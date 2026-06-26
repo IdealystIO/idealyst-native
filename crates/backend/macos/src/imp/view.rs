@@ -31,13 +31,16 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
 use objc2_app_kit::{
-    NSCursor, NSEvent, NSTextField, NSTextFieldCell, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSCursor, NSEvent, NSText, NSTextField, NSTextFieldCell, NSTrackingArea, NSTrackingAreaOptions,
+    NSView,
 };
 use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker, NSString};
 use std::cell::Cell as StdCell;
 
+use runtime_core::primitives::text_input::{BlurHandler, BlurOutcome};
 use runtime_core::{
     set_pointer_modifiers, HoverHandler, PointerModifiers, StateBits, TouchEvent, TouchHandler,
     TouchId, TouchPhase, TouchPoint, WheelEvent, WheelHandler, WheelKind,
@@ -157,6 +160,36 @@ declare_class!(
             if flags & FLAG_CONTROL != 0 {
                 let _: () = unsafe { msg_send![super(self), mouseDown: event] };
                 return;
+            }
+            // Blur any active text-field editing when the user presses a
+            // non-text view. AppKit only ends field editing when focus moves
+            // to another key view — clicking empty background leaves the field
+            // first responder with its focus ring stuck on. If the window's
+            // current first responder is a field editor (an NSText subclass),
+            // hand first responder back to the window so the field resigns and
+            // its `controlTextDidEndEditing:` fires → StateBits::FOCUSED clears.
+            // The macOS analogue of web's blur-on-outside-click.
+            unsafe {
+                let window: *mut AnyObject = msg_send![self, window];
+                if !window.is_null() {
+                    let fr: *mut AnyObject = msg_send![window, firstResponder];
+                    if !fr.is_null()
+                        && msg_send![fr, isKindOfClass: objc2::class!(NSText)]
+                    {
+                        // `fr` is the shared field editor; its delegate is the
+                        // NSTextField being edited. Consult that field's
+                        // cancelable-blur handler — a `Keep` veto leaves focus
+                        // (and the ring) intact, matching iOS/web.
+                        let field: *mut AnyObject = msg_send![fr, delegate];
+                        let allows = field.is_null()
+                            || text_field_blur_allows(&*(field as *const NSView));
+                        if allows {
+                            // `makeFirstResponder:` returns BOOL — must be typed
+                            // as such or objc2 aborts on the return-type mismatch.
+                            let _: bool = msg_send![window, makeFirstResponder: window];
+                        }
+                    }
+                }
             }
             // Pressed-state feedback (no-op for views without a state setter).
             // Independent of touch dispatch so a styled button dims on press
@@ -665,6 +698,22 @@ pub(crate) struct LabelInsets {
 
 pub(crate) struct CellIvars {
     insets: StdCell<LabelInsets>,
+    /// Focus-state setter installed by `Backend::attach_states` (via
+    /// [`set_text_field_focus_setter`]) for an editable field's cell. The cell
+    /// fires `(true)` when its field editor engages (`editWithFrame:` /
+    /// `selectWithFrame:`) and `(false)` on `endEditing:`, driving
+    /// `StateBits::FOCUSED` so a `focused` style variant (the input focus ring)
+    /// resolves. The control's begin/end-editing notifications AND its delegate
+    /// proved unreliable for our framework-chromed field, but these cell methods
+    /// are ALWAYS invoked (they position the field editor — that's how the caret
+    /// stays centered), so they're the dependable focus hook. Unused by
+    /// `IdealystLabelCell` (a non-editable label never edits).
+    focus_setter: RefCell<Option<Rc<dyn Fn(bool)>>>,
+    /// Cancelable-blur handler (see
+    /// [`runtime_core::primitives::text_input::BlurOutcome`]). The `FlippedView`
+    /// outside-click handler consults it before resigning this field — `Keep`
+    /// keeps focus. Also unused by `IdealystLabelCell`.
+    blur_handler: RefCell<Option<BlurHandler>>,
 }
 
 declare_class!(
@@ -720,6 +769,8 @@ impl IdealystLabelCell {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(CellIvars {
             insets: StdCell::new(LabelInsets::default()),
+            focus_setter: RefCell::new(None),
+            blur_handler: RefCell::new(None),
         });
         let empty = NSString::from_str("");
         unsafe { msg_send_id![super(this), initTextCell: &*empty] }
@@ -756,3 +807,261 @@ pub(crate) fn set_label_insets(label: &NSView, insets: LabelInsets) {
     cell.set_insets(insets);
 }
 
+
+// =========================================================================
+// VCenterTextFieldCell — `NSTextFieldCell` that vertically centers its text.
+// =========================================================================
+
+declare_class!(
+    /// `NSTextFieldCell` subclass that vertically centers its content within
+    /// the cell bounds. AppKit's default cell TOP-aligns text, so an editable
+    /// `text_input` whose style adds vertical padding (making the field taller
+    /// than one line) renders its text / placeholder pinned to the top — see
+    /// the search field in a sidebar. Overriding `drawingRectForBounds:` (the
+    /// rect AppKit uses for BOTH drawing and positioning the field editor)
+    /// centers the resting text, the placeholder, AND the caret while typing.
+    /// Matches web / iOS, which center single-line input text.
+    ///
+    /// Also insets horizontally by the author's `padding_left/right` (set via
+    /// [`set_text_field_insets`]) — AppKit paints text flush at the cell origin
+    /// otherwise, so a styled input's text would touch the border. The vertical
+    /// padding is handled by the centering, not an inset, so the text sits in
+    /// the visual middle.
+    pub(crate) struct VCenterTextFieldCell;
+
+    unsafe impl ClassType for VCenterTextFieldCell {
+        type Super = NSTextFieldCell;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystVCenterTextFieldCell";
+    }
+
+    impl DeclaredClass for VCenterTextFieldCell {
+        type Ivars = CellIvars;
+    }
+
+    unsafe impl VCenterTextFieldCell {
+        #[method(drawingRectForBounds:)]
+        fn drawing_rect_for_bounds(&self, bounds: CGRect) -> CGRect {
+            let i = self.ivars().insets.get();
+            let base: CGRect = unsafe { msg_send![super(self), drawingRectForBounds: bounds] };
+            // The natural one-line content height for these bounds.
+            let natural: CGSize = unsafe { msg_send![self, cellSizeForBounds: bounds] };
+            // Horizontal: inset by the author's left/right padding.
+            let x = base.origin.x + i.left;
+            let w = (base.size.width - i.left - i.right).max(0.0);
+            // Vertical: center (the padding-inflated bounds give the breathing
+            // room above/below, so centering reproduces symmetric padding).
+            let delta = base.size.height - natural.height;
+            let (y, h) = if delta > 0.0 {
+                (base.origin.y + delta / 2.0, natural.height)
+            } else {
+                (base.origin.y, base.size.height)
+            };
+            CGRect { origin: CGPoint { x, y }, size: CGSize { width: w, height: h } }
+        }
+
+        // When the field is FOCUSED, AppKit hands the field editor (an NSText)
+        // the cell frame, not `drawingRectForBounds:`, so the live text + caret
+        // would top-align even though the resting placeholder centers. Re-frame
+        // the editor to the same centered rect so typing stays centered too.
+        #[method(editWithFrame:inView:editor:delegate:event:)]
+        fn edit_with_frame(
+            &self,
+            frame: CGRect,
+            view: &NSView,
+            editor: &NSText,
+            delegate: Option<&AnyObject>,
+            event: Option<&NSEvent>,
+        ) {
+            let r: CGRect = unsafe { msg_send![self, drawingRectForBounds: frame] };
+            let _: () = unsafe {
+                msg_send![
+                    super(self),
+                    editWithFrame: r,
+                    inView: view,
+                    editor: editor,
+                    delegate: delegate,
+                    event: event
+                ]
+            };
+            // The field editor just engaged → the field is focused.
+            self.fire_focus(true);
+        }
+
+        #[method(selectWithFrame:inView:editor:delegate:start:length:)]
+        fn select_with_frame(
+            &self,
+            frame: CGRect,
+            view: &NSView,
+            editor: &NSText,
+            delegate: Option<&AnyObject>,
+            start: isize,
+            length: isize,
+        ) {
+            let r: CGRect = unsafe { msg_send![self, drawingRectForBounds: frame] };
+            let _: () = unsafe {
+                msg_send![
+                    super(self),
+                    selectWithFrame: r,
+                    inView: view,
+                    editor: editor,
+                    delegate: delegate,
+                    start: start,
+                    length: length
+                ]
+            };
+            // Click-to-edit installs the field editor here → focused.
+            self.fire_focus(true);
+        }
+
+        // Editing ended (focus lost / committed) → clear FOCUSED.
+        #[method(endEditing:)]
+        fn end_editing(&self, editor: &NSText) {
+            let _: () = unsafe { msg_send![super(self), endEditing: editor] };
+            self.fire_focus(false);
+        }
+    }
+);
+
+impl VCenterTextFieldCell {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(CellIvars {
+            insets: StdCell::new(LabelInsets::default()),
+            focus_setter: RefCell::new(None),
+            blur_handler: RefCell::new(None),
+        });
+        let empty = NSString::from_str("");
+        unsafe { msg_send_id![super(this), initTextCell: &*empty] }
+    }
+
+    fn set_insets(&self, insets: LabelInsets) {
+        self.ivars().insets.set(insets);
+        let cv: *mut NSView = unsafe { msg_send![self, controlView] };
+        if !cv.is_null() {
+            let _: () = unsafe { msg_send![cv, setNeedsDisplay: true] };
+        }
+    }
+
+    /// Install the focus-state setter (from `Backend::attach_states`). Fired
+    /// `(true)` when the field editor engages, `(false)` on `endEditing:`.
+    pub(crate) fn set_focus_setter(&self, setter: Rc<dyn Fn(bool)>) {
+        *self.ivars().focus_setter.borrow_mut() = Some(setter);
+    }
+
+    /// Drive the installed focus setter, if any. Clones out of the `RefCell`
+    /// before calling so the closure can't re-borrow it reentrantly.
+    fn fire_focus(&self, on: bool) {
+        let cb = self.ivars().focus_setter.borrow().clone();
+        if let Some(cb) = cb {
+            cb(on);
+        }
+    }
+
+    /// Install the cancelable-blur handler (from `create_text_input`).
+    pub(crate) fn set_blur_handler(&self, handler: BlurHandler) {
+        *self.ivars().blur_handler.borrow_mut() = Some(handler);
+    }
+
+    /// Whether this field may blur now: `Keep` → `false` (veto); no handler →
+    /// `true`. Cloned out of the `RefCell` before calling to avoid a reentrant
+    /// re-borrow.
+    fn blur_allows(&self) -> bool {
+        let cb = self.ivars().blur_handler.borrow().clone();
+        match cb {
+            Some(cb) => cb() != BlurOutcome::Keep,
+            None => true,
+        }
+    }
+}
+
+/// Install a focus-state setter on a text input's [`VCenterTextFieldCell`] so the
+/// field drives `StateBits::FOCUSED` from its field-editor engage/resign. The
+/// macOS analogue of the FlippedView state setter for editable fields; no-op for
+/// any other cell (e.g. a secure field's `NSSecureTextFieldCell`).
+pub(crate) fn set_text_field_focus_setter(field: &NSView, setter: Rc<dyn Fn(bool)>) {
+    if let Some(cell) = vcenter_cell_of(field) {
+        cell.set_focus_setter(setter);
+    }
+}
+
+/// Install the cancelable-blur handler on a text input's cell. No-op for any
+/// non-`VCenterTextFieldCell` (e.g. a secure field).
+pub(crate) fn set_text_field_blur_handler(field: &NSView, handler: BlurHandler) {
+    if let Some(cell) = vcenter_cell_of(field) {
+        cell.set_blur_handler(handler);
+    }
+}
+
+/// Whether `field` (an editing NSTextField) may blur now — consults its cell's
+/// `on_blur`. `true` (allow) when it isn't our cell or has no handler. Used by
+/// the [`FlippedView`] outside-click handler to honor a `Keep` veto.
+pub(crate) fn text_field_blur_allows(field: &NSView) -> bool {
+    match vcenter_cell_of(field) {
+        Some(cell) => cell.blur_allows(),
+        None => true,
+    }
+}
+
+/// Borrow `field`'s cell as a [`VCenterTextFieldCell`], or `None` if its cell is
+/// some other class (secure field, plain NSTextField, …).
+fn vcenter_cell_of(field: &NSView) -> Option<&VCenterTextFieldCell> {
+    let cell: *mut NSTextFieldCell = unsafe { msg_send![field, cell] };
+    if cell.is_null() {
+        return None;
+    }
+    let is_ours: bool = unsafe { msg_send![cell, isKindOfClass: VCenterTextFieldCell::class()] };
+    if !is_ours {
+        return None;
+    }
+    // SAFETY: just confirmed the dynamic class is `VCenterTextFieldCell`.
+    Some(unsafe { &*(cell as *const VCenterTextFieldCell) })
+}
+
+/// Push the author's `padding_*` into a text input's [`VCenterTextFieldCell`] so
+/// its text is inset from the border (AppKit otherwise paints flush). The macOS
+/// analogue of `set_label_insets` for editable fields; no-op for any other cell.
+pub(crate) fn set_text_field_insets(field: &NSView, insets: LabelInsets) {
+    let cell: *mut NSTextFieldCell = unsafe { msg_send![field, cell] };
+    if cell.is_null() {
+        return;
+    }
+    let cls = VCenterTextFieldCell::class();
+    let is_ours: bool = unsafe { msg_send![cell, isKindOfClass: cls] };
+    if !is_ours {
+        return;
+    }
+    // SAFETY: just confirmed the dynamic class is `VCenterTextFieldCell`.
+    let cell: &VCenterTextFieldCell = unsafe { &*(cell as *const VCenterTextFieldCell) };
+    cell.set_insets(insets);
+}
+
+/// Swap `field`'s cell for a [`VCenterTextFieldCell`] so its text/placeholder
+/// vertically centers, and standardize the field to FRAMEWORK-controlled chrome
+/// — exactly like [`IdealystLabel::label_with_string`]: no native bezel/border
+/// (the style's background + border draw it), so the macOS text input matches
+/// web/iOS/Android instead of stacking AppKit's bezel inset on top of the
+/// authored padding. Colors, font, and background still come from `apply_style`.
+///
+/// Call only on a NON-secure field — a secure field's `NSSecureTextFieldCell`
+/// would lose its bullet masking under this (non-secure) superclass.
+pub(crate) fn vertically_center_text_field(mtm: MainThreadMarker, field: &NSTextField) {
+    let centered = VCenterTextFieldCell::new(mtm);
+    unsafe {
+        let _: () = msg_send![field, setCell: &*centered];
+        // Framework owns the chrome — drop AppKit's bezel (its inset is the
+        // "extra padding" around the text) and let the style draw bg + border.
+        let _: () = msg_send![field, setBordered: false];
+        let _: () = msg_send![field, setBezeled: false];
+        // Kill the native focus ring: with no bezel it draws as a SQUARE blue
+        // outline that fights the style's rounded border. `NSFocusRingTypeNone`
+        // = 1. (A focused style variant is the standardized, cross-platform way
+        // to show focus; the native ring isn't.)
+        let _: () = msg_send![field, setFocusRingType: 1usize];
+        let _: () = msg_send![field, setEditable: true];
+        let _: () = msg_send![field, setSelectable: true];
+        // Single-line, horizontally scrolling editable text (the search-box shape).
+        let _: () = msg_send![&centered, setScrollable: true];
+        let _: () = msg_send![&centered, setUsesSingleLineMode: true];
+    }
+}

@@ -1,0 +1,25 @@
+# The MCP Arena is its OWN workspace, deliberately decoupled from the
+# framework workspace one level up. Reasons:
+#   * The arena churns constantly (new scenarios, run artifacts) and must
+#     never trigger a framework rebuild or widen the framework's Cargo.lock.
+#   * Most of the arena isn't Rust (scenario data, agent/verifier skills,
+#     captured transcripts) — a top-level home holds all of it.
+# It still reaches INTO the framework via path deps for the runtime
+# verifier tiers (robot-e2e / mock-backend) — those are added when the
+# Robot tier lands; the compile + static tiers here need neither.
+[workspace]
+resolver = "2"
+members = ["spine"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+regex = "1"
+glob = "0.3"
+anyhow = "1"

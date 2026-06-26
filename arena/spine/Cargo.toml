@@ -1,0 +1,18 @@
+[package]
+name = "arena-spine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Deterministic evaluation spine for the idealyst MCP arena: scenario/rubric model, tiered verifiers (compile/static/robot/playwright), scoring with divergence neutralization, transcript pathology metrics, and report rendering. The LLM-driven half (implementation agent, locator verifier, feedback agent) lives in ../skills and calls into this crate for every objective check."
+
+[[bin]]
+name = "arena"
+path = "src/bin/arena.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+regex.workspace = true
+glob.workspace = true
+anyhow.workspace = true

@@ -133,12 +133,20 @@ pub fn set_theme<T: ThemeTokens + 'static>(theme: T) {
 /// `var(--color-background)` reference auto-resolves on swap.
 const HOST_BG_TOKEN: &str = "color-background";
 
-/// Token name for the platform scrollbar thumb. Track is fixed
-/// `transparent` (literal) so the underlying surface color shows through;
-/// most apps don't want a separately-themed track. Tighter contrast on
+/// Token name for the platform scrollbar thumb. Tighter contrast on
 /// hover comes from the web backend's `::-webkit-scrollbar-thumb:hover`
 /// rule reading `--color-text-muted`, but that's web-only chrome.
 const SCROLLBAR_THUMB_TOKEN: &str = "color-border-strong";
+
+/// Token name for the scrollbar **track** (gutter). An OPAQUE surface, not
+/// `transparent`: the `::-webkit-scrollbar` rule is global and several
+/// scroll surfaces (notably the drawer-sidebar wrapper) have a transparent
+/// background, so a transparent track let a floating/legacy scrollbar
+/// reveal the content *behind* the scroller. `color-surface-alt` reads as a
+/// subtle gutter on white surfaces and blends into the canvas on the page
+/// scroll, while staying opaque so nothing shows through. Re-tints on theme
+/// swap like the thumb.
+const SCROLLBAR_TRACK_TOKEN: &str = "color-surface-alt";
 
 /// Look up the host-surface background + scrollbar thumb in `tokens`
 /// (by well-known name) and route them through
@@ -160,8 +168,18 @@ fn apply_host_surface_from_tokens(tokens: &[TokenEntry]) {
     if let Some(fallback) = lookup_color(tokens, SCROLLBAR_THUMB_TOKEN) {
         runtime_core::set_scrollbar_theme(
             Tokenized::Token { name: SCROLLBAR_THUMB_TOKEN, fallback },
-            Tokenized::Literal(Color("transparent".into())),
+            scrollbar_track_ref(tokens),
         );
+    }
+}
+
+/// Resolve the scrollbar track reference from a theme's tokens: a themed,
+/// opaque [`SCROLLBAR_TRACK_TOKEN`] surface, or `transparent` only when the
+/// theme defines no such token. Pure (the regression test pins it).
+fn scrollbar_track_ref(tokens: &[TokenEntry]) -> Tokenized<Color> {
+    match lookup_color(tokens, SCROLLBAR_TRACK_TOKEN) {
+        Some(fallback) => Tokenized::Token { name: SCROLLBAR_TRACK_TOKEN, fallback },
+        None => Tokenized::Literal(Color("transparent".into())),
     }
 }
 
@@ -291,6 +309,48 @@ mod tests {
 
     fn keepalive_len() -> usize {
         INSTALL_THEMES_KEEPALIVE.with(|k| if k.borrow().is_some() { 1 } else { 0 })
+    }
+
+    /// Regression: the scrollbar track was hardcoded `transparent`, so a
+    /// floating/legacy scrollbar revealed the content *behind* any scroll
+    /// surface with a transparent background (the drawer-sidebar wrapper).
+    /// The track must now resolve to the opaque `color-surface-alt` token.
+    #[test]
+    fn scrollbar_track_is_opaque_surface_not_transparent() {
+        let tokens = vec![
+            TokenEntry {
+                name: "color-surface-alt",
+                value: TokenValue::Color(Color("#f1f5f9".into())),
+            },
+            TokenEntry {
+                name: "color-border-strong",
+                value: TokenValue::Color(Color("#94a3b8".into())),
+            },
+        ];
+        match scrollbar_track_ref(&tokens) {
+            Tokenized::Token { name, fallback } => {
+                assert_eq!(name, SCROLLBAR_TRACK_TOKEN);
+                assert_ne!(
+                    fallback.0.to_ascii_lowercase(),
+                    "transparent",
+                    "the track must be an opaque surface, not transparent",
+                );
+            }
+            Tokenized::Literal(_) => panic!("expected a themed track token, got a literal"),
+        }
+
+        // Graceful fallback: a theme that defines no surface-alt keeps the
+        // old transparent track rather than emitting a dangling token ref.
+        let bare = vec![TokenEntry {
+            name: "color-border-strong",
+            value: TokenValue::Color(Color("#94a3b8".into())),
+        }];
+        match scrollbar_track_ref(&bare) {
+            Tokenized::Literal(c) => assert_eq!(c.0.to_ascii_lowercase(), "transparent"),
+            Tokenized::Token { .. } => {
+                panic!("a theme without surface-alt must fall back to a transparent literal")
+            }
+        }
     }
 
     /// Regression test for the `INSTALL_THEMES_KEEPALIVE` Vec growth audit

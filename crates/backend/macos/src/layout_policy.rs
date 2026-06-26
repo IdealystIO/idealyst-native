@@ -54,6 +54,41 @@ pub(crate) fn insert_needs_layout_pass(parent_attached_to_window: bool) -> bool 
     parent_attached_to_window
 }
 
+/// Hash a label's text-measure inputs — the style fields that drive its
+/// intrinsic size (font family/size/weight, line-height, letter-spacing,
+/// padding, text-transform). Paint props (color, background, border, radius,
+/// shadow) are deliberately excluded, so a paint-only restyle — e.g. a
+/// `:hover` color swap that arrives on every mouse-enter as content scrolls
+/// under the cursor — yields an UNCHANGED signature. The macOS `apply_style`
+/// re-measures the label + schedules a layout pass only when this signature
+/// moves. This (with `LayoutTree::set_style`'s geometry diff for non-text
+/// views) kills the scroll jitter where hover restyles fired a ~20ms global
+/// relayout per mouse-enter.
+pub(crate) fn text_measure_signature(style: &runtime_core::StyleRules) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    // Debug-format the measure-relevant subset: not every field type
+    // implements `Hash`, and a label restyle is far cheaper than the layout
+    // pass this gates, so the formatting cost is irrelevant.
+    format!(
+        "{:?}",
+        (
+            &style.font_family,
+            &style.font_size,
+            &style.font_weight,
+            &style.line_height,
+            &style.letter_spacing,
+            &style.text_transform,
+            &style.padding_top,
+            &style.padding_right,
+            &style.padding_bottom,
+            &style.padding_left,
+        )
+    )
+    .hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Minimum per-axis delta (in points) before a `setFrameSize:` on the host
 /// resize observer counts as a real resize. AppKit's autoresize math can emit
 /// sub-pixel jitter for a nominally-unchanged size; reacting to it would fire
@@ -474,5 +509,32 @@ mod tests {
         assert!(!detached_overlay_needs_resize((1200.0, 800.0), (1200.0, 800.0)));
         // Sub-pixel drift isn't a resize either.
         assert!(!detached_overlay_needs_resize((1200.0, 800.0), (1200.3, 799.8)));
+    }
+
+    // Regression: scrolling jittered because a `:hover` color restyle on a
+    // label fired a full layout pass per mouse-enter. The measure signature
+    // must ignore paint-only changes and track only intrinsic-size inputs.
+    #[test]
+    fn text_measure_signature_ignores_paint_tracks_metrics() {
+        use runtime_core::{Color, Length, StyleRules, Tokenized};
+        let mut base = StyleRules::default();
+        base.font_size = Some(Tokenized::Literal(Length::Px(14.0)));
+        let sig = text_measure_signature(&base);
+
+        // Paint-only changes (the scroll-jitter hover case) → SAME signature.
+        let mut painted = base.clone();
+        painted.background = Some(Tokenized::Literal(Color("#ffffff".into())));
+        painted.color = Some(Tokenized::Literal(Color("#000000".into())));
+        painted.border_top_color = Some(Tokenized::Literal(Color("#cccccc".into())));
+        assert_eq!(
+            text_measure_signature(&painted),
+            sig,
+            "color/background/border must not change a label's measure signature",
+        );
+
+        // A font-size change → DIFFERENT signature (the label must re-measure).
+        let mut bigger = base.clone();
+        bigger.font_size = Some(Tokenized::Literal(Length::Px(20.0)));
+        assert_ne!(text_measure_signature(&bigger), sig);
     }
 }

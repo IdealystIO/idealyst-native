@@ -13,6 +13,9 @@
 //! Each constructor returns a `Bound<HandleType>` so `.bind(r)` is
 //! type-checked against the call-site `Ref<HandleType>`.
 
+use crate::accessibility::{
+    AccessibilityProps, AccessibilityTraits, LiveRegionPriority, Role,
+};
 use crate::handles::{ButtonHandle, PressableHandle, RefFill, TextHandle, ViewHandle};
 use crate::element::{EachKey, EachRowBuild, Element};
 use crate::reactive::Ref;
@@ -82,6 +85,73 @@ impl<H> Bound<H> {
     #[cfg(feature = "robot")]
     pub fn test_id(mut self, id: &'static str) -> Self {
         self.primitive = self.primitive.with_test_id(id);
+        self
+    }
+
+    /// Replace this primitive's accessibility props wholesale. Use the
+    /// granular `a11y_*` setters below for the common single-field case;
+    /// reach for this when building the whole [`AccessibilityProps`] at
+    /// once (e.g. attaching custom `actions`). Same semantics as
+    /// [`Element::with_accessibility`].
+    pub fn accessibility(mut self, a11y: AccessibilityProps) -> Self {
+        self.primitive = self.primitive.with_accessibility(a11y);
+        self
+    }
+
+    /// Set the spoken accessibility label (screen-reader name).
+    /// `None`-by-default means backends derive a name from the
+    /// primitive's natural content; setting this overrides that.
+    pub fn a11y_label(mut self, label: impl Into<String>) -> Self {
+        if let Some(a) = self.primitive.accessibility_mut() {
+            a.label = Some(label.into());
+        }
+        self
+    }
+
+    /// Set the longer accessibility hint ("Double tap to open menu").
+    pub fn a11y_hint(mut self, hint: impl Into<String>) -> Self {
+        if let Some(a) = self.primitive.accessibility_mut() {
+            a.hint = Some(hint.into());
+        }
+        self
+    }
+
+    /// Override the inferred accessibility [`Role`]. By default every
+    /// primitive ships a sensible role; set this when the visible shape
+    /// differs from the a11y intent (e.g. a styled `pressable` that is
+    /// semantically a link).
+    pub fn a11y_role(mut self, role: Role) -> Self {
+        if let Some(a) = self.primitive.accessibility_mut() {
+            a.role = Some(role);
+        }
+        self
+    }
+
+    /// Hide this primitive (and its descendants) from the accessibility
+    /// tree — for purely decorative content. Maps to `aria-hidden`,
+    /// `accessibilityElementsHidden`, etc.
+    pub fn a11y_hidden(mut self, hidden: bool) -> Self {
+        if let Some(a) = self.primitive.accessibility_mut() {
+            a.hidden = hidden;
+        }
+        self
+    }
+
+    /// Set the orthogonal accessibility state flags
+    /// ([`AccessibilityTraits`]) — selected, disabled, expanded, etc.
+    pub fn a11y_traits(mut self, traits: AccessibilityTraits) -> Self {
+        if let Some(a) = self.primitive.accessibility_mut() {
+            a.traits = traits;
+        }
+        self
+    }
+
+    /// Mark this primitive as a live region so platform AX announces
+    /// updates to its label at the given [`LiveRegionPriority`].
+    pub fn live_region(mut self, priority: LiveRegionPriority) -> Self {
+        if let Some(a) = self.primitive.accessibility_mut() {
+            a.live_region = Some(priority);
+        }
         self
     }
 }
@@ -1097,5 +1167,79 @@ mod hover_builder_tests {
     fn view_without_on_hover_is_none() {
         let el: Element = view(Vec::new()).into();
         assert!(matches!(el, Element::View { on_hover: None, .. }));
+    }
+}
+
+#[cfg(test)]
+mod a11y_builder_tests {
+    use super::*;
+    use crate::accessibility::{AccessibilityProps, AccessibilityTraits, LiveRegionPriority, Role};
+
+    /// Pull the `accessibility` field out of a node-bearing element.
+    fn a11y_of(el: &Element) -> &AccessibilityProps {
+        match el {
+            Element::View { accessibility, .. }
+            | Element::Text { accessibility, .. }
+            | Element::Button { accessibility, .. } => accessibility,
+            _ => panic!("unexpected element variant in a11y test"),
+        }
+    }
+
+    #[test]
+    fn granular_setters_write_their_field() {
+        let el: Element = view(Vec::new())
+            .a11y_label("Toolbar")
+            .a11y_hint("Main actions")
+            .a11y_role(Role::Toolbar)
+            .a11y_hidden(true)
+            .live_region(LiveRegionPriority::Polite)
+            .into();
+        let a = a11y_of(&el);
+        assert_eq!(a.label.as_deref(), Some("Toolbar"));
+        assert_eq!(a.hint.as_deref(), Some("Main actions"));
+        assert_eq!(a.role, Some(Role::Toolbar));
+        assert!(a.hidden);
+        assert_eq!(a.live_region, Some(LiveRegionPriority::Polite));
+    }
+
+    #[test]
+    fn a11y_traits_setter_writes_flags() {
+        let el: Element = button("Save", || {})
+            .a11y_traits(AccessibilityTraits::SELECTED | AccessibilityTraits::DISABLED)
+            .into();
+        let a = a11y_of(&el);
+        assert!(a.traits.contains(AccessibilityTraits::SELECTED));
+        assert!(a.traits.contains(AccessibilityTraits::DISABLED));
+        assert!(!a.traits.contains(AccessibilityTraits::CHECKED));
+    }
+
+    #[test]
+    fn accessibility_bag_replaces_wholesale() {
+        let props = AccessibilityProps {
+            label: Some("Custom".into()),
+            role: Some(Role::Image),
+            hidden: false,
+            ..Default::default()
+        };
+        let el: Element = text("hi").accessibility(props).into();
+        let a = a11y_of(&el);
+        assert_eq!(a.label.as_deref(), Some("Custom"));
+        assert_eq!(a.role, Some(Role::Image));
+    }
+
+    #[test]
+    fn plain_primitive_has_default_a11y() {
+        let el: Element = view(Vec::new()).into();
+        assert!(a11y_of(&el).is_default());
+    }
+
+    /// The setter is generic over `Bound<H>`, so it must work uniformly
+    /// across primitives, not just `view`.
+    #[test]
+    fn setters_are_generic_across_primitives() {
+        let b: Element = button("x", || {}).a11y_label("B").into();
+        let t: Element = text("y").a11y_label("T").into();
+        assert_eq!(a11y_of(&b).label.as_deref(), Some("B"));
+        assert_eq!(a11y_of(&t).label.as_deref(), Some("T"));
     }
 }

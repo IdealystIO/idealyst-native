@@ -102,20 +102,33 @@ pub fn app() -> Element {
     //  - macOS: always-pinned sidebar, no header — navigate via the panel.
     let mut builder = DrawerNavigator::new(DEFAULT_ROUTE);
     builder = match platform() {
-        Platform::Web => builder
+        // Desktop (web/browser AND native macOS): the custom header bar +
+        // pinned sidebar. macOS now renders `TopSlot::Custom` above its
+        // sidebar+outlet, matching the browser layout.
+        Platform::Web | Platform::MacOs => builder
             .native_header(false)
             .top_with(TopSlot::Custom(Box::new(move |slot| shell::header(slot, is_dark)))),
+        // Mobile: the native header bar (UINavigationController / Toolbar)
+        // with its auto-injected drawer hamburger.
         _ => builder.native_header(true),
     };
     builder = builder.leading_with(move |slot| shell::sidebar(slot, q)).drawer_width(252.0);
 
     // Fold the catalog into one screen per entry. Each screen wraps the
-    // entry's body in the central page frame.
+    // entry's body in the central page frame — except the Overview
+    // landing, which renders full-bleed via `landing_frame` (no title
+    // block / Usage panel).
     for group in CATALOG {
         for entry in group.entries {
             let route = entry.route.clone();
+            let is_landing = entry.route.name() == routes::OVERVIEW_ROUTE.name();
             builder = builder.screen(route, move |_| {
-                Screen::new(shell::page_frame(entry)).title(entry.name)
+                let content = if is_landing {
+                    shell::landing_frame(entry)
+                } else {
+                    shell::page_frame(entry)
+                };
+                Screen::new(content).title(entry.name)
             });
         }
     }

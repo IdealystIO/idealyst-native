@@ -59,6 +59,8 @@ pub struct Group {
 // Routes — one per catalog entry. `name` is the stable id.
 // =============================================================================
 
+// Get started
+pub const OVERVIEW_ROUTE: Route<()> = Route::<()>::new("overview", "/overview");
 // Foundations
 pub const COLORS_ROUTE: Route<()> = Route::<()>::new("colors", "/foundations/color");
 pub const INTENTS_ROUTE: Route<()> = Route::<()>::new("intents", "/foundations/intents");
@@ -120,6 +122,26 @@ pub const TABLE_ROUTE: Route<()> = Route::<()>::new("table", "/data/table");
 use Status::{Detailed, Preview};
 
 pub const CATALOG: &[Group] = &[
+    Group {
+        label: "Get started",
+        entries: &[
+            Entry {
+                route: &OVERVIEW_ROUTE,
+                name: "Overview",
+                // Detailed → green sidebar dot, matching the design's
+                // primary-tinted "Overview" nav item.
+                status: Detailed,
+                // No token hint in the header on the landing screen.
+                token: "",
+                // The landing renders full-bleed (no page frame), so this
+                // lead is never shown — kept for catalog completeness.
+                desc: "The idea-ui component library — a token-driven UI kit where every \
+                    component composes from a shared, swappable design vocabulary.",
+                body: pages::overview::overview,
+                code: "",
+            },
+        ],
+    },
     Group {
         label: "Foundations",
         entries: &[
@@ -558,8 +580,9 @@ pub const CATALOG: &[Group] = &[
     },
 ];
 
-/// The route the docs open on. The design defaults to Button.
-pub const DEFAULT_ROUTE: &Route<()> = &BUTTON_ROUTE;
+/// The route the docs open on. The design's slight change makes the
+/// Overview landing the base screen (it was Button before).
+pub const DEFAULT_ROUTE: &Route<()> = &OVERVIEW_ROUTE;
 
 /// Find the catalog entry for a route id (`route.name()`).
 pub fn entry_for(route_name: &str) -> Option<&'static Entry> {

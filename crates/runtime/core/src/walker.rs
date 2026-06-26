@@ -184,6 +184,22 @@ where
     // opener — a self-contained closure making a window/system call.
     crate::backend::install_fullscreen_setter(backend.borrow().fullscreen_setter());
 
+    // Stash an accessibility announcer so author code can post a
+    // live-region announcement via `runtime_core::announce(...)` from any
+    // event handler. Unlike the URL opener / full-screen setter, the
+    // backend's `announce_for_accessibility` takes `&mut self`, so the
+    // closure captures the backend handle and borrows it on each call.
+    {
+        let announce_backend = backend.clone();
+        crate::backend::install_announcer(Some(Rc::new(
+            move |msg: &str, priority: crate::accessibility::LiveRegionPriority| {
+                announce_backend
+                    .borrow_mut()
+                    .announce_for_accessibility(msg, priority);
+            },
+        )));
+    }
+
     // Auto-start the Robot bridge when the `dev` feature is on so
     // the MCP server's runtime tools can attach without the user
     // wiring `bridge::start(...)` themselves. The call is
@@ -615,9 +631,9 @@ fn dispatch_icon<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) 
 
 #[inline(never)]
 fn dispatch_text_input<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
-    let Element::TextInput { value, on_change, on_key_down, placeholder, secure, style, ref_fill, accessibility, .. } = node
+    let Element::TextInput { value, on_change, on_key_down, on_blur, placeholder, secure, style, ref_fill, accessibility, .. } = node
     else { unreachable!() };
-    text_input::build_text_input(backend, value, on_change, on_key_down, placeholder, secure, style, ref_fill, accessibility)
+    text_input::build_text_input(backend, value, on_change, on_key_down, on_blur, placeholder, secure, style, ref_fill, accessibility)
 }
 
 #[inline(never)]

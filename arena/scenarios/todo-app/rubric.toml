@@ -1,0 +1,97 @@
+# SECRET — never enters the implementation agent's context. Each item is
+# atomic and objectively checkable at its declared tier. Items are derived
+# strictly from the scenario's stated requirements; nothing subjective and
+# nothing the scenario didn't ask for (e.g. no server-persistence item — the
+# prompt only says "persists across reloads", which local storage satisfies).
+scenario_id = "todo-app"
+
+# --- compile floor -----------------------------------------------------------
+
+[[item]]
+id = "builds-web"
+description = "The produced project builds for web."
+points = 20
+class = "decision"
+tier = "compile"
+verifier = "compile"
+assertion = { target = "web" }
+
+# --- decision items (source-verifiable: did the agent pick the right APIs) ---
+
+[[item]]
+id = "uses-list-primitive"
+description = "Renders the items through a list primitive (flat_list) rather than a hand-rolled loop of views."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "flat_list|virtualizer", in = "src/**/*.rs" }
+
+[[item]]
+id = "uses-text-input"
+description = "Has a text_input primitive for entering a new item."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "text_input", in = "src/**/*.rs" }
+
+[[item]]
+id = "uses-reactive-state"
+description = "Holds the item list in reactive state (signal) so the UI updates on change."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "signal!|Signal<", in = "src/**/*.rs" }
+
+[[item]]
+id = "uses-persistent-storage"
+description = "Persists items via the storage SDK rather than holding them only in memory."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "storage::|use_storage|Storage::", in = "src/**/*.rs" }
+
+# --- outcome items (platform truth via Playwright; each gated on a decision) -
+
+[[item]]
+id = "add-item-renders"
+description = "Typing an item and submitting adds a visible row to the list."
+points = 20
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-text-input"
+assertion = { action = "type 'Buy milk' into the add field and submit", expect_role = "listitem", expect_name = "Buy milk" }
+
+[[item]]
+id = "toggle-done-visible"
+description = "Marking an item done changes its visible state."
+points = 15
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-reactive-state"
+assertion = { action = "add an item, then activate its done control", expect_role = "checkbox" }
+
+[[item]]
+id = "delete-removes-row"
+description = "Deleting an item removes its row from the list."
+points = 15
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-list-primitive"
+assertion = { action = "add an item, then activate its delete control" }
+
+[[item]]
+id = "persists-across-reload"
+description = "Added items survive a page reload."
+points = 15
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-persistent-storage"
+assertion = { action = "add an item, reload the page", expect_role = "listitem", expect_name = "Buy milk" }

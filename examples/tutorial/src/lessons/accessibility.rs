@@ -1,11 +1,12 @@
-//! Accessibility track. The data model and backend wiring are shipped;
-//! the author-facing setter surface is still landing, and these lessons
-//! say so plainly rather than teaching an API that isn't there yet.
+//! Accessibility track. The data model, backend wiring, and the
+//! author-facing setter surface are all shipped: these lessons teach the
+//! defaults, the `AccessibilityProps` model, and the `a11y_*` / `ui!`
+//! setters authors use to override them.
 
 use runtime_core::{ui, Element};
 use idea_ui::{typography_kind, Typography};
 
-use crate::common::{Callout, CodePanel, DocsLink, LessonPage};
+use crate::common::{CodePanel, DocsLink, LessonPage};
 use crate::routes::{A11Y_DEFAULTS_ROUTE, A11Y_MODEL_ROUTE};
 use crate::shell;
 
@@ -98,20 +99,36 @@ let props = AccessibilityProps {
                     signals.".to_string()
             )
 
-            Callout(label = "Attaching props is still being built out".to_string()) {
-                Typography(
-                    content = "AccessibilityProps reaches every backend, but the only shipped \
-                        author setter is LazyBuilder::with_accessibility(props). There is not \
-                        yet a .accessibility(props) method on the common builders or an \
-                        accessibility = ... prop in ui!, and announce_for_accessibility is a \
-                        Backend method with no author-facing free function. Until that lands, \
-                        the defaults from the previous step carry the common case.".to_string(),
-                    muted = true,
-                )
-            }
+            Typography(content = "Setting props".to_string(), kind = typography_kind::H2)
+            Typography(
+                content = "Every primitive exposes the same setters, both as ui! attributes \
+                    (the named-prop form, inside the parens) and as builder methods on the \
+                    value a constructor returns: a11y_label, a11y_hint, a11y_role, a11y_hidden, \
+                    a11y_traits, and live_region for single fields, or accessibility for a whole \
+                    AccessibilityProps at once. Each maps to one field of the model \
+                    above.".to_string()
+            )
+            CodePanel(src = r##"use runtime_core::{ui, Role};
+
+ui! {
+    button(
+        label = "Save",
+        on_click = on_save,
+        a11y_label = "Save document",
+        a11y_role = Role::Button,
+    )
+}"##.to_string())
+            Typography(
+                content = "For transient feedback with no focus target \u{2014} \"Saved\", \
+                    \"Form submitted\" \u{2014} call runtime_core::announce(msg, priority) from \
+                    any event handler; it routes to the active backend's AX announcer.".to_string()
+            )
+            CodePanel(src = r##"use runtime_core::{announce, LiveRegionPriority};
+
+announce("Saved", LiveRegionPriority::Polite);"##.to_string())
 
             DocsLink(
-                summary = "The model reference and the in-progress author surface.".to_string(),
+                summary = "The full model reference and the per-platform mapping.".to_string(),
                 link_label = "Accessibility guide".to_string(),
                 doc_file = "accessibility.md".to_string(),
             )

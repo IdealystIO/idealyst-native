@@ -1164,6 +1164,7 @@ impl Backend for TerminalBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        _on_blur: Option<runtime_core::primitives::text_input::BlurHandler>,
         secure: bool,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {

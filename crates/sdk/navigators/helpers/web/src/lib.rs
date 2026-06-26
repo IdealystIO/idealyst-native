@@ -1084,6 +1084,15 @@ pub fn create_tab(
 /// `NavCommand::Custom` channel carrying a `DrawerCmd` payload —
 /// the dispatcher downcasts and flips the `is_open` signal that the
 /// layout subscribes to.
+thread_local! {
+    /// The click `Closure` for each drawer's modal backdrop, keyed by the
+    /// navigator's `nav_id`. Kept alive here (not `forget`-ed) for the
+    /// navigator's lifetime and dropped in [`release`] so the JS callback
+    /// frees with its navigator — see [[feedback_no_forget_in_library_code]].
+    static DRAWER_BACKDROP_CLOSURES: RefCell<HashMap<u32, Closure<dyn FnMut(web_sys::Event)>>> =
+        RefCell::new(HashMap::new());
+}
+
 pub fn create_drawer(
     b: &mut WebBackend,
     callbacks: WebDrawerCallbacks<Node>,
@@ -1112,6 +1121,10 @@ pub fn create_drawer(
         state: None,
     });
     control.install_link_activator(select_activator);
+
+    // Clone for the modal backdrop's tap-to-close handler before `control`
+    // is moved into the dispatcher build callback below.
+    let backdrop_control = control.clone();
 
     let container = create_inner(b, navigator, control.clone(), move |instance| {
         // Wire `is_open` -> the `.drawer-open` class on the root so the
@@ -1305,6 +1318,33 @@ pub fn create_drawer(
         // body outlet (append) rather than before a footer node.
     }
 
+    // --- MODAL BACKDROP (scrim) ---
+    //
+    // A dimmed overlay behind the off-canvas sidebar. The `@media`-pinned
+    // wide layout hides it (`.ui-nav-drawer-backdrop{display:none}`); on
+    // narrow viewports it fades in with `.drawer-open` and intercepts
+    // pointer events. Clicking it closes the drawer — the same
+    // tap-to-dismiss the iOS scrim gives. Without this the off-canvas
+    // sidebar slid in over undimmed, un-dismissable content (the reported
+    // bug). It's a sibling of the frame rows (its own `position:fixed`
+    // stacking, z below the sidebar's), so DOM order doesn't affect layout.
+    let backdrop = doc.create_element("div").expect("create backdrop div");
+    let _ = backdrop.set_attribute("class", css::nav_class::DRAWER_BACKDROP);
+    let _ = backdrop.set_attribute("aria-hidden", "true");
+    let _ = container.append_child(backdrop.as_ref());
+    {
+        let close_control = backdrop_control.clone();
+        let closure = Closure::wrap(Box::new(move |_ev: web_sys::Event| {
+            // Ride the same `NavCommand::Custom(DrawerCmd::Close)` channel the
+            // dispatcher above handles — flips `is_open` to false, which the
+            // `drawer-open` class effect reflects to the DOM (slide out).
+            close_control.dispatch(NavCommand::Custom(Rc::new(DrawerCmd::Close)));
+        }) as Box<dyn FnMut(web_sys::Event)>);
+        let _ = backdrop
+            .add_event_listener_with_callback("click", closure.as_ref().unchecked_ref());
+        DRAWER_BACKDROP_CLOSURES.with(|m| m.borrow_mut().insert(nav_id, closure));
+    }
+
     // Mount every slot's content in a single microtask so the
     // SDK's `build_node` calls happen outside the create-time
     // backend borrow. Each builder is a no-arg `Fn() -> Node`
@@ -1421,6 +1461,11 @@ pub fn release(node: &Node) {
     // Drop the strong ref from POPSTATE_TARGETS so the instance
     // (and its closures) actually free.
     unregister_popstate_target(&entry.instance);
+    // Drop the drawer backdrop's click `Closure` (no-op for non-drawer
+    // navigators, which never inserted one).
+    DRAWER_BACKDROP_CLOSURES.with(|m| {
+        m.borrow_mut().remove(&nav_id);
+    });
     let _ = entry.control;
 }
 

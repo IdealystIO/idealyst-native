@@ -1336,7 +1336,9 @@ fn text_input_create_adopts_ssr_input_during_hydration() {
         "", // initial_value (overridden post-adopt)
         None,
         Rc::new(|_: String| {}),
-        None,
+        None, // on_key_down
+        None, // on_blur
+        false, // secure
         &Default::default(),
     );
 

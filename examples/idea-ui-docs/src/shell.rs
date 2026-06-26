@@ -10,9 +10,10 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, derived, switch, ui, Color, Element, IntoElement, SafeAreaSides, Signal,
-    StyleApplication, Tokenized,
+    component, derived, fragment, pressable, switch, ui, viewport_size, when, Color, Element,
+    IntoElement, SafeAreaSides, Signal, StyleApplication, Tokenized,
 };
+use runtime_core::primitives::navigator::ambient_drawer;
 use drawer_navigator::SlotProps;
 use idea_ui::{
     dark_theme, light_theme, set_idea_theme, typography_kind, Spacer, Stack, StackGap, Switch,
@@ -23,9 +24,9 @@ use crate::routes::{Entry, Status, CATALOG};
 use crate::styles::{
     BrandName, Callout as CalloutBox, CodePanel as CodePanelBox, CodeText, ControlsBox, DemoRow,
     DemoSurface as DemoSurfaceBox, DocHeader, GroupOverline, HeaderBrand, HeaderMono, HeaderSpacer,
-    LogoBox, LogoGlyph, NavDot, NavDotReady, NavItem, NavItemActive, PagePad, PreviewBox,
+    LogoBox, LogoGlyph, MenuButton, MenuGlyph, NavDot, NavDotReady, NavItem, NavItemActive, PagePad, PreviewBox,
     PreviewSlot, ScreenScroll, SearchInput, SegBtn, SegBtnActive, SegBtnText, SegBtnTextActive,
-    SegToggle, SidebarBody, SidebarSection, StatusBadge, StatusBadgeDetailed, StatusBadgeText,
+    SegToggle, SidebarBody, SidebarScroll, SidebarSection, StatusBadge, StatusBadgeDetailed, StatusBadgeText,
     StatusBadgeTextDetailed, TitleRow, UsageLabel, VersionPill,
 };
 
@@ -50,6 +51,7 @@ pub fn header(slot: SlotProps, is_dark: Signal<bool>) -> Element {
 
     ui! {
         view(style = DocHeader()) {
+            menu_button()
             view(style = HeaderBrand()) {
                 view(style = LogoBox()) {
                     text(style = LogoGlyph()) { "i".to_string() }
@@ -63,6 +65,35 @@ pub fn header(slot: SlotProps, is_dark: Signal<bool>) -> Element {
             theme_toggle(is_dark)
         }
     }
+}
+
+// The leading hamburger. The custom header replaces the SDK's auto-
+// injected nav bar (web + macOS), so it must render its own way to open
+// the drawer once the sidebar collapses to a modal. The drawer publishes
+// an ambient `DrawerChrome { open, collapse_below }` for exactly this
+// "page-level header" case:
+//   - macOS: the drawer never collapses (always pinned) and publishes no
+//     ambient chrome → `ambient_drawer()` is `None` → no button.
+//   - web: `collapse_below` is the pin width (900); the reactive `when`
+//     shows the button only while the viewport is narrower than that,
+//     in lockstep with the sidebar's own CSS pin/modal switch.
+fn menu_button() -> Element {
+    let Some(chrome) = ambient_drawer() else {
+        return fragment(vec![]);
+    };
+    let below = chrome.collapse_below;
+    let open = chrome.open;
+    when(
+        move || viewport_size().get().width < below,
+        move || {
+            let open = open.clone();
+            let glyph = ui! { text(style = MenuGlyph()) { "\u{2630}".to_string() } };
+            pressable(vec![glyph], move || (open)())
+                .with_style(MenuButton())
+                .into_element()
+        },
+        || fragment(vec![]),
+    )
 }
 
 fn theme_toggle(is_dark: Signal<bool>) -> Element {
@@ -125,10 +156,17 @@ pub fn sidebar(slot: SlotProps, q: Signal<String>) -> Element {
         move |query: &String| build_nav(query, active_route),
     );
 
+    // A scroll view (not a plain view): the drawer SDK gives the leading
+    // slot a fixed full-height panel and leaves scrolling to the author, so
+    // a nav list taller than the viewport must scroll here. The
+    // `scroll_view` seed (`flex_grow:1 / flex_basis:0`) fills the panel's
+    // height, bounding the scroller so its content overflows and scrolls.
     ui! {
-        view(style = SidebarBody()) {
-            search
-            nav
+        scroll_view(style = SidebarScroll()) {
+            view(style = SidebarBody()) {
+                search
+                nav
+            }
         }
         .safe_area(SafeAreaSides::VERTICAL)
     }
@@ -226,6 +264,23 @@ pub fn page_frame(entry: &'static Entry) -> Element {
                 body
                 usage
             }
+        }
+        .safe_area(SafeAreaSides::BOTTOM)
+    }
+}
+
+// =============================================================================
+// landing_frame — the full-bleed frame for the Overview landing screen.
+// Unlike `page_frame`, it adds NO title block / status badge / Usage
+// panel; the page body (`pages::overview`) owns its whole layout inside
+// the wide `LandingPad` column. Just the scrolling surface + safe area.
+// =============================================================================
+
+pub fn landing_frame(entry: &'static Entry) -> Element {
+    let body = (entry.body)();
+    ui! {
+        scroll_view(style = ScreenScroll()) {
+            body
         }
         .safe_area(SafeAreaSides::BOTTOM)
     }

@@ -10,6 +10,7 @@ use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
 use crate::primitives::key::{KeyEvent, KeyOutcome};
+use crate::primitives::text_input::BlurHandler;
 use crate::reactive::{Effect, Signal};
 use crate::sources::StyleSource;
 use std::cell::RefCell;
@@ -20,6 +21,7 @@ pub(super) fn build_text_input<B: Backend + 'static>(
     value: Signal<String>,
     on_change: Rc<dyn Fn(String)>,
     on_key_down: Option<Rc<dyn Fn(&KeyEvent) -> KeyOutcome>>,
+    on_blur: Option<BlurHandler>,
     placeholder: Option<String>,
     secure: bool,
     style: Option<StyleSource>,
@@ -33,6 +35,7 @@ pub(super) fn build_text_input<B: Backend + 'static>(
             placeholder.as_deref(),
             on_change,
             on_key_down,
+            on_blur,
             secure,
             &a11y,
         )

@@ -414,7 +414,19 @@ impl LayoutTree {
     /// the base style established (gap, padding, flex_direction,
     /// width, …) — which is exactly the bug we saw with the dashboard
     /// page's gap getting wiped.
-    pub fn set_style(&mut self, node: LayoutNode, rules: &StyleRules) {
+    ///
+    /// Returns `true` iff this changed the node's **layout** geometry. The
+    /// Taffy `Style` we build holds geometry only — flex / size / spacing /
+    /// position / aspect-ratio. Paint properties (color, background,
+    /// border-color, border-radius, box-shadow, opacity) never reach it. So a
+    /// `false` return means a paint-only change (e.g. a `:hover` border-color
+    /// swap): a backend can skip scheduling a layout pass for it. Text-measure
+    /// inputs (font, line-height) also aren't in the Taffy `Style` — a node
+    /// with a measure fn must gate on those separately (see the macOS
+    /// backend's text-measure signature). The `tree.set_style` write itself is
+    /// unconditional, so Taffy's dirty bookkeeping is identical for every
+    /// backend; only the return value is advisory.
+    pub fn set_style(&mut self, node: LayoutNode, rules: &StyleRules) -> bool {
         // Surface lifecycle bugs cleanly: if a caller hands us a node
         // that was already freed via `remove_node`, panic *here* with a
         // backtrace pointing at the bad caller instead of letting
@@ -429,11 +441,8 @@ impl LayoutTree {
              BEFORE the backend frees the Taffy slot.",
             node.0
         );
-        let mut style = self
-            .tree
-            .style(node.0)
-            .cloned()
-            .unwrap_or(Style::default());
+        let existing = self.tree.style(node.0).cloned().unwrap_or_default();
+        let mut style = existing.clone();
 
         // Display is always Flex for framework views.
         style.display = Display::Flex;
@@ -635,9 +644,12 @@ impl LayoutTree {
         // the merged result, not the incoming `rules`).
         self.apply_default_max_width(node.0, &mut style);
 
+        // Geometry-only diff: equal Taffy `Style` ⇒ a paint-only change.
+        let changed = style != existing;
         self.tree
             .set_style(node.0, style)
             .expect("taffy set_style");
+        changed
     }
 
     /// Re-derive the framework's default `max-width: 100%` cross-axis
@@ -752,25 +764,10 @@ impl LayoutTree {
                 .style(node.0)
                 .cloned()
                 .unwrap_or(Style::default());
-            // Scroll on the requested axis; CLIP the cross axis. Taffy
-            // leaves the unset axis at `Overflow::Visible`, whose automatic
-            // minimum size is the content's size — so a non-wrapping wide
-            // child (e.g. a button row) would push a VERTICAL scroller's
-            // *width* out to its content's min-content, and that bleeds up
-            // through every ancestor until the whole page is wider than the
-            // viewport (a phantom horizontal scroll + dead space). CSS hides
-            // this: per the overflow spec, `overflow-y: scroll` with
-            // `overflow-x: visible` computes the x axis to `auto`. Taffy does
-            // NOT do that promotion, so we pin the cross axis to `Clip`
-            // (automatic minimum 0 → the scroller's cross size tracks its
-            // frame, never its content). Backends already clip a scroll
-            // view to its bounds, so this is sizing-only.
             if horizontal {
                 style.overflow.x = taffy::Overflow::Scroll;
-                style.overflow.y = taffy::Overflow::Clip;
             } else {
                 style.overflow.y = taffy::Overflow::Scroll;
-                style.overflow.x = taffy::Overflow::Clip;
             }
             // `flex_basis: 0` + `flex_grow: 1` tells Taffy "fill the
             // available main-axis space from the parent" rather than
@@ -957,6 +954,82 @@ impl LayoutTree {
             .unwrap_or_default()
     }
 
+    /// Compute the scrollable content extent of a scroll node — the
+    /// `(width, height)` a backend should set as its scroll view's
+    /// `contentSize` — by walking the node's descendants in its content
+    /// coordinate space, **respecting clipping**.
+    ///
+    /// A naive "bounding box of every descendant frame on both axes" walk
+    /// over-reports: it counts content that is clipped (never visible /
+    /// reachable), inflating `contentSize` so the scroll view scrolls to
+    /// dead space. Two clipping rules fix that:
+    ///
+    /// 1. **The scroll view clips its CROSS axis to its own frame.** A
+    ///    vertical scroller can't scroll sideways, so a child wider than its
+    ///    bounds is clipped — it must not extend `contentSize.width`. Only
+    ///    the SCROLL axis is unbounded (that's what scrolls). Which axis is
+    ///    which is read from the node's own Taffy `overflow` (set by
+    ///    [`set_overflow_scroll`](Self::set_overflow_scroll)).
+    /// 2. **A descendant that clips its overflow bounds its subtree to its
+    ///    own frame** — e.g. a nested scroll view scrolls its own content;
+    ///    that content must not leak into the outer scroller's extent.
+    ///
+    /// A node with `overflow: Visible` does NOT clip — its overflowing
+    /// children legitimately extend the extent (e.g. a sidebar whose
+    /// `min_height: 100%` container is clamped to the viewport but whose
+    /// Spacer-pushed footer sits below must still drive `contentSize.height`;
+    /// only the SCROLL axis benefits — the cross axis is clipped by rule 1).
+    ///
+    /// Note: `StyleRules { overflow: Hidden }` is a backend-level
+    /// `clipsToBounds` not reflected in Taffy `overflow`, so rule 2 here only
+    /// fires for nodes Taffy knows clip (scroll views). Rule 1 still bounds
+    /// the cross axis regardless — which is what stops an over-wide child (a
+    /// non-wrapping button row, a wide table) from turning a vertical
+    /// scroller into a horizontal one.
+    pub fn scroll_content_extent(&self, scroll: LayoutNode) -> (f32, f32) {
+        let style = self.tree.style(scroll.0).cloned().unwrap_or(Style::default());
+        let sf = self.frame_of(scroll);
+        // The SCROLL axis is unbounded; the CROSS axis clips to the frame.
+        let scrolls_x = style.overflow.x == taffy::Overflow::Scroll;
+        let scrolls_y = style.overflow.y == taffy::Overflow::Scroll;
+        let clip_right = if scrolls_x { f32::INFINITY } else { sf.width };
+        let clip_bottom = if scrolls_y { f32::INFINITY } else { sf.height };
+
+        let mut max_x = 0.0_f32;
+        let mut max_y = 0.0_f32;
+        // (node, accumulated origin x/y, inherited clip right/bottom).
+        let mut stack: Vec<(LayoutNode, f32, f32, f32, f32)> = self
+            .children_of(scroll)
+            .into_iter()
+            .map(|c| (c, 0.0, 0.0, clip_right, clip_bottom))
+            .collect();
+        while let Some((node, ox, oy, cr, cb)) = stack.pop() {
+            let f = self.frame_of(node);
+            let nx = ox + f.x;
+            let ny = oy + f.y;
+            // This node's extent, clamped to the clip rect it lives in.
+            max_x = max_x.max((nx + f.width).min(cr));
+            max_y = max_y.max((ny + f.height).min(cb));
+            // If this node clips an axis, tighten that axis's clip bound for
+            // its subtree. (`Visible` → no clip → children inherit cr/cb.)
+            let s = self.tree.style(node.0).cloned().unwrap_or(Style::default());
+            let child_cr = if s.overflow.x != taffy::Overflow::Visible {
+                cr.min(nx + f.width)
+            } else {
+                cr
+            };
+            let child_cb = if s.overflow.y != taffy::Overflow::Visible {
+                cb.min(ny + f.height)
+            } else {
+                cb
+            };
+            for child in self.children_of(node) {
+                stack.push((child, nx, ny, child_cr, child_cb));
+            }
+        }
+        (max_x, max_y)
+    }
+
     /// Return `node`'s parent in the layout tree, or `None` if it's a
     /// root. Used by backends that need to walk a subtree's resolved
     /// frames upward — e.g. iOS's `Position::Sticky` impl sums Taffy
@@ -1015,6 +1088,42 @@ mod tests {
     }
     fn f32t(v: f32) -> Tokenized<f32> {
         Tokenized::Literal(v)
+    }
+
+    /// `set_style` returns whether the change moved LAYOUT geometry. Paint-only
+    /// restyles (color/background/border) must return `false` so a backend can
+    /// skip a needless layout pass (the macOS scroll-jitter fix); a real
+    /// geometry change (width) must return `true`.
+    #[test]
+    fn set_style_reports_only_geometry_changes() {
+        use runtime_core::Color;
+        let mut t = LayoutTree::new();
+        let node = t.new_node();
+
+        let mut base = StyleRules::default();
+        base.width = Some(px(100.0));
+        base.background = Some(Tokenized::Literal(Color("#ffffff".into())));
+        // First application establishes the style — geometry went from the
+        // default to a definite 100px width, so it counts as a change.
+        assert!(t.set_style(node, &base), "first apply sets geometry");
+
+        // Re-applying the identical style is a no-op.
+        assert!(!t.set_style(node, &base), "identical restyle is not a layout change");
+
+        // A paint-only change (background + border color) must NOT report a
+        // layout change — this is exactly the `:hover` scroll-jitter case.
+        let mut painted = base.clone();
+        painted.background = Some(Tokenized::Literal(Color("#000000".into())));
+        painted.border_top_color = Some(Tokenized::Literal(Color("#cccccc".into())));
+        assert!(
+            !t.set_style(node, &painted),
+            "color/background/border are not in the Taffy style → no layout change",
+        );
+
+        // A width change IS a layout change.
+        let mut wider = painted.clone();
+        wider.width = Some(px(200.0));
+        assert!(t.set_style(node, &wider), "width change is a layout change");
     }
 
     /// Regression: the idea-ui `Modal` card must size to its content (up to a
@@ -1108,60 +1217,50 @@ mod tests {
         );
     }
 
-    /// Compute the width of a VERTICAL scroll view whose only child is
-    /// `child_width` wide, laid out under a `viewport`-wide root column.
-    /// Returns the scroller's computed width.
-    fn vscroll_width(child_width: f32, viewport: f32) -> f32 {
+    /// Regression: a VERTICAL scroll view's content extent must clip its
+    /// CROSS axis to the scroll view's frame — an over-wide child (a
+    /// non-wrapping button row, a wide table) must NOT turn it into a
+    /// horizontal scroller.
+    ///
+    /// The bug: the iOS `contentSize` sync took the bounding box of every
+    /// descendant frame on BOTH axes, so a child wider than the viewport
+    /// drove `contentSize.width` past the bounds → a phantom horizontal
+    /// scroll with dead space. [`scroll_content_extent`](LayoutTree::scroll_content_extent)
+    /// clips the cross axis (rule 1): the width tracks the 393px frame, not
+    /// the 800px child. (Verified load-bearing: a naive max-x/max-y walk
+    /// reports 800.)
+    #[test]
+    fn scroll_content_extent_clips_cross_axis() {
         let mut t = LayoutTree::new();
-
-        // Root = the viewport column (the "page").
         let root = t.new_node();
         let mut rr = StyleRules::default();
         rr.flex_direction = Some(FwFlexDirection::Column);
         t.set_style(root, &rr);
 
-        // A vertical scroll view: fills the viewport, scrolls vertically.
         let scroller = t.new_node();
-        t.set_overflow_scroll(scroller, false); // grow:1/basis:0 + overflow.y scroll + overflow.x clip
+        t.set_overflow_scroll(scroller, false);
         let mut scr = StyleRules::default();
         scr.flex_direction = Some(FwFlexDirection::Column);
+        scr.width = Some(pct(100.0));
         t.set_style(scroller, &scr);
 
-        // A non-wrapping child WIDER than the viewport (a button row, a wide
-        // table, a long unbreakable string, …).
         let wide = t.new_node();
         let mut wr = StyleRules::default();
-        wr.width = Some(px(child_width));
+        wr.width = Some(px(800.0));
         wr.height = Some(px(100.0));
         t.set_style(wide, &wr);
 
         t.add_child(root, scroller);
         t.add_child(scroller, wide);
-        t.compute(root, viewport, 852.0);
-        t.frame_of(scroller).width
-    }
+        t.compute(root, 393.0, 852.0);
 
-    /// Regression: a vertical scroll view must pin its WIDTH to the viewport,
-    /// never to an over-wide child.
-    ///
-    /// `set_overflow_scroll(.., horizontal=false)` sets `overflow.y = Scroll`
-    /// but used to leave `overflow.x` at Taffy's default `Visible`, whose
-    /// automatic minimum size is the content size. So a non-wrapping child
-    /// wider than the viewport drove the scroller's width out to the child's
-    /// min-content, and that bled up through every ancestor until the whole
-    /// page was wider than the screen — a phantom horizontal scroll with dead
-    /// space on the side. CSS avoids this (an `overflow-y: scroll` box
-    /// computes `overflow-x` to `auto`); Taffy does not, so we pin the cross
-    /// axis to `Clip`. This asserts the scroller tracks the 393px viewport,
-    /// not its 800px child (which it would before the fix).
-    #[test]
-    fn regression_vertical_scroll_clips_cross_axis_overflow() {
-        let w = vscroll_width(800.0, 393.0);
+        let (w, h) = t.scroll_content_extent(scroller);
         assert!(
             (w - 393.0).abs() < 1.0,
-            "vertical scroll view must pin its width to the 393px viewport, \
-             got {w} (≈800 == the cross-axis bleed bug)"
+            "vertical scroll content width must clip to the 393px viewport, \
+             got {w} (≈800 == the cross-axis bleed)"
         );
+        assert!((h - 100.0).abs() < 1.0, "scroll content height tracks the child, got {h}");
     }
 
     fn pct(v: f32) -> Tokenized<FwLength> {

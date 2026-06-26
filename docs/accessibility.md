@@ -11,12 +11,11 @@ model, and how to override it. For the per-platform mapping tables, the
 Backend-trait surface, and the design rationale, see
 [`accessibility-design.md`](./accessibility-design.md).
 
-> **Status.** The data model and backend wiring are shipped end-to-end:
-> every primitive carries an `AccessibilityProps` and every native
-> backend applies it. The *author-facing API to set those props on the
-> common primitives* is still landing — see
-> [Setting props](#setting-props-author-surface-in-progress) for exactly
-> what works today.
+> **Status.** Shipped end-to-end. Every primitive carries an
+> `AccessibilityProps`, every native backend applies it, and the
+> author-facing surface — granular `a11y_*` setters / `ui!` attributes, a
+> whole-struct `accessibility` setter, and the `announce()` free function
+> — is live on all primitives. See [Setting props](#setting-props).
 
 ---
 
@@ -137,32 +136,86 @@ let archive = AccessibilityAction {
 
 ---
 
-## Setting props (author surface — in progress)
+## Setting props
 
-`AccessibilityProps` is attached to every primitive's `Element` and read
-by every native backend. The ergonomic way to *set* those props from
-author code is still being built out. What exists today:
+Every primitive exposes the same a11y surface — both as builder methods
+on the value a constructor returns and as attributes inside `ui!` / `jsx!`.
 
-- **`LazyBuilder::with_accessibility(props)`** — the one shipped builder
-  setter, on the `lazy!` primitive's container.
+### Granular setters — the common case
 
-  ```rust
-  // attach a11y to a lazily-mounted subtree's container:
-  some_lazy_builder.with_accessibility(props)
-  ```
+Each maps to one `AccessibilityProps` field. As `ui!` attributes (the
+named-prop form) and as builder methods, the names are identical:
 
-- There is **not yet** a general `.accessibility(props)` method on the
-  common builders (`view`, `text`, `button`, `pressable`) or an
-  `accessibility = …` prop in the `ui!` / `jsx!` macros.
-- `announce_for_accessibility` exists on the `Backend` trait (for global
-  one-shot announcements), but is **not yet exposed as an author-reachable
-  free function**.
+| Setter / attribute | Sets | Accepts |
+| --- | --- | --- |
+| `a11y_label` | `label` | `impl Into<String>` |
+| `a11y_hint` | `hint` | `impl Into<String>` |
+| `a11y_role` | `role` | `Role` |
+| `a11y_hidden` | `hidden` | `bool` |
+| `a11y_traits` | `traits` | `AccessibilityTraits` |
+| `live_region` | `live_region` | `LiveRegionPriority` |
 
-Until the per-primitive setter lands, the defaults above carry the
-common case: standard controls with visible labels are already announced
-correctly. Overriding role/traits/label on an arbitrary `View`/`Text`
-from author code is the gap being closed next. Track the surface in
-[`accessibility-design.md` §7 (migration plan)](./accessibility-design.md).
+```rust
+use runtime_core::{ui, Role};
+
+// `ui!` named-prop form — attributes live inside the parens:
+ui! {
+    button(
+        label = "Save",
+        on_click = on_save,
+        a11y_label = "Save document",
+        a11y_hint = "Writes changes to disk",
+        a11y_role = Role::Button,
+    )
+}
+```
+
+```rust
+// Builder-chain form — on the value any constructor returns. Use this
+// with the positional primitive form (`button("Save", cb)`), which is a
+// plain expression rather than a `ui!` tag:
+view(children)
+    .a11y_role(Role::Toolbar)
+    .a11y_hidden(false)
+```
+
+### Whole-struct setter — `accessibility`
+
+When you need to set several fields at once, or attach custom `actions`,
+pass a full `AccessibilityProps`. Available as a builder method and as a
+`ui!` attribute:
+
+```rust
+use runtime_core::{ui, AccessibilityProps, Role};
+
+ui! {
+    view(accessibility = AccessibilityProps {
+        label: Some("Toolbar".into()),
+        role: Some(Role::Toolbar),
+        ..Default::default()
+    })
+}
+```
+
+The `LazyBuilder` container exposes the same setters (plus its original
+`with_accessibility(props)`).
+
+### Announcements — `announce`
+
+For transient feedback with no focus target ("Saved", "Form submitted"),
+call `runtime_core::announce` from any event handler or effect — no
+`Backend` reference needed:
+
+```rust
+use runtime_core::{announce, LiveRegionPriority};
+
+announce("Saved", LiveRegionPriority::Polite);
+```
+
+It routes to the active backend's announcer (web `aria-live`, iOS/macOS
+AX post, Android `announceForAccessibility`, GPU pending-announcement
+queue). On backends with no AX subsystem (terminal, CPU, Roku) it is a
+silent no-op, as it is before the app has mounted.
 
 ---
 

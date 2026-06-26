@@ -26,6 +26,11 @@ denoise = { workspace = true }
 media-writer = { workspace = true }
 files = { workspace = true }
 video = { workspace = true }
+# GPU waveform scrubber. `canvas` is the SDK; `canvas-native` is the CPU base
+# renderer (all targets); `canvas-vello` (target-gated below) is the GPU renderer
+# that wins last on macOS/iOS/web/Android. All self-register via inventory.
+canvas = { workspace = true }
+canvas-native = { workspace = true }
 dev-server = { workspace = true, optional = true }
 
 # Web only: the DeepFilterNet model isn't bundled into the wasm binary (that's
@@ -36,6 +41,20 @@ dev-server = { workspace = true, optional = true }
 # bundle stays small. Native uses the embedded `Denoiser::new()` (no chunk).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-split = { workspace = true }
+# GPU canvas on web (vello over WebGPU); falls back to Canvas2D per-canvas.
+canvas-vello = { workspace = true }
+
+[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+# GPU canvas on macOS (vello/Metal) — overrides canvas-native (last-wins).
+canvas-vello = { workspace = true }
+
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+# GPU canvas on iOS (vello/Metal); steps aside to canvas-native on the simulator.
+canvas-vello = { workspace = true }
+
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+# GPU canvas on Android (vello/Vulkan); steps aside to canvas-native on emulators.
+canvas-vello = { workspace = true }
 
 # The mic capability + its OS prompt reason. `denoise` declares no capability
 # of its own (it consumes an existing stream), so the only permission injected

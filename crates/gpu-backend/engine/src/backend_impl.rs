@@ -518,6 +518,7 @@ impl Backend for WgpuBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        _on_blur: Option<runtime_core::primitives::text_input::BlurHandler>,
         secure: bool,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {

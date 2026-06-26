@@ -2285,6 +2285,9 @@ dependencies = [
 name = "denoise-demo"
 version = "0.0.1"
 dependencies = [
+ "canvas",
+ "canvas-native",
+ "canvas-vello",
  "denoise",
  "dev-server",
  "files",

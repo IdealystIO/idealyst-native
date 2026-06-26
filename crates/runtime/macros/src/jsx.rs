@@ -477,20 +477,28 @@ fn emit_element(
     // Same trick as `ui!`: pull `style` out of the prop list for primitives
     // and emit `.with_style(...)`. User components pass `style = ...` as an
     // ordinary field in their props struct literal.
-    let (style_value, other_props): (Option<&PropValue>, Vec<&Prop>) = if is_primitive {
-        let mut style = None;
-        let mut rest = Vec::with_capacity(props.len());
-        for p in props {
-            if p.name == "style" && style.is_none() {
-                style = Some(&p.value);
-            } else {
-                rest.push(p);
+    // Same partition as `ui!`: pull `style` and the accessibility attrs
+    // (`a11y_label`, `accessibility`, …) out for primitives; they attach
+    // as post-fix setter calls. User components receive them as ordinary
+    // props-struct fields via `emit_user`.
+    let (style_value, a11y_props, other_props): (Option<&PropValue>, Vec<&Prop>, Vec<&Prop>) =
+        if is_primitive {
+            let mut style = None;
+            let mut a11y = Vec::new();
+            let mut rest = Vec::with_capacity(props.len());
+            for p in props {
+                if p.name == "style" && style.is_none() {
+                    style = Some(&p.value);
+                } else if crate::ui::is_a11y_attr(&p.name.to_string()) {
+                    a11y.push(p);
+                } else {
+                    rest.push(p);
+                }
             }
-        }
-        (style, rest)
-    } else {
-        (None, props.iter().collect())
-    };
+            (style, a11y, rest)
+        } else {
+            (None, Vec::new(), props.iter().collect())
+        };
 
     let inner = match canonical {
         Some("text") => emit_text(&other_props, children),
@@ -507,10 +515,22 @@ fn emit_element(
         inner
     };
 
-    if let Some(r) = ref_expr {
-        quote! { (#with_style).bind(#r) }
-    } else {
+    // Chain a11y setters: each attr name maps 1:1 to a `Bound` setter.
+    let with_a11y = if a11y_props.is_empty() {
         with_style
+    } else {
+        let setters = a11y_props.iter().map(|p| {
+            let n = &p.name;
+            let v = emit_attr_value_raw(&p.value);
+            quote! { .#n(#v) }
+        });
+        quote! { (#with_style) #(#setters)* }
+    };
+
+    if let Some(r) = ref_expr {
+        quote! { (#with_a11y).bind(#r) }
+    } else {
+        with_a11y
     }
 }
 

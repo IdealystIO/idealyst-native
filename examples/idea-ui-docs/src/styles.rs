@@ -102,46 +102,75 @@ stylesheet! {
 }
 
 // The hamburger itself — a square pressable that tints the menu glyph
-// with the theme's text color.
+// with the theme's text color. Used in the custom header's leading edge
+// (web only) when the sidebar collapses below the pin width; a soft
+// hover fill gives it the same affordance as the sidebar nav items.
 stylesheet! {
     pub MenuButton<()> {
         base(_t) {
-            width: Length::Px(40.0),
-            height: Length::Px(40.0),
+            width: Length::Px(34.0),
+            height: Length::Px(34.0),
             border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
+            // Pull the icon toward the header's leading edge so it lines
+            // up with the sidebar's own left inset.
+            margin_left: -6.0,
+            background: Color("transparent".into()),
         }
+        state hovered(_t) {
+            background: Tokenized::token("color-surface-alt", Color("#f1f5f9".into())),
+        }
+        transitions { background: 150ms EaseOut, }
+    }
+}
+
+// The ☰ glyph inside `MenuButton`, tinted with the theme's text color.
+stylesheet! {
+    pub MenuGlyph<()> {
+        base(_t) {
+            font_size: 19.0,
+            text_align: TextAlign::Center,
+            color: Tokenized::token("color-text", Color("#0f172a".into())),
+        }
+        transitions { color: 250ms EaseInOut, }
     }
 }
 
 // ---- Sidebar ---------------------------------------------------------------
 
 stylesheet! {
-    pub SidebarBody<()> {
+    // The scrolling panel: background + right border span the WHOLE panel
+    // (so they stay put while content scrolls). Padding lives on the inner
+    // `SidebarBody`, NOT here — a scroll view's own `padding` doesn't reliably
+    // inset its content (its documentView isn't Taffy-positioned on macOS), so
+    // a `width: 100%` child resolves against the full panel width and the
+    // search field reads as too wide. Keep padding on a plain inner view.
+    pub SidebarScroll<()> {
         base(_t) {
             background: Tokenized::token("color-surface", Color("#ffffff".into())),
             border_right_width: 1.0,
             border_right_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
-            padding: Tokenized::token("spacing-lg", Length::Px(16.0)),
-            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
             flex_direction: FlexDirection::Column,
-            // NB: do NOT set `min_height: Percent(100)` here. Taffy
-            // clamps SidebarBody to the scroll view's height when
-            // min_height: 100% is set, so the bottom of the sidebar
-            // (overflow children — the dark-mode toggle, the last
-            // few nav links) renders outside SidebarBody's frame.
-            // They're still visible (scroll content extends past
-            // SidebarBody), but iOS UIView hit-testing won't descend
-            // into children outside the parent's frame — taps on the
-            // bottom half of the sidebar fall through to nothing.
-            // The SDK's scroll_view wrapper carries the same
-            // `color-surface` background so removing the min_height
-            // here doesn't leave a transparent gap.
+            width: Length::pct(100.0),
         }
         transitions {
             background: 250ms EaseInOut,
             border_right_color: 250ms EaseInOut,
+        }
+    }
+}
+
+stylesheet! {
+    // Inner content column: a PLAIN view (not the scroll view) so its padding
+    // correctly insets the children — the search field + nav then sit inside
+    // the panel padding on every side.
+    pub SidebarBody<()> {
+        base(_t) {
+            padding: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            flex_direction: FlexDirection::Column,
+            width: Length::pct(100.0),
         }
     }
 }
@@ -576,7 +605,14 @@ stylesheet! {
             color: Tokenized::token("color-text", Color("#0f172a".into())),
             margin_bottom: 12.0,
         }
-        transitions { background: 250ms EaseInOut, border_color: 250ms EaseInOut, }
+        // Focus ring: recolor the existing 1px border to the theme accent —
+        // thin + themed, not a heavy native ring. Web gets this from CSS
+        // `:focus`; macOS drives it off StateBits::FOCUSED (NSTextField
+        // begin/end editing). Same observable result on both (§7).
+        state focused(_t) {
+            border_color: Tokenized::token("color-focus-ring", Color("#5b6cff".into())),
+        }
+        transitions { background: 250ms EaseInOut, border_color: 150ms EaseOut, }
     }
 }
 
@@ -765,6 +801,465 @@ stylesheet! {
             text_transform: TextTransform::Uppercase,
             color: Tokenized::token("color-text-muted", Color("#64748b".into())),
             margin_bottom: 11.0,
+        }
+    }
+}
+
+// ===========================================================================
+// Overview / landing page — the design's `D.home` screen: hero card, stat
+// cards, principle features, the dark token-resolution strip, and the
+// catalog grid. Rendered full-bleed (no page frame) via
+// `shell::landing_frame`, so these sheets own all the page's chrome.
+// ===========================================================================
+
+const MONO: &str = "ui-monospace, SFMono-Regular, Menlo, monospace";
+
+// Wide centered reading column — the landing uses a roomier 1000px max
+// (vs. the component pages' 880px) so the hero + two-up grids breathe.
+stylesheet! {
+    pub LandingPad<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            max_width: 1000.0,
+            align_self: runtime_core::AlignSelf::Center,
+            width: Length::pct(100.0),
+            padding: 16.0,
+            gap: 16.0,
+        }
+        breakpoint sm(_t) { padding: 28.0, }
+        breakpoint md(_t) { padding: 40.0, }
+    }
+}
+
+// ---- Hero --------------------------------------------------------------
+
+stylesheet! {
+    pub HeroCard<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::FlexStart,
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+            border_radius: 20.0,
+            padding: 32.0,
+            gap: 18.0,
+        }
+        breakpoint md(_t) {
+            padding_top: 52.0,
+            padding_bottom: 46.0,
+            padding_horizontal: 48.0,
+        }
+        transitions { background: 250ms EaseInOut, border_color: 250ms EaseInOut, }
+    }
+}
+
+stylesheet! {
+    pub HeroBadge<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: 8.0,
+            padding_horizontal: 13.0,
+            padding_vertical: 5.0,
+            border_radius: 999.0,
+            background: Tokenized::token("color-surface-alt", Color("#f1f5f9".into())),
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+        }
+        transitions { background: 250ms EaseInOut, }
+    }
+}
+
+stylesheet! {
+    pub HeroDot<()> {
+        base(_t) {
+            width: Length::Px(7.0),
+            height: Length::Px(7.0),
+            border_radius: 999.0,
+            background: Tokenized::token("intent-success-solid-bg", Color("#15803d".into())),
+        }
+    }
+}
+
+stylesheet! {
+    pub HeroBadgeText<()> {
+        base(_t) {
+            font_family: MONO,
+            font_size: 11.5,
+            font_weight: FontWeight::SemiBold,
+            letter_spacing: 0.4,
+            color: Tokenized::token("color-text-muted", Color("#64748b".into())),
+        }
+    }
+}
+
+stylesheet! {
+    pub HeroCtaRow<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            flex_wrap: runtime_core::FlexWrap::Wrap,
+            align_items: AlignItems::Center,
+            gap: 12.0,
+            margin_top: 10.0,
+        }
+    }
+}
+
+// ---- CTA buttons (link-wrapped styled views, not interactive Buttons —
+// the whole CTA is a navigation `link`, so its content is a plain view) --
+
+stylesheet! {
+    pub CtaPrimary<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            gap: 9.0,
+            padding_horizontal: 22.0,
+            padding_vertical: 11.0,
+            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
+            background: Tokenized::token("intent-primary-solid-bg", Color("#4f46e5".into())),
+        }
+        transitions { background: 150ms EaseOut, }
+    }
+}
+
+stylesheet! {
+    pub CtaPrimaryText<()> {
+        base(_t) {
+            font_size: 16.0,
+            font_weight: FontWeight::SemiBold,
+            text_align: TextAlign::Center,
+            color: Tokenized::token("intent-primary-solid-text", Color("#ffffff".into())),
+        }
+    }
+}
+
+stylesheet! {
+    pub CtaOutline<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            gap: 9.0,
+            padding_horizontal: 22.0,
+            padding_vertical: 11.0,
+            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
+            border_width: 1.0,
+            border_color: Tokenized::token("intent-neutral-border", Color("#e2e8f0".into())),
+            background: Color("transparent".into()),
+        }
+        state hovered(_t) {
+            border_color: Tokenized::token("color-border-strong", Color("#94a3b8".into())),
+        }
+        transitions { border_color: 150ms EaseOut, }
+    }
+}
+
+stylesheet! {
+    pub CtaOutlineText<()> {
+        base(_t) {
+            font_size: 16.0,
+            font_weight: FontWeight::SemiBold,
+            text_align: TextAlign::Center,
+            color: Tokenized::token("intent-neutral-fg", Color("#475569".into())),
+        }
+    }
+}
+
+// ---- Stat cards --------------------------------------------------------
+
+stylesheet! {
+    pub StatCard<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            gap: 4.0,
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+            border_radius: 14.0,
+            padding_horizontal: 22.0,
+            padding_vertical: 20.0,
+        }
+        transitions { background: 250ms EaseInOut, border_color: 250ms EaseInOut, }
+    }
+}
+
+// The big stat number, tinted per-intent. Tone is the variant axis so the
+// color re-binds on theme swap (vs. a baked-in hex).
+stylesheet! {
+    pub StatNumber<()> {
+        base(_t) {
+            font_size: 34.0,
+            font_weight: FontWeight::Bold,
+            letter_spacing: -0.6,
+        }
+        variant tone {
+            #[default]
+            primary(_t) { color: Tokenized::token("intent-primary-fg", Color("#4f46e5".into())), }
+            success(_t) { color: Tokenized::token("intent-success-fg", Color("#16a34a".into())), }
+            info(_t) { color: Tokenized::token("intent-info-fg", Color("#0891b2".into())), }
+            warning(_t) { color: Tokenized::token("intent-warning-fg", Color("#b45309".into())), }
+        }
+    }
+}
+
+stylesheet! {
+    pub StatLabel<()> {
+        base(_t) {
+            font_size: 13.5,
+            font_weight: FontWeight::Medium,
+            color: Tokenized::token("color-text-muted", Color("#64748b".into())),
+        }
+    }
+}
+
+// ---- Section label (the uppercase rules between landing sections) ------
+
+stylesheet! {
+    pub SectionLabel<()> {
+        base(_t) {
+            font_family: MONO,
+            font_size: 11.0,
+            font_weight: FontWeight::SemiBold,
+            letter_spacing: 1.3,
+            text_transform: TextTransform::Uppercase,
+            color: Tokenized::token("color-text-muted", Color("#64748b".into())),
+            margin_top: 26.0,
+        }
+    }
+}
+
+// ---- Principle feature cards -------------------------------------------
+
+stylesheet! {
+    pub FeatureCard<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::FlexStart,
+            gap: 14.0,
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+            border_radius: 14.0,
+            padding_horizontal: 22.0,
+            padding_vertical: 20.0,
+        }
+        transitions { background: 250ms EaseInOut, border_color: 250ms EaseInOut, }
+    }
+}
+
+// The 38px tinted glyph chip. Soft-bg + border per intent; the Icon inside
+// carries the matching `fg` tint via its own `tone` prop.
+stylesheet! {
+    pub FeatureIconBox<()> {
+        base(_t) {
+            width: Length::Px(38.0),
+            height: Length::Px(38.0),
+            border_radius: 10.0,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            border_width: 1.0,
+        }
+        variant tone {
+            #[default]
+            primary(_t) {
+                background: Tokenized::token("intent-primary-soft-bg", Color("#eef2ff".into())),
+                border_color: Tokenized::token("intent-primary-border", Color("#c7d2fe".into())),
+            }
+            info(_t) {
+                background: Tokenized::token("intent-info-soft-bg", Color("#ecfeff".into())),
+                border_color: Tokenized::token("intent-info-border", Color("#a5f3fc".into())),
+            }
+            success(_t) {
+                background: Tokenized::token("intent-success-soft-bg", Color("#f0fdf4".into())),
+                border_color: Tokenized::token("intent-success-border", Color("#bbf7d0".into())),
+            }
+            warning(_t) {
+                background: Tokenized::token("intent-warning-soft-bg", Color("#fffbeb".into())),
+                border_color: Tokenized::token("intent-warning-border", Color("#fde68a".into())),
+            }
+        }
+    }
+}
+
+stylesheet! {
+    pub FeatureTextCol<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            gap: 5.0,
+            flex_grow: 1.0,
+            flex_shrink: 1.0,
+            min_width: 0.0,
+        }
+    }
+}
+
+stylesheet! {
+    pub FeatureTitle<()> {
+        base(_t) {
+            font_size: 15.0,
+            font_weight: FontWeight::SemiBold,
+            color: Tokenized::token("color-text", Color("#0f172a".into())),
+            text_align: TextAlign::Left,
+        }
+    }
+}
+
+stylesheet! {
+    pub FeatureBody<()> {
+        base(_t) {
+            font_size: 13.5,
+            line_height: 21.0,
+            color: Tokenized::token("color-text-muted", Color("#64748b".into())),
+            text_align: TextAlign::Left,
+        }
+    }
+}
+
+// ---- Token-resolution strip (dark code-bg card) ------------------------
+
+stylesheet! {
+    pub TokenStrip<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            flex_wrap: runtime_core::FlexWrap::Wrap,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::SpaceBetween,
+            gap: 30.0,
+            background: Tokenized::token("code-bg", Color("#0f172a".into())),
+            border_radius: 16.0,
+            padding_horizontal: 28.0,
+            padding_vertical: 26.0,
+        }
+        transitions { background: 250ms EaseInOut, }
+    }
+}
+
+stylesheet! {
+    pub TokenStripCol<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            gap: 8.0,
+        }
+    }
+}
+
+stylesheet! {
+    pub TokenStripLabel<()> {
+        base(_t) {
+            font_family: MONO,
+            font_size: 11.0,
+            font_weight: FontWeight::SemiBold,
+            letter_spacing: 1.1,
+            text_transform: TextTransform::Uppercase,
+            // Fixed slate against the always-dark strip background.
+            color: Color("#94a3b8".into()),
+        }
+    }
+}
+
+stylesheet! {
+    pub TokenStripCode<()> {
+        base(_t) {
+            font_family: MONO,
+            font_size: 13.5,
+            line_height: 23.0,
+            color: Tokenized::token("code-fg", Color("#cbd5e1".into())),
+        }
+    }
+}
+
+stylesheet! {
+    pub TokenStripCodeAccent<()> {
+        base(_t) {
+            font_family: MONO,
+            font_size: 13.5,
+            line_height: 23.0,
+            color: Color("#34d399".into()),
+        }
+    }
+}
+
+// ---- Catalog grid (one card per component group) -----------------------
+
+stylesheet! {
+    pub CatCard<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            gap: 11.0,
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+            border_radius: 14.0,
+            padding_horizontal: 20.0,
+            padding_vertical: 18.0,
+        }
+        state hovered(_t) {
+            border_color: Tokenized::token("intent-primary-fg", Color("#4f46e5".into())),
+        }
+        transitions { background: 250ms EaseInOut, border_color: 150ms EaseOut, }
+    }
+}
+
+stylesheet! {
+    pub CatHead<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::SpaceBetween,
+        }
+    }
+}
+
+stylesheet! {
+    pub CatGroupLabel<()> {
+        base(_t) {
+            font_family: MONO,
+            font_size: 11.0,
+            font_weight: FontWeight::SemiBold,
+            letter_spacing: 1.1,
+            text_transform: TextTransform::Uppercase,
+            color: Tokenized::token("color-text-muted", Color("#64748b".into())),
+            text_align: TextAlign::Left,
+        }
+    }
+}
+
+stylesheet! {
+    pub CatCount<()> {
+        base(_t) {
+            font_family: MONO,
+            font_size: 12.0,
+            font_weight: FontWeight::SemiBold,
+            color: Tokenized::token("intent-primary-fg", Color("#4f46e5".into())),
+        }
+    }
+}
+
+stylesheet! {
+    pub CatChips<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            flex_wrap: runtime_core::FlexWrap::Wrap,
+            gap: 6.0,
+        }
+    }
+}
+
+stylesheet! {
+    pub CatChip<()> {
+        base(_t) {
+            font_size: 12.0,
+            font_weight: FontWeight::Medium,
+            color: Tokenized::token("color-text", Color("#0f172a".into())),
+            background: Tokenized::token("color-surface-alt", Color("#f1f5f9".into())),
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+            border_radius: 6.0,
+            padding_horizontal: 8.0,
+            padding_vertical: 3.0,
         }
     }
 }

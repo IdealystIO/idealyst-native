@@ -160,6 +160,26 @@ struct Prop {
     arrow_target: Option<Expr>,
 }
 
+/// Recognized accessibility attribute names. Each maps 1:1 to a
+/// `Bound<H>` setter of the same name (`a11y_label` → `.a11y_label(..)`,
+/// `accessibility` → `.accessibility(..)`, etc.), so both `ui!` and
+/// `jsx!` lower them by emitting `.<name>(<value>)`. Keeping the list
+/// here (the single source of truth) keeps the two macros in lockstep
+/// with the `Element` accessibility surface. When a new author-facing
+/// a11y field lands, add its attr name here.
+pub(crate) fn is_a11y_attr(name: &str) -> bool {
+    matches!(
+        name,
+        "accessibility"
+            | "a11y_label"
+            | "a11y_hint"
+            | "a11y_role"
+            | "a11y_hidden"
+            | "a11y_traits"
+            | "live_region"
+    )
+}
+
 impl Parse for Ui {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let elements = parse_ui_nodes(input)?;
@@ -717,15 +737,25 @@ fn emit_component(
     let is_primitive = canonical.is_some();
     let supports_disabled = canonical == Some("button");
 
-    let (style_prop, disabled_prop, other_props): (Vec<&Prop>, Vec<&Prop>, Vec<&Prop>) = if is_primitive {
+    let (style_prop, disabled_prop, a11y_props, other_props): (
+        Vec<&Prop>,
+        Vec<&Prop>,
+        Vec<&Prop>,
+        Vec<&Prop>,
+    ) = if is_primitive {
         let mut style = None;
         let mut disabled = None;
+        let mut a11y = Vec::new();
         let mut rest = Vec::with_capacity(props.len());
         for p in props {
             if p.name == "style" && style.is_none() {
                 style = Some(p);
             } else if supports_disabled && p.name == "disabled" && disabled.is_none() {
                 disabled = Some(p);
+            } else if is_a11y_attr(&p.name.to_string()) {
+                // `accessibility`, `a11y_label`, `a11y_role`, … attach as
+                // post-fix `Bound` setter calls, like `style`/`disabled`.
+                a11y.push(p);
             } else {
                 rest.push(p);
             }
@@ -733,10 +763,11 @@ fn emit_component(
         (
             style.into_iter().collect(),
             disabled.into_iter().collect(),
+            a11y,
             rest,
         )
     } else {
-        (Vec::new(), Vec::new(), props.iter().collect())
+        (Vec::new(), Vec::new(), Vec::new(), props.iter().collect())
     };
 
     let other_props: Vec<Prop> = other_props
@@ -785,13 +816,27 @@ fn emit_component(
         with_style
     };
 
+    // Chain the accessibility setters. Each recognized attr name
+    // (`a11y_label`, `a11y_role`, `accessibility`, …) maps 1:1 to a
+    // `Bound` setter of the same name, so we emit `.<name>(<value>)`.
+    let with_a11y = if a11y_props.is_empty() {
+        with_disabled
+    } else {
+        let setters = a11y_props.iter().map(|p| {
+            let name = &p.name;
+            let v = &p.value;
+            quote! { .#name(#v) }
+        });
+        quote! { (#with_disabled) #(#setters)* }
+    };
+
     // Append any trailing `.method(args)` calls verbatim. The
     // expression is parenthesized once so the chain attaches to the
     // final value of the inner expression, not to its head.
     if chain.is_empty() {
-        with_disabled
+        with_a11y
     } else {
-        quote! { (#with_disabled) #(#chain)* }
+        quote! { (#with_a11y) #(#chain)* }
     }
 }
 

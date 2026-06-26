@@ -1,0 +1,20 @@
+# PUBLIC — the `prompt` below is the ONLY task framing the implementation
+# agent receives. Requirements only; no hints about how to use the MCP.
+id = "todo-app"
+
+prompt = """
+Build a todo list app.
+
+Requirements:
+- The user can type a new item into a text field and add it to the list.
+- Each item in the list can be marked done (toggling a done/undone state)
+  and the done state is visually distinct.
+- Each item can be deleted from the list.
+- The list of items persists across app reloads.
+
+Target the web platform.
+"""
+
+platforms = ["web"]
+token_budget = 2_000_000
+runs = 5

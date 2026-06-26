@@ -1,0 +1,5 @@
+# Per-run artifacts: produced project trees, transcripts, evidence, scores.
+/runs/
+# Separate workspace → its own lockfile is fine to commit, but build output isn't.
+/target/
+spine/target/

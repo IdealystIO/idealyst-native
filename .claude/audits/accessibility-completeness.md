@@ -5,6 +5,9 @@ targets:
   - crates/runtime/core/src/accessibility.rs
   - crates/runtime/core/src/backend.rs
   - crates/runtime/core/src/element.rs
+  - crates/runtime/core/src/builder.rs
+  - crates/runtime/macros/src/ui.rs
+  - crates/runtime/macros/src/jsx.rs
   - crates/dev/wire/src/lib.rs
   - crates/backend/web
   - crates/backend/ios/mobile
@@ -60,6 +63,42 @@ does NOT flag Roku's `_a11y` discipline.
       Grep `enum Element { ... }` for variants without an
       `accessibility:` field. The constructors / `ui!` macros must also
       default-initialize the field.
+
+### Author surface
+
+The setter surface is the single chokepoint `Element::accessibility_mut`
+(in `element.rs`); the `Bound<H>` setters (`builder.rs`) and the `ui!` /
+`jsx!` `a11y_*` attributes all write through it. The three lists below
+must stay in lockstep with the `AccessibilityProps` fields.
+
+- [ ] **`Element::accessibility_mut` covers every node variant.** Its
+      `match` must list the same variants `with_style` lists (every
+      `Element` variant whose `accessibility:` field exists), returning
+      `Some`; control-flow variants (`When`/`Switch`/`Each`/`Repeat`/
+      `Fragment`) and the robot `Component` wrapper return `None`. A node
+      variant missing from the `Some(...)` arm silently can't be set from
+      author code.
+- [ ] **`Element::with_accessibility` forwards through the robot
+      `Component` wrapper**, mirroring `with_style`, so
+      `Component(..).accessibility(..)` lands on the wrapped root.
+- [ ] **`Bound<H>` exposes one granular setter per writable
+      `AccessibilityProps` field**, plus the whole-struct
+      `accessibility(props)` (`builder.rs`). Today: `a11y_label`,
+      `a11y_hint`, `a11y_role`, `a11y_hidden`, `a11y_traits`,
+      `live_region`. A new author-writable field on `AccessibilityProps`
+      needs a matching setter here. `LazyBuilder` carries the same set.
+- [ ] **The macro attr list matches the setters.** `is_a11y_attr` in
+      `crates/runtime/macros/src/ui.rs` is the single source of truth both
+      `ui!` and `jsx!` consult; each recognized name must equal a
+      `Bound` setter name (the macros emit `.<name>(<value>)`). A setter
+      added without updating `is_a11y_attr` is unreachable from the
+      macros; a name in `is_a11y_attr` with no matching setter is a
+      compile error at the call site.
+- [ ] **`announce` is installed at mount.** `walker.rs::mount` must call
+      `install_announcer(...)` with a closure forwarding to the active
+      backend's `announce_for_accessibility`, alongside the
+      `install_url_opener` / `install_fullscreen_setter` calls. Without
+      it, `runtime_core::announce(...)` is a silent no-op in real apps.
 
 ### Backend coverage
 
@@ -155,6 +194,11 @@ For each of `crates/backend/web`, `crates/backend/ios/mobile`,
       regressions in the mapping are caught (the cross-platform
       contract is the value-add of `Role`; a mapping bug is a
       cross-cutting break).
+- [ ] **The author surface has setter + macro tests.**
+      `builder.rs::a11y_builder_tests` covers the `Bound` setters and the
+      bag; `crates/runtime/core/tests/a11y_macro.rs` covers `ui!` / `jsx!`
+      attribute lowering; `backend.rs` covers `announce` dispatch + no-op.
+      A new setter / attr should extend these.
 
 ## Output format
 

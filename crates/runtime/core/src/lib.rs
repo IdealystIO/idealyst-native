@@ -180,8 +180,11 @@ pub use assets::{
     TypefaceId,
 };
 pub use backend::{
-    color_scheme, open_url, platform, set_fullscreen, Backend, ColorScheme, Platform, Screenshot,
-    VirtualizerCallbacks,
+    announce, color_scheme, open_url, platform, set_fullscreen, Backend, ColorScheme, Platform,
+    Screenshot, VirtualizerCallbacks,
+};
+pub use accessibility::{
+    AccessibilityAction, AccessibilityProps, AccessibilityTraits, LiveRegionPriority, Role,
 };
 pub use page_meta::{set_page_metadata, take_page_metadata, PageMetadata};
 pub use batch::{BackendBatch, BatchOp};

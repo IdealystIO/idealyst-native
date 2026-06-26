@@ -7,6 +7,7 @@
 use runtime_core::{ui, Element};
 use idea_ui::{Stack, StackGap};
 
+pub mod overview;
 pub mod foundations;
 pub mod primitives;
 pub mod layout;

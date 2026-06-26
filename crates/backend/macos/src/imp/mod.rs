@@ -56,6 +56,14 @@ pub struct MacosBackend {
     /// host (e.g. mid-build) survive the layout walk.
     pub(crate) view_to_layout:
         HashMap<usize, (Retained<NSView>, runtime_layout::LayoutNode)>,
+    /// Per-Label text-measure signature (font / line-height / padding — the
+    /// inputs to a label's intrinsic size), keyed by view pointer. `apply_style`
+    /// only re-marks a label dirty + schedules a layout pass when this signature
+    /// changes; a paint-only restyle (e.g. a `:hover` color swap arriving on
+    /// every mouse-enter as content scrolls under the cursor) leaves it
+    /// unchanged and is skipped. See `apply_style`. Cleared when the view is
+    /// deregistered.
+    pub(crate) text_measure_sig: HashMap<usize, u64>,
     /// Process-registered custom fonts + per-`Typeface` lookup table.
     /// Same shape as iOS — driven by `register_asset` / `register_typeface`.
     /// Read by the text-style applier when constructing NSFont.
@@ -458,6 +466,7 @@ impl MacosBackend {
             host_root: None,
             layout: runtime_layout::LayoutTree::new(),
             view_to_layout: HashMap::new(),
+            text_measure_sig: HashMap::new(),
             font_registry: backend_apple_core::font::FontRegistry::new(),
             callback_targets: Vec::new(),
             app_key_monitor: None,
@@ -2394,6 +2403,7 @@ impl Backend for MacosBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        on_blur: Option<runtime_core::primitives::text_input::BlurHandler>,
         secure: bool,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
@@ -2415,6 +2425,23 @@ impl Backend for MacosBackend {
         };
         let field: Retained<objc2_app_kit::NSTextField> =
             unsafe { msg_send_id![msg_send_id![cls, alloc], init] };
+
+        // Vertically center the text. AppKit's default `NSTextFieldCell`
+        // top-aligns, so a field whose style adds vertical padding (taller
+        // than one line — e.g. a sidebar search box) shows its placeholder /
+        // text pinned to the top. Swap in a centering cell. Secure fields keep
+        // their `NSSecureTextFieldCell` (the centering cell isn't a secure
+        // subclass, so swapping would drop the bullet masking).
+        if !secure {
+            crate::imp::view::vertically_center_text_field(self.mtm, &field);
+        }
+
+        // Cancelable blur: stash the handler on the field's cell so the
+        // `FlippedView` outside-click handler can consult it before resigning
+        // this field. No-op for a secure field (no VCenterTextFieldCell).
+        if let Some(handler) = on_blur {
+            crate::imp::view::set_text_field_blur_handler(&field, handler);
+        }
 
         // Set initial value + placeholder. `setStringValue:` writes
         // the editable string; `setPlaceholderString:` (on the field
@@ -2814,6 +2841,18 @@ impl Backend for MacosBackend {
             msg_send![&scroll_view, setHasHorizontalScroller: horizontal]
         };
         let _: () = unsafe { msg_send![&scroll_view, setAutohidesScrollers: true] };
+        // Force OVERLAY scrollers (NSScrollerStyleOverlay = 1) regardless of the
+        // user's "Show scroll bars" system pref. With the legacy style the clip
+        // view (contentView) reserves a ~15px gutter for the scroller, but Taffy
+        // has already laid the scroll view's children out against the scroll
+        // view's FULL width — so a `width:100%` / padded child (e.g. the docs
+        // search field) has its trailing edge land under that gutter and reads
+        // as "too wide on the right", its right padding swallowed by the
+        // scrollbar. Overlay scrollers float and reserve no width, so content
+        // keeps its full laid-out box and the scrollbar composites OVER the
+        // trailing padding — exactly how iOS (UIScrollView) and web behave.
+        // (CLAUDE.md §7: diverge in mechanism, converge in output.)
+        let _: () = unsafe { msg_send![&scroll_view, setScrollerStyle: 1isize] };
 
         // Transparent by default — matching iOS's UIScrollView. By default an
         // NSScrollView AND its NSClipView (`contentView`) both fill with the
@@ -3146,6 +3185,9 @@ impl Backend for MacosBackend {
         // Drop any pending color transition keyed on this view pointer so a
         // recycled NSView can't inherit a stale `from` color.
         transitions::forget_view(child_view);
+        // Drop the cached text-measure signature so a recycled NSView at the
+        // same address can't read a stale label sig.
+        self.text_measure_sig.remove(&child_key);
         let _: () = unsafe { msg_send![child_view, removeFromSuperview] };
 
         // Reflow after the removal — symmetric with `insert` / `insert_at`. The
@@ -3315,6 +3357,8 @@ impl Backend for MacosBackend {
             // Drop any pending color transition keyed on this view pointer so a
             // recycled NSView can't inherit a stale `from` color.
             transitions::forget_view(sub_ref);
+            // Drop the cached text-measure signature (mirror `remove_child`).
+            self.text_measure_sig.remove(&(sub_ptr as *const NSView as usize));
             let _: () = unsafe { msg_send![sub_ptr, removeFromSuperview] };
         }
     }
@@ -3345,10 +3389,19 @@ impl Backend for MacosBackend {
         // (direction, gap, justify, align, width/height) flow into
         // the layout pass. `LayoutTree::set_style` accepts
         // `&StyleRules` directly — the translation lives inside
-        // `runtime-layout`.
-        if let Some(layout_node) = self.layout_of(view) {
-            self.layout.set_style(layout_node, style);
-        }
+        // `runtime-layout`. Its return value tells us whether the change
+        // actually moved any LAYOUT geometry (vs. a paint-only restyle like
+        // a `:hover` color swap); we use it below to skip a needless layout
+        // pass. `false` when the node has no Taffy node yet.
+        let layout_changed = if let Some(layout_node) = self.layout_of(view) {
+            self.layout.set_style(layout_node, style)
+        } else {
+            false
+        };
+        // Set by the Label branch below when a text-measure input (font /
+        // line-height / padding) changed — those aren't in the Taffy `Style`,
+        // so `layout_changed` can't see them.
+        let mut measure_changed = false;
 
         // Per-node-type text styling. Labels and text views need
         // font/color/alignment applied directly to the AppKit
@@ -3377,11 +3430,24 @@ impl Backend for MacosBackend {
                         right: resolve(&style.padding_right),
                     },
                 );
-                // Label height depends on font + width; both can
-                // change via apply_style. Dirty the layout node so
-                // the measure_fn runs again.
-                if let Some(layout_node) = self.layout_of(view) {
-                    self.layout.mark_dirty(layout_node);
+                // A label's intrinsic height depends on its measure inputs —
+                // font, line-height, letter-spacing, padding — NONE of which
+                // live in the Taffy `Style`, so `layout_changed` above can't
+                // see them move. Gate the re-measure (and the layout pass at the
+                // end of this method) on a text-measure SIGNATURE so a paint-only
+                // restyle — a `:hover` color swap, which arrives on every
+                // mouse-enter as content scrolls under a stationary cursor —
+                // leaves the signature unchanged and schedules nothing. Only a
+                // real font/metrics change dirties the node + fires a pass. This
+                // is the core of the macOS scroll-jitter fix.
+                let key = view as *const NSView as usize;
+                let sig = crate::layout_policy::text_measure_signature(style);
+                if self.text_measure_sig.get(&key) != Some(&sig) {
+                    self.text_measure_sig.insert(key, sig);
+                    if let Some(layout_node) = self.layout_of(view) {
+                        self.layout.mark_dirty(layout_node);
+                    }
+                    measure_changed = true;
                 }
             }
             MacosNode::View(_) if is_editable_text_control(view) => {
@@ -3412,6 +3478,24 @@ impl Backend for MacosBackend {
                 // CALayer-level props, so without this an NSTextField/NSTextView
                 // ignores `font_family`/`font_size` and renders in the system font.
                 text_style::apply_text_style(view, style, false, &self.font_registry);
+                // Author `padding_*` insets the text from the border (Taffy
+                // reserves the padding on the node, but AppKit paints the field's
+                // text flush at the cell origin). Push left/right into the
+                // centering cell so the text doesn't touch the border; vertical
+                // padding is reproduced by the cell's centering. `length_to_px`
+                // yields 0 for Percent/Auto (a leaf has no sizing parent).
+                let resolve = |t: &Option<runtime_core::Tokenized<runtime_core::Length>>| {
+                    t.as_ref().map(|tok| length_to_px(&tok.resolve())).unwrap_or(0.0)
+                };
+                view::set_text_field_insets(
+                    view,
+                    view::LabelInsets {
+                        top: resolve(&style.padding_top),
+                        left: resolve(&style.padding_left),
+                        bottom: resolve(&style.padding_bottom),
+                        right: resolve(&style.padding_right),
+                    },
+                );
             }
             MacosNode::View(_) => {
                 // NSScrollView + its NSClipView paint their background through
@@ -3481,9 +3565,19 @@ impl Backend for MacosBackend {
         // commit the new frames. The window check is what keeps the initial
         // build from posting N redundant passes. Mirrors the Android
         // dynamic-update fix.
+        // Only schedule when the change actually moved layout geometry
+        // (`layout_changed`) or a label's measure inputs (`measure_changed`).
+        // A paint-only restyle (color / background / border-color / radius /
+        // shadow) needs only a repaint, which `apply_style_to_view` already did
+        // — scheduling a full global relayout for it is what made scrolling
+        // jitter (hover restyles firing a ~20ms pass per mouse-enter as cards
+        // pass under the cursor). The window gate still excludes the initial
+        // build, where `finish` lays everything out.
         let host_window: *mut objc2_app_kit::NSWindow =
             unsafe { msg_send![view, window] };
-        if crate::layout_policy::reactive_change_needs_layout_pass(!host_window.is_null()) {
+        if crate::layout_policy::reactive_change_needs_layout_pass(!host_window.is_null())
+            && (layout_changed || measure_changed)
+        {
             schedule_layout_pass();
         }
     }
@@ -3498,6 +3592,27 @@ impl Backend for MacosBackend {
     fn attach_states(&mut self, node: &Self::Node, setter: Rc<dyn Fn(StateBits, bool)>) {
         if let Some(fv) = as_flipped_view(node.as_view()) {
             fv.set_state_setter(setter);
+            return;
+        }
+        // Native controls render their own hover/press, so they're not
+        // FlippedViews — but the framework's FOCUSED state still needs to
+        // drive a `focused` style variant (the text-input focus ring). An
+        // NSTextField doesn't route focus through the FlippedView state
+        // machine, so observe its begin/end-editing notifications and flip
+        // StateBits::FOCUSED from them. This is the macOS equivalent of the
+        // web backend's `:focus` mapping (§7).
+        let view = node.as_view();
+        if is_editable_text_control(view) {
+            // Drive FOCUSED from the field's VCenterTextFieldCell, which fires on
+            // field-editor engage/resign. (The control's begin/end-editing
+            // notifications and its delegate both proved silent for our
+            // framework-chromed field, but the cell's edit/select/endEditing
+            // overrides are always invoked — they position the field editor.)
+            let focus_setter = setter.clone();
+            view::set_text_field_focus_setter(
+                view,
+                Rc::new(move |on: bool| focus_setter(StateBits::FOCUSED, on)),
+            );
         }
     }
 

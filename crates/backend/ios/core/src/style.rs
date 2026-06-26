@@ -1003,15 +1003,40 @@ fn idealyst_label_class() -> Option<&'static objc2::runtime::AnyClass> {
     Some(unsafe { &*(p as *const objc2::runtime::AnyClass) })
 }
 
+static IDEALYST_TEXT_FIELD_CLASS: std::sync::atomic::AtomicPtr<objc2::runtime::AnyClass> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+/// Same lazy, retry-until-success class cache as [`idealyst_label_class`] but
+/// for `IdealystTextField` — an editable input honors `padding_*` via the same
+/// `setTextInsets:` selector, so the inset path serves both classes.
+fn idealyst_text_field_class() -> Option<&'static objc2::runtime::AnyClass> {
+    use std::sync::atomic::Ordering;
+    let cached = IDEALYST_TEXT_FIELD_CLASS.load(Ordering::Relaxed);
+    if !cached.is_null() {
+        return Some(unsafe { &*cached });
+    }
+    let name = std::ffi::CString::new("IdealystTextField").ok()?;
+    let p = unsafe { objc2::ffi::objc_lookUpClass(name.as_ptr()) };
+    if p.is_null() {
+        return None;
+    }
+    IDEALYST_TEXT_FIELD_CLASS.store(p as *mut _, Ordering::Relaxed);
+    Some(unsafe { &*(p as *const objc2::runtime::AnyClass) })
+}
+
 fn apply_text_insets_if_label(
     view: &UIView,
     style: &runtime_core::StyleRules,
 ) {
-    let Some(cls_ref) = idealyst_label_class() else {
-        return;
-    };
-    let is_match: bool = unsafe { msg_send![view, isKindOfClass: cls_ref] };
-    if !is_match {
+    // Applies to both the label (`IdealystLabel`) and the editable input
+    // (`IdealystTextField`) — both honor `padding_*` via `setTextInsets:`.
+    let is_label = idealyst_label_class()
+        .map(|c| unsafe { msg_send![view, isKindOfClass: c] })
+        .unwrap_or(false);
+    let is_field = idealyst_text_field_class()
+        .map(|c| unsafe { msg_send![view, isKindOfClass: c] })
+        .unwrap_or(false);
+    if !is_label && !is_field {
         return;
     }
 

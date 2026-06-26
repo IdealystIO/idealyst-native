@@ -21,7 +21,7 @@
 
 use crate::{
     DrawerCmd, DrawerPresentation, DrawerScreenOptions, DrawerSide, DrawerSlotProps, LeadingIntent,
-    MountPolicy, SlotProps, TrailingIntent,
+    MountPolicy, SlotProps, TopSlot, TrailingIntent,
 };
 use backend_macos::{with_global_backend, MacosBackend, MacosNode};
 use runtime_core::primitives::navigator::{
@@ -285,6 +285,107 @@ impl NavigatorHandler<MacosBackend> for MacosDrawerHandler {
             });
         }
 
+        // Top slot (header bar). macOS mirrors the web layout: a full-width
+        // header ABOVE the sidebar+outlet Row. Without a top slot the
+        // navigator root stays the bare Row (the prior, headerless layout).
+        // Built deferred (like the sidebar) so it runs outside the outer
+        // backend borrow; `build_node_scoped` publishes the ambient navigator
+        // so header links/buttons dispatch.
+        let root_node = if let Some(TopSlot::Custom(top_builder)) =
+            presentation.top_slot.borrow_mut().take()
+        {
+            // Outer Column: header on top, the Row filling the rest.
+            let outer = backend.create_view(&Default::default());
+            let mut outer_style = StyleRules::default();
+            outer_style.flex_direction = Some(FlexDirection::Column);
+            outer_style.align_items = Some(AlignItems::Stretch);
+            outer_style.width = Some(Length::pct(100.0).into());
+            outer_style.height = Some(Length::pct(100.0).into());
+            backend.apply_style(&outer, &Rc::new(outer_style));
+
+            // Re-style the Row to fill the height BELOW the header. It was
+            // `height: 100%`, which would overlap the header inside a column.
+            let mut row_style = StyleRules::default();
+            row_style.flex_direction = Some(FlexDirection::Row);
+            row_style.align_items = Some(AlignItems::Stretch);
+            row_style.width = Some(Length::pct(100.0).into());
+            row_style.flex_grow = Some(1.0f32.into());
+            row_style.flex_basis = Some(Length::Px(0.0).into());
+            row_style.min_height = Some(Length::Px(0.0).into());
+            backend.apply_style(&container, &Rc::new(row_style));
+
+            // Full-width header placeholder; `flex_shrink: 0` so it keeps its
+            // content height and the Row absorbs the rest.
+            let header_slot = backend.create_view(&Default::default());
+            let mut header_style = StyleRules::default();
+            header_style.width = Some(Length::pct(100.0).into());
+            header_style.flex_shrink = Some(0.0f32.into());
+            backend.apply_style(&header_slot, &Rc::new(header_style));
+
+            let mut outer_mut = outer.clone();
+            backend.insert(&mut outer_mut, header_slot.clone());
+            backend.insert(&mut outer_mut, container.clone());
+
+            // Materialise the header content deferred, then drop it into the
+            // placeholder — mirrors the sidebar microtask above.
+            let build_node_scoped = host.build_node_scoped.clone();
+            let control_for_top = control.clone();
+            let nav_state_for_top = nav_state.clone();
+            let is_open_for_top = is_open;
+            runtime_core::schedule_microtask(move || {
+                let builder_closure: Box<dyn FnOnce() -> runtime_core::Element> =
+                    Box::new(move || {
+                        let on_select: Rc<dyn Fn(&'static str)> = {
+                            let c = control_for_top.clone();
+                            Rc::new(move |name| {
+                                c.dispatch(NavCommand::Select {
+                                    name,
+                                    url: String::new(),
+                                    params: Box::new(()),
+                                    state: None,
+                                });
+                            })
+                        };
+                        let open_drawer: Rc<dyn Fn()> = {
+                            let c = control_for_top.clone();
+                            Rc::new(move || {
+                                c.dispatch(NavCommand::Custom(Rc::new(DrawerCmd::Open)));
+                            })
+                        };
+                        let close_drawer: Rc<dyn Fn()> = {
+                            let c = control_for_top.clone();
+                            Rc::new(move || {
+                                c.dispatch(NavCommand::Custom(Rc::new(DrawerCmd::Close)));
+                            })
+                        };
+                        let props = SlotProps {
+                            active_route: nav_state_for_top.active_route,
+                            active_path: nav_state_for_top.active_path.clone(),
+                            depth: nav_state_for_top.depth,
+                            can_go_back: nav_state_for_top.can_go_back,
+                            is_open: is_open_for_top,
+                            leading_intent: runtime_core::signal!(LeadingIntent::OpenDrawer),
+                            trailing_intent: runtime_core::signal!(TrailingIntent::None),
+                            screen_title: runtime_core::signal!(String::new()),
+                            on_select,
+                            open_drawer,
+                            close_drawer,
+                            pop: Rc::new(|| {}),
+                            scroll: None,
+                        };
+                        top_builder(props)
+                    });
+                let header_node = build_node_scoped(builder_closure);
+                with_global_backend(|b| {
+                    let mut h = header_slot.clone();
+                    b.insert(&mut h, header_node);
+                });
+            });
+            outer
+        } else {
+            container.clone()
+        };
+
         // Install dispatcher. `Select` swaps the outlet's child;
         // `Custom(DrawerCmd::*)` flips `is_open`; stack-shaped
         // commands panic (drawer kind doesn't accept Push / Pop /
@@ -418,7 +519,7 @@ impl NavigatorHandler<MacosBackend> for MacosDrawerHandler {
             }
         }));
 
-        container
+        root_node
     }
 
     fn attach_initial(

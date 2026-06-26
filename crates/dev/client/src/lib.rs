@@ -523,6 +523,9 @@ where
                     placeholder.as_deref(),
                     cb,
                     None,
+                    // on_blur: the veto closure can't cross the wire, so the
+                    // dev-client proxy can't honor cancellation remotely.
+                    None,
                     secure,
                     &a11y,
                 );

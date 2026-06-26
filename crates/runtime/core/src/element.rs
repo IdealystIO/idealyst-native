@@ -281,6 +281,12 @@ pub enum Element {
         /// [`primitives::key`](crate::primitives::key) for the
         /// cross-platform contract.
         on_key_down: Option<Rc<dyn Fn(&crate::primitives::key::KeyEvent) -> crate::primitives::key::KeyOutcome>>,
+        /// Dismiss-path blur hook. Consulted when the input is about to lose
+        /// focus via an outside tap/click or a programmatic blur; returning
+        /// [`BlurOutcome::Keep`](crate::primitives::text_input::BlurOutcome)
+        /// vetoes the blur (focus + mobile keyboard stay). `None` = always
+        /// allow. Focus-transfer to another input is never vetoed.
+        on_blur: Option<crate::primitives::text_input::BlurHandler>,
         placeholder: Option<String>,
         /// Mask the entered text (password entry). Each backend maps this to
         /// its native secure-entry mode — web `type="password"`, UIKit
@@ -890,6 +896,72 @@ impl Element {
             // match exhaustiveness.
             #[cfg(feature = "robot")]
             Element::Component { .. } => unreachable!(),
+        }
+        self
+    }
+
+    /// Mutable access to this primitive's [`AccessibilityProps`], or
+    /// `None` for the control-flow / wrapper variants that carry no
+    /// node of their own (`When`, `Switch`, `Each`, `Repeat`,
+    /// `Fragment`, and the robot `Component` tag — style/a11y belong on
+    /// their wrapped children, see `with_style`).
+    ///
+    /// This is the single chokepoint the author-facing a11y setters
+    /// (`Bound::a11y_label`, `…a11y_role`, the `ui!` `a11y_*` attrs)
+    /// write through. Note it does **not** transparently forward into a
+    /// robot `Component`'s child — that forwarding lives in
+    /// [`with_accessibility`](Self::with_accessibility), which is what
+    /// the builder setters call.
+    pub fn accessibility_mut(&mut self) -> Option<&mut AccessibilityProps> {
+        match self {
+            Element::View { accessibility, .. }
+            | Element::Text { accessibility, .. }
+            | Element::Button { accessibility, .. }
+            | Element::Pressable { accessibility, .. }
+            | Element::Image { accessibility, .. }
+            | Element::Icon { accessibility, .. }
+            | Element::TextInput { accessibility, .. }
+            | Element::TextArea { accessibility, .. }
+            | Element::Toggle { accessibility, .. }
+            | Element::ScrollView { accessibility, .. }
+            | Element::Slider { accessibility, .. }
+            | Element::ActivityIndicator { accessibility, .. }
+            | Element::Virtualizer { accessibility, .. }
+            | Element::Graphics { accessibility, .. }
+            | Element::Link { accessibility, .. }
+            | Element::External { accessibility, .. }
+            | Element::Navigator { accessibility, .. }
+            | Element::Portal { accessibility, .. }
+            | Element::Presence { accessibility, .. }
+            | Element::Lazy { accessibility, .. } => Some(accessibility),
+            // Control-flow / layout-transparent variants carry no node.
+            Element::When { .. }
+            | Element::Switch { .. }
+            | Element::Each { .. }
+            | Element::Repeat { .. }
+            | Element::Fragment { .. } => None,
+            // Robot wrapper is transparent; reach its child via
+            // `with_accessibility` instead.
+            #[cfg(feature = "robot")]
+            Element::Component { .. } => None,
+        }
+    }
+
+    /// Replace this primitive's accessibility props wholesale. Mirrors
+    /// [`with_style`](Self::with_style), including the transparent
+    /// robot-`Component` forwarding so `Component(..).accessibility(..)`
+    /// lands on the wrapped root primitive rather than the tag. A no-op
+    /// on the control-flow variants that have no node (`When`, …).
+    pub fn with_accessibility(mut self, a11y: AccessibilityProps) -> Self {
+        #[cfg(feature = "robot")]
+        if let Element::Component { instance, child } = self {
+            return Element::Component {
+                instance,
+                child: Box::new(child.with_accessibility(a11y)),
+            };
+        }
+        if let Some(slot) = self.accessibility_mut() {
+            *slot = a11y;
         }
         self
     }

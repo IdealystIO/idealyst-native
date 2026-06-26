@@ -1,4 +1,5 @@
 use runtime_core::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
+use runtime_core::primitives::text_input::{BlurHandler, BlurOutcome};
 use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
@@ -1010,6 +1011,10 @@ impl DisplayLinkTarget {
 pub(crate) struct TextKeyDelegateIvars {
     pub(crate) key: RefCell<Option<KeyDownHandler>>,
     pub(crate) on_change: RefCell<Option<Rc<dyn Fn(String)>>>,
+    /// Cancelable blur (see [`runtime_core::primitives::text_input::BlurOutcome`]).
+    /// Consulted by `textFieldShouldEndEditing:` — the native veto point that
+    /// `endEditing:` (our outside-tap dismiss) honors.
+    pub(crate) on_blur: RefCell<Option<BlurHandler>>,
 }
 
 declare_class!(
@@ -1066,6 +1071,20 @@ declare_class!(
                 cb(s);
             }
         }
+
+        /// `UITextFieldDelegate.textFieldShouldEndEditing:` — UIKit's native
+        /// blur veto. Returning `NO` keeps the field editing (focus + keyboard
+        /// stay), which `[view endEditing:]` (our outside-tap dismiss) respects.
+        #[method(textFieldShouldEndEditing:)]
+        fn text_field_should_end_editing(&self, _text_field: &UITextField) -> bool {
+            self.should_end_editing()
+        }
+
+        /// Same veto for the multi-line widget.
+        #[method(textViewShouldEndEditing:)]
+        fn text_view_should_end_editing(&self, _text_view: &UITextView) -> bool {
+            self.should_end_editing()
+        }
     }
 );
 
@@ -1074,13 +1093,26 @@ impl TextKeyDelegate {
         mtm: MainThreadMarker,
         key: Option<KeyDownHandler>,
         on_change: Option<Rc<dyn Fn(String)>>,
+        on_blur: Option<BlurHandler>,
     ) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(TextKeyDelegateIvars {
             key: RefCell::new(key),
             on_change: RefCell::new(on_change),
+            on_blur: RefCell::new(on_blur),
         });
         unsafe { msg_send_id![super(this), init] }
+    }
+
+    /// Whether the field may end editing now. `Keep` → `false` (veto); no
+    /// handler → `true` (allow). Cloned out of the `RefCell` before calling so
+    /// the closure can't reentrantly re-borrow it.
+    fn should_end_editing(&self) -> bool {
+        let cb = self.ivars().on_blur.borrow().clone();
+        match cb {
+            Some(cb) => cb() != BlurOutcome::Keep,
+            None => true,
+        }
     }
 
     /// Map the (range, replacement) tuple UIKit hands us into our
@@ -1135,6 +1167,75 @@ impl TextKeyDelegate {
             KeyOutcome::PreventDefault => false,
             KeyOutcome::Default => true,
         }
+    }
+}
+
+// =========================================================================
+// KeyboardDismissTarget — tap-to-dismiss for blur-on-outside parity
+// =========================================================================
+//
+// Target + `UIGestureRecognizerDelegate` for a `UITapGestureRecognizer` on the
+// host root. UIKit leaves the keyboard up when you tap outside a field (unlike
+// web/macOS where clicking outside blurs); this brings iOS to parity: a tap on
+// blank space (or any non-text-input view) calls `[view endEditing:YES]`,
+// resigning the active field. The field's `on_blur` veto
+// (`textFieldShouldEndEditing:`) still applies. `shouldReceiveTouch:` skips
+// taps landing on a text input so field-to-field focus transfer stays a clean
+// native handoff instead of a dismiss+refocus flicker.
+
+declare_class!(
+    pub(crate) struct KeyboardDismissTarget;
+
+    unsafe impl ClassType for KeyboardDismissTarget {
+        type Super = NSObject;
+        type Mutability = mutability::InteriorMutable;
+        const NAME: &'static str = "IdealystKeyboardDismissTarget";
+    }
+
+    impl DeclaredClass for KeyboardDismissTarget {
+        type Ivars = ();
+    }
+
+    unsafe impl KeyboardDismissTarget {
+        /// Gesture action — end editing on the recognizer's view (the host
+        /// root), blurring whatever field is first responder.
+        #[method(dismiss:)]
+        fn dismiss(&self, gesture: &NSObject) {
+            let view: *mut NSObject = unsafe { msg_send![gesture, view] };
+            if !view.is_null() {
+                // `endEditing:` returns BOOL — type it or objc2 aborts.
+                let _: bool = unsafe { msg_send![view, endEditing: true] };
+            }
+        }
+
+        /// Skip touches that land on a text input — those manage focus
+        /// natively (tapping another field transfers focus). Everything else
+        /// (blank space, buttons) dismisses, matching web's "any outside click
+        /// blurs".
+        #[method(gestureRecognizer:shouldReceiveTouch:)]
+        fn should_receive_touch(&self, _gr: &NSObject, touch: &NSObject) -> objc2::runtime::Bool {
+            let view: *mut NSObject = unsafe { msg_send![touch, view] };
+            if view.is_null() {
+                return objc2::runtime::Bool::new(true);
+            }
+            for name in ["UITextField", "UITextView"] {
+                if let Some(cls) = objc2::runtime::AnyClass::get(name) {
+                    let is: bool = unsafe { msg_send![view, isKindOfClass: cls] };
+                    if is {
+                        return objc2::runtime::Bool::new(false);
+                    }
+                }
+            }
+            objc2::runtime::Bool::new(true)
+        }
+    }
+);
+
+impl KeyboardDismissTarget {
+    pub(crate) fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(());
+        unsafe { msg_send_id![super(this), init] }
     }
 }
 

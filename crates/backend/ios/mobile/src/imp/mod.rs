@@ -913,6 +913,31 @@ impl IosBackend {
         };
         self.callback_targets.push(kb_obj);
 
+        // Tap-to-dismiss: a tap outside any text input ends editing, blurring
+        // the active field — iOS parity with web/macOS (clicking outside an
+        // input blurs it). `cancelsTouchesInView = NO` so the tap still reaches
+        // buttons; the target's `shouldReceiveTouch:` skips taps on text inputs
+        // so field→field focus transfer stays a clean native handoff. The
+        // field's `on_blur` veto still applies via `textFieldShouldEndEditing:`.
+        let dismiss_target = callbacks::KeyboardDismissTarget::new(self.mtm);
+        let tap: Retained<NSObject> = unsafe {
+            let alloc: *mut NSObject = msg_send![objc2::class!(UITapGestureRecognizer), alloc];
+            let inited: *mut NSObject = msg_send![
+                alloc,
+                initWithTarget: &*dismiss_target,
+                action: objc2::sel!(dismiss:),
+            ];
+            Retained::from_raw(inited).expect("UITapGestureRecognizer init returned nil")
+        };
+        let _: () = unsafe { msg_send![&tap, setCancelsTouchesInView: false] };
+        let _: () = unsafe { msg_send![&tap, setDelegate: &*dismiss_target] };
+        let _: () = unsafe { msg_send![&view, addGestureRecognizer: &*tap] };
+        let dt_obj: Retained<NSObject> = unsafe {
+            let ptr = Retained::as_ptr(&dismiss_target) as *mut NSObject;
+            Retained::retain(ptr).unwrap()
+        };
+        self.callback_targets.push(dt_obj);
+
         self.host_root = Some(view);
     }
 
@@ -1530,10 +1555,15 @@ impl Backend for IosBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        on_blur: Option<runtime_core::primitives::text_input::BlurHandler>,
         secure: bool,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        let field = unsafe { UITextField::new(self.mtm) };
+        // IdealystTextField (not a plain UITextField): insets its text by the
+        // author `padding_*` and fires StateBits::FOCUSED on first-responder
+        // changes — the iOS half of the macOS/web padded-input + focus-ring
+        // parity. See `imp::text_inset`.
+        let field = text_inset::IdealystTextField::new(self.mtm);
         let ns_val = NSString::from_str(initial_value);
         unsafe { field.setText(Some(&ns_val)) };
 
@@ -1547,7 +1577,10 @@ impl Backend for IosBackend {
             unsafe { field.setPlaceholder(Some(&ns_ph)) };
         }
 
-        let _: () = unsafe { msg_send![&field, setBorderStyle: 3isize] };
+        // No native bezel (0 = UITextBorderStyleNone): the framework draws the
+        // border via the style's CALayer stroke (so a `focused` variant's
+        // border-color change shows as the focus ring), matching macOS/web.
+        let _: () = unsafe { msg_send![&field, setBorderStyle: 0isize] };
 
         let target = StringCallbackTarget::new(self.mtm, on_change);
         let sel = objc2::sel!(invoke:);
@@ -1560,14 +1593,40 @@ impl Backend for IosBackend {
         // `shouldChangeCharactersInRange:` fires for every keystroke
         // (Tab/Enter/printable/Backspace) before UIKit applies the
         // change. The delegate carries `None` for on_change because
-        // UITextField already reports change via target/action above.
-        if let Some(handler) = on_key_down {
-            let delegate = TextKeyDelegate::new(self.mtm, Some(handler), None);
+        // UITextField already reports change via target/action above. It ALSO
+        // carries `on_blur` (consulted via `textFieldShouldEndEditing:`), so we
+        // install it whenever EITHER hook is present.
+        if on_key_down.is_some() || on_blur.is_some() {
+            let delegate = TextKeyDelegate::new(self.mtm, on_key_down, None, on_blur);
             let _: () = unsafe { msg_send![&field, setDelegate: &*delegate] };
             self.retain_target(&delegate);
         }
 
-        let node = IosNode::TextField(field);
+        // Single-line height. A UITextField has no children, so without a
+        // measure_fn Taffy collapses it to its padding box — leaving no room
+        // for the text line, so the text/placeholder render cramped and clipped
+        // (the "scuffed placeholder" bug). Report the field's intrinsic height
+        // (Taffy then adds the author's `padding_*` around it), matching macOS's
+        // intrinsicContentSize measurer. Width stays Taffy-driven (`width:100%`).
+        let layout = self.layout_for_view(&field);
+        let field_for_measure = field.clone();
+        self.layout.set_measure_fn(
+            layout,
+            std::rc::Rc::new(move |known_dimensions, _available_space| {
+                let intrinsic: objc2_foundation::CGSize =
+                    unsafe { msg_send![&field_for_measure, intrinsicContentSize] };
+                runtime_layout::Size {
+                    width: known_dimensions
+                        .width
+                        .unwrap_or((intrinsic.width as f32).ceil()),
+                    height: known_dimensions
+                        .height
+                        .unwrap_or((intrinsic.height as f32).ceil()),
+                }
+            }),
+        );
+
+        let node = IosNode::TextField(Retained::into_super(field));
         // Create-time theme default: even before any `apply_style`, a bare
         // `text_input` resolves its background→color-surface + text→color-text
         // (the `None`/no-explicit path) instead of UIKit's dark-in-dark-mode
@@ -1590,6 +1649,23 @@ impl Backend for IosBackend {
                 unsafe { field.setText(Some(&ns)) };
             }
         }
+    }
+
+    /// iOS has no general hover/press state firing, but an editable field needs
+    /// `FOCUSED` to drive its focus ring (the `focused` style variant). Install
+    /// the framework's state setter on the `IdealystTextField` so its
+    /// become/resignFirstResponder flips FOCUSED; no-op for every other node
+    /// (preserving today's behavior where iOS doesn't track interaction state).
+    fn attach_states(
+        &mut self,
+        node: &Self::Node,
+        setter: Rc<dyn Fn(runtime_core::StateBits, bool)>,
+    ) {
+        let focus_setter = setter.clone();
+        text_inset::set_text_field_focus_setter(
+            node.as_view(),
+            Rc::new(move |on: bool| focus_setter(runtime_core::StateBits::FOCUSED, on)),
+        );
     }
 
     fn create_text_area(
@@ -1632,7 +1708,9 @@ impl Backend for IosBackend {
         // and on_key_down (via shouldChangeTextInRange:). UITextView
         // has no target/action editing-changed event; the delegate is
         // the only canonical change-notification path.
-        let delegate = TextKeyDelegate::new(self.mtm, on_key_down, Some(on_change));
+        // on_blur: None — TextArea has no cancelable-blur hook yet (the
+        // primitive doesn't expose `on_blur` on the multi-line variant).
+        let delegate = TextKeyDelegate::new(self.mtm, on_key_down, Some(on_change), None);
         let _: () = unsafe { msg_send![&view, setDelegate: &*delegate] };
         self.retain_target(&delegate);
 
@@ -3891,56 +3969,18 @@ impl IosBackend {
             else {
                 continue;
             };
-            let _ = scroll_layout; // currently not used; reserved for future per-axis adjustments
-
-            // Bounding box across the scroll view's Taffy descendants.
-            // We have to look past the direct children: author
-            // sidebars frequently set `min_height: Percent(100)` on
-            // their outermost container, which Taffy clamps to the
-            // scroll view's bounds — overflowing grandchildren (a
-            // Spacer-pushed footer, a Dark-mode toggle pinned at
-            // the end of a tall list) sit past the direct child's
-            // reported frame and won't drive `contentSize` if we
-            // stop there. UIKit projects a deep subview's frame
-            // into the scroll view's content coordinate space by
-            // walking the chain of superview origins; we do the
-            // same by accumulating the running origin while
-            // descending.
-            //
-            // Perf note: this runs at the end of every layout pass
-            // for every framework-created UIScrollView. The walk is
-            // unconditional — a "skip if this node doesn't extend
-            // the running max" pruning sounds tempting but breaks
-            // the case the deep walk exists for: a 260×852 parent
-            // clamped to the scroll view's bounds with a single
-            // narrow descendant sitting at y = 900, which extends
-            // the bbox on the height axis but not the width axis,
-            // so a both-axis-must-extend gate would skip it. The
-            // O(N) cost stays bounded by the tree size — author
-            // scroll views inside the website are tens of nodes,
-            // not thousands.
-            let mut max_x = 0.0_f32;
-            let mut max_y = 0.0_f32;
-            let mut stack: Vec<(runtime_layout::LayoutNode, f32, f32)> = Vec::new();
-            for c in self.layout.children_of(scroll_layout) {
-                stack.push((c, 0.0_f32, 0.0_f32));
-            }
-            while let Some((node, origin_x, origin_y)) = stack.pop() {
-                let f = self.layout.frame_of(node);
-                let nx = origin_x + f.x;
-                let ny = origin_y + f.y;
-                let right = nx + f.width;
-                let bottom = ny + f.height;
-                if right > max_x {
-                    max_x = right;
-                }
-                if bottom > max_y {
-                    max_y = bottom;
-                }
-                for child in self.layout.children_of(node) {
-                    stack.push((child, nx, ny));
-                }
-            }
+            // Clip-aware content extent — see
+            // `LayoutTree::scroll_content_extent`. The SCROLL axis is the
+            // bounding box of descendants (deep walk, so a Spacer-pushed
+            // footer past a `min_height: 100%` container still drives
+            // `contentSize`), but the CROSS axis is clipped to the scroll
+            // view's own frame: a vertical scroller can't scroll sideways, so
+            // an over-wide child (a non-wrapping button row, a wide table)
+            // must NOT inflate `contentSize.width` into a phantom horizontal
+            // scroll. Nested scroll views clip their own content out of the
+            // extent too. This previously took the bounding box on BOTH axes,
+            // which is exactly the phantom-horizontal-scroll bug.
+            let (max_x, max_y) = self.layout.scroll_content_extent(scroll_layout);
             let scroll_view: Retained<UIScrollView> = unsafe {
                 let ptr = view_ptr as *mut UIScrollView;
                 Retained::retain(ptr).unwrap()

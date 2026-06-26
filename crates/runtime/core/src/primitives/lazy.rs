@@ -153,6 +153,50 @@ impl LazyBuilder {
         self.accessibility = a11y;
         self
     }
+
+    /// Alias of [`with_accessibility`](Self::with_accessibility), named
+    /// to match the `Bound::accessibility` setter every other primitive
+    /// exposes.
+    pub fn accessibility(self, a11y: AccessibilityProps) -> Self {
+        self.with_accessibility(a11y)
+    }
+
+    /// Set the spoken accessibility label on the container. See
+    /// [`Bound::a11y_label`](crate::Bound::a11y_label).
+    pub fn a11y_label(mut self, label: impl Into<String>) -> Self {
+        self.accessibility.label = Some(label.into());
+        self
+    }
+
+    /// Set the longer accessibility hint on the container.
+    pub fn a11y_hint(mut self, hint: impl Into<String>) -> Self {
+        self.accessibility.hint = Some(hint.into());
+        self
+    }
+
+    /// Override the inferred accessibility role on the container.
+    pub fn a11y_role(mut self, role: crate::accessibility::Role) -> Self {
+        self.accessibility.role = Some(role);
+        self
+    }
+
+    /// Hide the container from the accessibility tree.
+    pub fn a11y_hidden(mut self, hidden: bool) -> Self {
+        self.accessibility.hidden = hidden;
+        self
+    }
+
+    /// Set the accessibility state flags on the container.
+    pub fn a11y_traits(mut self, traits: crate::accessibility::AccessibilityTraits) -> Self {
+        self.accessibility.traits = traits;
+        self
+    }
+
+    /// Mark the container as a live region at the given priority.
+    pub fn live_region(mut self, priority: crate::accessibility::LiveRegionPriority) -> Self {
+        self.accessibility.live_region = Some(priority);
+        self
+    }
 }
 
 impl IntoElement for LazyBuilder {

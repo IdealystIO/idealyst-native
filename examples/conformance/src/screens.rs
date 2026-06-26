@@ -91,17 +91,25 @@ pub(crate) fn root_page(state: State, nav: Ref<StackHandle>) -> Element {
         move || state.modal_open.get(),
         move || {
             let dismiss: Rc<dyn Fn()> = Rc::new(move || state.modal_open.set(false));
-            let confirm = move || {
-                state.confirmed.update(|n| *n += 1);
-                state.modal_open.set(false);
-            };
-            let modal_children: Vec<Element> = vec![
-                text("Confirm action?").test_id("modal-title").into_element(),
-                button("Confirm", confirm)
-                    .test_id("modal-confirm")
-                    .into_element(),
-            ];
-            ui! { Modal(on_dismiss = Some(dismiss)) { modal_children } }
+            // Modal body is a `content = move || …` closure now (the `presence`
+            // rebuild needs a reconstructable builder, not a `{ children }`
+            // block). `State` is `Copy`, so rebuild the body — and its
+            // `confirm` handler — fresh on each open. The `when` gate already
+            // drives mount/unmount, so `open = true` while mounted.
+            ui! {
+                Modal(open = true, on_dismiss = Some(dismiss), content = move || {
+                    let confirm = move || {
+                        state.confirmed.update(|n| *n += 1);
+                        state.modal_open.set(false);
+                    };
+                    ui! {
+                        view() {
+                            text("Confirm action?").test_id("modal-title")
+                            button("Confirm", confirm).test_id("modal-confirm")
+                        }
+                    }
+                })
+            }
         },
         || view(vec![]).into_element(),
     );

@@ -3,7 +3,9 @@
 
 use crate::WebBackend;
 use runtime_core::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
-use runtime_core::primitives::text_input::{TextInputHandle, TextInputOps};
+use runtime_core::primitives::text_input::{
+    BlurHandler, BlurOutcome, TextInputHandle, TextInputOps,
+};
 use std::any::Any;
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
@@ -16,6 +18,7 @@ pub(crate) fn create(
     placeholder: Option<&str>,
     on_change: Rc<dyn Fn(String)>,
     on_key_down: Option<KeyDownHandler>,
+    on_blur: Option<BlurHandler>,
     secure: bool,
 ) -> Node {
     // Hydration adoption: reuse the SSR `<input>` if the cursor is on
@@ -59,6 +62,20 @@ pub(crate) fn create(
     b.state_listeners.entry(id).or_default().push(closure);
     if let Some(handler) = on_key_down {
         attach_key_listener_input(&input, id, b, handler);
+    }
+    // Cancelable blur: `blur` isn't preventable per spec, so when the handler
+    // returns `Keep` we synchronously re-`focus()` to retain focus (one frame
+    // of flicker — the honest platform limitation; iOS/macOS veto natively).
+    if let Some(blur_handler) = on_blur {
+        let input_for_blur = input.clone();
+        let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
+            if blur_handler() == BlurOutcome::Keep {
+                let _ = input_for_blur.focus();
+            }
+        });
+        let _ = input
+            .add_event_listener_with_callback("blur", closure.as_ref().unchecked_ref());
+        b.state_listeners.entry(id).or_default().push(closure);
     }
     input.unchecked_into::<Node>()
 }

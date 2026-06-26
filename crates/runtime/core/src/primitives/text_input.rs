@@ -18,6 +18,35 @@ use crate::{Bound, Element, Ref, RefFill, Signal};
 use std::any::Any;
 use std::rc::Rc;
 
+/// Decision returned from an [`on_blur`](Bound::on_blur) handler when an input
+/// is about to lose focus via the dismiss path (an outside tap / click, or a
+/// programmatic blur). Lets the author veto the blur — e.g. keep focus while a
+/// field is mid-validation.
+///
+/// Scope: this governs the "drop to no-focus" path only. Tapping ANOTHER input
+/// always transfers focus (there is nowhere for focus to stay), so `Keep` means
+/// "don't dismiss to nothing", not "trap focus forever".
+///
+/// Platform contract (CLAUDE.md §7 — same observable result, native mechanism):
+/// - **iOS**: `UITextFieldDelegate.textFieldShouldEndEditing:` returns `NO` on
+///   `Keep` — a native veto, so the outside-tap `endEditing:` respects it.
+/// - **macOS**: the outside-click handler consults this before resigning.
+/// - **web**: `blur` is not preventable by spec, so `Keep` re-`focus()`es the
+///   input (one frame of flicker; focus is retained).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlurOutcome {
+    /// Let the blur proceed (default when there is no handler).
+    Allow,
+    /// Veto the blur — keep focus (and, on mobile, the keyboard up).
+    Keep,
+}
+
+/// Shared handler type carried into the backend `create_text_input`. Aliased so
+/// the Backend trait signature stays readable. Mirrors [`KeyDownHandler`].
+///
+/// [`KeyDownHandler`]: crate::primitives::key::KeyDownHandler
+pub type BlurHandler = Rc<dyn Fn() -> BlurOutcome>;
+
 /// Handle exposed to a parent via `Ref<TextInputHandle>`. Backends
 /// implement the ops trait below to make `focus()`, `blur()`,
 /// `select_all()`, and `insert_text()` work.
@@ -90,6 +119,7 @@ pub fn text_input<F: Fn(String) + 'static>(
         // Born batched — see `reactive::cycle`.
         on_change: Rc::new(move |s: String| crate::cycle(|| on_change(s))),
         on_key_down: None,
+        on_blur: None,
         placeholder: None,
         secure: false,
         style: None,
@@ -141,6 +171,23 @@ impl Bound<TextInputHandle> {
             // Born batched — see `reactive::cycle`. Return value (preventDefault)
             // is preserved through the cycle flush.
             *on_key_down = Some(Rc::new(move |e: &KeyEvent| crate::cycle(|| handler(e))));
+        }
+        self
+    }
+
+    /// Attach a blur hook, consulted when the input is about to lose focus via
+    /// the dismiss path (an outside tap/click, or programmatic blur). Return
+    /// [`BlurOutcome::Keep`] to veto the blur and keep focus (and the keyboard
+    /// up on mobile); [`BlurOutcome::Allow`] (or no handler) lets it proceed.
+    /// See [`BlurOutcome`] for the per-platform contract.
+    pub fn on_blur<F>(mut self, handler: F) -> Self
+    where
+        F: Fn() -> BlurOutcome + 'static,
+    {
+        if let Element::TextInput { on_blur, .. } = &mut self.primitive {
+            // Born batched — see `reactive::cycle`. The veto return value is
+            // preserved through the cycle flush, mirroring `on_key_down`.
+            *on_blur = Some(Rc::new(move || crate::cycle(|| handler())));
         }
         self
     }

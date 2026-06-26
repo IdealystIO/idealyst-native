@@ -251,6 +251,10 @@ members = [
 # Listing them in `exclude` documents the intent; without it cargo
 # walks the file system at `cargo check`-time and is fine either way.
 exclude = [
+    # The MCP Arena is its own top-level workspace (arena/Cargo.toml). It's a
+    # benchmark harness, not framework plumbing, and must not be pulled into
+    # the framework build graph or lockfile.
+    "arena",
     "examples/fiddle/template",
     "examples/fiddle/webapp",
     # ESP32-C3 firmware — target = `riscv32imc-esp-espidf`,

@@ -2411,6 +2411,7 @@ impl Backend for WebBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        on_blur: Option<runtime_core::primitives::text_input::BlurHandler>,
         secure: bool,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
@@ -2420,6 +2421,7 @@ impl Backend for WebBackend {
             placeholder,
             on_change,
             on_key_down,
+            on_blur,
             secure,
         );
         // `<input>` has implicit textbox role; no inference needed.

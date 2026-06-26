@@ -42,6 +42,9 @@ pub mod nav_class {
     pub const DRAWER_TRAILING: &str = "ui-nav-drawer-trailing";
     /// Body outlet (screens mount here).
     pub const DRAWER_BODY: &str = "ui-nav-drawer-body";
+    /// Modal scrim behind the off-canvas sidebar (narrow viewports). The
+    /// web helper attaches a tap-to-close handler to the node carrying it.
+    pub const DRAWER_BACKDROP: &str = "ui-nav-drawer-backdrop";
 }
 
 /// The canonical navigator layout stylesheet **base** — the structural
@@ -88,6 +91,17 @@ pub const NAVIGATOR_LAYOUT_CSS: &str = concat!(
        transform:translateX(-100%);transition:transform 240ms cubic-bezier(0.2,0.0,0.0,1.0);\
        z-index:1000;box-shadow:6px 0 28px rgba(0,0,0,0.22);overflow-y:auto;}",
     ".ui-nav-drawer-root.drawer-open .ui-nav-drawer-sidebar{transform:translateX(0);}",
+    // Modal scrim — a dimmed, tappable overlay behind the off-canvas
+    // sidebar (z below the sidebar's 1000). Hidden until `.drawer-open`
+    // is toggled on the root; the pinned `@media` overlay removes it
+    // entirely. The web helper wires its click to `DrawerCmd::Close`, so
+    // tapping outside the drawer dismisses it — matching the iOS scrim.
+    // Themeable: `--color-overlay` (the framework token) tints it, with a
+    // slate fallback for un-themed surfaces.
+    ".ui-nav-drawer-backdrop{position:fixed;inset:0;z-index:999;\
+       background:var(--color-overlay,rgba(15,23,42,0.45));opacity:0;pointer-events:none;\
+       transition:opacity 240ms cubic-bezier(0.2,0.0,0.0,1.0);}",
+    ".ui-nav-drawer-root.drawer-open .ui-nav-drawer-backdrop{opacity:1;pointer-events:auto;}",
     ".ui-nav-drawer-trailing{flex:0 0 auto;height:100%;overflow-y:auto;}",
     // Body fills the full width in the mobile base (the sidebar is fixed /
     // out of flow). The `@media` overlay drops `width:100%` so the pinned
@@ -125,6 +139,9 @@ const NAVIGATOR_PINNED_RULES: &str = concat!(
     ".ui-nav-drawer-sidebar{position:static;transform:none;flex:0 0 auto;width:16rem;\
        z-index:auto;box-shadow:none;transition:none;}",
     ".ui-nav-drawer-body{width:auto;}",
+    // No modal scrim when the sidebar is pinned in-flow — there's nothing
+    // to dismiss.
+    ".ui-nav-drawer-backdrop{display:none;}",
 );
 
 thread_local! {
@@ -1300,6 +1317,32 @@ mod tests {
         assert!(
             !custom.contains("@media (min-width: 1024px){"),
             "the default boundary must be gone after override; got: {custom}"
+        );
+    }
+
+    #[test]
+    fn navigator_layout_css_has_tappable_modal_backdrop() {
+        // Regression: the off-canvas modal drawer slid in over UNDIMMED,
+        // un-dismissable content — no scrim. The base sheet must define a
+        // fixed backdrop that only shows while `.drawer-open` is set...
+        let base = navigator_layout_css();
+        assert!(
+            base.contains(".ui-nav-drawer-backdrop{position:fixed"),
+            "base must define a fixed modal backdrop; got: {base}"
+        );
+        assert!(
+            base.contains(".ui-nav-drawer-root.drawer-open .ui-nav-drawer-backdrop{opacity:1;pointer-events:auto;}"),
+            "the backdrop must become visible + clickable only when the drawer is open; got: {base}"
+        );
+        // ...and the pinned (`@media`) overlay must hide it — a pinned,
+        // in-flow sidebar has nothing to dismiss.
+        let pin = px_value(navigator_pin_width());
+        let media_marker = format!("@media (min-width: {pin}){{");
+        let media_idx = base.find(&media_marker).expect("pinned @media overlay present");
+        assert!(
+            base[media_idx..].contains(".ui-nav-drawer-backdrop{display:none;}"),
+            "the pinned @media overlay must hide the backdrop; got: {}",
+            &base[media_idx..]
         );
     }
 

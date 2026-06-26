@@ -839,6 +839,7 @@ impl Backend for CpuBackend {
         _placeholder: Option<&str>,
         _on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        _on_blur: Option<runtime_core::primitives::text_input::BlurHandler>,
         _secure: bool,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {

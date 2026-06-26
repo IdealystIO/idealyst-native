@@ -767,6 +767,7 @@ impl Backend for WindowsBackend {
         _placeholder: Option<&str>,
         _on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        _on_blur: Option<runtime_core::primitives::text_input::BlurHandler>,
         // STATIC stub renders no editable text, so password masking is
         // N/A here. When this grows into a real EDIT control, apply the
         // ES_PASSWORD (0x20) style when secure.

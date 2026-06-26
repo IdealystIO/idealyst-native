@@ -386,6 +386,63 @@ pub fn install_fullscreen_setter(setter: Option<Rc<dyn Fn(bool)>>) {
 }
 
 // ---------------------------------------------------------------------------
+// Accessibility announcements
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static ANNOUNCER: std::cell::RefCell<
+        Option<Rc<dyn Fn(&str, crate::accessibility::LiveRegionPriority)>>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+/// Post a one-shot live-region accessibility announcement to the host's
+/// AX subsystem — transient feedback with no focus target ("Saved",
+/// "Form submitted", "Loading complete"). Author-facing entry point for
+/// [`Backend::announce_for_accessibility`]; callable from any event
+/// handler or effect without holding a `Backend` reference.
+///
+/// Per-backend mechanism (rule 7: converge in behavior, diverge in
+/// mechanism): web writes a hidden `aria-live` region, iOS posts
+/// `UIAccessibility.announcement`, macOS posts
+/// `NSAccessibilityAnnouncementRequested`, Android calls
+/// `announceForAccessibility`, the GPU backend queues into its pending
+/// announcements. Use [`LiveRegionPriority::Assertive`] sparingly — it
+/// interrupts whatever the screen reader is currently speaking.
+///
+/// Routes to the announcer the active backend installed during
+/// [`mount`](crate::mount). Before any mount — or on a backend with no
+/// AX subsystem (terminal, CPU, Roku) — this is a no-op that logs once
+/// at debug level.
+///
+/// [`LiveRegionPriority::Assertive`]: crate::accessibility::LiveRegionPriority::Assertive
+pub fn announce(msg: &str, priority: crate::accessibility::LiveRegionPriority) {
+    // Clone the Rc out before invoking so the announcer can re-enter
+    // framework code without tripping a RefCell double-borrow.
+    let announcer = ANNOUNCER.with(|cell| cell.borrow().clone());
+    match announcer {
+        Some(post) => post(msg, priority),
+        None => crate::logging::log(
+            crate::logging::LogLevel::Debug,
+            "announce: no accessibility announcer installed for the active \
+             backend; ignoring",
+        ),
+    }
+}
+
+/// Internal: invoked by `mount(...)` to stash a closure that forwards to
+/// the active backend's [`Backend::announce_for_accessibility`]. Unlike
+/// the URL opener / full-screen setter (self-contained platform-singleton
+/// closures), this captures the live backend handle because
+/// `announce_for_accessibility` takes `&mut self`. Not part of the public
+/// API surface; backends override `announce_for_accessibility` instead.
+#[doc(hidden)]
+pub fn install_announcer(
+    announcer: Option<Rc<dyn Fn(&str, crate::accessibility::LiveRegionPriority)>>,
+) {
+    ANNOUNCER.with(|cell| *cell.borrow_mut() = announcer);
+}
+
+// ---------------------------------------------------------------------------
 // Backend trait
 // ---------------------------------------------------------------------------
 
@@ -1253,6 +1310,7 @@ pub trait Backend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<primitives::key::KeyDownHandler>,
+        on_blur: Option<primitives::text_input::BlurHandler>,
         secure: bool,
         a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
@@ -3003,6 +3061,47 @@ mod tests {
         install_url_opener(None);
         // Must not panic.
         open_url("https://example.com");
+    }
+
+    /// `announce` must route each call through the installed announcer,
+    /// preserving the message and priority — the spine the per-backend
+    /// `announce_for_accessibility` rides on (web aria-live, iOS/macOS
+    /// AX post, Android announceForAccessibility).
+    #[test]
+    fn announce_dispatches_to_installed_announcer() {
+        use crate::accessibility::LiveRegionPriority;
+        let seen = Rc::new(RefCell::new(Vec::<(String, LiveRegionPriority)>::new()));
+        let seen_for_announcer = seen.clone();
+        install_announcer(Some(Rc::new(
+            move |msg: &str, priority: LiveRegionPriority| {
+                seen_for_announcer.borrow_mut().push((msg.to_string(), priority));
+            },
+        )));
+
+        announce("Saved", LiveRegionPriority::Polite);
+        announce("Error", LiveRegionPriority::Assertive);
+
+        assert_eq!(
+            *seen.borrow(),
+            vec![
+                ("Saved".to_string(), LiveRegionPriority::Polite),
+                ("Error".to_string(), LiveRegionPriority::Assertive),
+            ],
+            "announce must forward each (msg, priority) to the installed announcer in order",
+        );
+
+        // Restore default so sibling tests on this thread aren't
+        // surprised by a leftover announcer.
+        install_announcer(None);
+    }
+
+    /// With no announcer installed, `announce` must be a silent no-op
+    /// (logged at debug) — author code can call it before mount or on a
+    /// backend without an AX subsystem (terminal, CPU, Roku).
+    #[test]
+    fn announce_without_announcer_is_noop() {
+        install_announcer(None);
+        announce("nobody is listening", crate::accessibility::LiveRegionPriority::Polite);
     }
 
     /// `set_fullscreen` must forward each call to the installed setter,

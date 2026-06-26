@@ -312,6 +312,10 @@ pub struct MockBackendCore {
     /// [`MockBackend::fire_key_event`] to synthesize a keydown without
     /// going through a real platform.
     pub(crate) key_handlers: Rc<RefCell<std::collections::HashMap<NodeId, runtime_core::primitives::key::KeyDownHandler>>>,
+    /// Registered `on_blur` handlers keyed by node id. Lets tests call
+    /// [`MockBackend::fire_blur`] to synthesize the dismiss-path blur and read
+    /// back the [`runtime_core::primitives::text_input::BlurOutcome`].
+    pub(crate) blur_handlers: Rc<RefCell<std::collections::HashMap<NodeId, runtime_core::primitives::text_input::BlurHandler>>>,
     /// Registered `on_scroll` callbacks keyed by node id. Lets tests
     /// call [`MockBackend::fire_scroll_event`] to synthesize a scroll
     /// without driving an actual scroll event from a host.
@@ -328,6 +332,7 @@ impl Default for MockBackendCore {
             next_id: Rc::new(RefCell::new(0)),
             events: Rc::new(RefCell::new(Vec::new())),
             key_handlers: Rc::new(RefCell::new(std::collections::HashMap::new())),
+            blur_handlers: Rc::new(RefCell::new(std::collections::HashMap::new())),
             scroll_handlers: Rc::new(RefCell::new(std::collections::HashMap::new())),
             virtualizers: Rc::new(RefCell::new(std::collections::HashMap::new())),
         }
@@ -426,6 +431,20 @@ impl MockBackend {
     ) -> Option<runtime_core::primitives::key::KeyOutcome> {
         let handler = self.core.key_handlers.borrow().get(&node).cloned()?;
         Some(handler(event))
+    }
+
+    /// Synthesize the dismiss-path blur on the registered `on_blur` handler for
+    /// `node`, returning its [`BlurOutcome`]. `None` if no handler is
+    /// registered (the author didn't pass `on_blur`). Verifies the on_blur
+    /// plumbing threads from the builder through the walker to the backend.
+    ///
+    /// [`BlurOutcome`]: runtime_core::primitives::text_input::BlurOutcome
+    pub fn fire_blur(
+        &self,
+        node: NodeId,
+    ) -> Option<runtime_core::primitives::text_input::BlurOutcome> {
+        let handler = self.core.blur_handlers.borrow().get(&node).cloned()?;
+        Some(handler())
     }
 
     /// Synthesize a scroll event on the registered `on_scroll`
@@ -726,6 +745,7 @@ impl Backend for MockBackend {
         placeholder: Option<&str>,
         _on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        on_blur: Option<runtime_core::primitives::text_input::BlurHandler>,
         secure: bool,
         _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
@@ -737,6 +757,9 @@ impl Backend for MockBackend {
         });
         if let Some(h) = on_key_down {
             self.core.key_handlers.borrow_mut().insert(id, h);
+        }
+        if let Some(h) = on_blur {
+            self.core.blur_handlers.borrow_mut().insert(id, h);
         }
         id
     }

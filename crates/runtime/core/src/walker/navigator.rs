@@ -279,10 +279,23 @@ pub(super) fn build<B: Backend + 'static>(
         let backend = backend.clone();
         let scopes_slot = nav_chrome_scopes.clone();
         let chrome_identity = crate::Identity::node(nav_identity, 2, None, None);
+        let control_for_chrome = control.clone();
         Rc::new(move |builder| {
             let mut scope = Box::new(reactive::Scope::new());
             let node = reactive::with_scope(&mut scope, || {
                 crate::with_current_identity(chrome_identity, || {
+                    // Publish THIS navigator as the ambient one while the
+                    // chrome (drawer sidebar / header) builds, exactly like
+                    // `mount_screen` does for screen content. Without it,
+                    // `link(route = …)` elements in a sidebar capture
+                    // `ambient_navigator() == None` and their `on_activate`
+                    // no-ops — taps register (a native button even plays its
+                    // click sound) but no navigation dispatches. Held across
+                    // `super::build` because the link's `on_activate` snapshots
+                    // the ambient navigator as the walker builds it.
+                    let _nav_guard = primitives::navigator::AmbientNavGuard::push(
+                        control_for_chrome.clone(),
+                    );
                     let prim = builder();
                     super::build(&backend, 0, prim)
                 })
