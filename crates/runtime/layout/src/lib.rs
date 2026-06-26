@@ -752,10 +752,25 @@ impl LayoutTree {
                 .style(node.0)
                 .cloned()
                 .unwrap_or(Style::default());
+            // Scroll on the requested axis; CLIP the cross axis. Taffy
+            // leaves the unset axis at `Overflow::Visible`, whose automatic
+            // minimum size is the content's size — so a non-wrapping wide
+            // child (e.g. a button row) would push a VERTICAL scroller's
+            // *width* out to its content's min-content, and that bleeds up
+            // through every ancestor until the whole page is wider than the
+            // viewport (a phantom horizontal scroll + dead space). CSS hides
+            // this: per the overflow spec, `overflow-y: scroll` with
+            // `overflow-x: visible` computes the x axis to `auto`. Taffy does
+            // NOT do that promotion, so we pin the cross axis to `Clip`
+            // (automatic minimum 0 → the scroller's cross size tracks its
+            // frame, never its content). Backends already clip a scroll
+            // view to its bounds, so this is sizing-only.
             if horizontal {
                 style.overflow.x = taffy::Overflow::Scroll;
+                style.overflow.y = taffy::Overflow::Clip;
             } else {
                 style.overflow.y = taffy::Overflow::Scroll;
+                style.overflow.x = taffy::Overflow::Clip;
             }
             // `flex_basis: 0` + `flex_grow: 1` tells Taffy "fill the
             // available main-axis space from the parent" rather than
@@ -1090,6 +1105,62 @@ mod tests {
             (body - 2000.0).abs() < 1.0,
             "tall body must keep its full 2000px height (so the scroll view \
              scrolls), got {body}"
+        );
+    }
+
+    /// Compute the width of a VERTICAL scroll view whose only child is
+    /// `child_width` wide, laid out under a `viewport`-wide root column.
+    /// Returns the scroller's computed width.
+    fn vscroll_width(child_width: f32, viewport: f32) -> f32 {
+        let mut t = LayoutTree::new();
+
+        // Root = the viewport column (the "page").
+        let root = t.new_node();
+        let mut rr = StyleRules::default();
+        rr.flex_direction = Some(FwFlexDirection::Column);
+        t.set_style(root, &rr);
+
+        // A vertical scroll view: fills the viewport, scrolls vertically.
+        let scroller = t.new_node();
+        t.set_overflow_scroll(scroller, false); // grow:1/basis:0 + overflow.y scroll + overflow.x clip
+        let mut scr = StyleRules::default();
+        scr.flex_direction = Some(FwFlexDirection::Column);
+        t.set_style(scroller, &scr);
+
+        // A non-wrapping child WIDER than the viewport (a button row, a wide
+        // table, a long unbreakable string, …).
+        let wide = t.new_node();
+        let mut wr = StyleRules::default();
+        wr.width = Some(px(child_width));
+        wr.height = Some(px(100.0));
+        t.set_style(wide, &wr);
+
+        t.add_child(root, scroller);
+        t.add_child(scroller, wide);
+        t.compute(root, viewport, 852.0);
+        t.frame_of(scroller).width
+    }
+
+    /// Regression: a vertical scroll view must pin its WIDTH to the viewport,
+    /// never to an over-wide child.
+    ///
+    /// `set_overflow_scroll(.., horizontal=false)` sets `overflow.y = Scroll`
+    /// but used to leave `overflow.x` at Taffy's default `Visible`, whose
+    /// automatic minimum size is the content size. So a non-wrapping child
+    /// wider than the viewport drove the scroller's width out to the child's
+    /// min-content, and that bled up through every ancestor until the whole
+    /// page was wider than the screen — a phantom horizontal scroll with dead
+    /// space on the side. CSS avoids this (an `overflow-y: scroll` box
+    /// computes `overflow-x` to `auto`); Taffy does not, so we pin the cross
+    /// axis to `Clip`. This asserts the scroller tracks the 393px viewport,
+    /// not its 800px child (which it would before the fix).
+    #[test]
+    fn regression_vertical_scroll_clips_cross_axis_overflow() {
+        let w = vscroll_width(800.0, 393.0);
+        assert!(
+            (w - 393.0).abs() < 1.0,
+            "vertical scroll view must pin its width to the 393px viewport, \
+             got {w} (≈800 == the cross-axis bleed bug)"
         );
     }
 

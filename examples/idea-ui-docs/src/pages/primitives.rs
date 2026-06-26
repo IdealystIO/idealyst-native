@@ -128,7 +128,7 @@ pub fn icon() -> Element {
         ui! {
             Section(title = "Sizes".to_string()) {
                 DemoSurface {
-                    Stack(axis = StackAxis::Row, gap = StackGap::Lg, align = StackAlign::Center) {
+                    Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Lg, align = StackAlign::Center) {
                         Icon(data = STAR, size = 14.0)
                         Icon(data = STAR, size = 18.0)
                         Icon(data = STAR, size = 24.0)
@@ -141,7 +141,7 @@ pub fn icon() -> Element {
         ui! {
             Section(title = "Tones".to_string()) {
                 DemoSurface {
-                    Stack(axis = StackAxis::Row, gap = StackGap::Lg, align = StackAlign::Center) {
+                    Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Lg, align = StackAlign::Center) {
                         Icon(data = HEART, size = 24.0, tone = Some(tone::Primary.into()))
                         Icon(data = HEART, size = 24.0, tone = Some(tone::Success.into()))
                         Icon(data = HEART, size = 24.0, tone = Some(tone::Danger.into()))
@@ -175,7 +175,7 @@ pub fn image() -> Element {
                 P(content = "Responsive media with an explicit size and an optional rounded \
                     treatment. Falls back to a placeholder if the source can't load.".to_string())
                 DemoSurface {
-                    Stack(axis = StackAxis::Row, gap = StackGap::Lg, align = StackAlign::Center) {
+                    Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Lg, align = StackAlign::Center) {
                         Image(src = "https://picsum.photos/seed/idea1/160/120".to_string(), width = Some(160.0), height = Some(120.0))
                         Image(src = "https://picsum.photos/seed/idea2/120/120".to_string(), width = Some(120.0), height = Some(120.0), rounded = true)
                     }
@@ -218,7 +218,7 @@ pub fn divider() -> Element {
         ui! {
             Section(title = "Vertical".to_string()) {
                 DemoSurface {
-                    Stack(axis = StackAxis::Row, gap = StackGap::Md) {
+                    Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Md) {
                         Typography(content = "Edit".to_string())
                         Divider(axis = DividerAxis::Vertical)
                         Typography(content = "Duplicate".to_string())
@@ -250,7 +250,7 @@ pub fn spacer() -> Element {
                 P(content = "An empty flex item with flex-grow: 1. Drop one between siblings in \
                     a row to push them to opposite ends without computing margins.".to_string())
                 DemoSurface {
-                    Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+                    Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Sm) {
                         Typography(content = "Title".to_string(), kind = typography_kind::H3)
                         Spacer()
                         Button(label = "Save".to_string(), on_click = noop, tone = tone::Primary, variant = variant::Filled)
@@ -278,7 +278,7 @@ pub fn surface() -> Element {
                     Background, Surface, or SurfaceAlt — so nested surfaces read as distinct \
                     layers on both light and dark themes.".to_string())
                 DemoSurface {
-                    Stack(axis = StackAxis::Row, gap = StackGap::Md) {
+                    Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Md) {
                         Surface(background = SurfaceColor::Surface, padding = StackPadding::Lg) {
                             Typography(content = "surface".to_string())
                         }

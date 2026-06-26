@@ -254,4 +254,27 @@ impl VideoOps for AndroidVideoOps {
             }
         });
     }
+
+    fn position(&self, node: &dyn Any) -> f32 {
+        let Some(host) = node.downcast_ref::<GlobalRef>() else { return 0.0 };
+        with_jni_env(|env| {
+            existing_video_view(env, host)
+                .and_then(|vv| env.call_method(&vv, "getCurrentPosition", "()I", &[]).ok())
+                .and_then(|v| v.i().ok())
+                .map(|ms| ms as f32 / 1000.0)
+                .unwrap_or(0.0)
+        })
+    }
+
+    fn duration(&self, node: &dyn Any) -> f32 {
+        let Some(host) = node.downcast_ref::<GlobalRef>() else { return 0.0 };
+        with_jni_env(|env| {
+            existing_video_view(env, host)
+                .and_then(|vv| env.call_method(&vv, "getDuration", "()I", &[]).ok())
+                .and_then(|v| v.i().ok())
+                // VideoView returns -1 until prepared.
+                .map(|ms| if ms > 0 { ms as f32 / 1000.0 } else { 0.0 })
+                .unwrap_or(0.0)
+        })
+    }
 }

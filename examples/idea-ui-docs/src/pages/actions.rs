@@ -97,7 +97,7 @@ pub fn button() -> Element {
 fn button_variant_row() -> Element {
     let on_click: Rc<dyn Fn()> = Rc::new(|| {});
     ui! {
-        Stack(axis = StackAxis::Row, gap = StackGap::Md) {
+        Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Md) {
             Button(label = "Filled".to_string(),   on_click = on_click.clone(), tone = tone::Primary, variant = variant::Filled)
             Button(label = "Soft".to_string(),     on_click = on_click.clone(), tone = tone::Primary, variant = variant::Soft)
             Button(label = "Outlined".to_string(), on_click = on_click.clone(), tone = tone::Primary, variant = variant::Outlined)
@@ -109,7 +109,7 @@ fn button_variant_row() -> Element {
 fn button_tone_row() -> Element {
     let on_click: Rc<dyn Fn()> = Rc::new(|| {});
     ui! {
-        Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+        Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Sm) {
             Button(label = "Primary".to_string(),   on_click = on_click.clone(), tone = tone::Primary)
             Button(label = "Secondary".to_string(), on_click = on_click.clone(), tone = tone::Secondary)
             Button(label = "Neutral".to_string(),   on_click = on_click.clone(), tone = tone::Neutral)
@@ -124,7 +124,7 @@ fn button_tone_row() -> Element {
 fn button_size_row() -> Element {
     let on_click: Rc<dyn Fn()> = Rc::new(|| {});
     ui! {
-        Stack(axis = StackAxis::Row, gap = StackGap::Md) {
+        Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Md) {
             Button(label = "Small".to_string(),  on_click = on_click.clone(), size = size::Sm)
             Button(label = "Medium".to_string(), on_click = on_click.clone(), size = size::Md)
             Button(label = "Large".to_string(),  on_click = on_click,         size = size::Lg)
@@ -135,7 +135,7 @@ fn button_size_row() -> Element {
 fn button_state_row() -> Element {
     let on_click: Rc<dyn Fn()> = Rc::new(|| {});
     ui! {
-        Stack(axis = StackAxis::Row, gap = StackGap::Md) {
+        Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Md) {
             Button(label = "Download".to_string(), on_click = on_click.clone(), leading_icon = Some(DOWNLOAD))
             Button(label = "Saving".to_string(),   on_click = on_click.clone(), loading = true)
             Button(label = "Disabled".to_string(), on_click = on_click,         disabled = true)
@@ -189,7 +189,7 @@ pub fn icon_button() -> Element {
 fn icon_button_variant_row() -> Element {
     let on_click: Rc<dyn Fn()> = Rc::new(|| {});
     ui! {
-        Stack(axis = StackAxis::Row, gap = StackGap::Md) {
+        Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Md) {
             IconButton(icon = Some(HEART),    on_click = on_click.clone(), tone = tone::Primary, variant = variant::Filled)
             IconButton(icon = Some(STAR),     on_click = on_click.clone(), tone = tone::Primary, variant = variant::Soft)
             IconButton(icon = Some(PENCIL),   on_click = on_click.clone(), tone = tone::Primary, variant = variant::Outlined)
@@ -201,7 +201,7 @@ fn icon_button_variant_row() -> Element {
 fn icon_button_size_row() -> Element {
     let on_click: Rc<dyn Fn()> = Rc::new(|| {});
     ui! {
-        Stack(axis = StackAxis::Row, gap = StackGap::Md) {
+        Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Md) {
             IconButton(icon = Some(SEARCH), on_click = on_click.clone(), size = IconButtonSize::Sm)
             IconButton(icon = Some(SEARCH), on_click = on_click.clone(), size = IconButtonSize::Md)
             IconButton(icon = Some(SEARCH), on_click = on_click,         size = IconButtonSize::Lg)
@@ -212,7 +212,7 @@ fn icon_button_size_row() -> Element {
 fn icon_button_tone_row() -> Element {
     let on_click: Rc<dyn Fn()> = Rc::new(|| {});
     ui! {
-        Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+        Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Sm) {
             IconButton(icon = Some(PLUS),    on_click = on_click.clone(), tone = tone::Primary)
             IconButton(icon = Some(STAR),    on_click = on_click.clone(), tone = tone::Secondary)
             IconButton(icon = Some(PENCIL),  on_click = on_click.clone(), tone = tone::Neutral)
@@ -249,7 +249,7 @@ pub fn link() -> Element {
                 DemoSurface {
                     // Baseline-align so the Link sits on the prose's text
                     // baseline instead of being centered/top-aligned in the row.
-                    Stack(axis = StackAxis::Row, gap = StackGap::Xs, align = StackAlign::Baseline) {
+                    Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Xs, align = StackAlign::Baseline) {
                         P(content = "By continuing you agree to the".to_string())
                         Link(label = "terms of service".to_string(), url = "https://example.com/terms".to_string())
                         P(content = ".".to_string())
@@ -325,7 +325,7 @@ pub fn avatar() -> Element {
 
 fn avatar_size_row() -> Element {
     ui! {
-        Stack(axis = StackAxis::Row, gap = StackGap::Md) {
+        Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Md) {
             Avatar(initials = "XS".to_string(), color = AvatarColor::Primary, size = AvatarSize::Xs)
             Avatar(initials = "SM".to_string(), color = AvatarColor::Primary, size = AvatarSize::Sm)
             Avatar(initials = "MD".to_string(), color = AvatarColor::Primary, size = AvatarSize::Md)
@@ -337,7 +337,7 @@ fn avatar_size_row() -> Element {
 
 fn avatar_content_row() -> Element {
     ui! {
-        Stack(axis = StackAxis::Row, gap = StackGap::Md) {
+        Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Md) {
             Avatar(initials = "AB".to_string(), color = AvatarColor::Primary, size = AvatarSize::Lg)
             Avatar(initials = "CD".to_string(), color = AvatarColor::Success, size = AvatarSize::Lg)
             Avatar(
@@ -350,7 +350,7 @@ fn avatar_content_row() -> Element {
 
 fn avatar_group_row() -> Element {
     ui! {
-        Stack(axis = StackAxis::Row, gap = StackGap::Xs) {
+        Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Xs) {
             Avatar(initials = "AL".to_string(), color = AvatarColor::Primary,   size = AvatarSize::Md)
             Avatar(initials = "BR".to_string(), color = AvatarColor::Secondary, size = AvatarSize::Md)
             Avatar(initials = "CJ".to_string(), color = AvatarColor::Success,   size = AvatarSize::Md)

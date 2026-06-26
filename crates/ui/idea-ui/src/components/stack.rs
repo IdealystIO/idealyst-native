@@ -9,6 +9,7 @@
 use runtime_core::{component, ui, ChildList, Element, IdealystSchema};
 
 use crate::stylesheets::Stack as StackStyle;
+use crate::stylesheets::StackWrap;
 
 // Re-export the stylesheet-generated variant enums.
 pub use crate::stylesheets::{StackAlign, StackAxis, StackGap, StackJustify, StackPadding};
@@ -31,6 +32,11 @@ pub struct StackProps {
     pub align: StackAlign,
     /// Main-axis distribution of children. Default Start.
     pub justify: StackJustify,
+    /// Let children wrap onto new lines when they don't fit on one line.
+    /// Default `false` (single line, may overflow). Set `true` for rows of
+    /// chips/buttons/badges that should reflow on a narrow viewport instead
+    /// of pushing the page wider than the screen.
+    pub wrap: bool,
     /// The stacked children.
     pub children: Vec<Element>,
 }
@@ -44,7 +50,8 @@ pub fn Stack(props: StackProps) -> Element {
         .padding(props.padding)
         .axis(props.axis)
         .align(props.align)
-        .justify(props.justify);
+        .justify(props.justify)
+        .wrap(if props.wrap { StackWrap::On } else { StackWrap::Off });
     let mut children: Vec<Element> = Vec::with_capacity(props.children.len());
     for c in props.children {
         ChildList::append_to(c, &mut children);

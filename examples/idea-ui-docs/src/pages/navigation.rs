@@ -459,7 +459,7 @@ fn person_row(
     let title = name.to_string();
     let subtitle = email.to_string();
     let leading = ui! {
-        Stack(axis = StackAxis::Row, gap = StackGap::Md) {
+        Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Md) {
             avatar
             Stack(gap = StackGap::Xs) {
                 Typography(content = title, kind = typography_kind::Body)

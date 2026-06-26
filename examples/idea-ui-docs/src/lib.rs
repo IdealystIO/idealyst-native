@@ -17,7 +17,7 @@
 //!   `pub fn name() -> Element`.
 
 use runtime_core::primitives::navigator::Screen;
-use runtime_core::{component, signal, ui, Element, Ref, Signal};
+use runtime_core::{component, platform, signal, ui, Element, Platform, Ref, Signal};
 use drawer_navigator::{
     install_navigator_pin_width, DrawerBuilder, DrawerHandle, DrawerNavigator, DrawerScreenExt,
     TopSlot,
@@ -88,13 +88,26 @@ pub fn app() -> Element {
     // Pin the sidebar (vs. modal slide-in) at wide viewports.
     install_navigator_pin_width(900.0);
 
-    let mut builder = DrawerNavigator::new(DEFAULT_ROUTE)
-        // Own the chrome: no native iOS/Android nav bar — the custom
-        // header bar (top slot) carries the brand + theme toggle.
-        .native_header(false)
-        .top_with(TopSlot::Custom(Box::new(move |slot| shell::header(slot, is_dark))))
-        .leading_with(move |slot| shell::sidebar(slot, q))
-        .drawer_width(252.0);
+    // Chrome strategy is per-platform:
+    //  - Web: own the chrome with a custom responsive header (brand +
+    //    Light/Dark toggle). `TopSlot::Custom` only materializes on web,
+    //    and the sidebar pins at wide widths / collapses to a modal below
+    //    `install_navigator_pin_width`.
+    //  - iOS/Android: use the NATIVE header (UINavigationController /
+    //    Toolbar). The drawer SDK auto-injects a leading hamburger that
+    //    opens the drawer, and each screen's `.title(...)` shows in the
+    //    bar — so `native_header(true)` is the whole story. (`native_header
+    //    (false)` would force-hide the bar AND its auto-hamburger, leaving
+    //    no way to open the drawer — the bug this fixes.)
+    //  - macOS: always-pinned sidebar, no header — navigate via the panel.
+    let mut builder = DrawerNavigator::new(DEFAULT_ROUTE);
+    builder = match platform() {
+        Platform::Web => builder
+            .native_header(false)
+            .top_with(TopSlot::Custom(Box::new(move |slot| shell::header(slot, is_dark)))),
+        _ => builder.native_header(true),
+    };
+    builder = builder.leading_with(move |slot| shell::sidebar(slot, q)).drawer_width(252.0);
 
     // Fold the catalog into one screen per entry. Each screen wraps the
     // entry's body in the central page frame.

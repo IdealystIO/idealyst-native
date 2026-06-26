@@ -38,7 +38,7 @@ pub fn stack() -> Element {
                 P(content = "Pass `axis = StackAxis::Row` for toolbars, button groups, and badge \
                     rows. The same `gap` scale spaces children along the main axis.".to_string())
                 DemoSurface {
-                    Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+                    Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Sm) {
                         Badge(label = "one".to_string(),   tone = tone::Primary, variant = variant::Soft)
                         Badge(label = "two".to_string(),   tone = tone::Success, variant = variant::Soft)
                         Badge(label = "three".to_string(), tone = tone::Warning, variant = variant::Soft)

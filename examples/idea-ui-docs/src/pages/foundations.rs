@@ -87,7 +87,7 @@ pub fn intents() -> Element {
             let label = name.to_string();
             let on_click: Rc<dyn Fn()> = Rc::new(|| {});
             ui! {
-                Stack(axis = StackAxis::Row, gap = StackGap::Md) {
+                Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Md) {
                     Button(label = label.clone(), on_click = on_click, tone = t.clone(), variant = variant::Filled)
                     Button(label = "Soft".to_string(), on_click = Rc::new(|| {}) as Rc<dyn Fn()>, tone = t.clone(), variant = variant::Soft)
                     Badge(label = label, tone = t, variant = variant::Soft)
@@ -143,7 +143,7 @@ pub fn scale() -> Element {
             Section(title = "Radius scale".to_string()) {
                 P(content = "Four corner radii, from a 4px nick to a full pill.".to_string())
                 DemoSurface {
-                    Stack(axis = StackAxis::Row, gap = StackGap::Lg) {
+                    Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Lg) {
                         radius_box("sm · 4px", RadiusBoxR::Sm)
                         radius_box("md · 8px", RadiusBoxR::Md)
                         radius_box("lg · 12px", RadiusBoxR::Lg)
@@ -159,9 +159,9 @@ fn spacing_row(label: &'static str, gap: StackGap) -> Element {
     let a = view(vec![]).with_style(GapBlock()).into_element();
     let b = view(vec![]).with_style(GapBlock()).into_element();
     ui! {
-        Stack(axis = StackAxis::Row, gap = StackGap::Lg) {
+        Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Lg) {
             Typography(content = label.to_string(), kind = typography_kind::Caption, muted = true)
-            Stack(axis = StackAxis::Row, gap = gap) { a b }
+            Stack(axis = StackAxis::Row, wrap = true, gap = gap) { a b }
         }
     }
 }

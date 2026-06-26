@@ -521,4 +521,32 @@ impl VideoOps for MacosVideoOps {
         let Some(player) = lookup_player(node) else { return };
         let _: () = unsafe { msg_send![&*player, setMuted: muted] };
     }
+
+    fn position(&self, node: &dyn Any) -> f32 {
+        let Some(player) = lookup_player(node) else { return 0.0 };
+        let t: CMTime = unsafe { msg_send![&*player, currentTime] };
+        cmtime_secs(t)
+    }
+
+    fn duration(&self, node: &dyn Any) -> f32 {
+        let Some(player) = lookup_player(node) else { return 0.0 };
+        // `currentItem` is nil until an item is loaded; its `duration` is the
+        // CMTime length (kCMTimeIndefinite for live / not-yet-known, which
+        // `cmtime_secs` maps to 0.0).
+        let item: *mut AnyObject = unsafe { msg_send![&*player, currentItem] };
+        if item.is_null() {
+            return 0.0;
+        }
+        let t: CMTime = unsafe { msg_send![item, duration] };
+        cmtime_secs(t)
+    }
+}
+
+/// CMTime → seconds, mapping invalid/indefinite (e.g. `kCMTimeIndefinite`) to
+/// `0.0`. The `Valid` flag is required; a zero `timescale` would divide by zero.
+fn cmtime_secs(t: CMTime) -> f32 {
+    if t.flags & CM_TIME_FLAG_VALID == 0 || t.timescale == 0 {
+        return 0.0;
+    }
+    (t.value as f64 / t.timescale as f64) as f32
 }

@@ -314,6 +314,18 @@ impl VideoHandle {
     pub fn set_muted(&self, muted: bool) {
         self.ops.set_muted(&*self.node, muted);
     }
+
+    /// Current playback position in seconds, or `0.0` if unknown / not yet
+    /// loaded. Poll it (e.g. from a `raf_loop`) to drive a progress scrubber.
+    pub fn position(&self) -> f32 {
+        self.ops.position(&*self.node)
+    }
+
+    /// Total duration of the loaded media in seconds, or `0.0` if unknown
+    /// (still loading, a live stream, or an empty player).
+    pub fn duration(&self) -> f32 {
+        self.ops.duration(&*self.node)
+    }
 }
 
 /// Imperative-ops dispatch. Implementations live in each cfg-gated
@@ -334,6 +346,14 @@ pub trait VideoOps: Sync {
     /// Mute/unmute the audio track. Default no-op (the fallback for backends
     /// that can't toggle muting on a live player, e.g. Android's `VideoView`).
     fn set_muted(&self, _node: &dyn Any, _muted: bool) {}
+    /// Current playback position in seconds. Default `0.0`.
+    fn position(&self, _node: &dyn Any) -> f32 {
+        0.0
+    }
+    /// Total media duration in seconds. Default `0.0` (unknown).
+    fn duration(&self, _node: &dyn Any) -> f32 {
+        0.0
+    }
 }
 
 /// Fallback ops used on targets with no `Video` impl. Every method is

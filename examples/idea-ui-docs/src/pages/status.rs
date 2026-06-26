@@ -27,7 +27,7 @@ pub fn spinner() -> Element {
                 P(content = "Two scales — Small (the default) for inline use and Large for \
                     prominent, full-region loading states.".to_string())
                 DemoSurface {
-                    Stack(axis = StackAxis::Row, gap = StackGap::Lg) {
+                    Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Lg) {
                         Spinner(size = SpinnerSize::Small)
                         Spinner(size = SpinnerSize::Large)
                     }
@@ -47,7 +47,7 @@ pub fn spinner() -> Element {
                 P(content = "Pair a spinner with a short status line by laying them out in a \
                     row. The spinner says \"something is happening\"; the label says what.".to_string())
                 DemoSurface {
-                    Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+                    Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Sm) {
                         Spinner(size = SpinnerSize::Small)
                         P(content = "Loading…".to_string())
                     }
@@ -96,7 +96,7 @@ pub fn skeleton() -> Element {
                     list-item placeholder. A circular skeleton is just a square block with a \
                     radius of half its size.".to_string())
                 DemoSurface {
-                    Stack(axis = StackAxis::Row, gap = StackGap::Md) {
+                    Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Md) {
                         Skeleton(width = SkeletonWidth::Px(48.0), height = 48.0, radius = 24.0)
                         // Explicit px widths: the line column has no definite
                         // width here (the row shrink-wraps in the centered
@@ -207,7 +207,7 @@ pub fn badge() -> Element {
                 P(content = "A muted tint with a tone-colored label — the everyday status \
                     pill. Every tone is available.".to_string())
                 DemoSurface {
-                    Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+                    Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Sm) {
                         Badge(label = "Neutral".to_string(),   tone = tone::Neutral,   variant = variant::Soft)
                         Badge(label = "Primary".to_string(),   tone = tone::Primary,   variant = variant::Soft)
                         Badge(label = "Secondary".to_string(), tone = tone::Secondary, variant = variant::Soft)
@@ -224,7 +224,7 @@ pub fn badge() -> Element {
                 P(content = "The Filled variant paints a solid tone fill with a contrasting \
                     label — use it for counts and high-emphasis statuses.".to_string())
                 DemoSurface {
-                    Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+                    Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Sm) {
                         Badge(label = "Neutral".to_string(),   tone = tone::Neutral,   variant = variant::Filled)
                         Badge(label = "Primary".to_string(),   tone = tone::Primary,   variant = variant::Filled)
                         Badge(label = "Secondary".to_string(), tone = tone::Secondary, variant = variant::Filled)
@@ -275,7 +275,7 @@ pub fn tag() -> Element {
                     of the label. The host owns the removal — the callback flips its own \
                     state (here a signal).".to_string())
                 DemoSurface {
-                    Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+                    Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Sm) {
                         Tag(label = "Rust".to_string(), tone = tone::Primary, variant = variant::Soft, on_remove = Some(on_remove.clone()))
                         Tag(label = "Go".to_string(),   tone = tone::Neutral, variant = variant::Soft, on_remove = Some(on_remove.clone()))
                     }
@@ -288,7 +288,7 @@ pub fn tag() -> Element {
                     glyph with the label, put the glyph in the label string, or lay an Icon \
                     primitive next to the Tag inside a row.".to_string())
                 DemoSurface {
-                    Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+                    Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Sm) {
                         Tag(label = "★ Featured".to_string(), tone = tone::Warning, variant = variant::Soft)
                         Tag(label = "✓ Verified".to_string(), tone = tone::Success, variant = variant::Soft)
                     }
@@ -300,7 +300,7 @@ pub fn tag() -> Element {
                 P(content = "Tag carries the same tone × variant axes as Badge. Pick the tone \
                     that matches the label's meaning.".to_string())
                 DemoSurface {
-                    Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+                    Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Sm) {
                         Tag(label = "Primary".to_string(),   tone = tone::Primary,   variant = variant::Soft)
                         Tag(label = "Success".to_string(),   tone = tone::Success,   variant = variant::Soft)
                         Tag(label = "Danger".to_string(),    tone = tone::Danger,    variant = variant::Soft)
@@ -362,7 +362,7 @@ pub fn chip() -> Element {
                     state and flips it in `on_select`. Independent signals make this a \
                     multi-select row.".to_string())
                 DemoSurface {
-                    Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+                    Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Sm) {
                         Chip(label = "Rust".to_string(),  selected = rust.get(),  on_select = Some(toggle_rust.clone()),  tone = tone::Primary)
                         Chip(label = "Go".to_string(),    selected = go.get(),    on_select = Some(toggle_go.clone()),    tone = tone::Primary)
                         Chip(label = "Swift".to_string(), selected = swift.get(), on_select = Some(toggle_swift.clone()), tone = tone::Primary)
@@ -376,7 +376,7 @@ pub fn chip() -> Element {
                     drop to the quieter Ghost variant of the same tone, so a row reads as \
                     \"one lit, the rest muted\".".to_string())
                 DemoSurface {
-                    Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+                    Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Sm) {
                         Chip(label = "Primary".to_string(), selected = true,  tone = tone::Primary)
                         Chip(label = "Success".to_string(), selected = true,  tone = tone::Success)
                         Chip(label = "Danger".to_string(),  selected = true,  tone = tone::Danger)

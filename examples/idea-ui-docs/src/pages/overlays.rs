@@ -199,7 +199,7 @@ pub fn modal() -> Element {
                                         below to dismiss.".to_string(),
                                     muted = true,
                                 )
-                                Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+                                Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Sm) {
                                     Button(
                                         label = "Cancel".to_string(),
                                         on_click = content_close.clone(),
@@ -476,7 +476,7 @@ pub fn toast() -> Element {
                     Each fades in, shows for a few seconds, then animates out and removes \
                     itself.".to_string())
                 DemoSurface {
-                    Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+                    Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Sm) {
                         Button(
                             label = "Push success".to_string(),
                             on_click = push_success,

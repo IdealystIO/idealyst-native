@@ -23,7 +23,7 @@ pub fn card() -> Element {
                     and one of two background tokens. Compose the inner anatomy yourself — header, \
                     body, and footer are just Typography and actions inside the card.".to_string())
                 DemoSurface {
-                    Stack(axis = StackAxis::Row, gap = StackGap::Lg) {
+                    Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Lg) {
                         media_card()
                         stat_card()
                     }
@@ -86,7 +86,7 @@ fn media_card() -> Element {
             Typography(content = "Release notes".to_string(), kind = typography_kind::Overline, muted = true)
             Typography(content = "Spring update".to_string(), kind = typography_kind::H3)
             Typography(content = "New layout primitives, a themed data table, and faster reactive re-renders across every backend.".to_string())
-            Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+            Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Sm) {
                 Button(
                     label = "Read more".to_string(),
                     on_click = on_act.clone(),

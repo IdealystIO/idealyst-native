@@ -71,6 +71,15 @@ stylesheet! {
             between(_t) { justify_content: JustifyContent::SpaceBetween }
             around(_t)  { justify_content: JustifyContent::SpaceAround }
         }
+        // Opt-in line wrapping. `off` (default) keeps the row/column on a
+        // single line (may overflow); `on` lets children wrap onto new
+        // lines when they don't fit — the natural choice for a Row of
+        // chips/buttons/badges on a narrow viewport.
+        variant wrap {
+            #[default]
+            off(_t) { flex_wrap: runtime_core::FlexWrap::NoWrap }
+            on(_t)  { flex_wrap: runtime_core::FlexWrap::Wrap }
+        }
     }
 }
 

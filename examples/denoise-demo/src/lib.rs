@@ -34,7 +34,7 @@ use idea_ui::{
 use media_writer::{MediaInputs, MediaWriter, RecordConfig, Recording};
 use microphone::{AudioStreamConfig, MicError, Microphone};
 use runtime_core::{
-    rx, signal, switch, Element, IntoElement, Length, Ref, Signal, StyleRules, StyleSheet,
+    rx, signal, switch, ui, Element, IntoElement, Length, Ref, Signal, StyleRules, StyleSheet,
 };
 use video::{Video, VideoBind, VideoHandle, VideoProps};
 
@@ -513,6 +513,12 @@ pub fn app() -> Element {
                 let on_ab = on_ab.clone();
                 let on_play_pause: Rc<dyn Fn()> = Rc::new(on_play_pause.clone());
                 let on_replay: Rc<dyn Fn()> = Rc::new(on_replay.clone());
+                // The two synced, hidden players. Raw starts muted so the
+                // default-selected "Denoised" is what you hear first. Built as
+                // locals and splatted by name — a `{ expr }` block right after a
+                // component tag would be parsed as *that component's* children.
+                let raw_p = hidden_player(raw_url, true, raw_player.clone());
+                let den_p = hidden_player(denoised_url, false, den_player.clone());
                 ui! {
                     Card(padding = CardPadding::Lg) {
                         Stack(gap = StackGap::Md) {
@@ -546,16 +552,19 @@ pub fn app() -> Element {
                                     tone = tone::Neutral,
                                 )
                             }
-                            // The two synced, hidden players. Raw starts muted so
-                            // the default-selected "Denoised" is what you hear first.
-                            { hidden_player(raw_url, true, raw_player.clone()) }
-                            { hidden_player(denoised_url, false, den_player.clone()) }
+                            raw_p
+                            den_p
                         }
                     }
                 }
             }
         },
     );
+
+    // Built as locals and splatted by name: a `{ expr }` block placed right
+    // after a component tag inside `ui!` is parsed as that component's children.
+    let raw_meter = meter("Raw input", raw_level, tone::Neutral.into());
+    let den_meter = meter("Denoised", denoised_level, tone::Success.into());
 
     ui! {
         Stack(gap = StackGap::Lg, padding = StackPadding::Lg) {
@@ -570,8 +579,8 @@ pub fn app() -> Element {
             Card(padding = CardPadding::Lg) {
                 Stack(gap = StackGap::Md) {
                     Typography(content = status, muted = true)
-                    { meter("Raw input", raw_level, tone::Neutral) }
-                    { meter("Denoised", denoised_level, tone::Success) }
+                    raw_meter
+                    den_meter
                     Divider()
                     action
                 }

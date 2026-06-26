@@ -145,6 +145,23 @@ impl VideoOps for WebVideoOps {
         let Some(el) = downcast_media(node) else { return };
         el.set_muted(muted);
     }
+
+    fn position(&self, node: &dyn Any) -> f32 {
+        let Some(el) = downcast_media(node) else { return 0.0 };
+        el.current_time() as f32
+    }
+
+    fn duration(&self, node: &dyn Any) -> f32 {
+        let Some(el) = downcast_media(node) else { return 0.0 };
+        // `duration` is NaN before metadata loads and Infinity for a live
+        // stream; both are useless as a scrubber denominator → report 0.0.
+        let d = el.duration();
+        if d.is_finite() {
+            d as f32
+        } else {
+            0.0
+        }
+    }
 }
 
 /// The framework hands us a `Rc<dyn Any>` whose concrete type is

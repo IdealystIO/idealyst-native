@@ -585,6 +585,30 @@ impl VideoOps for IosVideoOps {
         let Some(player) = lookup_player(node) else { return };
         let _: () = unsafe { msg_send![&*player, setMuted: muted] };
     }
+
+    fn position(&self, node: &dyn Any) -> f32 {
+        let Some(player) = lookup_player(node) else { return 0.0 };
+        let t: CMTime = unsafe { msg_send![&*player, currentTime] };
+        cmtime_secs(t)
+    }
+
+    fn duration(&self, node: &dyn Any) -> f32 {
+        let Some(player) = lookup_player(node) else { return 0.0 };
+        let item: *mut AnyObject = unsafe { msg_send![&*player, currentItem] };
+        if item.is_null() {
+            return 0.0;
+        }
+        let t: CMTime = unsafe { msg_send![item, duration] };
+        cmtime_secs(t)
+    }
+}
+
+/// CMTime → seconds, mapping invalid/indefinite (`kCMTimeIndefinite`) to `0.0`.
+fn cmtime_secs(t: CMTime) -> f32 {
+    if t.flags & CM_TIME_FLAG_VALID == 0 || t.timescale == 0 {
+        return 0.0;
+    }
+    (t.value as f64 / t.timescale as f64) as f32
 }
 
 fn lookup_player(node: &dyn Any) -> Option<Retained<NSObject>> {
