@@ -54,9 +54,9 @@ impl VariantEnum for SpinnerSize {
 
 // Reactive-by-default: `#[props]` wraps `size` → `Reactive<SpinnerSize>` so a
 // `ui!` call site can pass a `Signal`/`rx!` (a bare value stays a zero-cost
-// `Static` snapshot). See the TODO in `Spinner` — the framework's
-// `activity_indicator` primitive has no reactive `size` sink yet, so a live
-// `size` is read once at build for now.
+// `Static` snapshot). A live `size` routes to the primitive's reactive
+// `.size_reactive()` sink (resizes in place on web; native inherits the no-op);
+// a `Static` size uses the one-shot `.size()` setter.
 #[runtime_core::props]
 #[derive(Default)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
@@ -70,14 +70,20 @@ pub struct SpinnerProps {
 /// framework's `activity_indicator` primitive with a small/large size knob.
 #[component]
 pub fn Spinner(props: &SpinnerProps) -> Element {
-    // TODO(reactive-sweep): route `size` to the activity_indicator size sink.
-    // The `Element::ActivityIndicator` `size` field is a plain (non-reactive)
-    // value and `.size()` is a one-shot setter — there's no reactive walker
-    // path to re-apply a native indicator size in place. A live `size` is read
-    // once here; wire a reactive size sink on the primitive to make it live.
-    let native = match props.size.get() {
-        SpinnerSize::Small => ActivityIndicatorSize::Small,
-        SpinnerSize::Large => ActivityIndicatorSize::Large,
+    fn to_native(s: SpinnerSize) -> ActivityIndicatorSize {
+        match s {
+            SpinnerSize::Small => ActivityIndicatorSize::Small,
+            SpinnerSize::Large => ActivityIndicatorSize::Large,
+        }
+    }
+    // A live `size` routes to the primitive's reactive `.size_reactive()` sink
+    // (the walker installs an Effect → `update_activity_indicator_size`); a
+    // `Static` size uses the one-shot `.size()` setter.
+    let spinner = if props.size.is_static() {
+        activity_indicator().size(to_native(props.size.get()))
+    } else {
+        let size = props.size.clone();
+        activity_indicator().size_reactive(move || to_native(size.get()))
     };
-    activity_indicator().size(native).with_style(spinner_hug_sheet()).into_element()
+    spinner.with_style(spinner_hug_sheet()).into_element()
 }

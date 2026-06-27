@@ -103,29 +103,51 @@ pub fn Avatar(props: &AvatarProps) -> Element {
 
     let initials = props.initials.clone();
 
-    // TODO(reactive-sweep): `src` selects WHICH subtree renders (image vs
-    // initials). It's read once here to pick the branch, so a live `src`
-    // flipping between `Some`/`None` won't swap the subtree without a parent
-    // rebuild. Routing it needs a `when`/`switch` on `src.get().is_some()` so
-    // the image↔initials swap happens in place — a structural-reactivity
-    // change, not a plain style sink. Left as a follow-on. (`size`/`color`
-    // DO re-style in place via the closures above.)
-    match props.src.get() {
-        Some(source) => {
-            // Build the image from the unified source (URL or Asset) and
-            // splat it into the circular container.
+    // `src` selects WHICH subtree renders (image vs initials) — a structural
+    // branch. Routed via `when(|| src.get().is_some(), …)` so a live `src`
+    // flipping between `Some`/`None` swaps the image↔initials subtree in place
+    // (the active branch is rebuilt, the hidden one's effects dropped). When
+    // `src` is `Static` we keep the build-time branch (no per-node `When`
+    // anchor) — mirrors how the style sinks above collapse for static props.
+    let build_image = {
+        let src = props.src.clone();
+        let container_style = container_style.clone();
+        move || {
+            // Read `src` INSIDE so the `when` Effect subscribes; the source is
+            // `Some` here because the `cond` selected this branch.
+            let source = src.get().expect("when(src.is_some) image branch");
             let img = image_from(source).into_element();
             ui! {
-                view(style = container_style) {
+                view(style = container_style.clone()) {
                     img
                 }
             }
         }
-        None => ui! {
-            view(style = container_style) {
-                text(style = text_style) { initials }
+    };
+    let build_initials = {
+        let container_style = container_style.clone();
+        let text_style = text_style.clone();
+        let initials = initials.clone();
+        move || {
+            let initials = initials.clone();
+            ui! {
+                view(style = container_style.clone()) {
+                    text(style = text_style.clone()) { initials }
+                }
             }
-        },
+        }
+    };
+
+    if props.src.is_static() {
+        // Static fast path: resolve the branch once, no `When` anchor.
+        if props.src.get().is_some() {
+            build_image()
+        } else {
+            build_initials()
+        }
+    } else {
+        let src = props.src.clone();
+        runtime_core::when(move || src.get().is_some(), build_image, build_initials)
     }
 }
 

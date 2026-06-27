@@ -78,6 +78,7 @@ pub fn image<S: IntoImageSource>(src: S) -> Bound<ImageHandle> {
     Bound::new(Element::Image {
         src: src.into_image_source(),
         alt: None,
+        alt_fn: None,
         style: None,
         ref_fill: None,
         asset: None,
@@ -109,6 +110,7 @@ pub fn image_asset(asset: Asset<kinds::Image>) -> Bound<ImageHandle> {
     Bound::new(Element::Image {
         src: Box::new(move || format!("asset://{}", id.0)),
         alt: None,
+        alt_fn: None,
         style: None,
         ref_fill: None,
         asset: Some(asset),
@@ -186,6 +188,19 @@ impl Bound<ImageHandle> {
     pub fn alt(mut self, alt: String) -> Self {
         if let Element::Image { alt: slot, .. } = &mut self.primitive {
             *slot = Some(alt);
+        }
+        self
+    }
+
+    /// Set a reactive `alt` (accessibility label). When the closure's
+    /// signals change, the rendered alt / a11y label swaps in place (no
+    /// node rebuild) via `Backend::update_image_alt`. The image mounts at
+    /// the closure's initial value. Static labels use [`alt`](Self::alt)
+    /// and skip this. Mirrors the reactive `src` shape.
+    pub fn alt_reactive<F: Fn() -> Option<String> + 'static>(mut self, f: F) -> Self {
+        if let Element::Image { alt, alt_fn, .. } = &mut self.primitive {
+            *alt = f();
+            *alt_fn = Some(Box::new(f));
         }
         self
     }

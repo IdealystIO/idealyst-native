@@ -189,6 +189,7 @@ pub fn link<P: RouteParams + Clone>(
         children,
         route: route_name,
         url,
+        url_fn: None,
         make_params,
         kind,
         target: ambient,
@@ -224,6 +225,7 @@ pub fn external_link(url: impl Into<String>, children: Vec<Element>) -> Bound<Li
         children,
         route: "",
         url: url.into(),
+        url_fn: None,
         make_params,
         kind: NavKind::Default,
         target: None,
@@ -243,6 +245,25 @@ impl Bound<LinkHandle> {
     pub fn kind(mut self, k: NavKind) -> Self {
         if let Element::Link { kind, .. } = &mut self.primitive {
             *kind = k;
+        }
+        self
+    }
+
+    /// Set a reactive `url` (the `<a href>` destination). When the
+    /// closure's signals change, the rendered href swaps in place (no
+    /// node rebuild) via `Backend::update_link_url` — e.g. an external
+    /// link whose target follows a signal. The link mounts at the
+    /// closure's initial value. Static links pass the URL to [`link`] /
+    /// [`external_link`] and skip this.
+    ///
+    /// Mirrors `Icon::data` (closure-source). Note: for in-app links the
+    /// *activation target* (route + params) is fixed at construction —
+    /// this only updates the displayed href / right-click affordance, so
+    /// it's primarily useful for `external_link`.
+    pub fn url<F: Fn() -> String + 'static>(mut self, f: F) -> Self {
+        if let Element::Link { url, url_fn, .. } = &mut self.primitive {
+            *url = f();
+            *url_fn = Some(Box::new(f));
         }
         self
     }

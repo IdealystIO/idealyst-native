@@ -15,10 +15,12 @@ use crate::sources::StyleSource;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     src: Box<dyn Fn() -> String>,
     alt: Option<String>,
+    alt_fn: Option<Box<dyn Fn() -> Option<String>>>,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
     asset: Option<Asset<kinds::Image>>,
@@ -49,6 +51,18 @@ pub(super) fn build<B: Backend + 'static>(
         let _e = Effect::new(move || {
             let url = src();
             backend.borrow_mut().update_image_src(&node, &url);
+        });
+    }
+    // Reactive `alt`: a live source installs an Effect that swaps the
+    // alt / a11y label in place when the closure's signals change (no
+    // node rebuild). The node is born at the create-time `alt`; a fixed
+    // alt (`alt_fn == None`) installs no effect (the common case).
+    if let Some(f) = alt_fn {
+        let backend = backend.clone();
+        let node = n.clone();
+        let _e = Effect::new(move || {
+            let a = f();
+            backend.borrow_mut().update_image_alt(&node, a.as_deref());
         });
     }
     if let Some(RefFill::Image(fill)) = ref_fill {

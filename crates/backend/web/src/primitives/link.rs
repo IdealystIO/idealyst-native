@@ -95,6 +95,21 @@ pub(crate) fn create(b: &mut WebBackend, config: LinkConfig) -> Node {
     anchor.unchecked_into::<Node>()
 }
 
+/// Swap the anchor's `href` in place when a reactive `url` source
+/// fires. Mirrors `image::update_src` — guard against a needless write
+/// so a no-op update doesn't perturb the element.
+pub(crate) fn update_url(node: &Node, url: &str) {
+    if let Ok(anchor) = node.clone().dyn_into::<web_sys::HtmlAnchorElement>() {
+        // Compare against the raw `href` ATTRIBUTE, not the `.href()`
+        // property — the latter returns the resolved absolute URL, so a
+        // relative `url` would never match and we'd rewrite every fire.
+        let current = anchor.get_attribute("href");
+        if current.as_deref() != Some(url) {
+            anchor.set_href(url);
+        }
+    }
+}
+
 /// `Ref<LinkHandle>` support. The minimal-correct path is to
 /// expose `activate()` as `anchor.click()` — the browser fires a
 /// synthetic click that our click listener intercepts. That

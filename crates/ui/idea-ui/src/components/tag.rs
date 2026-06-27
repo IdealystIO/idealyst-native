@@ -65,6 +65,13 @@ fn label_color_only(color: Tokenized<Color>) -> Rc<StyleSheet> {
     }))
 }
 
+/// An empty base sheet for the bare `×` glyph, used by the REACTIVE
+/// foreground path: the color is layered on as a per-call `override_color`
+/// (re-resolved live), so the base carries no rules of its own.
+fn label_color_sheet() -> Rc<StyleSheet> {
+    Rc::new(StyleSheet::r#static(StyleRules::default()))
+}
+
 // Reactive-by-default: `#[props]` wraps `tone`/`variant` → `Reactive<…>`;
 // `label` is already reactive and `on_remove` (an `Rc<dyn Fn()>` handler) is
 // auto-skipped. Bare markers (`tone = tone::Primary`) coerce to
@@ -121,29 +128,53 @@ pub fn Tag(props: &TagProps) -> Element {
         }
     };
 
-    // Build-time container style: also used to resolve the fill's foreground
-    // so the label + close glyph carry it on their OWN text nodes (native
-    // doesn't inherit text color). Reads the tone/variant snapshot.
+    // The label + close glyph carry the container fill's foreground on
+    // their OWN text nodes (native doesn't inherit text color). This color
+    // is DERIVED from the resolved container style, so it tracks tone/variant.
     //
-    // TODO(reactive-sweep): the label/close foreground COLOR is a coupled
-    // sink — it's resolved from the container fill at build time and stamped
-    // onto the separate text nodes. When tone/variant are reactive the
-    // container border/fill re-styles in place (the closure above), but the
-    // label/close text color is snapshotted here and won't track a live
-    // tone/variant change. Routing it needs the label color resolved INSIDE a
-    // reactive style closure on the label node (read tone/variant `.get()`
-    // there too) — same shape as Typography's color sink. Left as a follow-on
-    // because it's a derived-from-resolved-style coupling, not a plain prop.
+    // reactive-sweep DONE: when tone/variant are live the foreground COLOR
+    // now re-resolves IN PLACE on the label/close nodes via a reactive style
+    // closure (`make_label_fg_app` reads tone/variant `.get()` → re-runs the
+    // same container resolution → stamps the fresh fg as a color override on
+    // the label's base sheet). Same shape as Typography's color sink. The
+    // STATIC fast path (tone+variant both static — the common case, and the
+    // tests' default) keeps stamping the snapshot color directly: no per-node
+    // Effect, no first-paint flicker.
+    //
+    // `make_label_fg_app` builds a label `StyleApplication`: the named base
+    // sheet (so its sizing/weight stays), plus the container's resolved
+    // foreground as a color override. The fg `Tokenized` keeps its token
+    // reference inside, so theme swaps still re-resolve in bulk.
+    let make_label_fg_app = {
+        let make_container_style = make_container_style.clone();
+        move |base: Rc<StyleSheet>| -> StyleApplication {
+            let mut app = StyleApplication::new(base);
+            if let Some(c) = resolve_style(&make_container_style()).color.clone() {
+                app = app.override_color(c);
+            }
+            app
+        }
+    };
+
+    // Snapshot fg for the static path + the close-glyph static stamp.
     let container_style = make_container_style();
     let fg = resolve_style(&container_style).color.clone();
 
-    let label_style: Rc<StyleSheet> = match fg.clone() {
-        Some(c) => with_inherited_color(TagLabel(), c),
-        None => TagLabel::sheet(),
+    // Label text node: reactive color closure when tone/variant are live,
+    // else the build-time snapshot (no flicker, resolved color stamped).
+    let label_el: Element = if style_is_reactive {
+        let make_label_fg_app = make_label_fg_app.clone();
+        runtime_core::text(label)
+            .with_style(move || make_label_fg_app(TagLabel::sheet()))
+            .into_element()
+    } else {
+        let label_style: Rc<StyleSheet> = match fg.clone() {
+            Some(c) => with_inherited_color(TagLabel(), c),
+            None => TagLabel::sheet(),
+        };
+        ui! { text(style = label_style) { label } }
     };
     let close_style = TagClose();
-
-    let label_el: Element = ui! { text(style = label_style) { label } };
 
     let mut children: Vec<Element> = Vec::with_capacity(2);
     children.push(label_el);
@@ -151,11 +182,22 @@ pub fn Tag(props: &TagProps) -> Element {
         // The `×` is a bare text node inside the pressable; color it on
         // its own node so it's visible on native (TagClose only sizes
         // the affordance and "inherits" foreground — which native won't).
-        let close_text = match fg.clone() {
-            Some(c) => runtime_core::text("×".to_string())
-                .with_style(label_color_only(c))
-                .into_element(),
-            None => runtime_core::text("×".to_string()).into_element(),
+        // Reactive when tone/variant are live (re-resolves the fg in place),
+        // else the static snapshot color.
+        let close_text = if style_is_reactive {
+            let make_label_fg_app = make_label_fg_app.clone();
+            // A color-only base sheet for the bare glyph (carries no sizing
+            // of its own); the closure overlays the live fg as a color override.
+            runtime_core::text("×".to_string())
+                .with_style(move || make_label_fg_app(label_color_sheet()))
+                .into_element()
+        } else {
+            match fg.clone() {
+                Some(c) => runtime_core::text("×".to_string())
+                    .with_style(label_color_only(c))
+                    .into_element(),
+                None => runtime_core::text("×".to_string()).into_element(),
+            }
         };
         let close = runtime_core::pressable(vec![close_text], move || (on_remove)())
             .with_style(close_style)

@@ -626,9 +626,9 @@ fn dispatch_button<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element
 
 #[inline(never)]
 fn dispatch_image<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
-    let Element::Image { src, alt, style, ref_fill, asset, accessibility, .. } = node
+    let Element::Image { src, alt, alt_fn, style, ref_fill, asset, accessibility, .. } = node
     else { unreachable!() };
-    image::build(backend, src, alt, style, ref_fill, asset, accessibility)
+    image::build(backend, src, alt, alt_fn, style, ref_fill, asset, accessibility)
 }
 
 #[inline(never)]
@@ -675,9 +675,9 @@ fn dispatch_slider<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element
 
 #[inline(never)]
 fn dispatch_activity_indicator<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
-    let Element::ActivityIndicator { size, color, style, ref_fill, accessibility, .. } = node
+    let Element::ActivityIndicator { size, size_fn, color, style, ref_fill, accessibility, .. } = node
     else { unreachable!() };
-    activity_indicator::build(backend, size, color, style, ref_fill, accessibility)
+    activity_indicator::build(backend, size, size_fn, color, style, ref_fill, accessibility)
 }
 
 #[inline(never)]
@@ -733,9 +733,9 @@ fn dispatch_fragment<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Eleme
 
 #[inline(never)]
 fn dispatch_link<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
-    let Element::Link { children, route, url, make_params, kind, target, external, style, ref_fill, accessibility } = node
+    let Element::Link { children, route, url, url_fn, make_params, kind, target, external, style, ref_fill, accessibility } = node
     else { unreachable!() };
-    link::build(backend, children, route, url, make_params, kind, target, external, style, ref_fill, accessibility)
+    link::build(backend, children, route, url, url_fn, make_params, kind, target, external, style, ref_fill, accessibility)
 }
 
 #[inline(never)]

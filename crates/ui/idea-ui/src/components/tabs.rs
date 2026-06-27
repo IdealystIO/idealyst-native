@@ -201,11 +201,6 @@ fn tab_button(
         }
     };
 
-    // TODO(reactive-sweep): route `indicator` to the dot CHILD presence below
-    // (structural — adding/removing the leading dot node on a live indicator
-    // flip needs a `when`/keyed splice, not a style closure). Snapshot for now.
-    let dot_mode = matches!(indicator.get(), TabIndicator::Dot);
-
     let press = {
         let id = id.clone();
         move || on_change(id.clone())
@@ -238,17 +233,40 @@ fn tab_button(
     };
 
     let label_primitive: Element = text(label).with_style(label_style).into();
+
+    // The leading dot's *presence* is structural — adding/removing the dot
+    // node on a live `indicator` flip. Routed via `when(|| indicator == Dot,
+    // dot, empty)` so a reactive indicator splices the dot in/out in place.
+    // The dot's own style stays a sink (re-resolves on `active`). When
+    // `indicator` is `Static` we keep the build-time branch (no `When` anchor).
+    let build_dot = {
+        let active = active.clone();
+        let id = id.clone();
+        move || {
+            let dot_style = {
+                let active = active.clone();
+                let id = id.clone();
+                move || {
+                    let variant = if active.get() == id { "on" } else { "off" };
+                    StyleApplication::new(TabDot::sheet()).with("active", variant.to_string())
+                }
+            };
+            view(Vec::new()).with_style(dot_style).into()
+        }
+    };
+
     let mut tab_children: Vec<Element> = Vec::with_capacity(2);
-    if dot_mode {
-        let dot_style = {
-            let active = active.clone();
-            let id = id.clone();
-            move || {
-                let variant = if active.get() == id { "on" } else { "off" };
-                StyleApplication::new(TabDot::sheet()).with("active", variant.to_string())
-            }
-        };
-        tab_children.push(view(Vec::new()).with_style(dot_style).into());
+    if indicator.is_static() {
+        if matches!(indicator.get(), TabIndicator::Dot) {
+            tab_children.push(build_dot());
+        }
+    } else {
+        let indicator = indicator.clone();
+        tab_children.push(runtime_core::when(
+            move || matches!(indicator.get(), TabIndicator::Dot),
+            build_dot,
+            || runtime_core::fragment(Vec::new()),
+        ));
     }
     tab_children.push(label_primitive);
     pressable(tab_children, press).with_style(tab_style).into()

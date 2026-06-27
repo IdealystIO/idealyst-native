@@ -849,10 +849,23 @@ where
                 let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
                 self.backend.borrow_mut().update_image_src(&n, &src);
             }
+            Command::UpdateLinkUrl { node, url } => {
+                let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
+                self.backend.borrow_mut().update_link_url(&n, &url);
+            }
+            Command::UpdateImageAlt { node, alt } => {
+                let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
+                self.backend.borrow_mut().update_image_alt(&n, alt.as_deref());
+            }
             Command::UpdateIconColor { node, color } => {
                 let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
                 let c = convert::wire_color_to_color(color);
                 self.backend.borrow_mut().update_icon_color(&n, &c);
+            }
+            Command::UpdateIconData { node, data } => {
+                let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
+                let d = convert::wire_icon_to_static(data);
+                self.backend.borrow_mut().update_icon_data(&n, &d);
             }
             Command::UpdateIconStroke { node, progress } => {
                 let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
@@ -895,6 +908,11 @@ where
             Command::UpdateSliderValue { node, value } => {
                 let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
                 self.backend.borrow_mut().update_slider_value(&n, value);
+            }
+            Command::UpdateActivityIndicatorSize { node, size } => {
+                let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
+                let s = convert::wire_activity_size(size);
+                self.backend.borrow_mut().update_activity_indicator_size(&n, s);
             }
             Command::SetDisabled { node, disabled } => {
                 let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();

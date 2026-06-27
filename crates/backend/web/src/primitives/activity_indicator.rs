@@ -46,3 +46,20 @@ pub(crate) fn create(
     let _ = span.set_attribute("style", &style);
     span.unchecked_into::<Node>()
 }
+
+/// Resize the spinner in place when a reactive `size` source fires. Only
+/// the `width`/`height` change between sizes (the ring border, color,
+/// and animation are size-independent), so we set just those two CSS
+/// properties via the style object — leaving the rest of the inline
+/// style (and any author `.with_style` override) untouched.
+pub(crate) fn update_size(node: &Node, size: ActivityIndicatorSize) {
+    if let Ok(el) = node.clone().dyn_into::<web_sys::HtmlElement>() {
+        let diameter = match size {
+            ActivityIndicatorSize::Small => 16,
+            ActivityIndicatorSize::Large => 36,
+        };
+        let style = el.style();
+        let _ = style.set_property("width", &format!("{diameter}px"));
+        let _ = style.set_property("height", &format!("{diameter}px"));
+    }
+}

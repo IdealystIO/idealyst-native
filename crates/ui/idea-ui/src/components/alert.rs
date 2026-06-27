@@ -69,6 +69,13 @@ fn label_color_only(color: Tokenized<Color>) -> Rc<StyleSheet> {
     }))
 }
 
+/// An empty base sheet for the bare `×` glyph, used by the REACTIVE
+/// foreground path: the color is layered on as a per-call `override_color`
+/// (re-resolved live), so the base carries no rules of its own.
+fn empty_sheet() -> Rc<StyleSheet> {
+    Rc::new(StyleSheet::r#static(StyleRules::default()))
+}
+
 /// The close affordance shown at an [`Alert`]'s trailing edge.
 ///
 /// One prop expresses all three modes so there's no "show a close?" flag
@@ -142,36 +149,77 @@ impl Default for AlertProps {
 /// tone × variant axes.
 #[component]
 pub fn Alert(props: AlertProps) -> Element {
-    // TODO(reactive-sweep): route `tone`/`variant` reactively to the
-    // appearance/foreground sinks. They drive a COUPLED, eager structure here —
-    // the container appearance key, the resolved foreground color, and the
-    // per-node text-color stamping on title/body/`×` (native doesn't inherit
-    // color) all derive from tone × variant at build time. A live signal would
-    // need every one of those re-resolved in a style closure (the badge.rs
-    // make_style/style_is_reactive gate), which is a structural rewrite of the
-    // color-stamping path. Snapshotting here keeps tone/variant static-correct.
-    let appearance_key = format!("{}_{}", props.tone.get().key(), props.variant.get().key());
+    let tone = props.tone.clone();
+    let variant = props.variant.clone();
 
-    // Static style — build-time apply, no flicker (see Button).
-    let container_style =
-        StyleApplication::new(installed_alert_sheet()).with("appearance", appearance_key);
-
-    // Resolve the fill's foreground so the title, body, and `×` glyph
-    // carry it on their own text nodes (native doesn't inherit color).
-    let fg = resolve_style(&container_style).color.clone();
-
-    let title_style: Rc<StyleSheet> = match fg.clone() {
-        Some(c) => with_inherited_color(AlertTitle(), c),
-        None => AlertTitle::sheet(),
+    // The container appearance is REACTIVE when tone/variant is live; else the
+    // build-time fast path (no first-paint flicker). The closure reads each
+    // prop's `.get()` INSIDE so the apply-style Effect subscribes to whichever
+    // are dynamic.
+    let style_is_reactive = !tone.is_static() || !variant.is_static();
+    let make_container_style = {
+        let tone = tone.clone();
+        let variant = variant.clone();
+        move || {
+            let appearance_key = format!("{}_{}", tone.get().key(), variant.get().key());
+            StyleApplication::new(installed_alert_sheet()).with("appearance", appearance_key)
+        }
     };
-    let body_style: Rc<StyleSheet> = match fg.clone() {
-        Some(c) => with_inherited_color(AlertBody(), c),
-        None => AlertBody::sheet(),
+
+    // reactive-sweep DONE: the title/body/`×` foreground COLOR is DERIVED from
+    // the resolved container fill and stamped on each text node (native doesn't
+    // inherit color). When tone/variant are live, the color now re-resolves IN
+    // PLACE via a reactive style closure (`make_text_fg_app` re-runs the same
+    // container resolution → stamps the fresh fg as a color override on the
+    // text node's base sheet). Same shape as Typography's color sink. The
+    // STATIC fast path (tone+variant both static — the common case + the tests'
+    // default) keeps stamping the snapshot color directly: no per-node Effect.
+    //
+    // `make_text_fg_app` builds a text `StyleApplication`: the named base sheet
+    // (keeps font/weight) + the container's resolved foreground as a color
+    // override. The fg `Tokenized` keeps its token reference, so theme swaps
+    // still re-resolve in bulk.
+    let make_text_fg_app = {
+        let make_container_style = make_container_style.clone();
+        move |base: Rc<StyleSheet>| -> StyleApplication {
+            let mut app = StyleApplication::new(base);
+            if let Some(c) = resolve_style(&make_container_style()).color.clone() {
+                app = app.override_color(c);
+            }
+            app
+        }
     };
+
+    // Snapshot fg for the static path.
+    let fg = resolve_style(&make_container_style()).color.clone();
 
     let title = props.title.clone();
-    let body_node: Option<Element> =
-        crate::components::optional_reactive_text(props.body.clone(), body_style);
+    let title_node: Element = if style_is_reactive {
+        let make_text_fg_app = make_text_fg_app.clone();
+        runtime_core::text(title)
+            .with_style(move || make_text_fg_app(AlertTitle::sheet()))
+            .into_element()
+    } else {
+        let title_style: Rc<StyleSheet> = match fg.clone() {
+            Some(c) => with_inherited_color(AlertTitle(), c),
+            None => AlertTitle::sheet(),
+        };
+        ui! { text(style = title_style) { title } }
+    };
+
+    let body_node: Option<Element> = if style_is_reactive {
+        let make_text_fg_app = make_text_fg_app.clone();
+        crate::components::optional_reactive_text(
+            props.body.clone(),
+            move || make_text_fg_app(AlertBody::sheet()),
+        )
+    } else {
+        let body_style: Rc<StyleSheet> = match fg.clone() {
+            Some(c) => with_inherited_color(AlertBody(), c),
+            None => AlertBody::sheet(),
+        };
+        crate::components::optional_reactive_text(props.body.clone(), body_style)
+    };
 
     // Trailing slots. The action element is used verbatim; the close
     // affordance is built from `AlertClose`.
@@ -180,11 +228,19 @@ pub fn Alert(props: AlertProps) -> Element {
         AlertClose::None => None,
         AlertClose::Button(on_press) => {
             // Bare `×` text node — color it directly so it shows on native.
-            let close_text = match fg.clone() {
-                Some(c) => runtime_core::text("×".to_string())
-                    .with_style(label_color_only(c))
-                    .into_element(),
-                None => runtime_core::text("×".to_string()).into_element(),
+            // Reactive when tone/variant are live; static snapshot otherwise.
+            let close_text = if style_is_reactive {
+                let make_text_fg_app = make_text_fg_app.clone();
+                runtime_core::text("×".to_string())
+                    .with_style(move || make_text_fg_app(empty_sheet()))
+                    .into_element()
+            } else {
+                match fg.clone() {
+                    Some(c) => runtime_core::text("×".to_string())
+                        .with_style(label_color_only(c))
+                        .into_element(),
+                    None => runtime_core::text("×".to_string()).into_element(),
+                }
             };
             Some(
                 runtime_core::pressable(vec![close_text], move || (on_press)())
@@ -195,16 +251,32 @@ pub fn Alert(props: AlertProps) -> Element {
         AlertClose::Custom(el) => Some(el),
     };
 
+    // Content column: title + optional body.
     let content_style = AlertContent();
-    ui! {
-        view(style = container_style) {
-            view(style = content_style) {
-                text(style = title_style) { title }
-                body_node
-            }
-            action_node
-            close_node
+    let content_col: Element = ui! {
+        view(style = content_style) {
+            title_node
+            body_node
         }
+    };
+
+    // Outer row: content column, then optional action, then optional close.
+    // The container style is reactive (closure) when tone/variant are live,
+    // else the static snapshot — matching the Tag/Button gate so the static
+    // fast path stays a `StyleSource::Static` (no flicker, what the tests read).
+    let mut children: Vec<Element> = Vec::with_capacity(3);
+    children.push(content_col);
+    if let Some(action) = action_node {
+        children.push(action);
+    }
+    if let Some(close) = close_node {
+        children.push(close);
+    }
+    let node = runtime_core::view(children);
+    if style_is_reactive {
+        node.with_style(make_container_style).into_element()
+    } else {
+        node.with_style(make_container_style()).into_element()
     }
 }
 

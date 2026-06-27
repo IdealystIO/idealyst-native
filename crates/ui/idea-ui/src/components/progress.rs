@@ -41,8 +41,9 @@ const PULSE_MIN: f32 = 0.4;
 // `tone`/`variant` build the fill's appearance key; `size` the track key —
 // both route into their style sinks (`.get()` read INSIDE the closure).
 // `indeterminate` selects the WHOLE fill subtree (animated pulse vs value
-// track), i.e. structural reactivity — read once at build for now (see the
-// TODO in `Progress`).
+// track), i.e. structural reactivity — routed through `switch` in `Progress`
+// when Dynamic so a live flip swaps the subtree (and frees the prior branch's
+// scope-owned animation); Static keeps the direct `if` build.
 #[runtime_core::props]
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
@@ -93,51 +94,95 @@ pub fn Progress(props: &ProgressProps) -> Element {
         move || format!("{}_{}", tone.get().key(), variant.get().key())
     };
 
-    // TODO(reactive-sweep): route `indeterminate` to a structural sink. It
-    // selects the WHOLE fill subtree (an opacity-pulsing animated view vs a
-    // value-tracking view), so making it live needs a `switch`/`when` to swap
-    // the subtree — not a style-sink read. Read once at build for now; a live
-    // `indeterminate` won't flip the mode in place.
-    let fill: Element = if props.indeterminate.get() {
-        // Full-width fill, opacity pulsing forever.
-        let fill_ref: Ref<ViewHandle> = Ref::new();
-        let av: AnimatedValue<f32> = AnimatedValue::new(1.0);
-        av.bind(fill_ref, AnimProp::Opacity);
-        av.animate(LoopFactory::new(
-            SequenceFactory::new()
-                .then(TweenTo::new(PULSE_MIN, Duration::from_millis(PULSE_MS)).ease_in_out())
-                .then(TweenTo::new(1.0_f32, Duration::from_millis(PULSE_MS)).ease_in_out()),
-            Repeat::Forever,
-        ));
+    // The fill is one of TWO subtrees selected by `indeterminate`:
+    //   - `true`  → a full-width view whose opacity pulses forever (an
+    //     `AnimatedValue` + `av.bind`/`av.animate`, all SCOPE-OWNED — no
+    //     `.persist()`/`mem::forget`, so a `switch` rebuild that tears the
+    //     branch's nested scope down frees the `Forever` animation atomically).
+    //   - `false` → a determinate view whose width tracks `value`.
+    // Both subtrees are built INSIDE the component (not passed-in children),
+    // so `switch` may rebuild them. Builders are closures so the static path
+    // and each switch branch share one definition.
+    let build_indeterminate = {
+        let fill_sheet = fill_sheet.clone();
         let appearance_for = appearance_for.clone();
-        runtime_core::view(Vec::new())
-            .with_style(move || {
-                StyleApplication::new(fill_sheet.clone())
-                    .with("appearance", appearance_for())
-                    .with_computed("progress-w-100", || StyleRules {
-                        width: Some(Tokenized::Literal(Length::pct(100.0))),
-                        ..Default::default()
-                    })
-            })
-            .bind(fill_ref)
-            .into_element()
-    } else {
-        // Determinate — width follows the value, cached per whole percent.
-        let value = props.value.clone();
-        let appearance_for = appearance_for.clone();
-        runtime_core::view(Vec::new())
-            .with_style(move || {
-                let pct = (value.get().clamp(0.0, 1.0)) * 100.0;
-                StyleApplication::new(fill_sheet.clone())
-                    .with("appearance", appearance_for())
-                    .with_computed(format!("progress-w-{}", pct.round() as i32), move || {
-                        StyleRules {
-                            width: Some(Tokenized::Literal(Length::pct(pct))),
+        move || -> Element {
+            // Full-width fill, opacity pulsing forever. The AnimatedValue and
+            // its bind/animate effects are created in THIS scope (the switch
+            // branch's scope when dynamic), so they're freed on switch-away.
+            let fill_ref: Ref<ViewHandle> = Ref::new();
+            let av: AnimatedValue<f32> = AnimatedValue::new(1.0);
+            av.bind(fill_ref, AnimProp::Opacity);
+            av.animate(LoopFactory::new(
+                SequenceFactory::new()
+                    .then(TweenTo::new(PULSE_MIN, Duration::from_millis(PULSE_MS)).ease_in_out())
+                    .then(TweenTo::new(1.0_f32, Duration::from_millis(PULSE_MS)).ease_in_out()),
+                Repeat::Forever,
+            ));
+            let fill_sheet = fill_sheet.clone();
+            let appearance_for = appearance_for.clone();
+            runtime_core::view(Vec::new())
+                .with_style(move || {
+                    StyleApplication::new(fill_sheet.clone())
+                        .with("appearance", appearance_for())
+                        .with_computed("progress-w-100", || StyleRules {
+                            width: Some(Tokenized::Literal(Length::pct(100.0))),
                             ..Default::default()
-                        }
-                    })
-            })
-            .into_element()
+                        })
+                })
+                .bind(fill_ref)
+                .into_element()
+        }
+    };
+    let build_determinate = {
+        let fill_sheet = fill_sheet.clone();
+        let appearance_for = appearance_for.clone();
+        let value = props.value.clone();
+        move || -> Element {
+            // Determinate — width follows the value, cached per whole percent.
+            let fill_sheet = fill_sheet.clone();
+            let appearance_for = appearance_for.clone();
+            let value = value.clone();
+            runtime_core::view(Vec::new())
+                .with_style(move || {
+                    let pct = (value.get().clamp(0.0, 1.0)) * 100.0;
+                    StyleApplication::new(fill_sheet.clone())
+                        .with("appearance", appearance_for())
+                        .with_computed(format!("progress-w-{}", pct.round() as i32), move || {
+                            StyleRules {
+                                width: Some(Tokenized::Literal(Length::pct(pct))),
+                                ..Default::default()
+                            }
+                        })
+                })
+                .into_element()
+        }
+    };
+
+    // `indeterminate` is STRUCTURAL: it picks the whole fill subtree. Route a
+    // Dynamic `indeterminate` through `switch` so a live flip tears down the
+    // prior branch's scope (freeing the `Forever` animation when leaving the
+    // pulse) and builds the other branch fresh. Static keeps the direct `if`
+    // build — no `switch` anchor — mirroring `avatar.rs`'s `src.is_static()`
+    // and Field's `style_is_reactive` gate.
+    let fill: Element = if props.indeterminate.is_static() {
+        if props.indeterminate.get() {
+            build_indeterminate()
+        } else {
+            build_determinate()
+        }
+    } else {
+        let indeterminate = props.indeterminate.clone();
+        runtime_core::switch(
+            move || indeterminate.get(),
+            move |&indet| {
+                if indet {
+                    build_indeterminate()
+                } else {
+                    build_determinate()
+                }
+            },
+        )
     };
 
     // Track thickness follows `size`, read LIVE inside the style closure.

@@ -1177,6 +1177,16 @@ pub trait Backend {
         // leave the URL static.
     }
 
+    /// Update an existing image's `alt` text in place. Called by the
+    /// walker's Effect only when `alt` is a live source; a fixed `alt`
+    /// is set once at `create_image`. `None` clears it. Web rewrites the
+    /// `alt`/`aria-label`; native backends map it to the accessibility
+    /// label. Default no-op so backends without live-alt support compile.
+    #[allow(unused_variables)]
+    fn update_image_alt(&mut self, node: &Self::Node, alt: Option<&str>) {
+        // default: no-op
+    }
+
     /// Create an icon node from static vector path data. The initial
     /// color (if any) is provided; reactive color updates flow through
     /// `update_icon_color`.
@@ -1438,6 +1448,26 @@ pub trait Backend {
         a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
         unimplemented!("create_activity_indicator not implemented for this backend")
+    }
+
+    /// Update an existing activity indicator's `size` in place. Called by
+    /// the walker's Effect only when `size` is a live source; a fixed
+    /// size is set once at `create_activity_indicator`.
+    ///
+    /// `ActivityIndicatorSize` is a discrete two-value enum
+    /// (`Small`/`Large`). On web the size maps to a CSS diameter that can
+    /// be re-applied in place. On native (iOS `UIActivityIndicatorView`,
+    /// Android `ProgressBar`) the style is fixed at construction and an
+    /// in-place size change isn't meaningful, so those backends inherit
+    /// the default no-op. Default no-op so backends without live-size
+    /// support compile.
+    #[allow(unused_variables)]
+    fn update_activity_indicator_size(
+        &mut self,
+        node: &Self::Node,
+        size: primitives::activity_indicator::ActivityIndicatorSize,
+    ) {
+        // default: no-op
     }
 
     /// Create a virtualized list. The backend gets a bundle of
@@ -2458,6 +2488,16 @@ pub trait Backend {
     ) -> Self::Node {
         self.create_view(a11y)
     }
+
+    /// Update an existing link's `url` (the `<a href>` destination) in
+    /// place. Called from a reactive effect only when `url` is a live
+    /// source (via `Bound::<LinkHandle>::url`); a fixed link sets the
+    /// href once at `create_link` and never calls this. Web swaps the
+    /// `href` attribute; native backends ignore the href, so the default
+    /// no-op is correct for them (matching how `LinkConfig::url` is
+    /// documented as "ignored on native").
+    #[allow(unused_variables)]
+    fn update_link_url(&mut self, node: &Self::Node, url: &str) {}
 
     /// Apply safe-area-aware padding to `node`. Called by the walker
     /// for every container that opted in via `.safe_area(...)`, and

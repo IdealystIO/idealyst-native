@@ -126,7 +126,17 @@ use serde::{Deserialize, Serialize};
 /// on the floor — so a runtime-server client never themed its host surface
 /// / scrollbar, set its document title, or received navigator raw CSS. All
 /// four are additive variants; an older client just never receives them.
-pub const PROTOCOL_VERSION: u32 = 13;
+///
+/// Bumped to 14 to carry four more reactive-prop in-place updates whose
+/// recorder methods previously fell through to the trait no-op:
+/// [`Command::UpdateLinkUrl`] (link `<a href>`),
+/// [`Command::UpdateImageAlt`] (image alt text),
+/// [`Command::UpdateIconData`] (icon geometry swap), and
+/// [`Command::UpdateActivityIndicatorSize`] (spinner size). Each mirrors an
+/// existing reactive setter (`UpdateImageSrc` / `UpdateIconColor`) and folds
+/// into the matching snapshot `Create*` so a late-joining client renders the
+/// current state. All additive — an older client just never receives them.
+pub const PROTOCOL_VERSION: u32 = 14;
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
 /// than the canonical [`PROTOCOL_VERSION`] name. Both point at the same
@@ -707,9 +717,30 @@ pub enum Command {
         node: NodeId,
         src: String,
     },
+    /// Update an existing link's `url` (`<a href>`). Emitted when `url`
+    /// is a live source; mirrors `UpdateImageSrc`. Folds into the
+    /// snapshot `CreateLink` so a late-joining client renders the current
+    /// href.
+    UpdateLinkUrl {
+        node: NodeId,
+        url: String,
+    },
+    /// Update an existing image's `alt` text in place. Emitted when `alt`
+    /// is a live source; mirrors `UpdateImageSrc`. `None` clears the alt.
+    UpdateImageAlt {
+        node: NodeId,
+        alt: Option<String>,
+    },
     UpdateIconColor {
         node: NodeId,
         color: WireColor,
+    },
+    /// Swap an existing icon's geometry (viewbox + paths + fill rule +
+    /// filled) in place. Emitted when `data` is a live source; mirrors
+    /// `UpdateIconColor`. Folds into the snapshot `CreateIcon`.
+    UpdateIconData {
+        node: NodeId,
+        data: WireIconData,
     },
     UpdateIconStroke {
         node: NodeId,
@@ -780,6 +811,13 @@ pub enum Command {
     UpdateSliderValue {
         node: NodeId,
         value: f32,
+    },
+    /// Update an existing activity indicator's `size` in place. Emitted
+    /// when `size` is a live source; mirrors `UpdateSliderValue`. Folds
+    /// into the snapshot `CreateActivityIndicator`.
+    UpdateActivityIndicatorSize {
+        node: NodeId,
+        size: WireActivityIndicatorSize,
     },
     SetDisabled {
         node: NodeId,

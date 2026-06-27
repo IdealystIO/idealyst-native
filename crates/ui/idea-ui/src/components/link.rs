@@ -19,9 +19,9 @@ use runtime_core::{component, IdealystSchema, IntoElement, Element, Reactive};
 use crate::stylesheets::LinkText;
 
 // Reactive-by-default: `#[props]` wraps `url` → `Reactive<String>`; `label` is
-// already reactive. `label` routes to the `text()` sink (live); `url` is
-// snapshotted at build (the `external_link` primitive fixes the href at
-// construction — see the TODO in the body).
+// already reactive. `label` routes to the `text()` sink (live); a live `url`
+// routes to the `external_link` reactive `.url()` setter so the href swaps in
+// place (a `Static` url is set once at construction, no effect).
 #[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
@@ -53,11 +53,12 @@ pub fn Link(props: &LinkProps) -> Element {
     let text = runtime_core::text(props.label.clone())
         .with_style(LinkText())
         .into_element();
-    // TODO(reactive-sweep): route `url` to the `external_link` href reactively.
-    // The primitive fixes the href at construction (it takes a plain `String`,
-    // no reactive setter), so a live `url` signal is snapshotted here and won't
-    // update the destination in place. A reactive href setter on the
-    // `external_link` builder is the fix; until then `url` reads its initial
-    // value.
-    runtime_core::external_link(props.url.get(), vec![text]).into_element()
+    // A live `url` routes to the primitive's reactive `.url()` setter (swaps the
+    // `<a href>` in place); a `Static` url just seeds `external_link` once.
+    let mut node = runtime_core::external_link(props.url.get(), vec![text]);
+    if !props.url.is_static() {
+        let url = props.url.clone();
+        node = node.url(move || url.get());
+    }
+    node.into_element()
 }

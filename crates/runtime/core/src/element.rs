@@ -228,6 +228,12 @@ pub enum Element {
         /// should prefer `accessibility.label` for consistency with
         /// other primitives.
         alt: Option<String>,
+        /// Optional reactive `alt` source. `None` = fixed `alt`. When
+        /// `Some`, the walker installs an Effect that calls
+        /// `update_image_alt` so the alt text / a11y label swaps in place
+        /// (no node rebuild). The closure's initial value seeds the
+        /// static `alt` snapshot. Mirrors `Image::src` (closure-source).
+        alt_fn: Option<Box<dyn Fn() -> Option<String>>>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
         /// `Some` when the source is an [`Asset`](crate::assets::Asset)
@@ -408,6 +414,12 @@ pub enum Element {
     /// Indeterminate loading spinner. No methods — passive widget.
     ActivityIndicator {
         size: primitives::activity_indicator::ActivityIndicatorSize,
+        /// Optional reactive `size` source. `None` = fixed `size`. When
+        /// `Some`, the walker installs an Effect that calls
+        /// `update_activity_indicator_size` so the spinner resizes in
+        /// place (no node rebuild). The closure's initial value seeds the
+        /// static `size` snapshot. Mirrors `Icon::data_fn`.
+        size_fn: Option<Box<dyn Fn() -> primitives::activity_indicator::ActivityIndicatorSize>>,
         color: Option<Color>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
@@ -622,6 +634,12 @@ pub enum Element {
         /// at construction time. Web emits `<a href=url>` and uses
         /// it for right-click affordances; native backends ignore.
         url: String,
+        /// Optional reactive `url` source. `None` = fixed `url`. When
+        /// `Some`, the walker installs an Effect that calls
+        /// `update_link_url` so the `<a href>` swaps in place (e.g. an
+        /// external link whose destination follows a signal) without
+        /// rebuilding the node. Mirrors `Icon::data_fn`.
+        url_fn: Option<Box<dyn Fn() -> String>>,
         /// Type-erased params source. Each activation calls this to
         /// produce a fresh `Box<dyn Any>` for the `NavCommand`.
         /// `link<P>` boxes `P: Clone` and reproduces on demand.

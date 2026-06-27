@@ -23,9 +23,9 @@ use crate::stylesheets::ImageBox;
 // `Reactive<T>`. `src` routes to the framework `image` primitive's reactive
 // source (it accepts a `Fn() -> String`), so a `Signal`/`rx!` URL repaints the
 // image in place. `width`/`height`/`rounded` drive the style sink (`.get()`
-// read INSIDE the closure). `alt` has no reactive sink yet (the primitive's
-// `.alt()` is a one-shot setter) — read once at build (see the TODO in
-// `Image`). A bare value stays a zero-cost `Static` snapshot.
+// read INSIDE the closure). A live `alt` routes to the primitive's reactive
+// `.alt_reactive()` sink (swaps the alt / a11y label in place); a `Static` alt
+// is set once. A bare value stays a zero-cost `Static` snapshot.
 #[runtime_core::props]
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
@@ -112,12 +112,16 @@ pub fn Image(props: &ImageProps) -> Element {
         img.with_style(make_style())
     };
 
-    // TODO(reactive-sweep): route `alt` to a reactive sink. The primitive's
-    // `.alt()` is a one-shot setter (`Element::Image.alt: Option<String>` is a
-    // plain value with no reactive walker path), so a live `alt` is read once
-    // here. Wire a reactive alt sink on the image primitive to make it live.
-    if let Some(alt) = props.alt.get() {
-        img = img.alt(alt);
+    // A live `alt` routes to the primitive's reactive `.alt_reactive()` sink
+    // (the walker installs an Effect → `update_image_alt`); a `Static` alt is
+    // set once via the one-shot `.alt()` setter.
+    if props.alt.is_static() {
+        if let Some(alt) = props.alt.get() {
+            img = img.alt(alt);
+        }
+    } else {
+        let alt = props.alt.clone();
+        img = img.alt_reactive(move || alt.get());
     }
     img.into_element()
 }

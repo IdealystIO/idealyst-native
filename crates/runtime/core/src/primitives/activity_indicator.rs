@@ -49,6 +49,7 @@ pub trait ActivityIndicatorOps {
 pub fn activity_indicator() -> Bound<ActivityIndicatorHandle> {
     Bound::new(Element::ActivityIndicator {
         size: ActivityIndicatorSize::default(),
+        size_fn: None,
         color: None,
         style: None,
         ref_fill: None,
@@ -62,6 +63,25 @@ impl Bound<ActivityIndicatorHandle> {
     pub fn size(mut self, s: ActivityIndicatorSize) -> Self {
         if let Element::ActivityIndicator { size, .. } = &mut self.primitive {
             *size = s;
+        }
+        self
+    }
+
+    /// Set a reactive `size`. When the closure's signals change, the
+    /// spinner resizes in place (no node rebuild) via
+    /// `Backend::update_activity_indicator_size`. The indicator mounts at
+    /// the closure's initial value. A fixed size uses [`size`](Self::size)
+    /// and skips this. Mirrors `Icon::data` (closure-source).
+    ///
+    /// Note: `ActivityIndicatorSize` is a discrete `Small`/`Large` enum.
+    /// Web re-applies the CSS diameter in place; native spinners
+    /// (`UIActivityIndicatorView`, `ProgressBar`) fix their style at
+    /// construction and inherit the backend no-op (see
+    /// `Backend::update_activity_indicator_size`).
+    pub fn size_reactive<F: Fn() -> ActivityIndicatorSize + 'static>(mut self, f: F) -> Self {
+        if let Element::ActivityIndicator { size, size_fn, .. } = &mut self.primitive {
+            *size = f();
+            *size_fn = Some(Box::new(f));
         }
         self
     }

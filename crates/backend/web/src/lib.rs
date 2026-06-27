@@ -2376,6 +2376,10 @@ impl Backend for WebBackend {
         primitives::image::update_src(self, node, src)
     }
 
+    fn update_image_alt(&mut self, node: &Self::Node, alt: Option<&str>) {
+        primitives::image::update_alt(node, alt)
+    }
+
     fn create_icon(
         &mut self,
         data: &runtime_core::primitives::icon::IconData,
@@ -2547,6 +2551,14 @@ impl Backend for WebBackend {
         node
     }
 
+    fn update_activity_indicator_size(
+        &mut self,
+        node: &Self::Node,
+        size: runtime_core::primitives::activity_indicator::ActivityIndicatorSize,
+    ) {
+        primitives::activity_indicator::update_size(node, size)
+    }
+
     fn create_virtualizer(
         &mut self,
         callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
@@ -2698,6 +2710,10 @@ impl Backend for WebBackend {
         // `<a>` has implicit role="link"; skip inference.
         a11y::apply(&node, a11y, None);
         node
+    }
+
+    fn update_link_url(&mut self, node: &Self::Node, url: &str) {
+        primitives::link::update_url(node, url)
     }
 
     fn make_link_handle(

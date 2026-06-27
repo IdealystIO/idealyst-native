@@ -11,16 +11,19 @@ use crate::backend::Backend;
 use crate::handles::RefFill;
 use crate::element::Element;
 use crate::primitives;
+use crate::reactive::Effect;
 use crate::sources::StyleSource;
 use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     children: Vec<Element>,
     route: &'static str,
     url: String,
+    url_fn: Option<Box<dyn Fn() -> String>>,
     make_params: Rc<dyn Fn() -> Box<dyn Any>>,
     kind: primitives::link::NavKind,
     target: Option<Rc<primitives::navigator::NavigatorControl>>,
@@ -63,6 +66,18 @@ pub(super) fn build<B: Backend + 'static>(
     insert_children(backend, &mut n, children);
     if let Some(s) = style {
         attach_style(backend, &n, s);
+    }
+    // Reactive `url`: a live source installs an Effect that swaps the
+    // `<a href>` in place when the closure's signals change (no node
+    // rebuild). The node is born at the closure's initial value; a fixed
+    // `url` (`url_fn == None`) installs no effect (the common case).
+    if let Some(f) = url_fn {
+        let backend = backend.clone();
+        let node = n.clone();
+        let _e = Effect::new(move || {
+            let u = f();
+            backend.borrow_mut().update_link_url(&node, &u);
+        });
     }
     if let Some(RefFill::Link(fill)) = ref_fill {
         let handle = backend.borrow().make_link_handle(&n);

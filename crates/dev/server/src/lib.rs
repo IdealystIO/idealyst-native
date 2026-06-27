@@ -1510,6 +1510,22 @@ impl Backend for WireRecordingBackend {
         });
     }
 
+    fn update_image_alt(&mut self, node: &Self::Node, alt: Option<&str>) {
+        let mut state = self.inner.borrow_mut();
+        state.emit(Command::UpdateImageAlt {
+            node: *node,
+            alt: alt.map(|s| s.to_string()),
+        });
+    }
+
+    fn update_link_url(&mut self, node: &Self::Node, url: &str) {
+        let mut state = self.inner.borrow_mut();
+        state.emit(Command::UpdateLinkUrl {
+            node: *node,
+            url: url.to_string(),
+        });
+    }
+
     fn create_icon(
         &mut self,
         data: &primitives::icon::IconData,
@@ -1534,6 +1550,15 @@ impl Backend for WireRecordingBackend {
         state.emit(Command::UpdateIconColor {
             node: *node,
             color: WireColor(color.0.clone()),
+        });
+    }
+
+    fn update_icon_data(&mut self, node: &Self::Node, data: &primitives::icon::IconData) {
+        let mut state = self.inner.borrow_mut();
+        let wire_data = convert_out::icon_data_to_wire(data);
+        state.emit(Command::UpdateIconData {
+            node: *node,
+            data: wire_data,
         });
     }
 
@@ -1858,6 +1883,26 @@ impl Backend for WireRecordingBackend {
             a11y: wire_a11y,
         });
         id
+    }
+
+    fn update_activity_indicator_size(
+        &mut self,
+        node: &Self::Node,
+        size: primitives::activity_indicator::ActivityIndicatorSize,
+    ) {
+        let mut state = self.inner.borrow_mut();
+        let wire_size = match size {
+            primitives::activity_indicator::ActivityIndicatorSize::Small => {
+                wire::WireActivityIndicatorSize::Small
+            }
+            primitives::activity_indicator::ActivityIndicatorSize::Large => {
+                wire::WireActivityIndicatorSize::Large
+            }
+        };
+        state.emit(Command::UpdateActivityIndicatorSize {
+            node: *node,
+            size: wire_size,
+        });
     }
 
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {

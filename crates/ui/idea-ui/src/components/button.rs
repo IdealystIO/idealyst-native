@@ -33,7 +33,9 @@ use runtime_core::{
     StyleRules, StyleSheet, Tokenized,
 };
 
-use idea_theme::extensible::{installed_button_sheet, ButtonSizeRef, ShapeRef, ToneRef, VariantRef};
+use idea_theme::extensible::{
+    installed_button_sheet, ButtonSizeRef, ShapeRef, ToneRef, VariantRef,
+};
 
 /// Props for the extensible Button. Each modifier axis is a typed
 /// handle (`*Ref` newtype) so call sites can write
@@ -41,7 +43,10 @@ use idea_theme::extensible::{installed_button_sheet, ButtonSizeRef, ShapeRef, To
 /// defaults route to Filled/Primary/Md/Md.
 // Reactive-by-default: `#[props]` wraps each data field. Style axes
 // (tone/variant/size/shape) route to the style sink; structural props
-// (disabled/loading/block/icons) are read once (see the TODO in `Button`).
+// (disabled/loading/block/icons) now route too — icon glyph swaps via the
+// primitive's reactive `.data()` (no rebuild), and presence/loading/block/
+// disabled via a `switch` over a `PartialEq` tuple that rebuilds the pressable
+// subtree on change (the static fast path stays when none is live). See `Button`.
 // `on_click` (handler), `bind_to` (Ref), and `test_id` (`&'static str`) are
 // auto-skipped (not reactive data).
 #[runtime_core::props]
@@ -63,9 +68,10 @@ pub struct ButtonProps {
     /// Corner-radius scale (Sm, Md, Lg, Pill, …). Default Md.
     pub shape: ShapeRef,
     /// When `true`, blocks the press and dims the button (opacity drop).
-    /// Default `false`. For reactive disabling, read a signal in the
-    /// enclosing render scope (e.g. `disabled = some_state.get()`); the scope
-    /// re-renders the button when the value changes.
+    /// Default `false`. Reactive: pass a `Signal<bool>` (`disabled =
+    /// some_state.into()`) and the button rebuilds its pressable in place
+    /// when the value changes — no enclosing-scope re-render needed. (A live
+    /// structural prop is mutually exclusive with `bind_to`; see `bind_to`.)
     pub disabled: bool,
     /// When `true`, swaps the leading slot for a spinner (tinted to the
     /// button's text color) and blocks the press while the action runs.
@@ -73,7 +79,12 @@ pub struct ButtonProps {
     /// button reads as "busy", not "off".
     pub loading: bool,
     /// When `Some`, fills the given `Ref<PressableHandle>` on mount.
-    /// Useful for anchoring an `Overlay` to this button.
+    /// Useful for anchoring an `Overlay` to this button. A `Ref` fills
+    /// exactly once, so this is incompatible with the structural `switch`
+    /// rebuild: if you pass `bind_to` AND a *live* structural prop
+    /// (`disabled`/`loading`/`leading_icon`/`trailing_icon`/`block` as a
+    /// signal), the structure is snapshotted (static build) to keep the bind
+    /// correct. Bind-and-also-reactive-structure isn't supported on one button.
     pub bind_to: Option<Ref<PressableHandle>>,
     /// Vector icon rendered before the label (the leading slot). Pass an
     /// `IconData` constant from an icon pack (e.g. `icons_lucide::PLUS`).
@@ -169,126 +180,278 @@ pub fn Button(props: &ButtonProps) -> Element {
     let variant = props.variant.clone();
     let size = props.size.clone();
     let shape = props.shape.clone();
-    // TODO(reactive-sweep): these drive STRUCTURE (press-block, spinner-vs-icon
-    // children, the layout layer, and the resolved fg color stamped on the
-    // label/icons), so they are snapshotted here. A live one needs a
-    // `switch`/`when` rebuild (children) or a reactive fg-color sink, not a
-    // style closure — flagged. The tone/variant/size/shape STYLE axes below
-    // ARE routed reactively.
-    let disabled = props.disabled.get();
-    let loading = props.loading.get();
+    // reactive-sweep DONE (structure): the structural props drive the children
+    // (spinner-vs-icon swap, icon appear/disappear) and the layout/press-block.
+    // They're kept as `Reactive` here and routed in TWO layers (see below):
+    //   - icon GLYPH swaps (same presence) → the primitive's reactive `.data()`
+    //     setter, no rebuild (layer 1);
+    //   - presence/loading STRUCTURE (spinner-vs-icon, icon on/off, the layout
+    //     layer + press-block) → a `switch` keyed on a `PartialEq` tuple of the
+    //     structural booleans, which rebuilds the pressable subtree atomically
+    //     on change (layer 2).
+    // When NONE of them is live we keep the build-time fast path (no `switch`,
+    // no first-paint flicker) — the path the static tests exercise.
+    let leading_icon = props.leading_icon.clone();
+    let trailing_icon = props.trailing_icon.clone();
+    let disabled_prop = props.disabled.clone();
+    let loading_prop = props.loading.clone();
+    let block_prop = props.block.clone();
     let bind_to = props.bind_to;
-    let leading_icon = props.leading_icon.get();
-    let trailing_icon = props.trailing_icon.get();
-    let block = props.block.get();
-    // Both `disabled` and `loading` make the button inert (block the press);
-    // only `disabled` dims the surface.
-    let inert = disabled || loading;
 
-    // Variant-axis keys map directly to the installed stylesheet's
-    // pre-generated arms. For a built-in modifier set the arms exist;
-    // for an app-extended set, apps must have installed an extended
-    // sheet that includes those arms (else the framework falls back
-    // to the default arms).
-    // A loading spinner occupies the leading slot, so it needs the same
-    // centered-row layout an icon does. (`row_layout`/`block`/`disabled` are
-    // structural snapshots — see the TODO above.)
-    let row_layout = leading_icon.is_some() || trailing_icon.is_some() || loading;
+    // STYLE-axis reactivity (tone/variant/size/shape) is independent of
+    // STRUCTURE reactivity. `make_style` reads each axis live INSIDE so the
+    // apply-style Effect subscribes to the dynamic ones.
+    let style_is_reactive =
+        !tone.is_static() || !variant.is_static() || !size.is_static() || !shape.is_static();
 
-    // The button style is REACTIVE when any style axis (tone/variant/size/
-    // shape) is live; otherwise the build-time fast path (no first-paint
-    // flicker). `make_style` reads each axis live INSIDE so the apply-style
-    // Effect subscribes to the dynamic ones. The layout layer keys on the
-    // structural snapshots (icons/block/disabled).
-    let style_is_reactive = !tone.is_static()
-        || !variant.is_static()
-        || !size.is_static()
-        || !shape.is_static();
+    // `make_style` is parameterized by the structural booleans (row layout /
+    // block / disabled) so the same closure serves the static build and each
+    // `switch` arm. The style axes are captured reactively; the layout layer is
+    // baked from the per-arm booleans (constant within an arm — a structural
+    // change rebuilds the arm, re-baking the layer).
     let make_style = {
         let tone = tone.clone();
         let variant = variant.clone();
         let size = size.clone();
         let shape = shape.clone();
-        move || {
-            let appearance_key = format!("{}_{}", tone.get().key(), variant.get().key());
-            let style = StyleApplication::new(installed_button_sheet())
-                .with("appearance", appearance_key)
-                .with("size", size.get().key().to_string())
-                .with("shape", shape.get().key().to_string());
-            let layer_key =
-                format!("layout_{}_{}_{}", row_layout as u8, block as u8, disabled as u8);
-            style.with_computed(layer_key, move || {
-                let mut rules = StyleRules::default();
-                if row_layout {
-                    rules.flex_direction = Some(FlexDirection::Row);
-                    rules.align_items = Some(runtime_core::AlignItems::Center);
-                    rules.gap = Some(Tokenized::token("spacing-xs", Length::Px(6.0)));
+        move |row_layout: bool, block: bool, disabled: bool| {
+            let tone = tone.clone();
+            let variant = variant.clone();
+            let size = size.clone();
+            let shape = shape.clone();
+            move || {
+                let appearance_key = format!("{}_{}", tone.get().key(), variant.get().key());
+                let style = StyleApplication::new(installed_button_sheet())
+                    .with("appearance", appearance_key)
+                    .with("size", size.get().key().to_string())
+                    .with("shape", shape.get().key().to_string());
+                let layer_key = format!(
+                    "layout_{}_{}_{}",
+                    row_layout as u8, block as u8, disabled as u8
+                );
+                style.with_computed(layer_key, move || {
+                    let mut rules = StyleRules::default();
+                    if row_layout {
+                        rules.flex_direction = Some(FlexDirection::Row);
+                        rules.align_items = Some(runtime_core::AlignItems::Center);
+                        rules.gap = Some(Tokenized::token("spacing-xs", Length::Px(6.0)));
+                    }
+                    if block {
+                        rules.width = Some(Tokenized::Literal(Length::Percent(100.0)));
+                        rules.align_self = Some(AlignSelf::Stretch);
+                    } else {
+                        rules.align_self = Some(AlignSelf::Center);
+                    }
+                    if disabled {
+                        // Deterministic dim so a disabled button reads as off on
+                        // every backend.
+                        rules.opacity = Some(Tokenized::Literal(0.45));
+                    }
+                    rules
+                })
+            }
+        }
+    };
+
+    // reactive-sweep DONE (label/icon COLOR): the foreground is DERIVED from
+    // the resolved fill, so when tone/variant are live it re-resolves IN PLACE
+    // — the icon via the primitive's reactive `.color(closure)` and the label
+    // via a reactive style closure. The STATIC fast path stamps the snapshot
+    // color (no flicker, no per-node Effect). Structure-reactivity (handled by
+    // the `switch` below) is orthogonal: each arm rebuilds the children but
+    // still threads the same fg machinery.
+
+    // `build_pressable` builds the full pressable (children + style +
+    // press-block) for one STRUCTURAL state — the spinner-vs-icon leading slot,
+    // the optional trailing icon, the label, and the layout/dim style for these
+    // booleans. It captures everything reactively, so both the static path and
+    // each `switch` arm call it. Layer-1 (icon `.data()`) routing lives inside
+    // its `icon_node`.
+    let build_pressable = {
+        let label = label.clone();
+        let on_click = on_click.clone();
+        let make_style = make_style.clone();
+        let leading_icon = leading_icon.clone();
+        let trailing_icon = trailing_icon.clone();
+        move |loading: bool, has_lead: bool, has_trail: bool, disabled: bool, block: bool| {
+            // A loading spinner occupies the leading slot, so it needs the same
+            // centered-row layout an icon does.
+            let row_layout = has_lead || has_trail || loading;
+            // Both `disabled` and `loading` block the press; only `disabled`
+            // dims the surface.
+            let inert = disabled || loading;
+
+            let style_closure = make_style(row_layout, block, disabled);
+            // Snapshot the fg for this build (the resolved fill's foreground)
+            // so the label + icons can carry it on their own nodes (native
+            // doesn't inherit text/icon color).
+            let fg = resolve_style(&style_closure()).color.clone();
+            // Re-resolves the container's foreground from the live tone/variant.
+            // Used by the reactive icon `.color`/label-style closures so the
+            // tint tracks the container in place when a style axis is live.
+            let resolve_fg = {
+                let style_closure = style_closure.clone();
+                move || resolve_style(&style_closure()).color.clone()
+            };
+
+            // Builds one inline icon node from a `Reactive<Option<IconData>>`
+            // slot known to be `Some` here. LAYER 1: when the slot is a live
+            // `Dynamic`, route the glyph reactively via the primitive's
+            // `.data()` setter so a glyph SWAP (same presence) updates in place
+            // — no rebuild. (Presence changes are handled by the `switch`
+            // scrutinee, which keys on `.is_some()`, not the glyph itself —
+            // `IconData` isn't `PartialEq`.) Color tint follows the same
+            // static-vs-reactive split the label uses.
+            let icon_node = |slot: &Reactive<Option<IconData>>| -> Element {
+                let mut el = icon(slot.get().expect("icon slot is Some in this arm"))
+                    .with_style(button_icon_sheet());
+                if !slot.is_static() {
+                    // Live glyph: the slot is `Some` in this arm (presence is
+                    // the switch key); read the inner data reactively. The
+                    // `unwrap_or` guards the impossible "arm says Some, closure
+                    // now None" — a presence flip rebuilds the arm instead.
+                    let slot = slot.clone();
+                    el = el.data(move || slot.get().unwrap_or(EMPTY_ICON_DATA));
                 }
-                if block {
-                    rules.width = Some(Tokenized::Literal(Length::Percent(100.0)));
-                    rules.align_self = Some(AlignSelf::Stretch);
+                if style_is_reactive {
+                    let resolve_fg = resolve_fg.clone();
+                    match fg.clone() {
+                        Some(_) => el
+                            .color(move || {
+                                resolve_fg()
+                                    .map(|c| c.resolve())
+                                    .unwrap_or_else(|| Color("#000000".into()))
+                            })
+                            .into_element(),
+                        None => el.into_element(),
+                    }
                 } else {
-                    rules.align_self = Some(AlignSelf::Center);
+                    match fg.clone() {
+                        // Reactive read: `resolve()` re-runs on theme swap, so
+                        // the icon tint tracks the token like the label does.
+                        Some(c) => el.color(move || c.resolve()).into_element(),
+                        None => el.into_element(),
+                    }
                 }
-                if disabled {
-                    // Deterministic dim so a disabled button reads as off on
-                    // every backend.
-                    rules.opacity = Some(Tokenized::Literal(0.45));
+            };
+
+            let mut children: Vec<Element> = Vec::with_capacity(3);
+            // Loading takes the leading slot (a spinner) in place of the icon.
+            if loading {
+                let ai = activity_indicator().size(ActivityIndicatorSize::Small);
+                children.push(match fg.clone() {
+                    Some(c) => ai.color(c.resolve()).into_element(),
+                    None => ai.into_element(),
+                });
+            } else if has_lead {
+                children.push(icon_node(&leading_icon));
+            }
+            let label_node = if style_is_reactive {
+                // Live tone/variant: re-resolve the fg inside a reactive style
+                // closure so the label color tracks the container fill in place.
+                match fg.clone() {
+                    Some(_) => {
+                        let resolve_fg = resolve_fg.clone();
+                        text(label.clone())
+                            .with_style(move || {
+                                let mut app = StyleApplication::new(Rc::new(StyleSheet::r#static(
+                                    StyleRules::default(),
+                                )));
+                                if let Some(c) = resolve_fg() {
+                                    app = app.override_color(c);
+                                }
+                                app
+                            })
+                            .into_element()
+                    }
+                    None => text(label.clone()).into_element(),
                 }
-                rules
-            })
+            } else {
+                match fg.clone() {
+                    Some(c) => text(label.clone())
+                        .with_style(label_color_style(c))
+                        .into_element(),
+                    None => text(label.clone()).into_element(),
+                }
+            };
+            children.push(label_node);
+            if has_trail {
+                children.push(icon_node(&trailing_icon));
+            }
+
+            let on_click_for_p = on_click.clone();
+            let mut bound = runtime_core::pressable(children, move || (on_click_for_p)());
+            bound = if style_is_reactive {
+                bound.with_style(style_closure)
+            } else {
+                bound.with_style(style_closure())
+            };
+            if inert {
+                bound = bound.disabled(true);
+            }
+            bound
         }
     };
 
-    // Resolve the fill's foreground so the label + icons can carry it on
-    // their own nodes (native doesn't inherit text/icon color). Snapshot — a
-    // live tone won't re-tint the label/icons (coupled fg sink, see TODO).
-    let fg = resolve_style(&make_style()).color.clone();
+    // Decide between the static fast path and the structure `switch`.
+    // STRUCTURE is reactive when any structural prop is live.
+    let structure_is_reactive = !loading_prop.is_static()
+        || !disabled_prop.is_static()
+        || !leading_icon.is_static()
+        || !trailing_icon.is_static()
+        || !block_prop.is_static();
+    // `bind_to` fills its `Ref` exactly once; a `switch` that rebuilds the
+    // pressable would re-fill it each rebuild. When a caller both binds AND
+    // passes a live structural prop, prefer the static build (snapshot the
+    // structure) so the bind stays correct — a documented limitation, not a
+    // double-fill. Without `bind_to`, the `switch` is safe.
+    let use_switch = structure_is_reactive && bind_to.is_none();
 
-    // Fixed-size sheet for inline icons — they need explicit dimensions
-    // (an SVG/CAShapeLayer has no intrinsic content size to flex against).
-    // Icons inherit the button's text color on web; stamp it explicitly so
-    // they're correct on native too (an uncolored icon renders in the
-    // widget-default color and vanishes on a colored fill).
-    let icon_node = |data: IconData| -> Element {
-        let el = icon(data).with_style(button_icon_sheet());
-        match fg.clone() {
-            // Reactive read: `resolve()` re-runs on theme swap, so the
-            // icon tint tracks the token like the label's color does.
-            Some(c) => el.color(move || c.resolve()).into_element(),
-            None => el.into_element(),
-        }
-    };
+    if use_switch {
+        // LAYER 2: rebuild the pressable subtree atomically when a structural
+        // boolean changes. The scrutinee reads each `.get()` so the Effect
+        // subscribes; it keys on `.is_some()` (a `bool`) — `IconData` is not
+        // `PartialEq`, and glyph swaps within a present slot are handled by
+        // layer 1's `.data()`, not here. Clone the structural props into the
+        // scrutinee closure (the originals stay valid for the static-path
+        // expressions the borrow-checker still sees below the `return`).
+        let loading_s = loading_prop.clone();
+        let leading_s = leading_icon.clone();
+        let trailing_s = trailing_icon.clone();
+        let disabled_s = disabled_prop.clone();
+        let block_s = block_prop.clone();
+        let switch_el = runtime_core::switch(
+            move || {
+                (
+                    loading_s.get(),
+                    leading_s.get().is_some(),
+                    trailing_s.get().is_some(),
+                    disabled_s.get(),
+                    block_s.get(),
+                )
+            },
+            {
+                let build_pressable = build_pressable.clone();
+                move |&(loading, has_lead, has_trail, disabled, block)| {
+                    build_pressable(loading, has_lead, has_trail, disabled, block).into_element()
+                }
+            },
+        );
+        // `switch` returns a bare `Element`. No `bind_to` here — `use_switch`
+        // requires `bind_to.is_none()`; the test id (when requested) rides a
+        // transparent wrapper view since the pressable is rebuilt per arm.
+        return finalize_switch(switch_el, props);
+    }
 
-    let mut children: Vec<Element> = Vec::with_capacity(3);
-    // Loading takes the leading slot (a spinner) in place of the leading icon.
-    if loading {
-        let ai = activity_indicator().size(ActivityIndicatorSize::Small);
-        children.push(match fg.clone() {
-            Some(c) => ai.color(c.resolve()).into_element(),
-            None => ai.into_element(),
-        });
-    } else if let Some(d) = leading_icon {
-        children.push(icon_node(d));
-    }
-    let label_node = match fg.clone() {
-        Some(c) => text(label).with_style(label_color_style(c)).into_element(),
-        None => text(label).into_element(),
-    };
-    children.push(label_node);
-    if let Some(d) = trailing_icon {
-        children.push(icon_node(d));
-    }
-    let on_click_for_p = on_click.clone();
-    let mut bound = runtime_core::pressable(children, move || (on_click_for_p)());
-    bound = if style_is_reactive {
-        bound.with_style(make_style)
-    } else {
-        bound.with_style(make_style())
-    };
-    if inert {
-        bound = bound.disabled(true);
-    }
+    // STATIC fast path (or a binding caller): build once from the structural
+    // snapshots.
+    let mut bound = build_pressable(
+        loading_prop.get(),
+        leading_icon.get().is_some(),
+        trailing_icon.get().is_some(),
+        disabled_prop.get(),
+        block_prop.get(),
+    );
     if let Some(r) = bind_to {
         bound = bound.bind(r);
     }
@@ -299,6 +462,35 @@ pub fn Button(props: &ButtonProps) -> Element {
         bound = bound.test_id(tid);
     }
     bound.into_element()
+}
+
+/// A zero-path placeholder glyph. Only reachable in the impossible
+/// "arm says the icon slot is `Some`, but the live closure now yields
+/// `None`" case (a presence flip rebuilds the `switch` arm instead, so the
+/// reactive `.data()` closure never actually observes `None`).
+const EMPTY_ICON_DATA: IconData = IconData {
+    view_box: (24, 24),
+    paths: &[],
+    fill_rule: runtime_core::FillRule::NonZero,
+    filled: false,
+};
+
+/// Finishes the structure-`switch` path: forwards the test id (when the
+/// `robot` feature is on) and coerces to `Element`. Split out so the
+/// `switch` early-return and the static path share the same test-id wiring
+/// shape. The `switch` root is a synthetic node, so the test id rides on a
+/// thin wrapper view only when actually requested.
+fn finalize_switch(switch_el: Element, _props: &ButtonProps) -> Element {
+    #[cfg(feature = "robot")]
+    if let Some(tid) = _props.test_id {
+        // The pressable is rebuilt inside the switch arms, so a robot test id
+        // can't live on it across rebuilds. Attach it to a transparent wrapper
+        // `view` around the switch so location stays stable.
+        return runtime_core::view(vec![switch_el])
+            .test_id(tid)
+            .into_element();
+    }
+    switch_el
 }
 
 #[cfg(test)]
@@ -346,7 +538,7 @@ mod tests {
         theme();
         let props = ButtonProps {
             label: Reactive::Static("Save".into()),
-            tone: Reactive::Static(ToneRef::default()),     // Primary
+            tone: Reactive::Static(ToneRef::default()), // Primary
             variant: Reactive::Static(VariantRef::default()), // Filled
             ..Default::default()
         };
@@ -394,7 +586,9 @@ mod tests {
 
     fn pressable_parts(el: Element) -> (Vec<Element>, StyleApplication) {
         match el {
-            Element::Pressable { children, style, .. } => {
+            Element::Pressable {
+                children, style, ..
+            } => {
                 let app = match style.expect("Button always attaches a style") {
                     StyleSource::Static(a) => a,
                     _ => panic!("Button uses a static style source"),
@@ -499,7 +693,10 @@ mod tests {
             "a non-block button sizes to content (centered, not stretched to the parent cross axis)"
         );
 
-        let block = ButtonProps { block: Reactive::Static(true), ..Default::default() };
+        let block = ButtonProps {
+            block: Reactive::Static(true),
+            ..Default::default()
+        };
         let (_, app) = pressable_parts(Button(&block));
         assert_eq!(
             resolve_style(&app).align_self,
@@ -513,7 +710,10 @@ mod tests {
     #[test]
     fn disabled_button_dims_and_blocks_press() {
         theme();
-        let mk = || ButtonProps { disabled: Reactive::Static(true), ..Default::default() };
+        let mk = || ButtonProps {
+            disabled: Reactive::Static(true),
+            ..Default::default()
+        };
         let (_, app) = pressable_parts(Button(&mk()));
         assert_eq!(
             resolve_style(&app).opacity.as_ref().map(|t| t.resolve()),
@@ -590,17 +790,15 @@ mod tests {
             "resting button is fully opaque so the hover/press dim has a value to animate back to"
         );
 
-        let hovered = resolve_style(
-            &StyleApplication::new(sheet.clone()).with("__state_hovered", "on"),
-        );
+        let hovered =
+            resolve_style(&StyleApplication::new(sheet.clone()).with("__state_hovered", "on"));
         assert_eq!(
             hovered.opacity.as_ref().map(|t| t.resolve()),
             Some(0.92),
             "hover dims the button"
         );
 
-        let pressed =
-            resolve_style(&StyleApplication::new(sheet).with("__state_pressed", "on"));
+        let pressed = resolve_style(&StyleApplication::new(sheet).with("__state_pressed", "on"));
         assert_eq!(
             pressed.opacity.as_ref().map(|t| t.resolve()),
             Some(0.85),

@@ -54,3 +54,19 @@ pub(crate) fn update_src(b: &WebBackend, node: &Node, src: &str) {
         let _ = el.set_attribute("src", &resolved);
     }
 }
+
+/// Swap the `<img alt>` in place when a reactive `alt` source fires.
+/// `None` removes the attribute. Mirrors `create`'s alt handling — the
+/// alt attribute IS the accessibility text for an image on web.
+pub(crate) fn update_alt(node: &Node, alt: Option<&str>) {
+    if let Ok(el) = node.clone().dyn_into::<web_sys::Element>() {
+        match alt {
+            Some(a) => {
+                let _ = el.set_attribute("alt", a);
+            }
+            None => {
+                let _ = el.remove_attribute("alt");
+            }
+        }
+    }
+}

@@ -249,11 +249,39 @@ impl SceneModel {
                     *s = src.clone();
                 }
             }
+            Command::UpdateLinkUrl { node, url } => {
+                if let Some(Command::CreateLink { url: u, .. }) =
+                    self.node_create.get_mut(node)
+                {
+                    *u = url.clone();
+                }
+            }
+            Command::UpdateImageAlt { node, alt } => {
+                if let Some(Command::CreateImage { alt: a, .. }) =
+                    self.node_create.get_mut(node)
+                {
+                    *a = alt.clone();
+                }
+            }
+            Command::UpdateActivityIndicatorSize { node, size } => {
+                if let Some(Command::CreateActivityIndicator { size: s, .. }) =
+                    self.node_create.get_mut(node)
+                {
+                    *s = *size;
+                }
+            }
             Command::UpdateIconColor { node, color } => {
                 if let Some(Command::CreateIcon { color: c, .. }) =
                     self.node_create.get_mut(node)
                 {
                     *c = Some(color.clone());
+                }
+            }
+            Command::UpdateIconData { node, data } => {
+                if let Some(Command::CreateIcon { data: d, .. }) =
+                    self.node_create.get_mut(node)
+                {
+                    *d = data.clone();
                 }
             }
             Command::UpdateIconStroke { node, progress } => {
@@ -1286,5 +1314,40 @@ mod tests {
             .filter(|c| matches!(c, Command::RegisterRawCss { .. }))
             .count();
         assert_eq!(css_count, 1, "duplicate raw CSS must dedupe in the snapshot");
+    }
+
+    /// Reactive `Update*` variants must fold their live value into the stored
+    /// `Create*` so a late-joining client's snapshot renders the CURRENT state,
+    /// not the create-time value. Covers the secure/placeholder folds that
+    /// shipped with reactive-by-default props (the live password show/hide /
+    /// placeholder-edit case).
+    #[test]
+    fn reactive_text_input_updates_fold_into_snapshot_create() {
+        let mut model = SceneModel::new();
+        let node = wire::NodeId(1);
+        model.apply(&Command::CreateTextInput {
+            id: node,
+            initial_value: String::new(),
+            placeholder: None,
+            on_change: wire::HandlerId(0),
+            secure: false,
+            a11y: Default::default(),
+        });
+        model.apply(&Command::UpdateTextInputSecure { node, secure: true });
+        model.apply(&Command::UpdateTextInputPlaceholder {
+            node,
+            placeholder: Some("Password".into()),
+        });
+        match model.node_create.get(&node) {
+            Some(Command::CreateTextInput { secure, placeholder, .. }) => {
+                assert!(*secure, "UpdateTextInputSecure must fold into the snapshot Create");
+                assert_eq!(
+                    placeholder.as_deref(),
+                    Some("Password"),
+                    "UpdateTextInputPlaceholder must fold into the snapshot Create",
+                );
+            }
+            other => panic!("expected a folded CreateTextInput, got {other:?}"),
+        }
     }
 }

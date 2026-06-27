@@ -127,6 +127,12 @@ pub enum Event {
     UpdateText { node: NodeId, content: String },
     UpdateButtonLabel { node: NodeId, label: String },
     UpdateImageSrc { node: NodeId, src: String },
+    UpdateImageAlt { node: NodeId, alt: Option<String> },
+    UpdateLinkUrl { node: NodeId, url: String },
+    UpdateActivityIndicatorSize {
+        node: NodeId,
+        size: primitives::activity_indicator::ActivityIndicatorSize,
+    },
     UpdateIconColor { node: NodeId, color: Color },
     UpdateIconData { node: NodeId, paths: Vec<String> },
     UpdateIconStroke { node: NodeId, progress: f32 },
@@ -699,6 +705,25 @@ impl Backend for MockBackend {
 
     fn update_image_src(&mut self, node: &Self::Node, src: &str) {
         self.core.record(Event::UpdateImageSrc { node: *node, src: src.to_string() });
+    }
+
+    fn update_image_alt(&mut self, node: &Self::Node, alt: Option<&str>) {
+        self.core.record(Event::UpdateImageAlt {
+            node: *node,
+            alt: alt.map(|s| s.to_string()),
+        });
+    }
+
+    fn update_link_url(&mut self, node: &Self::Node, url: &str) {
+        self.core.record(Event::UpdateLinkUrl { node: *node, url: url.to_string() });
+    }
+
+    fn update_activity_indicator_size(
+        &mut self,
+        node: &Self::Node,
+        size: primitives::activity_indicator::ActivityIndicatorSize,
+    ) {
+        self.core.record(Event::UpdateActivityIndicatorSize { node: *node, size });
     }
 
     fn create_icon(
