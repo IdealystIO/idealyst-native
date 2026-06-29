@@ -80,6 +80,32 @@ pub(crate) fn create(
     input.unchecked_into::<Node>()
 }
 
+/// Install the author `on_focus` notifier on an existing input/textarea `node`:
+/// DOM `focus` → `handler(true)`, `blur` → `handler(false)`. Backs
+/// `Backend::set_text_input_focus_handler`. The closures are stashed under the
+/// node id so they live as long as the node. Used by the idea-ui `Field` to
+/// light its bordered shell's ring for an adorned (borderless-input) layout —
+/// the bare `<input>`'s own `:focus` can't style the wrapping shell `<div>`.
+pub(crate) fn set_focus_handler(b: &mut WebBackend, node: &Node, handler: Rc<dyn Fn(bool)>) {
+    let el: web_sys::HtmlElement = match node.clone().dyn_into() {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let id = b.node_id(node);
+    let on_focus = handler.clone();
+    let focus_cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
+        on_focus(true);
+    });
+    let _ = el.add_event_listener_with_callback("focus", focus_cb.as_ref().unchecked_ref());
+    b.state_listeners.entry(id).or_default().push(focus_cb);
+
+    let blur_cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
+        handler(false);
+    });
+    let _ = el.add_event_listener_with_callback("blur", blur_cb.as_ref().unchecked_ref());
+    b.state_listeners.entry(id).or_default().push(blur_cb);
+}
+
 /// Wire a DOM `keydown` listener that calls the Rust `KeyDownHandler`
 /// with the same `KeyEvent` shape used by every other backend, and
 /// calls `event.preventDefault()` when the handler returns

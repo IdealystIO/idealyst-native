@@ -22,7 +22,7 @@ use runtime_core::scheduling::{
 };
 use runtime_core::{
     after_ms_detached, after_ms_scoped, animated, is_reactive_busy, on_cleanup, raf_loop_scoped,
-    timeline, Effect, Signal,
+    timeline, watch, Signal,
 };
 
 // =============================================================================
@@ -247,7 +247,7 @@ fn after_ms_scoped_cancels_on_effect_drop() {
     let fired = Rc::new(Cell::new(false));
     let fired_for_effect = fired.clone();
     {
-        let _e = Effect::new(move || {
+        let _e = watch(move || {
             let f = fired_for_effect.clone();
             after_ms_scoped(1000, move || f.set(true));
         });
@@ -276,7 +276,7 @@ fn after_ms_scoped_still_fires_while_scope_alive() {
 
     let fired = Rc::new(Cell::new(false));
     let fired_for_effect = fired.clone();
-    let _e = Effect::new(move || {
+    let _e = watch(move || {
         let f = fired_for_effect.clone();
         after_ms_scoped(1000, move || f.set(true));
     });
@@ -296,7 +296,7 @@ fn raf_loop_scoped_stops_ticking_on_effect_drop() {
     let ticks = Rc::new(Cell::new(0u32));
     let ticks_for_effect = ticks.clone();
     {
-        let _e = Effect::new(move || {
+        let _e = watch(move || {
             let t = ticks_for_effect.clone();
             raf_loop_scoped(move || {
                 t.set(t.get() + 1);
@@ -340,7 +340,7 @@ fn timeline_tasks_cancel_on_effect_drop() {
     let av_b = animated!(0.0_f32);
     let av_c = animated!(0.0_f32);
     {
-        let _e = Effect::new(move || {
+        let _e = watch(move || {
             timeline! {
                 100 => {
                     av_a: TweenTo::new(1.0, Duration::from_millis(50)).ease_out(),
@@ -367,7 +367,7 @@ fn timeline_tasks_fire_while_scope_alive() {
     reset_state();
 
     let av = animated!(0.0_f32);
-    let _e = Effect::new(move || {
+    let _e = watch(move || {
         timeline! {
             100 => {
                 av: TweenTo::new(1.0, Duration::from_millis(50)).ease_out(),
@@ -442,12 +442,12 @@ fn nested_effect_inherits_scope_anchor() {
     let inner_fired = Rc::new(Cell::new(false));
     let outer_fired_for_outer = outer_fired.clone();
     let inner_fired_for_outer = inner_fired.clone();
-    let _outer = Effect::new(move || {
+    let _outer = watch(move || {
         let outer_fired = outer_fired_for_outer.clone();
         after_ms_scoped(500, move || outer_fired.set(true));
 
         let inner_fired = inner_fired_for_outer.clone();
-        let _inner = Effect::new(move || {
+        let _inner = watch(move || {
             let f = inner_fired.clone();
             after_ms_scoped(500, move || f.set(true));
         });
@@ -486,7 +486,7 @@ fn on_cleanup_still_works_alongside_scoped_helpers() {
     let trace: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
     let trace_for_effect = trace.clone();
     {
-        let _e = Effect::new(move || {
+        let _e = watch(move || {
             let t = trace_for_effect.clone();
             on_cleanup(move || t.borrow_mut().push("user-cleanup"));
             after_ms_scoped(500, || {});
@@ -514,7 +514,7 @@ fn explicit_cancel_inside_scope_is_idempotent_with_scope_drop() {
     let fired = Rc::new(Cell::new(false));
     let fired_for_effect = fired.clone();
     {
-        let _e = Effect::new(move || {
+        let _e = watch(move || {
             let f = fired_for_effect.clone();
             after_ms_scoped(1000, move || f.set(true));
         });
@@ -551,7 +551,7 @@ fn raf_loop_scoped_inside_after_ms_scoped_keeps_running() {
     let ticks = Rc::new(Cell::new(0u32));
     let ticks_for_effect = ticks.clone();
     {
-        let _e = Effect::new(move || {
+        let _e = watch(move || {
             let t = ticks_for_effect.clone();
             after_ms_scoped(500, move || {
                 raf_loop_scoped(move || {
@@ -613,7 +613,7 @@ fn raf_loop_scoped_does_not_fire_after_scope_drop_even_if_browser_already_dispat
 
     // A screen-scoped signal the per-frame body reads — the notetaker
     // shape (`state.get()` every frame inside the reactive context).
-    let effect = Effect::new(move || {
+    let effect = watch(move || {
         let signal = Signal::new(0u32);
         let ran = ran_for_effect.clone();
         raf_loop_scoped(move || {
@@ -655,7 +655,7 @@ fn after_ms_scoped_does_not_fire_after_scope_drop_even_if_browser_already_dispat
     let ran_after_drop = Rc::new(Cell::new(false));
     let ran_for_effect = ran_after_drop.clone();
 
-    let effect = Effect::new(move || {
+    let effect = watch(move || {
         let signal = Signal::new(0u32);
         let ran = ran_for_effect.clone();
         after_ms_scoped(1000, move || {
@@ -690,7 +690,7 @@ fn raf_loop_scoped_skips_a_frame_while_reactive_arena_is_busy() {
     let ran_count = Rc::new(Cell::new(0u32));
     let ran_for_effect = ran_count.clone();
 
-    let _effect = Effect::new(move || {
+    let _effect = watch(move || {
         let ran = ran_for_effect.clone();
         raf_loop_scoped(move || {
             // Must never observe a busy arena: if the guard works, the

@@ -490,6 +490,12 @@ pub(super) fn build_inner<B: Backend + 'static>(
     // The function-pointer call is monomorphic (`B` is fixed for any
     // given build), so this is a single direct call after match
     // selection — no virtual dispatch overhead.
+    // Capture editable-text-ness before `node` is moved into the dispatcher, so
+    // the post-dispatch robot block can wire a `focus`/`blur` action (the node
+    // exists only after dispatch). Lets the robot drive real input focus.
+    #[cfg(feature = "robot")]
+    let robot_is_text_input = matches!(&node, Element::TextInput { .. });
+
     type Dispatcher<B> = fn(&Rc<RefCell<B>>, Element) -> <B as Backend>::Node;
     let dispatcher: Dispatcher<B> = match &node {
         Element::Text { .. } => dispatch_text::<B>,
@@ -559,6 +565,32 @@ pub(super) fn build_inner<B: Backend + 'static>(
             Rc::new(move || backend_for_abs.borrow().absolute_frame(&node_for_abs)),
             Rc::new(move || backend_for_dev.borrow().device_frame(&node_for_dev)),
         );
+        // Native introspection: read the platform's resolved render state on
+        // demand (parity testing). Same capture pattern as the frame closures.
+        let node_for_introspect = result.clone();
+        let backend_for_introspect = backend.clone();
+        crate::robot::attach_introspect_action(
+            id,
+            Rc::new(move || backend_for_introspect.borrow().introspect_native(&node_for_introspect)),
+        );
+        // Record this node as a primitive-root boundary so a backend's native
+        // introspection walk knows where this element's subtree ends and a
+        // child element's begins (no-op on backends that don't need it).
+        backend.borrow().note_introspection_root(&result);
+        // Editable text inputs get `focus`/`blur` actions so the robot can drive
+        // real keyboard focus (a user-click analogue) — used by tests and the
+        // inspector. The handle is made on demand from the backend node.
+        if robot_is_text_input {
+            let node_focus = result.clone();
+            let node_blur = result.clone();
+            let backend_focus = backend.clone();
+            let backend_blur = backend.clone();
+            crate::robot::attach_focus_actions(
+                id,
+                Rc::new(move || backend_focus.borrow().make_text_input_handle(&node_focus).focus()),
+                Rc::new(move || backend_blur.borrow().make_text_input_handle(&node_blur).blur()),
+            );
+        }
     }
 
     // Robot: pop parent stack now that children are built.
@@ -640,16 +672,16 @@ fn dispatch_icon<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) 
 
 #[inline(never)]
 fn dispatch_text_input<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
-    let Element::TextInput { value, on_change, on_key_down, on_blur, placeholder, secure, style, ref_fill, accessibility, .. } = node
+    let Element::TextInput { value, on_change, on_key_down, on_blur, on_focus, placeholder, secure, style, ref_fill, accessibility, .. } = node
     else { unreachable!() };
-    text_input::build_text_input(backend, value, on_change, on_key_down, on_blur, placeholder, secure, style, ref_fill, accessibility)
+    text_input::build_text_input(backend, value, on_change, on_key_down, on_blur, on_focus, placeholder, secure, style, ref_fill, accessibility)
 }
 
 #[inline(never)]
 fn dispatch_text_area<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
-    let Element::TextArea { value, on_change, on_key_down, placeholder, wrap, style, ref_fill, accessibility, .. } = node
+    let Element::TextArea { value, on_change, on_key_down, placeholder, wrap, min_rows, max_rows, style, ref_fill, accessibility, .. } = node
     else { unreachable!() };
-    text_input::build_text_area(backend, value, on_change, on_key_down, placeholder, wrap, style, ref_fill, accessibility)
+    text_input::build_text_area(backend, value, on_change, on_key_down, placeholder, wrap, min_rows, max_rows, style, ref_fill, accessibility)
 }
 
 #[inline(never)]

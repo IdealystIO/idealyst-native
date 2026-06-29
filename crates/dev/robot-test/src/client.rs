@@ -115,3 +115,44 @@ pub fn discover(project_dir: Option<&Path>, apps_dir: &Path) -> Option<SocketAdd
     }
     fallback
 }
+
+/// Every **live** app bridge registered for `project_dir` (or every live app
+/// when `project_dir` is `None`). Unlike [`discover`], which returns one, this
+/// returns all of them — so a caller running two platforms of the same project
+/// can tell the two apps apart by which registration appeared after each
+/// launch (the registration file carries no platform field). Stale entries
+/// (their port no longer accepts a connection) are skipped.
+pub fn discover_all(project_dir: Option<&Path>, apps_dir: &Path) -> Vec<SocketAddr> {
+    let want = project_dir
+        .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()));
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(apps_dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        if entry.path().extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(reg) = std::fs::read_to_string(entry.path())
+            .ok()
+            .and_then(|s| serde_json::from_str::<AppReg>(&s).ok())
+        else {
+            continue;
+        };
+        let Ok(addr) = format!("127.0.0.1:{}", reg.port).parse::<SocketAddr>() else {
+            continue;
+        };
+        if let Some(want) = &want {
+            let reg_root = std::fs::canonicalize(&reg.project_root)
+                .unwrap_or_else(|_| PathBuf::from(&reg.project_root));
+            if &reg_root != want {
+                continue;
+            }
+        }
+        if TcpStream::connect_timeout(&addr, Duration::from_millis(400)).is_err() {
+            continue; // stale registration
+        }
+        out.push(addr);
+    }
+    out
+}

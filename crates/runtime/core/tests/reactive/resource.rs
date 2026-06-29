@@ -123,7 +123,7 @@ fn resource_data_reads_are_tracked() {
     let observed: Rc<Cell<Option<i32>>> = Rc::new(Cell::new(None));
     let obs = observed.clone();
 
-    let _e = runtime_core::Effect::new(move || {
+    let _e = runtime_core::watch(move || {
         obs.set(r.data());
     });
 

@@ -61,6 +61,8 @@ pub struct Group {
 
 // Get started
 pub const OVERVIEW_ROUTE: Route<()> = Route::<()>::new("overview", "/overview");
+/// Every component on one page — the cross-platform render-parity fixture.
+pub const ALL_ROUTE: Route<()> = Route::<()>::new("all", "/all");
 // Foundations
 pub const COLORS_ROUTE: Route<()> = Route::<()>::new("colors", "/foundations/color");
 pub const INTENTS_ROUTE: Route<()> = Route::<()>::new("intents", "/foundations/intents");
@@ -138,6 +140,17 @@ pub const CATALOG: &[Group] = &[
                 desc: "The idea-ui component library — a token-driven UI kit where every \
                     component composes from a shared, swappable design vocabulary.",
                 body: pages::overview::overview,
+                code: "",
+            },
+            Entry {
+                route: &ALL_ROUTE,
+                name: "All Components",
+                status: Detailed,
+                token: "render-parity fixture",
+                desc: "Every component rendered on one page, each section anchored with a \
+                    stable test_id. The cross-platform render-parity fixture — capture it on \
+                    web and macОS and diff (see `tests/parity.rs`).",
+                body: pages::all::all,
                 code: "",
             },
         ],

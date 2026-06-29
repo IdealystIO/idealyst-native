@@ -146,6 +146,11 @@ pub enum Event {
     // --- Style ---
     ApplyStyle { node: NodeId },
     ApplyStyledStates { node: NodeId, overlays: usize },
+    /// `attach_states(node, setter)` — the framework handed the backend a
+    /// state-flip setter (the native hover/press/focus wiring). Recorded so a
+    /// test can assert a state-bearing style actually wired the state machine
+    /// (the static path used to skip this on event-driven backends).
+    AttachStates { node: NodeId },
     RegisterStylesheet { rules: usize },
     UnregisterStylesheet { rules: usize },
     OnNodeUnstyled { node: NodeId },
@@ -161,6 +166,7 @@ pub enum Event {
     ReleaseTabNavigator { node: NodeId },
     ReleaseDrawerNavigator { node: NodeId },
     ReleasePortal { node: NodeId },
+    SetPortalHidden { node: NodeId, hidden: bool },
     ReleaseExternal { node: NodeId },
 
     // --- Assets / typefaces ---
@@ -333,6 +339,11 @@ pub struct MockBackendCore {
     /// Captured virtualizer callbacks keyed by the virtualizer node,
     /// driven out-of-band by [`TestRuntime::sync_virtualizers`].
     pub(crate) virtualizers: Rc<RefCell<std::collections::HashMap<NodeId, StoredVirtualizer>>>,
+    /// Captured `attach_states` setters keyed by node id. Lets tests call
+    /// [`MockBackend::flip_state`] to synthesize a hover/press/focus flip the
+    /// way a native backend's event listeners would, and observe the re-apply.
+    pub(crate) state_setters:
+        Rc<RefCell<std::collections::HashMap<NodeId, Rc<dyn Fn(runtime_core::StateBits, bool)>>>>,
 }
 
 impl Default for MockBackendCore {
@@ -344,6 +355,7 @@ impl Default for MockBackendCore {
             blur_handlers: Rc::new(RefCell::new(std::collections::HashMap::new())),
             scroll_handlers: Rc::new(RefCell::new(std::collections::HashMap::new())),
             virtualizers: Rc::new(RefCell::new(std::collections::HashMap::new())),
+            state_setters: Rc::new(RefCell::new(std::collections::HashMap::new())),
         }
     }
 }
@@ -475,6 +487,21 @@ impl MockBackend {
     /// Count events matching a predicate.
     pub fn count_matching(&self, pred: impl Fn(&Event) -> bool) -> usize {
         self.core.events.borrow().iter().filter(|e| pred(e)).count()
+    }
+
+    /// The state-flip setter captured in [`Backend::attach_states`] for `node`,
+    /// or `None` if none was attached (the bug this guards: a state-bearing
+    /// style that never wired the state machine). Returns the `Rc` so the caller
+    /// can invoke it AFTER dropping any backend borrow — a real backend fires
+    /// the setter from an NSTrackingArea / DOM listener with nothing borrowed,
+    /// and the flip drives a synchronous reactive cascade that re-borrows the
+    /// backend (`Signal::update` → style effect → `apply_style`). Invoking it
+    /// while holding `backend_mut()` would self-deadlock the RefCell.
+    pub fn state_setter(
+        &self,
+        node: NodeId,
+    ) -> Option<Rc<dyn Fn(runtime_core::StateBits, bool)>> {
+        self.core.state_setters.borrow().get(&node).cloned()
     }
 }
 
@@ -804,6 +831,8 @@ impl Backend for MockBackend {
         _initial_value: &str,
         placeholder: Option<&str>,
         wrap: bool,
+        _min_rows: Option<u32>,
+        _max_rows: Option<u32>,
         _on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
         _a11y: &runtime_core::accessibility::AccessibilityProps,
@@ -972,6 +1001,14 @@ impl Backend for MockBackend {
         false
     }
 
+    fn attach_states(&mut self, node: &Self::Node, setter: Rc<dyn Fn(runtime_core::StateBits, bool)>) {
+        // Capture the setter so `flip_state` can drive hover/press/focus the
+        // way a native backend's event listeners would, and record the call so
+        // a test can assert the state machine was wired at all.
+        self.core.record(Event::AttachStates { node: *node });
+        self.core.state_setters.borrow_mut().insert(*node, setter);
+    }
+
     fn register_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
         self.core.record(Event::RegisterStylesheet { rules: rules.len() });
     }
@@ -1034,6 +1071,30 @@ impl Backend for MockBackend {
         Some(ViewportRect::default())
     }
 
+    // Canned native introspection so the registry-closure → backend path is
+    // testable without a real platform. Encodes the queried `NodeId` into the
+    // returned node (class `mock`, `text` = the id) so a test can assert the
+    // closure routed to the right element + the value flowed back through
+    // `Robot::introspect_native` and serialized correctly.
+    fn supports_native_introspection(&self) -> bool {
+        true
+    }
+
+    fn introspect_native(
+        &self,
+        node: &Self::Node,
+    ) -> Option<runtime_core::introspect::NativeNode> {
+        use runtime_core::introspect::{keys, NativeNode, NativeRect, NativeValue};
+        let mut n = NativeNode::leaf(
+            "mock",
+            NativeRect { x: 1.0, y: 2.0, width: 3.0, height: 4.0 },
+        );
+        n.role = Some("view".into());
+        n.set(keys::TEXT, Some(NativeValue::Text(format!("node-{}", node.0))));
+        n.set(keys::BACKGROUND_COLOR, Some(NativeValue::Color([1.0, 0.0, 0.0, 1.0])));
+        Some(n)
+    }
+
     fn finish(&mut self, root: Self::Node) {
         self.core.record(Event::Finish { root });
     }
@@ -1065,6 +1126,10 @@ impl Backend for MockBackend {
 
     fn release_portal(&mut self, node: &Self::Node) {
         self.core.record(Event::ReleasePortal { node: *node });
+    }
+
+    fn set_portal_hidden(&mut self, node: &Self::Node, hidden: bool) {
+        self.core.record(Event::SetPortalHidden { node: *node, hidden });
     }
 
     fn create_external(

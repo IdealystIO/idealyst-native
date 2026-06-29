@@ -18,7 +18,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use runtime_core::{memo, Effect};
+use runtime_core::{memo, watch, Subscription};
 
 /// A shared counter readable from outside the reactive closure.
 #[derive(Clone, Default)]
@@ -45,21 +45,21 @@ impl FireCounter {
 }
 
 /// Wrap an effect body in a fire counter. Returns the counter (shared
-/// reference) and the `Effect` handle. The handle's lifetime should be
-/// kept around for the duration of the test — usually with
+/// reference) and the `Subscription` handle. The handle's lifetime should
+/// be kept around for the duration of the test — usually with
 /// `let (_count, _e) = counted_effect(...);` — so the effect isn't
 /// dropped prematurely.
-pub fn counted_effect<F>(body: F) -> (FireCounter, Effect)
+pub fn counted_effect<F>(body: F) -> (FireCounter, Subscription)
 where
     F: Fn() + 'static,
 {
     let counter = FireCounter::new();
     let c = counter.clone();
-    let effect = Effect::new(move || {
+    let sub = watch(move || {
         c.bump();
         body();
     });
-    (counter, effect)
+    (counter, sub)
 }
 
 /// Wrap a memo's compute closure in a fire counter. Returns the

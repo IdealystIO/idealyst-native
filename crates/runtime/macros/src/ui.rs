@@ -737,7 +737,8 @@ fn emit_component(
     let is_primitive = canonical.is_some();
     let supports_disabled = canonical == Some("button");
 
-    let (style_prop, disabled_prop, a11y_props, other_props): (
+    let (style_prop, disabled_prop, test_id_prop, a11y_props, other_props): (
+        Vec<&Prop>,
         Vec<&Prop>,
         Vec<&Prop>,
         Vec<&Prop>,
@@ -745,6 +746,7 @@ fn emit_component(
     ) = if is_primitive {
         let mut style = None;
         let mut disabled = None;
+        let mut test_id = None;
         let mut a11y = Vec::new();
         let mut rest = Vec::with_capacity(props.len());
         for p in props {
@@ -752,6 +754,13 @@ fn emit_component(
                 style = Some(p);
             } else if supports_disabled && p.name == "disabled" && disabled.is_none() {
                 disabled = Some(p);
+            } else if p.name == "test_id" && test_id.is_none() {
+                // Robot/automation anchor. Maps to the always-present
+                // `Element::with_test_id` (not the robot-gated builder
+                // `.test_id`), so it works on every primitive and never depends
+                // on the `robot` feature being on at macro-expansion time.
+                // Without this, `view(test_id = …)` silently dropped the id.
+                test_id = Some(p);
             } else if is_a11y_attr(&p.name.to_string()) {
                 // `accessibility`, `a11y_label`, `a11y_role`, … attach as
                 // post-fix `Bound` setter calls, like `style`/`disabled`.
@@ -763,11 +772,12 @@ fn emit_component(
         (
             style.into_iter().collect(),
             disabled.into_iter().collect(),
+            test_id.into_iter().collect(),
             a11y,
             rest,
         )
     } else {
-        (Vec::new(), Vec::new(), Vec::new(), props.iter().collect())
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), props.iter().collect())
     };
 
     let other_props: Vec<Prop> = other_props
@@ -816,18 +826,28 @@ fn emit_component(
         with_style
     };
 
+    // Robot/automation `test_id`. The `Bound::test_id` builder is always
+    // present (it just stores the id; only the registry that reads it is
+    // `robot`-gated), so emitting it never depends on the feature.
+    let with_test_id = if let Some(p) = test_id_prop.first() {
+        let v = &p.value;
+        quote! { (#with_disabled).test_id(#v) }
+    } else {
+        with_disabled
+    };
+
     // Chain the accessibility setters. Each recognized attr name
     // (`a11y_label`, `a11y_role`, `accessibility`, …) maps 1:1 to a
     // `Bound` setter of the same name, so we emit `.<name>(<value>)`.
     let with_a11y = if a11y_props.is_empty() {
-        with_disabled
+        with_test_id
     } else {
         let setters = a11y_props.iter().map(|p| {
             let name = &p.name;
             let v = &p.value;
             quote! { .#name(#v) }
         });
-        quote! { (#with_disabled) #(#setters)* }
+        quote! { (#with_test_id) #(#setters)* }
     };
 
     // Append any trailing `.method(args)` calls verbatim. The

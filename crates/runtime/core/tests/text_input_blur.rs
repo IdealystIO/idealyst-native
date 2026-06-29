@@ -10,11 +10,10 @@
 //! aren't reachable from a host test — but they all consult exactly this
 //! handler, so proving it threads end-to-end pins the contract they share.
 
-// Include only the harness pieces we need, NOT the whole `common` module —
-// `common/counted.rs` currently fails to compile against the now-`pub(crate)`
-// `Effect::new` (a separate, pre-existing harness breakage), which would
-// otherwise block this file. `mock_backend` is self-contained and `runtime`
-// only needs `super::mock_backend`, so both resolve as crate-root siblings.
+// Include only the harness pieces we need (mock backend + TestRuntime),
+// NOT the whole `common` umbrella — this binary touches no other module.
+// `mock_backend` is self-contained and `runtime` only needs
+// `super::mock_backend`, so both resolve as crate-root siblings.
 #[path = "common/mock_backend.rs"]
 mod mock_backend;
 #[path = "common/runtime.rs"]

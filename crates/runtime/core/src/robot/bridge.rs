@@ -238,8 +238,28 @@ fn bridge_registration_json(port: u16, identity: &AppIdentity) -> String {
         .unwrap_or_else(|| "null".into());
     let name = serde_json::to_string(&identity.name).unwrap_or_else(|_| "\"app\"".into());
     format!(
-        "{{\"port\":{port},\"pid\":{pid},\"name\":{name},\"bundle_id\":{bundle},\"project_root\":{root},\"proto\":1}}",
+        "{{\"port\":{port},\"pid\":{pid},\"name\":{name},\"bundle_id\":{bundle},\"project_root\":{root},\"platform\":\"{plat}\",\"proto\":1}}",
+        plat = platform_label(),
     )
+}
+
+/// Lowercase platform tag for the registration file, so the MCP server can
+/// tell two platforms of the same app apart (parity work targets each). Native
+/// self-hosted bridges write this directly; a web app's relay learns it from
+/// the `hello` frame and patches the file.
+#[cfg(not(target_arch = "wasm32"))]
+fn platform_label() -> &'static str {
+    use crate::Platform::*;
+    match crate::platform() {
+        Web => "web",
+        Ios => "ios",
+        Android => "android",
+        MacOs => "macos",
+        TvOs => "tvos",
+        AndroidTv => "androidtv",
+        Roku => "roku",
+        _ => "unknown",
+    }
 }
 
 /// `~/.idealyst/apps/<name>-<pid>.json` — per-process registration the
@@ -1094,6 +1114,24 @@ fn dispatch(robot: &Robot, cmd: &str, args: &serde_json::Value) -> Result<String
                     "{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}",
                     r.x, r.y, r.width, r.height
                 )),
+                None => Ok("null".into()),
+            }
+        }
+        // Platform-native render introspection — the cross-platform parity
+        // surface. Reads the *platform's* resolved geometry + visual props
+        // for one element (and the native sub-objects composing it), not the
+        // styles the author asked for. Available in any robot build (so
+        // `idealyst dev` can use it with no extra flags); only the phase-timer
+        // cost attribution inside each backend stays behind `debug-stats`. An
+        // external harness captures this from a web app and a macOS app and
+        // diffs the two. `Ok(None)` (→ `null`) means the backend has no native
+        // data for the element yet (e.g. not laid out, or a backend that
+        // doesn't implement the read — `supports_native_introspection`).
+        "introspect_native" => {
+            let el = resolve_element(args)?;
+            match robot.introspect_native(&el).map_err(|e| e.to_string())? {
+                Some(node) => serde_json::to_string(&node)
+                    .map_err(|e| format!("failed to serialize native tree: {e}")),
                 None => Ok("null".into()),
             }
         }

@@ -2365,6 +2365,7 @@ dependencies = [
 name = "dev-client"
 version = "0.0.1"
 dependencies = [
+ "mock-backend",
  "runtime-core",
  "serde_json",
  "wire",
@@ -4600,7 +4601,9 @@ dependencies = [
  "icons-lucide",
  "idea-ui",
  "lol_alloc",
+ "robot-test",
  "runtime-core",
+ "serde_json",
  "table",
  "wasm-bindgen",
  "web-sys",
@@ -5445,6 +5448,7 @@ dependencies = [
  "libc",
  "lint",
  "mcp-catalog",
+ "native-parity",
  "notify-debouncer-mini",
  "rmcp",
  "runtime-core",
@@ -5767,6 +5771,14 @@ dependencies = [
  "spirv",
  "thiserror 2.0.18",
  "unicode-ident",
+]
+
+[[package]]
+name = "native-parity"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -7681,6 +7693,7 @@ name = "robot-test"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "native-parity",
  "robot-test-macros",
  "serde",
  "serde_json",

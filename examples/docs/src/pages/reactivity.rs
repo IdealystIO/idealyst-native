@@ -415,7 +415,7 @@ docs! {
 
             let user_id = signal!(42u32);
 
-            let user = resource(user_id, |id| async move {
+            let user = resource(user_id, |id, _cancel| async move {
                 fetch_user(id).await
             });
 

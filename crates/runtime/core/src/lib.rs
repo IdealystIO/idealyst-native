@@ -7,6 +7,7 @@ mod backend;
 pub mod breakpoint;
 pub mod container_query;
 pub mod color;
+pub mod introspect;
 mod batch;
 mod builder;
 mod derive;
@@ -310,7 +311,7 @@ pub use scheduling::{
 pub use logging::{install_logger, is_logger_installed, log, LogLevel, Logger, StderrLogger};
 
 pub use style::{
-    derived, install_tokens, pregenerate, reset_for_ssg_render, resolve as resolve_style,
+    cached_stylesheet, derived, install_tokens, pregenerate, reset_for_ssg_render, resolve as resolve_style,
     set_app_background, set_app_key_handler, set_scrollbar_theme, take_pending_token_updates,
     update_tokens,
     AlignContent, AlignItems, AlignSelf, Color, Cursor, Derive, Easing, FlexDirection, FlexWrap,

@@ -67,6 +67,36 @@ pub(super) fn build<B: Backend + 'static>(
     let my_base = current_nav_base();
     control.set_base(my_base.clone());
 
+    // Reactive nav-state mirror, created BEFORE `mount_screen` so the latter
+    // can capture `active_route` and `provide` it (as `ScreenNav`) into each
+    // screen's scope — that's how a screen's portals learn to hide themselves
+    // when their screen isn't the active route (see `walker::portal`).
+    //
+    // `active_path` is the FULL hierarchical path (base + this navigator's
+    // initial relative path); root base "" leaves the configured initial path
+    // unchanged.
+    //
+    // These signals are created inside a DEDICATED scope owned by the
+    // `control` (an `Rc` that lives as long as the navigator), NOT the
+    // ambient build scope. A nested navigator is frequently built inside a
+    // transient dispatch/microtask scope (e.g. a stack hung under a drawer
+    // screen, reached via a sidebar `on_select`); if `nav_state` were owned
+    // by that scope its signals would be freed when it drops, and a later
+    // `active_route.set(...)` from `mount_internal` / `on_popstate` would hit
+    // a recycled arena slot ("signal used after its scope was dropped" /
+    // type-mismatch — the QuillEMR forward/back nested-stack crash). Owning
+    // the scope on the control frees them on navigator teardown instead —
+    // leak-free, and never before the control itself drops.
+    let mut nav_scope = Box::new(reactive::Scope::new());
+    let nav_state = reactive::with_scope(&mut nav_scope, || NavState {
+        active_route: Signal::new(initial),
+        active_path: Signal::new(join_path(&my_base, initial_path)),
+        depth: Signal::new(1),
+        can_go_back: Signal::new(false),
+    });
+    control.retain_scope(nav_scope);
+    control.attach_nav_state(nav_state.clone());
+
     // mount_screen: build a screen subtree inside its own scope; return
     // (node, scope_id, opaque options). Weak control to avoid Rc-cycle
     // through dispatcher → mount_screen → control.
@@ -79,6 +109,7 @@ pub(super) fn build<B: Backend + 'static>(
         let backend = backend.clone();
         let control_for_mount = Rc::downgrade(&control);
         let base_for_mount = my_base.clone();
+        let active_route_for_mount = nav_state.active_route;
         Rc::new(move |name, params, state| {
             let entry = screens.get(name).unwrap_or_else(|| {
                 panic!("Navigator: route '{}' is not registered", name)
@@ -103,6 +134,16 @@ pub(super) fn build<B: Backend + 'static>(
                 Some(crate::hash_key(name)),
             );
             let (node, options) = reactive::with_scope(&mut scope, || {
+                // Publish this screen's nav context so any portal built in the
+                // subtree (now, or later in a reactive `when`) can hide itself
+                // when this screen isn't the active route — the fix for an
+                // overlay opened here surviving a navigation to another screen
+                // (the portal escapes to the window, and a persistent screen's
+                // scope keeps it alive). See `ScreenNav` / `walker::portal`.
+                reactive::provide(primitives::navigator::ScreenNav {
+                    active_route: active_route_for_mount,
+                    route: name,
+                });
                 crate::with_current_identity(screen_id, || {
                     let screen = builder(params);
                     let n = super::build(&backend, 0, screen.primitive);
@@ -181,31 +222,6 @@ pub(super) fn build<B: Backend + 'static>(
     // host; clone it before the move so the synchronous (native/SSR/headless)
     // mount path can resolve THIS navigator's slice of a cold-start launch URL.
     let resolve_entry_for_initial = resolve_entry.clone();
-
-    // Reactive nav-state mirror. `active_path` is the FULL hierarchical path
-    // (base + this navigator's initial relative path); root base "" leaves the
-    // configured initial path unchanged.
-    //
-    // These signals are created inside a DEDICATED scope owned by the
-    // `control` (an `Rc` that lives as long as the navigator), NOT the
-    // ambient build scope. A nested navigator is frequently built inside a
-    // transient dispatch/microtask scope (e.g. a stack hung under a drawer
-    // screen, reached via a sidebar `on_select`); if `nav_state` were owned
-    // by that scope its signals would be freed when it drops, and a later
-    // `active_route.set(...)` from `mount_internal` / `on_popstate` would hit
-    // a recycled arena slot ("signal used after its scope was dropped" /
-    // type-mismatch — the QuillEMR forward/back nested-stack crash). Owning
-    // the scope on the control frees them on navigator teardown instead —
-    // leak-free, and never before the control itself drops.
-    let mut nav_scope = Box::new(reactive::Scope::new());
-    let nav_state = reactive::with_scope(&mut nav_scope, || NavState {
-        active_route: Signal::new(initial),
-        active_path: Signal::new(join_path(&my_base, initial_path)),
-        depth: Signal::new(1),
-        can_go_back: Signal::new(false),
-    });
-    control.retain_scope(nav_scope);
-    control.attach_nav_state(nav_state.clone());
 
     // Register this navigator in the global registry so the robot bridge can
     // enumerate it and report its route/depth/back-stack. The navigator's own

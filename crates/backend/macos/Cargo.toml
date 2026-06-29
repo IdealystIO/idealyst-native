@@ -78,6 +78,9 @@ objc2-app-kit = { version = "0.2", features = [
     "NSActionCell",
     "NSTextField",
     "NSTextFieldCell",
+    # `NSSecureTextFieldCell` — superclass of the framework's secure centering
+    # cell (password masking + framework chrome/focus wiring).
+    "NSSecureTextField",
     "NSTextView",
     "NSText",
     "NSScrollView",

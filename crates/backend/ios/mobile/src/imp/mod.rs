@@ -1688,6 +1688,8 @@ impl Backend for IosBackend {
         initial_value: &str,
         _placeholder: Option<&str>,
         wrap: bool,
+        min_rows: Option<u32>,
+        max_rows: Option<u32>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
@@ -1753,17 +1755,34 @@ impl Backend for IosBackend {
                             runtime_layout::AvailableSpace::MaxContent => f32::INFINITY,
                             runtime_layout::AvailableSpace::MinContent => 0.0,
                         });
-                    // Ask for the height the text needs at this width,
-                    // height unbounded — Taffy applies the max clamp.
+                    // Ask for the height the text needs at this width, height
+                    // unbounded. `sizeThatFits:` returns content + the text
+                    // view's vertical `textContainerInset`.
                     let target = objc2_foundation::CGSize {
                         width: if avail_w.is_finite() { avail_w as f64 } else { f64::MAX },
                         height: f64::MAX,
                     };
                     let fitted: objc2_foundation::CGSize =
                         unsafe { msg_send![&view_for_measure, sizeThatFits: target] };
+                    // Strip the vertical inset back out to get the glyph height,
+                    // then re-bound by `min_rows`/`max_rows` using the REAL font
+                    // line height — the shared cross-backend rows→px contract.
+                    // Past the cap, UITextView's default `scrollEnabled` scrolls.
+                    let inset: crate::imp::callbacks::UIEdgeInsets =
+                        unsafe { msg_send![&view_for_measure, textContainerInset] };
+                    let v_pad = ((inset.top + inset.bottom) / 2.0) as f32;
+                    let content_h = (fitted.height as f32) - v_pad * 2.0;
+                    let line_h: f64 = unsafe {
+                        let font: *mut objc2::runtime::AnyObject =
+                            msg_send![&view_for_measure, font];
+                        if font.is_null() { 0.0 } else { msg_send![font, lineHeight] }
+                    };
+                    let h = runtime_core::primitives::text_area::resolve_text_area_height(
+                        content_h, line_h as f32, v_pad, min_rows, max_rows,
+                    );
                     runtime_layout::Size {
                         width: known_dimensions.width.unwrap_or((fitted.width as f32).ceil()),
-                        height: known_dimensions.height.unwrap_or((fitted.height as f32).ceil()),
+                        height: known_dimensions.height.unwrap_or(h.ceil()),
                     }
                 }),
             );

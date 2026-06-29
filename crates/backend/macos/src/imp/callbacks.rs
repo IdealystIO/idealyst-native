@@ -227,6 +227,16 @@ declare_class!(
                 }
                 let ns_ref: &objc2_foundation::NSString = unsafe { &*ns };
                 cb(ns_ref.to_string());
+                // Autogrow parity (§7): the edit changed the wrapped height.
+                // Dirty the text view's Taffy node + schedule a coalesced pass
+                // so the box grows/shrinks as the user types. A controlled
+                // text_area also re-measures via `update_text_area_value` on the
+                // value write-back; this covers an UNCONTROLLED one (no binding),
+                // matching web, which autosizes on the raw `input` event. Runs
+                // AFTER `cb` so any synchronous reactive flush has released the
+                // backend borrow before `with_global_backend` re-enters it.
+                let view = unsafe { &*(sender as *const objc2_app_kit::NSView) };
+                crate::imp::with_global_backend(|b| b.note_text_area_edited(view));
             }
         }
     }

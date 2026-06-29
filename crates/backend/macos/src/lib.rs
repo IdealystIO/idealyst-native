@@ -24,6 +24,12 @@ mod private_layer_hittest;
 // from any host; the libdispatch + AppKit machinery it feeds is macos-only.
 mod layout_policy;
 
+// Pure decision logic for anchored-portal child routing (which inserted child
+// the tooltip/popover anchor tracker pins). Un-gated so its regression tests
+// run from any host; the AppKit positioning it feeds is macos-only. Mirrors
+// the iOS `portal_policy` module.
+mod portal_policy;
+
 #[cfg(target_os = "macos")]
 pub use imp::{
     coalesce_layout_passes, install_global_self, private_layer_window_ids, schedule_layout_pass,

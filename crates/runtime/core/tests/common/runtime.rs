@@ -2,7 +2,7 @@
 //! synchronous scheduler so tests don't need a real platform.
 //!
 //! Most reactive tests don't need this — they construct signals /
-//! effects directly via `Signal::new` / `Effect::new` and never call
+//! effects directly via `signal!` / `watch` and never call
 //! `render`. Walker / primitive / lifecycle tests do: they need to
 //! call `runtime_core::render(backend, primitive_tree)` and then
 //! drive the resulting `Owner` to mount + unmount things.
@@ -49,6 +49,14 @@ impl TestRuntime {
     /// the whole tree (each release_* fires through the backend).
     pub fn render(&self, root: Element) -> Owner {
         render(self.backend.clone(), root)
+    }
+
+    /// Render via a closure that runs INSIDE the root reactive scope, so
+    /// `provide(...)` / signals declared in it are adopted by the `Owner`.
+    /// Lets a test stand in for a navigator screen (which `provide`s its
+    /// `ScreenNav` before building the screen subtree).
+    pub fn render_with(&self, f: impl FnOnce() -> Element + 'static) -> Owner {
+        runtime_core::mount(self.backend.clone(), f)
     }
 
     /// Borrow the backend (immutable) for event inspection.

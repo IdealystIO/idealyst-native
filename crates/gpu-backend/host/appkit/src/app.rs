@@ -12,9 +12,10 @@ use std::rc::Rc;
 use backend_macos::MacosBackend;
 use runtime_core::Element;
 use objc2::rc::Retained;
+use objc2::sel;
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSView, NSWindow,
-    NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEventModifierFlags, NSMenu,
+    NSMenuItem, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{
     CGSize, MainThreadMarker, NSActivityOptions, NSPoint, NSProcessInfo, NSRect, NSSize, NSString,
@@ -120,6 +121,71 @@ impl std::fmt::Display for RunError {
 
 impl std::error::Error for RunError {}
 
+/// Install a standard main menu (App + Edit) so the app gets the system
+/// editing commands.
+///
+/// On macOS, `Cmd-A` / `Cmd-C` / `Cmd-V` / `Cmd-X` / `Cmd-Z` are NOT delivered
+/// to the focused control through key bindings — they're matched as **key
+/// equivalents of the main menu's items** and only then dispatched down the
+/// responder chain to the first responder. A programmatically-booted
+/// `NSApplication` has no menu by default, so a focused `NSTextView` /
+/// `NSTextField` never received select-all / copy / paste / cut / undo (the
+/// reported "can't do normal textbox functions" bug) even though it already
+/// implements every one of those action methods.
+///
+/// Each Edit item uses a `nil` target (the `initWithTitle:action:keyEquivalent:`
+/// default): AppKit then routes the action up the responder chain to whatever
+/// is first responder, so the same menu drives editing in any text control with
+/// no per-control wiring. The App menu carries `Quit` (`Cmd-Q`) so the standard
+/// quit shortcut works too.
+fn install_main_menu(mtm: MainThreadMarker, nsapp: &NSApplication) {
+    // `nil`-target item whose action travels the responder chain. `cmd_extra`
+    // adds modifiers beyond the implicit Command (e.g. Shift for Redo).
+    let make_item = |title: &str, action: objc2::runtime::Sel, key: &str, cmd_extra: bool| {
+        let item = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                mtm.alloc(),
+                &NSString::from_str(title),
+                Some(action),
+                &NSString::from_str(key),
+            )
+        };
+        if cmd_extra {
+            item.setKeyEquivalentModifierMask(
+                NSEventModifierFlags::NSEventModifierFlagCommand
+                    | NSEventModifierFlags::NSEventModifierFlagShift,
+            );
+        }
+        item
+    };
+
+    let main_menu = NSMenu::new(mtm);
+
+    // ── Application menu (Quit) ──────────────────────────────────────
+    // The first top-level item's submenu is the app menu (its title is
+    // replaced by the process name by AppKit).
+    let app_item = NSMenuItem::new(mtm);
+    let app_menu = NSMenu::new(mtm);
+    app_menu.addItem(&make_item("Quit", sel!(terminate:), "q", false));
+    app_item.setSubmenu(Some(&app_menu));
+    main_menu.addItem(&app_item);
+
+    // ── Edit menu (Undo/Redo, Cut/Copy/Paste, Select All) ────────────
+    let edit_item = NSMenuItem::new(mtm);
+    let edit_menu = unsafe { NSMenu::initWithTitle(mtm.alloc(), &NSString::from_str("Edit")) };
+    edit_menu.addItem(&make_item("Undo", sel!(undo:), "z", false));
+    edit_menu.addItem(&make_item("Redo", sel!(redo:), "z", true));
+    edit_menu.addItem(&NSMenuItem::separatorItem(mtm));
+    edit_menu.addItem(&make_item("Cut", sel!(cut:), "x", false));
+    edit_menu.addItem(&make_item("Copy", sel!(copy:), "c", false));
+    edit_menu.addItem(&make_item("Paste", sel!(paste:), "v", false));
+    edit_menu.addItem(&make_item("Select All", sel!(selectAll:), "a", false));
+    edit_item.setSubmenu(Some(&edit_menu));
+    main_menu.addItem(&edit_item);
+
+    nsapp.setMainMenu(Some(&main_menu));
+}
+
 /// Boot NSApplication, open the host window, install the backend,
 /// render `app()`, and enter the AppKit run loop.
 ///
@@ -167,6 +233,8 @@ where
     // ── NSApplication boot ────────────────────────────────────────
     let nsapp = NSApplication::sharedApplication(mtm);
     nsapp.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+    // Standard main menu so focused text controls get Cmd-A/C/V/X/Z.
+    install_main_menu(mtm, &nsapp);
 
     // ── Disable App Nap ───────────────────────────────────────────
     // A dev app runs the robot bridge (a TCP server polled on the UI
@@ -221,11 +289,23 @@ where
     backend_apple_core::log::install_logger();
 
     // ── Window ────────────────────────────────────────────────────
+    // `IDEALYST_WINDOW_SIZE=WxH` (logical px) overrides the configured size.
+    // Used by `idealyst test --parity` to pin macOS to the same viewport as
+    // the headless web app, so responsive layout doesn't make the two trees
+    // legitimately diverge. Ignored if unset/malformed.
+    let (win_w, win_h) = std::env::var("IDEALYST_WINDOW_SIZE")
+        .ok()
+        .and_then(|s| {
+            let (w, h) = s.split_once(['x', 'X', ','])?;
+            Some((w.trim().parse::<f64>().ok()?, h.trim().parse::<f64>().ok()?))
+        })
+        .filter(|(w, h)| *w > 0.0 && *h > 0.0)
+        .unwrap_or((opts.width, opts.height));
     let frame = NSRect {
         origin: NSPoint { x: 200.0, y: 200.0 },
         size: NSSize {
-            width: opts.width,
-            height: opts.height,
+            width: win_w,
+            height: win_h,
         },
     };
     let style = NSWindowStyleMask::Titled
@@ -367,6 +447,8 @@ pub fn run_aas(url: &str, opts: RunOptions) -> Result<(), RunError> {
     // ── NSApplication boot — identical to local-render path ───────
     let nsapp = NSApplication::sharedApplication(mtm);
     nsapp.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+    // Standard main menu so focused text controls get Cmd-A/C/V/X/Z.
+    install_main_menu(mtm, &nsapp);
 
     let app_delegate = crate::app_delegate::IdealystAppDelegate::new(mtm);
     let delegate_proto: &objc2::runtime::ProtocolObject<dyn objc2_app_kit::NSApplicationDelegate> =

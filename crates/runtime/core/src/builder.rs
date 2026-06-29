@@ -80,11 +80,20 @@ impl<H> Bound<H> {
         self
     }
 
-    /// Assigns a test ID for robot/automation queries.
-    /// Only available when the `robot` feature is enabled.
+    /// Assigns a test ID for robot/automation queries. Always present (so the
+    /// `ui!` macro can emit `.test_id(...)` without depending on the `robot`
+    /// feature at expansion time): a real store under `robot`, an inert no-op
+    /// otherwise (the `test_id` element fields only exist under `robot`).
     #[cfg(feature = "robot")]
     pub fn test_id(mut self, id: &'static str) -> Self {
         self.primitive = self.primitive.with_test_id(id);
+        self
+    }
+
+    /// No-op stub when `robot` is off — keeps `ui! { view(test_id = …) }`
+    /// compiling in production builds (the id is simply discarded).
+    #[cfg(not(feature = "robot"))]
+    pub fn test_id(self, _id: &'static str) -> Self {
         self
     }
 

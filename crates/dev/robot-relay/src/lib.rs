@@ -101,6 +101,11 @@ struct Inner {
     /// Where screenshot PNGs are written. `None` disables saving (no HOME and
     /// no configured dir).
     screenshot_dir: Option<PathBuf>,
+    /// The `~/.idealyst/apps/<name>-<pid>.json` we wrote at start (if any). The
+    /// relay writes it *before* the app dials, so it can't yet know the app's
+    /// platform; on the `hello` frame we patch this file with the reported
+    /// platform so the MCP server can tell e.g. web from macОS for parity work.
+    reg_path: Mutex<Option<PathBuf>>,
 }
 
 impl Inner {
@@ -151,6 +156,7 @@ pub fn start(config: RelayConfig) -> anyhow::Result<RelayHandle> {
         app_label,
         // CLI-provided dir wins; otherwise the global default.
         screenshot_dir: config.screenshot_dir.clone().or_else(default_screenshots_dir),
+        reg_path: Mutex::new(None),
     });
 
     // App side: accept WS dial-ins.
@@ -187,6 +193,9 @@ pub fn start(config: RelayConfig) -> anyhow::Result<RelayHandle> {
     } else {
         None
     };
+    // Remember it so the `hello` handler can patch in the app's platform once
+    // it dials (we wrote the file before knowing which platform connects).
+    *inner.reg_path.lock().unwrap() = reg_path.clone();
 
     Ok(RelayHandle {
         ws_addr,
@@ -243,9 +252,13 @@ fn route_from_app(text: &str, inner: &Arc<Inner>) {
     let Ok(v) = serde_json::from_str::<Value>(text) else {
         return;
     };
-    if v.get("hello").is_some() {
-        // Registry hook: today we just note it; the table grows here when
-        // native dials in too.
+    if let Some(hello) = v.get("hello") {
+        // Patch the platform the app just reported into our registration file,
+        // so the MCP server can target e.g. web vs macOS distinctly for parity
+        // work. We wrote the file before the app dialed, so it had no platform.
+        if let Some(platform) = hello.get("platform").and_then(|p| p.as_str()) {
+            patch_registration_platform(inner, platform);
+        }
         return;
     }
     if let Some(id) = v.get("id").and_then(|i| i.as_u64()) {
@@ -422,4 +435,24 @@ fn write_registration(tcp_port: u16, id: &Identity) -> anyhow::Result<PathBuf> {
     });
     std::fs::write(&path, body.to_string())?;
     Ok(path)
+}
+
+/// Patch `"platform"` into the registration file we wrote at start, using the
+/// value the app reported in its `hello`. Best-effort — a failed read/parse/
+/// write just leaves the file platform-less (the MCP server treats absent
+/// platform as "unknown"), never disrupts relaying.
+fn patch_registration_platform(inner: &Arc<Inner>, platform: &str) {
+    let Some(path) = inner.reg_path.lock().unwrap().clone() else {
+        return;
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(mut v) = serde_json::from_str::<Value>(&text) else {
+        return;
+    };
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("platform".to_string(), Value::String(platform.to_string()));
+        let _ = std::fs::write(&path, v.to_string());
+    }
 }

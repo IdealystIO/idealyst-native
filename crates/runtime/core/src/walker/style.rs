@@ -275,10 +275,29 @@ fn attach_style_static<B: Backend + 'static>(
     node: &B::Node,
     app: StyleApplication,
 ) -> Rc<dyn Fn(StateBits, bool)> {
+    let handles_states_natively = backend.borrow().handles_states_natively();
+
+    // Native state-machine divert: an event-driven backend (macOS / iOS /
+    // Android) drives hover/press/focus through the Rust state machine, which
+    // lives in `attach_style_reactive` — it allocates the `states_signal` that
+    // the backend's `attach_states` setter flips, then re-resolves and
+    // re-applies on each flip. The cohort-only static path below returns a
+    // NO-OP setter and never re-applies, so a STATIC-styled node whose sheet
+    // declares `state` overlays (e.g. a `MenuItem` / `ListItem` whose `active`
+    // prop happens to be a static bool, so the component emits a resolved
+    // `StyleApplication` rather than a closure) silently lost hover on native
+    // while web — which bakes `:hover` into CSS — kept it. Divert such nodes to
+    // the reactive path so their state overlays work; it also handles any
+    // breakpoint/container overlays the sheet declares. Web
+    // (`handles_states_natively`) stays on the cohort path: its hover is in the
+    // emitted CSS, no per-node signal needed. Done BEFORE the cohort-driver
+    // install since a diverted node never joins the cohort.
+    if !handles_states_natively && !app.sheet.state_axes().is_empty() {
+        return attach_style_reactive(backend, node, Box::new(move || app.clone()));
+    }
+
     // Make sure the cohort driver is alive before we register.
     install_theme_cohort_driver(backend);
-
-    let handles_states_natively = backend.borrow().handles_states_natively();
 
     // Native container-query divert: a static sheet that declares
     // `container` overlays AND sits inside a containment context can't

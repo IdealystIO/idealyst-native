@@ -625,6 +625,10 @@ impl Backend for WgpuBackend {
         // honored as a follow-up. No `auto_grow`: content-height growth
         // is intrinsic sizing, which lands with the same shaping work.
         _wrap: bool,
+        // Row bounds (autogrow floor/cap) land with the same multi-line
+        // shaping work `wrap` is waiting on; accepted to match the trait.
+        _min_rows: Option<u32>,
+        _max_rows: Option<u32>,
         on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
         a11y: &runtime_core::accessibility::AccessibilityProps,

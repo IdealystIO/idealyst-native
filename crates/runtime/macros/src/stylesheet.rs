@@ -53,8 +53,11 @@
 //! type `Theme`:
 //!
 //! - `pub fn card_style() -> Rc<StyleSheet>` — convention-name version
-//!   of the stylesheet (snake_case + `_style` suffix). Cached in a
-//!   thread-local so repeat calls return the same `Rc`.
+//!   of the stylesheet (snake_case + `_style` suffix). Cached via
+//!   `runtime_core::cached_stylesheet` (one shared thread-local registry
+//!   keyed by a per-sheet address) so repeat calls return the same `Rc`.
+//!   We intentionally avoid a `thread_local!` per sheet — Android bionic
+//!   caps pthread TLS keys at 128 and idea-ui alone would blow past it.
 //! - `pub enum CardSize { Small, Medium, Large }` + `Default` impl
 //!   (picks the `#[default]` arm).
 //! - `pub enum CardKind { Elevated, Outlined }` + `Default` impl.
@@ -614,9 +617,11 @@ fn snake_case(ident: &Ident) -> Ident {
     Ident::new(&out, ident.span())
 }
 
-/// Emits the `Rc<StyleSheet>` constructor with thread-local caching.
-/// Mirrors the hand-rolled `card_style()` / `banner_style()` style
-/// the codebase already uses.
+/// Emits the `Rc<StyleSheet>` constructor. The built sheet is cached
+/// through `runtime_core::cached_stylesheet` — a single shared
+/// thread-local registry keyed by a per-sheet `static` address — rather
+/// than a `thread_local!` per sheet (see the constructor body for the
+/// Android pthread-key-limit rationale).
 ///
 /// The declared `<Theme>` generic and `base(theme) { ... }` bindings
 /// are accepted for syntactic backward-compatibility but ignored at
@@ -702,19 +707,28 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl) -> TokenStream2 {
 
     quote! {
         #vis fn #fn_name() -> ::std::rc::Rc<::runtime_core::StyleSheet> {
-            ::std::thread_local! {
-                static SHEET: ::std::rc::Rc<::runtime_core::StyleSheet> =
-                    ::std::rc::Rc::new(
-                        ::runtime_core::StyleSheet::new(
-                            |_vs: &::runtime_core::VariantSet| #base_rules
-                        )
-                            #(#variant_chain)*
-                            #(#state_chain)*
-                            #(#breakpoint_chain)*
-                            #(#container_chain)*
-                    );
-            }
-            SHEET.with(|s| ::std::clone::Clone::clone(s))
+            // Process-unique key for this stylesheet: the address of a
+            // function-local `static`. We deliberately DO NOT emit a
+            // per-sheet `::std::thread_local!` here — on Android, std's
+            // TLS is pthread-key-backed and bionic caps total keys at
+            // PTHREAD_KEYS_MAX (128). idea-ui declares 70+ stylesheets, so
+            // a key apiece exhausted the table and aborted in
+            // `LazyKey::lazy_init` at mount. Instead every sheet routes
+            // through runtime-core's single shared thread-local registry,
+            // keyed by this address — one TLS key for all stylesheets.
+            static __SHEET_KEY: u8 = 0;
+            ::runtime_core::cached_stylesheet(
+                &__SHEET_KEY as *const u8 as usize,
+                || ::std::rc::Rc::new(
+                    ::runtime_core::StyleSheet::new(
+                        |_vs: &::runtime_core::VariantSet| #base_rules
+                    )
+                        #(#variant_chain)*
+                        #(#state_chain)*
+                        #(#breakpoint_chain)*
+                        #(#container_chain)*
+                ),
+            )
         }
     }
 }

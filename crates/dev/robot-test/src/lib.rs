@@ -30,9 +30,11 @@
 mod app;
 mod client;
 mod harness;
+pub mod parity;
 
 pub use app::{App, Locator, SignalAssert};
-pub use client::{default_apps_dir, discover, RobotClient};
+pub use client::{default_apps_dir, discover, discover_all, RobotClient};
+pub use parity::{capture_native, diff as diff_native, report as report_parity, Capture, Mismatch, Tolerance};
 
 // The attribute macro that turns a function into a `#[test]`.
 pub use robot_test_macros::robot_test;

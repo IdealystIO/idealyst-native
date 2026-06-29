@@ -1454,6 +1454,50 @@ pub struct CompoundVariant {
 ///    `(axis, value)` in `when` matches the *effective* variant set
 ///    (defaults included).
 /// 4. Any `StyleApplication::overrides` field.
+thread_local! {
+    /// Single shared per-sheet cache backing every `stylesheet!`-generated
+    /// `*_style()` constructor. Each generated fn passes a process-unique
+    /// key (the address of a function-local `static`) and its built
+    /// `Rc<StyleSheet>` is minted once per thread, then reused.
+    ///
+    /// Why ONE shared registry rather than a `thread_local!` *per* sheet:
+    /// Android's bionic libc caps total pthread TLS keys at
+    /// `PTHREAD_KEYS_MAX` (128, minus runtime-reserved), and Rust's std
+    /// uses a pthread-key-backed TLS model on Android — so every
+    /// `thread_local!` burns one key. idea-ui alone declares 70+
+    /// stylesheets; a key apiece exhausted the table and aborted in
+    /// `LazyKey::lazy_init` during mount (the abort surfaced under
+    /// whichever sheet happened to allocate the key past the cap —
+    /// `grid_row_style` in the idea-ui-docs build). Collapsing all sheet
+    /// caches into this single key keeps the key count flat no matter how
+    /// many stylesheets the binary links.
+    static STYLESHEET_CACHE: RefCell<HashMap<usize, Rc<StyleSheet>>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Returns the thread-cached `Rc<StyleSheet>` for `key`, building and
+/// caching it on first call. `key` must be process-unique per logical
+/// stylesheet — the `stylesheet!` macro passes the address of a
+/// function-local `static` so distinct sheets never collide and the same
+/// sheet always maps to the same entry.
+///
+/// Reentrancy-safe: `build` runs with no borrow of the cache held, so a
+/// stylesheet whose construction references another `*_style()` (nested
+/// sheet reference) cannot double-borrow the registry.
+pub fn cached_stylesheet(
+    key: usize,
+    build: impl FnOnce() -> Rc<StyleSheet>,
+) -> Rc<StyleSheet> {
+    if let Some(rc) = STYLESHEET_CACHE.with(|c| c.borrow().get(&key).cloned()) {
+        return rc;
+    }
+    let rc = build();
+    STYLESHEET_CACHE.with(|c| {
+        c.borrow_mut().insert(key, rc.clone());
+    });
+    rc
+}
+
 pub struct StyleSheet {
     base: RulesFn,
     /// axis → axis definition (default + per-value closures)
@@ -4646,5 +4690,65 @@ mod tests {
         };
         let without = StyleRules::default();
         assert_ne!(with_ratio.content_key(), without.content_key());
+    }
+
+    // --- cached_stylesheet (shared per-sheet registry) ---------------
+    //
+    // These exercise the registry that replaced the per-sheet
+    // `thread_local!` the `stylesheet!` macro used to emit. The bug
+    // being prevented is Android bionic exhausting its 128 pthread TLS
+    // keys when a binary links 70+ stylesheets (each old `thread_local!`
+    // burned a key → abort in `LazyKey::lazy_init` at mount). Key
+    // exhaustion isn't reproducible on a host with a large key table, so
+    // the closest reachable coverage is the registry's behavioral
+    // contract: same key → same `Rc` (caching identity preserved),
+    // distinct keys → distinct sheets, and reentrancy safety (a build
+    // closure that itself caches another sheet must not double-borrow).
+
+    fn empty_sheet() -> Rc<StyleSheet> {
+        Rc::new(StyleSheet::new(|_vs| StyleRules::default()))
+    }
+
+    #[test]
+    fn cached_stylesheet_same_key_returns_same_rc() {
+        static K: u8 = 0;
+        let key = &K as *const u8 as usize;
+        let mut built = 0;
+        let a = cached_stylesheet(key, || {
+            built += 1;
+            empty_sheet()
+        });
+        let b = cached_stylesheet(key, || {
+            built += 1;
+            empty_sheet()
+        });
+        // Built exactly once; both calls hand back the same allocation.
+        assert_eq!(built, 1, "build closure must run only on first call");
+        assert!(Rc::ptr_eq(&a, &b), "same key must return the cached Rc");
+    }
+
+    #[test]
+    fn cached_stylesheet_distinct_keys_are_independent() {
+        static K1: u8 = 0;
+        static K2: u8 = 0;
+        let a = cached_stylesheet(&K1 as *const u8 as usize, empty_sheet);
+        let b = cached_stylesheet(&K2 as *const u8 as usize, empty_sheet);
+        assert!(!Rc::ptr_eq(&a, &b), "distinct keys must not collide");
+    }
+
+    #[test]
+    fn cached_stylesheet_reentrant_build_does_not_double_borrow() {
+        // A sheet whose construction references another `*_style()` (a
+        // nested sheet) caches the inner one mid-build. The outer build
+        // must hold no borrow of the registry while it runs.
+        static OUTER: u8 = 0;
+        static INNER: u8 = 0;
+        let outer = cached_stylesheet(&OUTER as *const u8 as usize, || {
+            let _inner = cached_stylesheet(&INNER as *const u8 as usize, empty_sheet);
+            empty_sheet()
+        });
+        // Both entries are now resident and resolve to themselves.
+        let outer_again = cached_stylesheet(&OUTER as *const u8 as usize, empty_sheet);
+        assert!(Rc::ptr_eq(&outer, &outer_again));
     }
 }

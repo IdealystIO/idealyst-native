@@ -10,7 +10,7 @@ use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
 use crate::primitives::key::{KeyEvent, KeyOutcome};
-use crate::primitives::text_input::BlurHandler;
+use crate::primitives::text_input::{BlurHandler, FocusHandler};
 use crate::reactive::{Effect, Signal};
 use crate::sources::StyleSource;
 use crate::Reactive;
@@ -23,6 +23,7 @@ pub(super) fn build_text_input<B: Backend + 'static>(
     on_change: Rc<dyn Fn(String)>,
     on_key_down: Option<Rc<dyn Fn(&KeyEvent) -> KeyOutcome>>,
     on_blur: Option<BlurHandler>,
+    on_focus: Option<FocusHandler>,
     placeholder: Reactive<Option<String>>,
     secure: Reactive<bool>,
     style: Option<StyleSource>,
@@ -49,6 +50,13 @@ pub(super) fn build_text_input<B: Backend + 'static>(
     });
     if let Some(s) = style {
         attach_style(backend, &n, s);
+    }
+    // Author focus notifier: install the backend hook so it fires the handler
+    // on focus/blur. Backends without focus events default to a no-op (the
+    // adorned-Field ring just won't light there). Kept here, NOT in
+    // `create_text_input`, so the 15 backend signatures stay untouched.
+    if let Some(on_focus) = on_focus {
+        backend.borrow_mut().set_text_input_focus_handler(&n, on_focus);
     }
     // Reactive: whenever the controlled signal changes, push
     // the new value into the widget. Setting to the same
@@ -99,6 +107,8 @@ pub(super) fn build_text_area<B: Backend + 'static>(
     on_key_down: Option<Rc<dyn Fn(&KeyEvent) -> KeyOutcome>>,
     placeholder: Option<String>,
     wrap: bool,
+    min_rows: Option<u32>,
+    max_rows: Option<u32>,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
     a11y: AccessibilityProps,
@@ -109,6 +119,8 @@ pub(super) fn build_text_area<B: Backend + 'static>(
             &initial,
             placeholder.as_deref(),
             wrap,
+            min_rows,
+            max_rows,
             on_change,
             on_key_down,
             &a11y,

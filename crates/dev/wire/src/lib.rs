@@ -136,7 +136,12 @@ use serde::{Deserialize, Serialize};
 /// existing reactive setter (`UpdateImageSrc` / `UpdateIconColor`) and folds
 /// into the matching snapshot `Create*` so a late-joining client renders the
 /// current state. All additive — an older client just never receives them.
-pub const PROTOCOL_VERSION: u32 = 14;
+///
+/// Bumped to 15: [`Command::CreateTextArea`] grew `min_rows` / `max_rows`
+/// (autogrow row bounds; the client backend converts rows→px from its real
+/// font metrics). Both `#[serde(default)]` → a pre-15 sender omits them and the
+/// client reads `None` (unbounded growth), so the field is backward-compatible.
+pub const PROTOCOL_VERSION: u32 = 15;
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
 /// than the canonical [`PROTOCOL_VERSION`] name. Both point at the same
@@ -564,6 +569,14 @@ pub enum Command {
         /// scroll. Defaults to `true` for v9-and-earlier senders.
         #[serde(default = "wire_true")]
         wrap: bool,
+        /// Autogrow floor in text lines (`None` floors at one line).
+        /// Absent for pre-row-bounds senders → `None` (default).
+        #[serde(default)]
+        min_rows: Option<u32>,
+        /// Autogrow cap in text lines (`None` grows unbounded). The
+        /// client backend converts rows→px from its real font metrics.
+        #[serde(default)]
+        max_rows: Option<u32>,
         on_change: HandlerId,
         #[serde(default)]
         a11y: WireAccessibilityProps,

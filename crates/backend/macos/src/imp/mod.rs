@@ -16,8 +16,10 @@ pub(crate) mod graphics;
 pub(crate) mod handles;
 pub(crate) mod icon;
 pub(crate) mod image;
+pub(crate) mod introspect;
 pub(crate) mod keyboard;
 pub(crate) mod node;
+pub(crate) mod portal;
 pub(crate) mod screenshot;
 pub(crate) mod text_style;
 pub(crate) mod transitions;
@@ -154,6 +156,14 @@ pub struct MacosBackend {
     /// of a Settings list with no backdrop). The layout pass computes each against
     /// the viewport so a FullScreen portal fills the window.
     pub(crate) portal_roots: std::collections::HashSet<usize>,
+    /// Per-ANCHORED-portal state, keyed by the container view pointer (the
+    /// same key as in `portal_roots`). Only anchored portals (tooltip /
+    /// popover / dropdown) get an entry — it carries the anchor descriptor
+    /// and the live `raf_loop` tracker that re-pins the content child to its
+    /// trigger each frame. Viewport portals (Modal, sheets) need no entry;
+    /// their content is placed by the container's flex style. Mirrors the
+    /// anchored half of iOS's `portal_instances`.
+    pub(crate) portal_instances: portal::PortalInstances,
     /// Layout node of the top-of-tree root, stashed by `finish` so a
     /// post-mount `schedule_layout_pass()` can recompute from it without
     /// the `root: Node` argument `finish` receives. `finish` runs exactly
@@ -541,6 +551,7 @@ impl MacosBackend {
             nav_handler_instances: HashMap::new(),
             detached_window_roots: HashMap::new(),
             portal_roots: std::collections::HashSet::new(),
+            portal_instances: HashMap::new(),
             root_layout: None,
         };
         backend.drain_self_registrars();
@@ -746,6 +757,43 @@ impl MacosBackend {
     pub(crate) fn layout_of(&self, view: &NSView) -> Option<runtime_layout::LayoutNode> {
         let key = view as *const NSView as usize;
         self.view_to_layout.get(&key).map(|(_, n)| *n)
+    }
+
+    /// Re-measure an edited soft-wrap `text_area` (NSTextView): dirty its Taffy
+    /// node and schedule a coalesced layout pass so the autosized box tracks the
+    /// content as the user types. Reached from the `NSTextDidChange` observer
+    /// via [`with_global_backend`] — this is the autogrow path for an
+    /// UNCONTROLLED text area (a controlled one already re-measures through
+    /// `update_text_area_value` when its value signal writes back). Web autosizes
+    /// directly on the DOM `input` event; this is the AppKit analogue (§7).
+    pub(crate) fn note_text_area_edited(&mut self, view: &NSView) {
+        // The notification sender is the inner NSTextView, but the Taffy leaf
+        // (with the measure_fn) is the chrome CONTAINER several levels up
+        // (text view → NSClipView → NSScrollView → container). Walk superviews
+        // until one carries a layout node.
+        let mut probe: *mut NSView = view as *const NSView as *mut NSView;
+        let mut layout_node = None;
+        for _ in 0..6 {
+            if probe.is_null() {
+                break;
+            }
+            if let Some(n) = self.layout_of(unsafe { &*probe }) {
+                layout_node = Some(n);
+                break;
+            }
+            probe = unsafe { msg_send![probe, superview] };
+        }
+        if let Some(layout) = layout_node {
+            self.layout.mark_dirty(layout);
+            // SYNCHRONOUS, not the coalesced microtask: the notification fires
+            // on the keystroke, outside any framework reactive borrow, so we
+            // can recompute + commit the new height in the SAME runloop turn the
+            // character was typed. The deferred microtask would commit it one
+            // frame later — a visible lag between the glyph appearing and the
+            // box growing. `run_layout_pass_now` only needs `&mut self`, which
+            // the `with_global_backend` re-entry already holds.
+            self.run_layout_pass_now();
+        }
     }
 
     /// Install a Taffy `measure_fn` for an `NSImageView` so flex
@@ -1024,8 +1072,10 @@ impl MacosBackend {
                 },
             };
             let _: () = unsafe { msg_send![&**view, setFrame: rect] };
-            gradient::sync_gradient_sublayer(view);
-            icon::sync_icon_sublayer(view, frame.width as f64, frame.height as f64);
+            // Identical per-view post-frame work as the host pass (§7 — a portal
+            // must render the same). Omitting `sync_corner_radius` here left
+            // content-sized buttons square inside Modals/Popovers.
+            self.sync_view_after_frame(view, frame.width, frame.height);
         }
         unsafe {
             let _: () = msg_send![objc2::class!(CATransaction), commit];
@@ -1195,6 +1245,155 @@ fn is_editable_text_control(view: &NSView) -> bool {
         }
     }
     false
+}
+
+/// True when `view` is specifically an `NSTextView` (the multi-line `text_area`
+/// widget), not an `NSTextField`. The two diverge in how author `padding` and
+/// autosizing are applied: a field uses its framework cell's drawing-rect
+/// insets, a text view uses `textContainerInset` + a layout-manager measure.
+fn is_text_view(view: &NSView) -> bool {
+    objc2::runtime::AnyClass::get("NSTextView")
+        .map(|cls| unsafe { msg_send![view, isKindOfClass: cls] })
+        .unwrap_or(false)
+}
+
+/// The inner `NSTextView` of a `text_area`, reached from either the chrome
+/// CONTAINER (the node: a FlippedView whose subview is the scroll view) or the
+/// scroll view itself. `None` for any non-text-area view. The structure is
+/// container → NSScrollView → `documentView` (text view).
+fn text_area_inner_text_view(view: &NSView) -> Option<Retained<NSView>> {
+    // The scroll view is either `view` (rare) or `view`'s first scroll subview.
+    let scroll: Retained<NSView> = if is_scroll_view(view) {
+        unsafe { Retained::retain(view as *const NSView as *mut NSView) }?
+    } else {
+        let subviews: *mut NSObject = unsafe { msg_send![view, subviews] };
+        if subviews.is_null() {
+            return None;
+        }
+        let count: usize = unsafe { msg_send![subviews, count] };
+        let mut found: Option<Retained<NSView>> = None;
+        for i in 0..count {
+            let sub: *mut NSView = unsafe { msg_send![subviews, objectAtIndex: i] };
+            if !sub.is_null() && is_scroll_view(unsafe { &*sub }) {
+                found = unsafe { Retained::retain(sub) };
+                break;
+            }
+        }
+        found?
+    };
+    let doc: *mut NSView = unsafe { msg_send![&*scroll, documentView] };
+    if !doc.is_null() && is_text_view(unsafe { &*doc }) {
+        unsafe { Retained::retain(doc) }
+    } else {
+        None
+    }
+}
+
+/// True when `view` is a `text_area`'s chrome CONTAINER (a FlippedView wrapping
+/// the scroll view + text view) — NOT a single-line field and NOT an author
+/// `scroll_view`. Lets `apply_style` route the editable styling to the inner
+/// text view while the container itself gets the border/bg/radius.
+fn is_text_area_container(view: &NSView) -> bool {
+    !is_editable_text_control(view) && !is_scroll_view(view) && text_area_inner_text_view(view).is_some()
+}
+
+/// The editable control to talk to for `view`: the inner NSTextView when `view`
+/// is a `text_area`'s chrome container (or scroll view), else `view` itself (a
+/// single-line NSTextField, or any other view). Every path that touches the
+/// text content — set/get string, colors, font, padding, focus, selection —
+/// routes through here so the container/scroll wrapping is transparent to the
+/// rest of the backend.
+pub(crate) fn editable_text_target(view: &NSView) -> Retained<NSView> {
+    if let Some(tv) = text_area_inner_text_view(view) {
+        return tv;
+    }
+    unsafe { Retained::retain(view as *const NSView as *mut NSView) }
+        .expect("editable_text_target self retain")
+}
+
+/// Border-box height for an autosizing soft-wrap `text_area` at `target_width`,
+/// bounded by `min_rows`/`max_rows`. Constrains the text view's container to the
+/// content width (the width Taffy is resolving, minus the symmetric horizontal
+/// `textContainerInset`), forces a glyph layout, and reads the used rect, then
+/// hands the content height + the REAL font line height + the vertical inset to
+/// the shared [`runtime_core::primitives::text_area::resolve_text_area_height`]
+/// so the row floor/cap is computed from macOS's true line metrics. Independent
+/// of the view's current frame, which Taffy hasn't applied yet at measure time.
+/// `target_width` may be `f32::INFINITY` (MaxContent probe) → an unbounded
+/// single-line measure.
+fn measure_text_view_height(
+    view: &NSView,
+    target_width: f32,
+    min_rows: Option<u32>,
+    max_rows: Option<u32>,
+) -> f32 {
+    unsafe {
+        let inset: CGSize = msg_send![view, textContainerInset];
+        let layout_manager: *mut NSObject = msg_send![view, layoutManager];
+        let container: *mut NSObject = msg_send![view, textContainer];
+        if layout_manager.is_null() || container.is_null() {
+            return (inset.height as f32) * 2.0;
+        }
+        // The container tracks the text view width (`widthTracksTextView`), so
+        // drive it by setting the text view FRAME width and let the container
+        // follow — `setContainerSize:` width would be ignored under tracking.
+        // Independent of the live frame, which Taffy hasn't applied at measure
+        // time (and which AppKit re-sets to the clip width on the real layout).
+        // An infinite probe width → no wrapping (single-line content).
+        let frame_w = if target_width.is_finite() {
+            target_width.max(0.0) as f64
+        } else {
+            f64::MAX
+        };
+        // Set the WIDTH so the tracking container lays out at the resolved
+        // width; height is a throwaway here (glyph layout is independent of the
+        // frame height — the container height is MAX). We set the REAL
+        // documentView height below, once we know the content.
+        let _: () = msg_send![view, setFrameSize: CGSize { width: frame_w, height: 1.0 }];
+        // `usedRect` is only valid after layout is ensured for the container.
+        let _: () = msg_send![layout_manager, ensureLayoutForTextContainer: container];
+        let used: CGRect = msg_send![layout_manager, usedRectForTextContainer: container];
+        // Real font line height → exact row→px floor/cap (not an estimate).
+        let font: *mut NSObject = msg_send![view, font];
+        let line_h: CGFloat = if font.is_null() {
+            0.0
+        } else {
+            msg_send![layout_manager, defaultLineHeightForFont: font]
+        };
+        use runtime_core::primitives::text_area::resolve_text_area_height;
+        let uncapped =
+            resolve_text_area_height(used.size.height as f32, line_h as f32, inset.height as f32, None, None);
+        // Taffy gets the CAPPED height (floor `min_rows`, cap `max_rows`). The
+        // SCROLL VIEW (the clip) is sized to this.
+        let capped = resolve_text_area_height(
+            used.size.height as f32,
+            line_h as f32,
+            inset.height as f32,
+            min_rows,
+            max_rows,
+        );
+        // The documentView is sized to `max(content, clip)`:
+        //   - content < clip (the `min_rows` floor): fill the clip so the text
+        //     sits at the TOP and there's no shorter-than-clip documentView
+        //     sitting at the bottom (the "text appears below the box" bug);
+        //   - content > clip (past `max_rows`): the full content height, so EVERY
+        //     line is reachable by scrolling (no clipped last line). Width is left
+        //     to the scroll view's autoresize (the clip width).
+        let doc_h = uncapped.max(capped);
+        let _: () = msg_send![view, setFrameSize: CGSize { width: frame_w, height: doc_h as f64 }];
+        capped
+    }
+}
+
+/// Pure content-box → border-box height for an autosizing `text_area`. Floors
+/// the glyph height at one line (`line_h`) so an empty box is still one line
+/// tall — the fix for the "collapses to the height of the text" report — then
+/// adds the vertical `textContainerInset` back for both the top and bottom
+/// edge (the padding parity with web's `box-sizing: border-box`). Mirrors iOS
+/// `sizeThatFits` + the web `scrollHeight + border` math.
+#[allow(dead_code)]
+fn text_area_autosize_height(used_h: f32, line_h: f32, inset_v: f32) -> f32 {
+    used_h.max(line_h).max(0.0) + inset_v.max(0.0) * 2.0
 }
 
 /// The installed theme's body-text `Color`, resolved through the SAME token
@@ -1417,6 +1616,54 @@ fn overflow_masks_to_bounds(style: &StyleRules) -> Option<bool> {
 }
 
 #[cfg(test)]
+mod text_area_autosize_tests {
+    use super::text_area_autosize_height;
+
+    // Regression: a macOS `text_area` (NSTextView) used to read
+    // `intrinsicContentSize` for its layout height, which lagged the frame by a
+    // pass and collapsed the box to the bare text height after every edit (the
+    // "shrinks to the height of the text" report) — and never applied padding.
+    // The autosize math now floors the glyph height at one line and adds the
+    // vertical `textContainerInset` back for BOTH edges, so an empty box stays
+    // one line tall and a padded box grows to `content + padding`, matching the
+    // web `scrollHeight + border` box and iOS `sizeThatFits`.
+    //
+    // The live measure needs a main-thread NSTextView + layout manager (the
+    // `cargo test` harness runs off the main thread), so it's exercised by
+    // running the app; this pins the deterministic height arithmetic.
+
+    #[test]
+    fn empty_box_floors_at_one_line_plus_padding() {
+        // No glyphs (used height 0) must NOT collapse to just the insets —
+        // it floors at one line so the field is visible and clickable.
+        let h = text_area_autosize_height(0.0, 17.0, 8.0);
+        assert_eq!(h, 17.0 + 8.0 * 2.0, "empty box = one line + top & bottom padding");
+    }
+
+    #[test]
+    fn grows_with_content_above_one_line() {
+        // Three wrapped lines (51pt) clears the one-line floor, so the box is
+        // content + padding — the autogrow behavior.
+        let h = text_area_autosize_height(51.0, 17.0, 8.0);
+        assert_eq!(h, 51.0 + 8.0 * 2.0, "multi-line box = content + top & bottom padding");
+    }
+
+    #[test]
+    fn zero_padding_is_pure_content() {
+        // No author padding → no inset added; height is exactly the content
+        // (the framework imposes no default padding, like web).
+        assert_eq!(text_area_autosize_height(34.0, 17.0, 0.0), 34.0);
+    }
+
+    #[test]
+    fn negative_inputs_never_produce_negative_height() {
+        // Degenerate guards: a negative used height / inset (shouldn't happen,
+        // but AppKit metrics are floats) must not push the box off-screen.
+        assert_eq!(text_area_autosize_height(-5.0, 0.0, -3.0), 0.0);
+    }
+}
+
+#[cfg(test)]
 mod overflow_tests {
     use super::overflow_masks_to_bounds;
     use runtime_core::{Overflow, StyleRules};
@@ -1441,6 +1688,82 @@ mod overflow_tests {
             None,
             "unset overflow leaves the cornerRadius decision untouched",
         );
+    }
+}
+
+/// macOS scroll-content compositing policy — the coupled pair of native flags
+/// `create_scroll_view` installs on every `NSScrollView` / its `NSClipView`.
+///
+/// They are coupled on purpose. `copies_on_scroll = false` makes AppKit repaint
+/// the *entire* visible rect on every scroll frame (we need it off because the
+/// framework positions and animates views by CALayer **transform**, and the
+/// copy optimization assumes frame-positioned content — it slices a transformed
+/// card to the strip its *untransformed* frame exposes). That forced full
+/// repaint is only cheap when the scrolled subtree is **layer-backed**: then it
+/// is a GPU recomposite of cached layers, not a CPU `drawRect` pass over the
+/// whole viewport's worth of `NSView`s.
+///
+/// macOS `NSView` is layer-OPTIONAL and the host root is deliberately layer-LESS
+/// (so it can never re-host and detach a nested `CAMetalLayer`; see
+/// [[project_macos_appkit_uikit_diffs]] #21 (b)), so the scroll documentView's
+/// subtree is NOT implicitly layer-backed from above — only individually styled
+/// views opt in. We therefore layer-back the documentView explicitly. Mid-tree
+/// layer-backing is metal-safe (#21: `apply_style_to_view` already does it on
+/// every styled view and the vello canvas renders fine), and AppKit propagates
+/// it down to the whole subtree, so one flag GPU-composites all scrolled
+/// content. iOS (every `UIView` is layer-backed) and web (the browser
+/// compositor) get this for free; this restores parity (CLAUDE.md §7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ScrollCompositing {
+    /// `NSClipView.copiesOnScroll`.
+    pub copies_on_scroll: bool,
+    /// `documentView.wantsLayer`.
+    pub document_wants_layer: bool,
+}
+
+impl ScrollCompositing {
+    /// The policy the backend installs.
+    pub(crate) const fn policy() -> Self {
+        Self { copies_on_scroll: false, document_wants_layer: true }
+    }
+
+    /// The jank-free invariant: disabling the copy optimization REQUIRES
+    /// layer-backed content. The forbidden state — copy off AND a
+    /// non-layer-backed document — is the per-frame full-viewport CPU repaint.
+    pub(crate) const fn is_jank_free(self) -> bool {
+        self.copies_on_scroll || self.document_wants_layer
+    }
+}
+
+#[cfg(test)]
+mod scroll_compositing_tests {
+    use super::ScrollCompositing;
+
+    // Regression: macOS scrolled long pages (the idea-ui-docs "All Components"
+    // page mounts ~4000 nodes) with `copiesOnScroll = false` but a NON-layer-
+    // backed documentView, so every scroll frame forced a full-viewport CPU
+    // `drawRect` pass over thousands of `NSView`s — janky on macOS while web and
+    // iOS scrolled the same tree smoothly (both composite every layer). The fix
+    // layer-backs the documentView so the forced full repaint is a GPU
+    // recomposite. The live `wantsLayer` write needs a main-thread AppKit mount
+    // (the `cargo test` harness runs off the main thread, like the other macOS
+    // imp tests), so it's exercised by running the app; this pins the policy and
+    // its coupling invariant.
+    #[test]
+    fn copy_off_requires_layer_backed_document() {
+        let p = ScrollCompositing::policy();
+        assert!(!p.copies_on_scroll, "transform-positioned content needs the copy optimization off");
+        assert!(p.document_wants_layer, "copy-off content must be layer-backed to composite on the GPU");
+        assert!(p.is_jank_free(), "the installed policy must satisfy the no-CPU-repaint invariant");
+
+        // The exact bug state the regression guards against: copy disabled while
+        // the scrolled content stays non-layer-backed.
+        let janky = ScrollCompositing { copies_on_scroll: false, document_wants_layer: false };
+        assert!(!janky.is_jank_free(), "copy off + non-layer-backed document = per-frame CPU repaint");
+
+        // A frame-positioned backend (copy on) would not need layer-backing.
+        let copy_on = ScrollCompositing { copies_on_scroll: true, document_wants_layer: false };
+        assert!(copy_on.is_jank_free(), "with the copy optimization on, non-layer-backed content is fine");
     }
 }
 
@@ -1675,6 +1998,10 @@ impl MacosBackend {
         let scrolls: Vec<(Retained<NSView>, runtime_layout::LayoutNode)> = self
             .view_to_layout
             .values()
+            // Skip a `text_area`'s scroll wrapper: its documentView is the
+            // auto-growing NSTextView (sized by AppKit to content), NOT a
+            // Taffy-child bounding box. Sizing it here to the (empty) child
+            // bbox would clamp it to the clip and kill scroll-past-cap.
             .filter(|(v, _)| is_scroll_view(v))
             .map(|(v, n)| (v.clone(), *n))
             .collect();
@@ -1748,6 +2075,49 @@ impl MacosBackend {
             if !clip_view_ptr.is_null() {
                 let _: () =
                     unsafe { msg_send![&*scroll_view, reflectScrolledClipView: clip_view_ptr] };
+            }
+        }
+    }
+
+    /// The per-view work that MUST run after a view's frame is committed, shared
+    /// by the host layout pass ([`compute_and_apply_layout`]) and the
+    /// detached/portal pass ([`layout_detached_root`]) so the two CANNOT drift.
+    /// A portal path silently missing one of these is exactly what left
+    /// content-sized buttons square-cornered inside Modals/Popovers — their
+    /// `border-radius` is DEFERRED at apply-style time (bounds 0×0) and only
+    /// clamped+applied by `sync_corner_radius` here. Every call is a no-op when
+    /// the view has nothing stashed/subscribed. Call AFTER `setFrame:`.
+    fn sync_view_after_frame(&self, view: &Retained<NSView>, w: f32, h: f32) {
+        // Gradient sublayer → new bounds (CALayer autoresize doesn't fire).
+        gradient::sync_gradient_sublayer(view);
+        // Icon glyph sublayer scaled/centered to the box (path baked at 24px).
+        icon::sync_icon_sublayer(view, w as f64, h as f64);
+        // Re-apply a deferred cornerRadius, clamped to half the smaller bound.
+        sync_corner_radius(view);
+        // Re-resolve percent transforms against the real bounds.
+        animated::sync_transform_after_layout(view, &self.animated_states);
+        // Feed `.container()` inline-size subscribers (container queries).
+        handles::fire_layout_for_view(handles::view_key(&**view), w, h);
+        // A `text_area`: deterministically fill the chrome container with its
+        // scroll view (and re-pin the inner text view width to the clip). The
+        // scroll view's autoresize-from-a-0×0-create-frame is unreliable —
+        // leaving the clip NARROWER than the box, so the text wraps to more lines
+        // than the measure_fn accounted for and the bottom of the content gets
+        // clipped (reported). With the clip == the box width == the measured
+        // width, the displayed height matches the reported (Taffy) height.
+        if is_text_area_container(&**view) {
+            if let Some(tv) = text_area_inner_text_view(&**view) {
+                let scroll: *mut NSView = unsafe { msg_send![&*tv, enclosingScrollView] };
+                if !scroll.is_null() {
+                    let bounds: CGRect = unsafe { msg_send![&**view, bounds] };
+                    let _: () = unsafe { msg_send![scroll, setFrame: bounds] };
+                    // Match the documentView width to the (now-correct) clip so it
+                    // wraps at the visible width; height stays measure-owned.
+                    let cur: CGRect = unsafe { msg_send![&*tv, frame] };
+                    let _: () = unsafe {
+                        msg_send![&*tv, setFrameSize: CGSize { width: bounds.size.width, height: cur.size.height }]
+                    };
+                }
             }
         }
     }
@@ -1830,39 +2200,10 @@ impl MacosBackend {
                 },
             };
             let _: () = unsafe { msg_send![&**view, setFrame: rect] };
-            // Sync any gradient sublayer to the new bounds. CALayer
-            // autoresizingMask doesn't drive automatic sublayer
-            // resizing in practice — mirror the resize here. No-op
-            // when the view has no `idealyst_gradient` sublayer.
-            gradient::sync_gradient_sublayer(view);
-            // Scale + center an icon's glyph sublayer to the new box so
-            // `Icon(size = N)` renders at N px (the path is baked at 24).
-            // No-op when the view has no `idealyst_icon` sublayer.
-            icon::sync_icon_sublayer(view, frame.width as f64, frame.height as f64);
-            // Re-apply a deferred cornerRadius (stashed when apply_style
-            // ran before bounds were known). Clamps to half the
-            // smaller bound — required so `border-radius: 999px` on a
-            // percent-sized view ("make it a circle") actually
-            // renders instead of blanking the layer. No-op when no
-            // deferred radius was stashed.
-            sync_corner_radius(view);
-            // Re-resolve any percent transforms against the new
-            // bounds. The sun glare's wrapper uses `translate(50%,
-            // -50%)` to offset itself off-screen; that resolves to
-            // 0 at apply-style time (bounds 0×0) and only becomes
-            // correct here, post-layout. No-op for views with
-            // identity transforms.
-            animated::sync_transform_after_layout(view, &self.animated_states);
-            // Feed any `on_layout` subscribers (a `.container()` view's
-            // inline-size signal) with this view's resolved size. The
-            // callbacks change-guard, so re-firing at an unchanged width
-            // is a no-op — which is what keeps the container-query
-            // restyle→relayout loop convergent.
-            handles::fire_layout_for_view(
-                handles::view_key(&**view),
-                frame.width,
-                frame.height,
-            );
+            // Gradient/icon sublayer resize + deferred cornerRadius + percent
+            // transform re-resolve + container-query feed. Shared verbatim with
+            // the detached/portal pass so the two can't drift (see the method).
+            self.sync_view_after_frame(view, frame.width, frame.height);
         }
         unsafe {
             let _: () = msg_send![objc2::class!(CATransaction), commit];
@@ -2086,6 +2427,21 @@ impl Backend for MacosBackend {
 
     fn set_app_key_handler(&mut self, handler: Option<runtime_core::primitives::key::KeyDownHandler>) {
         keyboard::set_app_key_handler(self, handler);
+    }
+
+    // Native render introspection (parity testing) — reads the live
+    // NSView/CALayer/NSFont state. Available whenever the robot bridge can
+    // call it (no extra feature needed); only the phase-timer cost
+    // attribution inside stays behind `debug-stats`. See `imp/introspect.rs`.
+    fn supports_native_introspection(&self) -> bool {
+        true
+    }
+
+    fn introspect_native(
+        &self,
+        node: &Self::Node,
+    ) -> Option<runtime_core::introspect::NativeNode> {
+        self.introspect_native_impl(node)
     }
 
     fn supports_screenshot(&self) -> bool {
@@ -2614,19 +2970,22 @@ impl Backend for MacosBackend {
         let field: Retained<objc2_app_kit::NSTextField> =
             unsafe { msg_send_id![msg_send_id![cls, alloc], init] };
 
-        // Vertically center the text. AppKit's default `NSTextFieldCell`
-        // top-aligns, so a field whose style adds vertical padding (taller
-        // than one line — e.g. a sidebar search box) shows its placeholder /
-        // text pinned to the top. Swap in a centering cell. Secure fields keep
-        // their `NSSecureTextFieldCell` (the centering cell isn't a secure
-        // subclass, so swapping would drop the bullet masking).
-        if !secure {
+        // Vertically center the text + apply framework chrome. AppKit's default
+        // `NSTextFieldCell` top-aligns and draws a native bezel/focus ring, so a
+        // field whose style adds vertical padding shows its text pinned to the
+        // top inside a system bezel. Swap in a framework centering cell — the
+        // SECURE variant (`VCenterSecureTextFieldCell`) subclasses
+        // `NSSecureTextFieldCell` so it keeps bullet masking while gaining the
+        // same centering, chrome, and focus/blur wiring a plain field has.
+        if secure {
+            crate::imp::view::vertically_center_secure_text_field(self.mtm, &field);
+        } else {
             crate::imp::view::vertically_center_text_field(self.mtm, &field);
         }
 
         // Cancelable blur: stash the handler on the field's cell so the
         // `FlippedView` outside-click handler can consult it before resigning
-        // this field. No-op for a secure field (no VCenterTextFieldCell).
+        // this field. Both framework cells (plain + secure) carry it.
         if let Some(handler) = on_blur {
             crate::imp::view::set_text_field_blur_handler(&field, handler);
         }
@@ -2730,10 +3089,23 @@ impl Backend for MacosBackend {
     }
 
     fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
-        // In-place cell swap (NSSecureTextFieldCell ↔ VCenterTextFieldCell) —
-        // keeps the node's NSView so the walker handle + controlled value
+        // In-place cell swap (VCenterSecureTextFieldCell ↔ VCenterTextFieldCell)
+        // — keeps the node's NSView so the walker handle + controlled value
         // survive the toggle. See `set_text_field_secure` for the invariant.
         crate::imp::view::set_text_field_secure(self.mtm, node.as_view(), secure);
+    }
+
+    fn set_text_input_focus_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: std::rc::Rc<dyn Fn(bool)>,
+    ) {
+        // Store the author `on_focus` on the field's framework cell; the cell's
+        // edit/endEditing overrides fire it (true on engage, false on resign)
+        // alongside the framework `FOCUSED` driver. Lets the idea-ui `Field`
+        // light its bordered shell's ring for an adorned (borderless-input)
+        // layout. No-op for a non-framework cell.
+        crate::imp::view::set_text_field_author_focus(node.as_view(), handler);
     }
 
     fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
@@ -2745,52 +3117,140 @@ impl Backend for MacosBackend {
     fn create_text_area(
         &mut self,
         initial_value: &str,
-        _placeholder: Option<&str>,
-        // `wrap` is the no-wrap / soft-wrap toggle. The macOS NSTextView
-        // path mounts bare today (see the v1 note below) and already
-        // sizes to its content via the intrinsic measure_fn installed
-        // below, so the wrap toggle lands in the same follow-up that
-        // adds the NSScrollView wrapping. (There is no `auto_grow` flag:
-        // content-height growth is just the intrinsic measure with no
-        // pinned height — which this path already does.)
-        _wrap: bool,
+        placeholder: Option<&str>,
+        // `wrap` is the no-wrap / soft-wrap toggle. When `true` (prose) the
+        // box autosizes to its wrapped content (the `measure_fn` below); when
+        // `false` (code editor) it's a fixed-height scroller sized by its
+        // style, so no measure is installed — matching web (`wrap == "off"`
+        // never autosizes) and iOS. Mounting bare (no NSScrollView) so the
+        // `wrap == false` clip/scroll affordance is still the documented v1
+        // follow-up; the autosize path here does not need it.
+        wrap: bool,
+        min_rows: Option<u32>,
+        max_rows: Option<u32>,
         on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        // NSTextView is the multi-line editable text widget. It's
-        // typically embedded in an NSScrollView for clipping +
-        // scrollbars; for v1 we mount it bare and let the layout
-        // pass size it directly. Wrap-in-scroll-view lands as a
-        // follow-up alongside the ScrollView wiring.
-        let view: Retained<NSView> = unsafe {
-            let allocated: *mut objc2::runtime::AnyObject =
-                msg_send![objc2::class!(NSTextView), alloc];
-            let inited: *mut objc2::runtime::AnyObject = msg_send![allocated, init];
-            Retained::from_raw(inited.cast::<NSView>())
-                .expect("NSTextView init returned nil")
-        };
+        // A `text_area` is an NSTextView hosted in an NSScrollView so it
+        // SCROLLS once content passes the `max_rows` cap — exactly like iOS
+        // (UITextView) / Android (EditText) / web (overflow). The two-view
+        // split is what makes this safe vs. the earlier per-keystroke flicker:
+        // Taffy sizes the SCROLL VIEW (the Taffy leaf, via the `measure_fn`
+        // below), while the NSTextView self-sizes the *documentView* inside it
+        // (`isVerticallyResizable = true`) — different views, so the heights
+        // never fight. The canonical auto-growing-text-view-in-scroll-view
+        // recipe; the scroll view scrolls the auto-grown text view whenever the
+        // Taffy-sized (capped) frame is shorter than the content.
+        // `IdealystTextView` is our NSTextView subclass that overlays a
+        // placeholder label (NSTextView has no native `placeholderString`).
+        let text_view = view::IdealystTextView::new(self.mtm);
+        if let Some(ph) = placeholder {
+            text_view.set_placeholder(self.mtm, Some(ph));
+        }
+        // The rest of this fn speaks `&NSView`; IdealystTextView IS-A NSView.
+        let view: Retained<NSView> = unsafe { Retained::cast(text_view) };
         let ns_val = NSString::from_str(initial_value);
         let _: () = unsafe { msg_send![&view, setString: &*ns_val] };
         let _: () = unsafe { msg_send![&view, setEditable: true] };
         let _: () = unsafe { msg_send![&view, setRichText: false] };
 
-        // Create-time theme default (see `create_text_input`): a bare
-        // `text_area` gets the theme surface + text color with drawsBackground
-        // forced on, so an NSTextView is never AppKit's dark system fill in
-        // dark mode. Explicit author colors override in `apply_style`.
-        let bg = color_to_nscolor(&input_background_color(None));
-        let _: () = unsafe { msg_send![&view, setDrawsBackground: true] };
-        let _: () = unsafe { msg_send![&view, setBackgroundColor: &*bg] };
+        // Sizing config: the text view does NOT self-size — the `measure_fn`
+        // sizes the documentView to its UNCAPPED content height, and the Taffy
+        // pass sizes the SCROLL VIEW to the capped height, so the scroll view
+        // has scrollable content ONLY when content exceeds the cap.
+        //   - verticallyResizable=false: a self-sizing text view fought our
+        //     sizing and (with the measure setting a tall frame) left the
+        //     documentView a MILLION points tall → the scroll view always had
+        //     scrollable content (constant bounce) and a runaway scroll range
+        //     (the reported giant-scrollbar bug). We own the height instead.
+        //   - horizontallyResizable=false + container widthTracksTextView=true +
+        //     autoresizingMask=WidthSizable: the SCROLL VIEW drives the
+        //     documentView WIDTH to the clip width (the visible box), and the
+        //     text container tracks that — so the DISPLAY wrap width is always
+        //     the clip width, NOT a transient value the measure_fn left behind.
+        //     (The measure sets the frame width only to compute height at a
+        //     given width; AppKit re-sets it to the clip on the real layout. Tying
+        //     display wrap to the measure left lines wrapping inconsistently as
+        //     Taffy probed intrinsic widths — the reported bug.) Width-only (not
+        //     Height) so the measure still owns the content height for scrolling.
+        //   - lineFragmentPadding=0 so the only horizontal text inset is the
+        //     author's `padding` (pushed into `textContainerInset` by
+        //     `apply_style`), matching web where `padding` is the sole inset.
+        const NS_VIEW_WIDTH_SIZABLE: usize = 2;
+        let huge = CGSize { width: f64::MAX, height: f64::MAX };
+        unsafe {
+            let _: () = msg_send![&view, setHorizontallyResizable: false];
+            let _: () = msg_send![&view, setVerticallyResizable: false];
+            let _: () = msg_send![&view, setMinSize: CGSize { width: 0.0, height: 0.0 }];
+            let _: () = msg_send![&view, setMaxSize: huge];
+            let _: () = msg_send![&view, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
+            let container: *mut NSObject = msg_send![&view, textContainer];
+            if !container.is_null() {
+                let _: () = msg_send![container, setWidthTracksTextView: true];
+                let _: () = msg_send![container, setHeightTracksTextView: false];
+                let _: () = msg_send![container, setContainerSize: huge];
+                let _: () = msg_send![container, setLineFragmentPadding: 0.0_f64];
+            }
+        }
+
+        // The text view is TRANSPARENT: the FlippedView chrome container (below)
+        // paints the surface + border; the text floats over it. (`apply_style`
+        // re-asserts transparency on the inner view; the container gets the bg.)
+        let _: () = unsafe { msg_send![&view, setDrawsBackground: false] };
         let fg = color_to_nscolor(&input_text_color(None));
         let _: () = unsafe { msg_send![&view, setTextColor: &*fg] };
 
-        // Wire change notification.
-        // `NSTextDidChangeNotification` fires every edit on the
-        // text view; the StringCallbackTarget's `textDidChange:`
-        // method reads the sender's `string` and forwards. The
-        // `notification.object` filter is the NSTextView itself,
-        // so a sibling TextArea's edits don't fire this handler.
+        // The NSScrollView host: transparent + borderless, auto-hiding vertical
+        // scroller, no rubber-band. It FILLS the chrome container (autoresize) so
+        // the container's CALayer border + surface are the visible box — NSScroll-
+        // View's OWN layer border does NOT render reliably, which is why the
+        // chrome lives on the FlippedView container instead.
+        const NS_VIEW_W_H_SIZABLE: usize = 2 | 16; // Width | Height sizable
+        let scroll: Retained<NSView> = unsafe {
+            let allocated: *mut objc2::runtime::AnyObject =
+                msg_send![objc2::class!(NSScrollView), alloc];
+            let inited: *mut objc2::runtime::AnyObject = msg_send![allocated, init];
+            Retained::from_raw(inited.cast::<NSView>()).expect("NSScrollView init returned nil")
+        };
+        unsafe {
+            let _: () = msg_send![&scroll, setDrawsBackground: false];
+            let _: () = msg_send![&scroll, setHasVerticalScroller: true];
+            let _: () = msg_send![&scroll, setHasHorizontalScroller: false];
+            let _: () = msg_send![&scroll, setAutohidesScrollers: true];
+            let _: () = msg_send![&scroll, setBorderType: 0usize]; // NSNoBorder
+            // NSScrollerStyleOverlay (= 1): the scroller FLOATS over the content
+            // instead of taking a ~15px gutter. Without this, a system set to
+            // "always show scroll bars" (legacy scrollers) narrows the clip below
+            // the width the measure_fn used → the text wraps to MORE lines than
+            // the documentView height accounts for → the last line is clipped at
+            // the bottom (reported). Overlay keeps the clip width == the box width
+            // == the measured width, so the content height stays correct.
+            let _: () = msg_send![&scroll, setScrollerStyle: 1isize];
+            // NSScrollElasticityNone (= 1): no rubber-band bounce on a form field.
+            let _: () = msg_send![&scroll, setVerticalScrollElasticity: 1isize];
+            let _: () = msg_send![&scroll, setHorizontalScrollElasticity: 1isize];
+            let _: () = msg_send![&scroll, setDocumentView: &*view];
+            let _: () = msg_send![&scroll, setAutoresizingMask: NS_VIEW_W_H_SIZABLE];
+        }
+
+        // Chrome container: a `FlippedView` (whose CALayer border/bg/radius render
+        // reliably) holding the scroll view, which autoresizes to fill it. THIS is
+        // the Taffy leaf + the node; `apply_style_to_view` styles its border/bg/
+        // radius normally, and `editable_text_target` reaches the inner text view
+        // through it (container → scroll view → documentView).
+        let container = view::FlippedView::new(self.mtm);
+        unsafe {
+            let _: () = msg_send![&container, addSubview: &*scroll];
+        }
+        // The rest of this fn (measure, node) speaks `&NSView`; FlippedView IS-A NSView.
+        let container: Retained<NSView> = unsafe { Retained::cast(container) };
+
+        // Wire change notification on the INNER text view.
+        // `NSTextDidChangeNotification` fires every edit; the
+        // StringCallbackTarget's `textDidChange:` reads the sender's `string`
+        // and forwards. The `object` filter is this text view, so a sibling
+        // TextArea's edits don't fire this handler.
         let target = callbacks::StringCallbackTarget::new(self.mtm, on_change);
         let sel = objc2::sel!(textDidChange:);
         let notification_name = NSString::from_str("NSTextDidChangeNotification");
@@ -2813,36 +3273,79 @@ impl Backend for MacosBackend {
             Retained::cast::<NSObject>(target)
         });
 
-        let layout = self.layout_for_view(&view);
-        let view_for_measure = view.clone();
-        // NSTextView's `intrinsicContentSize` reports its natural
-        // text-content size; clamp negatives and bias toward a
-        // reasonable default (matches the wgpu TEXT_AREA_DEFAULT_HEIGHT
-        // posture — 4× line ≈ 80pt).
-        const TEXT_AREA_DEFAULT_HEIGHT: f32 = 80.0;
-        self.layout.set_measure_fn(
-            layout,
-            Rc::new(move |known_dimensions, _available_space| {
-                let intrinsic: CGSize =
-                    unsafe { msg_send![&view_for_measure, intrinsicContentSize] };
-                let w = (intrinsic.width as f32).max(0.0);
-                let h = (intrinsic.height as f32).max(TEXT_AREA_DEFAULT_HEIGHT);
-                runtime_layout::Size {
-                    width: known_dimensions.width.unwrap_or(w),
-                    height: known_dimensions.height.unwrap_or(h),
-                }
-            }),
-        );
+        // Autosize only the soft-wrap (prose) shape — exactly like the web
+        // (`wrap == "off"` never autosizes) and iOS (`measure_fn` installed only
+        // when `wrap`). A `wrap == false` code editor is a fixed-height scroller
+        // sized by its style, not its content. The measure_fn lives on the
+        // CHROME CONTAINER (the Taffy leaf) but measures the inner text view.
+        if wrap {
+            let layout = self.layout_for_view(&container);
+            let view_for_measure = view.clone();
+            self.layout.set_measure_fn(
+                layout,
+                Rc::new(move |known_dimensions, available_space| {
+                    let avail_w = known_dimensions.width.unwrap_or(match available_space.width {
+                        runtime_layout::AvailableSpace::Definite(w) => w,
+                        runtime_layout::AvailableSpace::MaxContent => f32::INFINITY,
+                        runtime_layout::AvailableSpace::MinContent => 0.0,
+                    });
+                    let h = measure_text_view_height(&view_for_measure, avail_w, min_rows, max_rows);
+                    runtime_layout::Size {
+                        width: known_dimensions.width.unwrap_or(avail_w.max(0.0)),
+                        height: known_dimensions.height.unwrap_or(h),
+                    }
+                }),
+            );
+        }
 
-        let node = MacosNode::View(view);
-        a11y::apply(&node, a11y, None);
-        node
+        // The NODE is the chrome container (the Taffy leaf inserted into the
+        // tree); every text-targeting path reaches the inner text view via
+        // `editable_text_target` (container → scroll view → documentView). a11y
+        // lands on the text view (the role-bearing control), not the wrapper.
+        let inner_node = MacosNode::View(view);
+        a11y::apply(&inner_node, a11y, None);
+        MacosNode::View(container)
     }
 
     fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
         let view = node.as_view();
+        // String ops target the inner NSTextView (the node is its NSScrollView
+        // wrapper); layout/window queries stay on the scroll view (the Taffy
+        // leaf bearing the measure_fn).
+        let tv = editable_text_target(view);
+        let tv: &NSView = &tv;
+        // Cursor-jump guard (mirrors web `update_value`): a controlled
+        // `text_area` echoes the value the user just typed back through this
+        // path on the same turn; calling `setString:` with the identical text
+        // resets the insertion point to the end mid-edit. Skip the write when
+        // the content already matches.
+        let current: *mut NSString = unsafe { msg_send![tv, string] };
+        let unchanged =
+            !current.is_null() && unsafe { (*current).to_string() } == value;
+        if unchanged {
+            return;
+        }
         let ns = NSString::from_str(value);
-        let _: () = unsafe { msg_send![view, setString: &*ns] };
+        let _: () = unsafe { msg_send![tv, setString: &*ns] };
+        // `setString:` doesn't fire the text system's `didChangeText` (the
+        // typing path that toggles the placeholder), so re-sync it here.
+        view::sync_text_area_placeholder(tv);
+        // A content change shifts the autosized height; dirty the node so the
+        // next layout pass re-measures (the box grows/shrinks with the text).
+        // Without this a controlled `text_area` kept its mount-time height —
+        // the autogrow gap vs. web/iOS. Mirrors `update_text` for labels.
+        if let Some(layout) = self.layout_of(view) {
+            self.layout.mark_dirty(layout);
+            // `update_text` rides the re-render's existing pass, but a
+            // controlled value write can arrive without one (e.g. a
+            // programmatic set), so schedule a coalesced pass when the view is
+            // already in a window (past the initial build `finish`).
+            let host_window: *mut objc2_app_kit::NSWindow =
+                unsafe { msg_send![view, window] };
+            if !host_window.is_null() {
+                schedule_layout_pass();
+            }
+        }
     }
 
     fn create_toggle(
@@ -3064,23 +3567,33 @@ impl Backend for MacosBackend {
         // (not the clip view) leaves the clip painting dark — the bug where the
         // body stayed dark even with `background: #f7f5ef`.
         let _: () = unsafe { msg_send![&scroll_view, setDrawsBackground: false] };
+
+        // Scroll-content compositing policy (see `ScrollCompositing`): the copy
+        // optimization is OFF (the framework positions/animates by CALayer
+        // transform, which the copy optimization slices), and the documentView
+        // is layer-backed so that forced full-rect repaint is a GPU recomposite
+        // instead of a per-frame CPU `drawRect` pass over the whole subtree.
+        // The two flags are a coupled pair — copy-off without layer-backing is
+        // the scroll-jank bug (smooth on web/iOS, janky only on macOS).
+        let compositing = ScrollCompositing::policy();
+        debug_assert!(compositing.is_jank_free());
+
+        // Layer-back the documentView. AppKit propagates layer-backing to the
+        // entire subtree, so this composites ALL scrolled content; mid-tree
+        // layer-backing is metal-safe (#21 — every styled view already does it).
+        if compositing.document_wants_layer {
+            let _: () = unsafe { msg_send![&document_view, setWantsLayer: true] };
+        }
+
         let clip_for_bg: *mut NSObject = unsafe { msg_send![&scroll_view, contentView] };
         if !clip_for_bg.is_null() {
+            // The clip view's half of the "disable BOTH" background fix above
+            // (left painting dark on its own → the `#f7f5ef` dark-void bug).
             let _: () = unsafe { msg_send![clip_for_bg, setDrawsBackground: false] };
-            // Force a full redraw of the visible rect on every scroll instead of
-            // AppKit's default copy-old-pixels optimization. `copiesOnScroll`
-            // assumes content is positioned by FRAME and only repaints the strip
-            // newly exposed by the frame delta. But the framework positions and
-            // animates views by CALayer TRANSFORM (`AnimatedValue` Translate —
-            // every animation, and the transform-only DnD layout where cards are
-            // laid out at frame (0,0) and translated into place). Under the copy
-            // optimization a transformed card is repainted only where its
-            // *untransformed* frame intersects the exposed strip, so its content
-            // (e.g. a card's centered label) gets sliced off — worse the further
-            // it's scrolled. A full redraw composites every layer at its true
-            // transformed position. iOS/web get this for free; this is the macOS
-            // equivalent (CLAUDE.md §7 — converge in output).
-            let _: () = unsafe { msg_send![clip_for_bg, setCopiesOnScroll: false] };
+            // Copy-on-scroll per the compositing policy (off — see above).
+            let _: () = unsafe {
+                msg_send![clip_for_bg, setCopiesOnScroll: compositing.copies_on_scroll]
+            };
         }
 
         // Install the documentView. NSScrollView retains it; we
@@ -3311,6 +3824,53 @@ impl Backend for MacosBackend {
         let parent_layout = self.layout_for_view(parent_view);
         let child_layout = self.layout_for_view(child_view);
         self.layout.add_child(parent_layout, child_layout);
+
+        // Anchored portal: position the CONTENT child absolutely against the
+        // trigger and re-pin it each frame. Composition inserts children in
+        // paint order — backdrop / click-away catcher FIRST, content LAST — so
+        // the LATEST child claims the tracker (see `portal_policy`): freezing on
+        // the first would pin a full-screen backdrop and leave the content laid
+        // out top-left (the reported "renders in the corner" bug). A single-child
+        // tooltip is unaffected (its one child is both first and last).
+        let parent_key = parent_view as *const NSView as usize;
+        if self.portal_instances.contains_key(&parent_key) {
+            use crate::portal_policy::{anchored_insert_action, AnchoredInsertAction};
+            let tracker_live = self
+                .portal_instances
+                .get(&parent_key)
+                .is_some_and(|e| e.tracker.is_some());
+            let action = anchored_insert_action(true, tracker_live);
+            if matches!(
+                action,
+                AnchoredInsertAction::StartTracker | AnchoredInsertAction::RetrackToLatest
+            ) {
+                // Drop the prior tracker before wiring the new one so a
+                // `[backdrop, content]` portal keeps exactly ONE live loop (on
+                // the content). Dropping the `RafLoop` cancels it.
+                if matches!(action, AnchoredInsertAction::RetrackToLatest) {
+                    if let Some(e) = self.portal_instances.get_mut(&parent_key) {
+                        e.tracker = None;
+                    }
+                }
+                let spec = self.portal_instances.get(&parent_key).unwrap().anchor.clone();
+                let child_rules = portal::child_style_for_anchor(&spec);
+                self.layout.set_style(child_layout, &child_rules);
+                let popover: Retained<NSView> = unsafe {
+                    Retained::retain(child_view as *const NSView as *mut NSView)
+                        .expect("retain anchored portal content view")
+                };
+                let tracker = portal::start_anchor_tracker(
+                    popover,
+                    spec.target.clone(),
+                    spec.side,
+                    spec.align,
+                    spec.offset,
+                );
+                if let Some(e) = self.portal_instances.get_mut(&parent_key) {
+                    e.tracker = Some(tracker);
+                }
+            }
+        }
 
         // Post-mount insert into a window-attached parent → queue a coalesced
         // layout pass so the freshly-mounted subtree gets sized. During the
@@ -3595,7 +4155,25 @@ impl Backend for MacosBackend {
         // a `:hover` color swap); we use it below to skip a needless layout
         // pass. `false` when the node has no Taffy node yet.
         let layout_changed = if let Some(layout_node) = self.layout_of(view) {
-            self.layout.set_style(layout_node, style)
+            if is_text_area_container(view) {
+                // A `text_area`'s padding is realized as the inner text view's
+                // `textContainerInset` (see the editable arm below), so it must
+                // NOT also be Taffy padding — otherwise it's counted TWICE: Taffy
+                // hands the measure_fn the content-box width (narrower than the
+                // visible box) so the text wraps to more lines than it displays,
+                // AND Taffy adds the padding back on top of the inset → the box
+                // ends up too tall with extra space at the bottom. Zero the Taffy
+                // padding so the measure sees the full box width and the height is
+                // `content + one padding`.
+                let mut s = (**style).clone();
+                s.padding_top = None;
+                s.padding_right = None;
+                s.padding_bottom = None;
+                s.padding_left = None;
+                self.layout.set_style(layout_node, &s)
+            } else {
+                self.layout.set_style(layout_node, style)
+            }
         } else {
             false
         };
@@ -3651,7 +4229,7 @@ impl Backend for MacosBackend {
                     measure_changed = true;
                 }
             }
-            MacosNode::View(_) if is_editable_text_control(view) => {
+            MacosNode::View(_) if is_editable_text_control(view) || is_text_area_container(view) => {
                 // NSTextField / NSTextView paint their OWN background + text
                 // through AppKit (the system text-control fill + `labelColor`),
                 // which composites OVER the CALayer `backgroundColor` that
@@ -3664,21 +4242,37 @@ impl Backend for MacosBackend {
                 // so the fill actually paints. Editing behaviour (caret,
                 // selection, secure entry) is untouched — these are pure
                 // appearance setters. Shared decision with iOS (§7).
+                //
+                // For a `text_area` the node is the chrome CONTAINER (a
+                // FlippedView). `apply_style_to_view` already painted its surface
+                // + 1px border + radius on the container's CALayer (FlippedView
+                // borders render reliably; an NSScrollView's layer border does
+                // NOT, which is why the chrome lives on the container). Here we
+                // only style the INNER text view (colors/font/inset) and keep it
+                // TRANSPARENT so the container surface + border are the visible
+                // box and nothing opaque covers the border.
+                let target = editable_text_target(view);
+                let target: &NSView = &target;
                 let bg = color_to_nscolor(&input_background_color(style.background.as_ref()));
                 // A fully-transparent author background means "no fill" — turn
                 // drawsBackground OFF so AppKit doesn't paint an opaque system
                 // surface under it (an in-canvas text editor wants the canvas to
                 // show through). Any visible alpha keeps the fill.
                 let draws_bg = style_color_rgba(&input_background_color(style.background.as_ref()))[3] > 0.001;
-                let _: () = unsafe { msg_send![view, setDrawsBackground: draws_bg] };
-                let _: () = unsafe { msg_send![view, setBackgroundColor: &*bg] };
                 let fg = color_to_nscolor(&input_text_color(style.color.as_ref()));
-                let _: () = unsafe { msg_send![view, setTextColor: &*fg] };
+                let _: () = unsafe { msg_send![target, setTextColor: &*fg] };
+                if is_text_area_container(view) {
+                    // Inner text view transparent — the container is the surface.
+                    let _: () = unsafe { msg_send![target, setDrawsBackground: false] };
+                } else {
+                    let _: () = unsafe { msg_send![target, setDrawsBackground: draws_bg] };
+                    let _: () = unsafe { msg_send![target, setBackgroundColor: &*bg] };
+                }
                 // Mirror the author's TYPOGRAPHY (font family/size/weight, alignment)
                 // onto the AppKit widget too — `apply_style_to_view` only does the
                 // CALayer-level props, so without this an NSTextField/NSTextView
                 // ignores `font_family`/`font_size` and renders in the system font.
-                text_style::apply_text_style(view, style, false, &self.font_registry);
+                text_style::apply_text_style(target, style, false, &self.font_registry);
                 // Author `padding_*` insets the text from the border (Taffy
                 // reserves the padding on the node, but AppKit paints the field's
                 // text flush at the cell origin). Push left/right into the
@@ -3688,15 +4282,44 @@ impl Backend for MacosBackend {
                 let resolve = |t: &Option<runtime_core::Tokenized<runtime_core::Length>>| {
                     t.as_ref().map(|tok| length_to_px(&tok.resolve())).unwrap_or(0.0)
                 };
-                view::set_text_field_insets(
-                    view,
-                    view::LabelInsets {
-                        top: resolve(&style.padding_top),
-                        left: resolve(&style.padding_left),
-                        bottom: resolve(&style.padding_bottom),
-                        right: resolve(&style.padding_right),
-                    },
-                );
+                let pad = view::LabelInsets {
+                    top: resolve(&style.padding_top),
+                    left: resolve(&style.padding_left),
+                    bottom: resolve(&style.padding_bottom),
+                    right: resolve(&style.padding_right),
+                };
+                if is_text_view(target) {
+                    // A multi-line `text_area` (NSTextView) has no framework
+                    // cell, so the field-inset path above is a no-op for it.
+                    // AppKit's only text-from-edge knob on a text view is the
+                    // symmetric `textContainerInset` (a CGSize: width = left &
+                    // right, height = top & bottom). Author `text_area` padding
+                    // is symmetric in practice (idea-ui Field uses
+                    // `padding: <v> <h>`), so map horizontal←left, vertical←top.
+                    // This is the platform analogue of web's `padding`; the same
+                    // inset is what `measure_text_view_height` adds back, so the
+                    // box grows to `content + padding` exactly like the web box.
+                    let new_inset = CGSize {
+                        width: pad.left as CGFloat,
+                        height: pad.top as CGFloat,
+                    };
+                    let old_inset: CGSize = unsafe { msg_send![target, textContainerInset] };
+                    let _: () = unsafe { msg_send![target, setTextContainerInset: new_inset] };
+                    // A changed inset changes the measured height (it's added to
+                    // both edges) — dirty the node so the next pass re-measures,
+                    // mirroring the label `text_measure_signature` gate. The
+                    // Taffy node is the SCROLL VIEW (`view`), not the text view.
+                    if (old_inset.width - new_inset.width).abs() > f64::EPSILON
+                        || (old_inset.height - new_inset.height).abs() > f64::EPSILON
+                    {
+                        if let Some(layout_node) = self.layout_of(view) {
+                            self.layout.mark_dirty(layout_node);
+                        }
+                        measure_changed = true;
+                    }
+                } else {
+                    view::set_text_field_insets(target, pad);
+                }
             }
             MacosNode::View(_) => {
                 // NSScrollView + its NSClipView paint their background through
@@ -3791,8 +4414,23 @@ impl Backend for MacosBackend {
     /// macOS has no touch, so this is the desktop analogue of web's CSS
     /// `:hover`/`:active`.
     fn attach_states(&mut self, node: &Self::Node, setter: Rc<dyn Fn(StateBits, bool)>) {
-        if let Some(fv) = as_flipped_view(node.as_view()) {
-            fv.set_state_setter(setter);
+        let view = node.as_view();
+        if let Some(fv) = as_flipped_view(view) {
+            fv.set_state_setter(setter.clone());
+            // A `text_area` chrome container IS a FlippedView (hover/press via
+            // the tracking area above), but its FOCUSED state must come from the
+            // inner NSTextView's first-responder change — the FlippedView never
+            // becomes first responder. Install the focus driver on the inner view
+            // so the `state focused` border (focus ring) lights on edit, like the
+            // single-line Field.
+            if is_text_area_container(view) {
+                let focus_setter = setter.clone();
+                let inner = editable_text_target(view);
+                view::set_text_area_focus_setter(
+                    &inner,
+                    Rc::new(move |on: bool| focus_setter(StateBits::FOCUSED, on)),
+                );
+            }
             return;
         }
         // Native controls render their own hover/press, so they're not
@@ -3875,6 +4513,14 @@ impl Backend for MacosBackend {
 
     fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
         handles::make_view_handle(node)
+    }
+
+    fn make_button_handle(&self, node: &Self::Node) -> runtime_core::ButtonHandle {
+        handles::make_button_handle(node)
+    }
+
+    fn make_pressable_handle(&self, node: &Self::Node) -> runtime_core::PressableHandle {
+        handles::make_pressable_handle(node)
     }
 
     fn make_scroll_view_handle(
@@ -4181,11 +4827,29 @@ impl Backend for MacosBackend {
     ) -> Self::Node {
         // Full-viewport overlay attached to the host window's contentView. Scrim
         // styling, named-slot routing, on_dismiss event firing, and focus
-        // trapping are deferred — match iOS's portal_instances surface when those
-        // land. The container's flex style (from the placement) positions its
-        // single content child within the viewport; FullScreen stretches it so a
-        // self-centering child (idea-ui `Modal`) fills the window.
-        let container_rules = portal_container_style(&target);
+        // trapping are deferred. For a VIEWPORT target the container's flex
+        // style (from the placement) positions its single content child within
+        // the viewport; FullScreen stretches it so a self-centering child
+        // (idea-ui `Modal`) fills the window. For an ANCHOR target the container
+        // uses a NEUTRAL flex style and the content child is positioned
+        // absolutely against the trigger rect + tracked each frame (see
+        // `insert` / `imp::portal`); without that the content laid out at the
+        // container's top-left — the tooltip/popover "renders in the corner" bug.
+        use runtime_core::primitives::portal::PortalTarget;
+        let anchor_spec = match &target {
+            PortalTarget::Anchor { target: t, side, align, offset } => Some(portal::AnchorSpec {
+                target: t.clone(),
+                side: *side,
+                align: *align,
+                offset: *offset,
+            }),
+            _ => None,
+        };
+        let container_rules = if anchor_spec.is_some() {
+            portal::container_style_for_anchor()
+        } else {
+            portal_container_style(&target)
+        };
 
         let content = FlippedView::new(self.mtm);
         let content: Retained<NSView> = Retained::into_super(content);
@@ -4210,6 +4874,13 @@ impl Backend for MacosBackend {
         let portal_key = &*content as *const NSView as usize;
         self.portal_roots.insert(portal_key);
 
+        // Anchored portals carry their descriptor + (later) tracker so `insert`
+        // can position the content child against the trigger and `release_portal`
+        // can stop the tracker. Viewport portals get no entry.
+        if let Some(anchor) = anchor_spec {
+            self.portal_instances.insert(portal_key, portal::PortalEntry { anchor, tracker: None });
+        }
+
         // Hold a strong ref so a future `release_portal` can
         // detach it cleanly. Without a side-map entry, removal
         // would require walking the tree.
@@ -4219,13 +4890,28 @@ impl Backend for MacosBackend {
     }
 
     fn release_portal(&mut self, node: &Self::Node) {
-        // v1 cleanup: detach the overlay from its superview. Once
-        // `portal_instances` lands (mirroring iOS's per-portal
-        // entry map), we'll also drop any KVO observers / dismiss
-        // gesture recognizers attached at create time.
-        self.portal_roots.remove(&node.view_key());
+        let key = node.view_key();
+        self.portal_roots.remove(&key);
+        // Drop the anchored-portal entry FIRST so its `raf_loop` tracker stops
+        // before the view leaves the hierarchy — a tracker firing into a
+        // detached popover would keep reading a stale frame and re-pinning a
+        // dead view. `RafLoop`'s Drop cancels the loop.
+        self.portal_instances.remove(&key);
         let view = node.as_view();
         unsafe { view.removeFromSuperview() };
+    }
+
+    fn set_portal_hidden(&mut self, node: &Self::Node, hidden: bool) {
+        // Toggle the portal container's visibility without tearing it down, so
+        // an overlay opened on one screen doesn't float over the next after a
+        // navigation (the portal is parented to the window's contentView and a
+        // persistent screen keeps its scope alive). `setHidden:` also stops the
+        // hidden view from hit-testing, so a popover's transparent click-away
+        // catcher can't swallow clicks meant for the now-active screen. The
+        // anchor tracker (anchored portals) keeps running, but `setFrame:` on a
+        // hidden view is harmless and it re-pins on re-show.
+        let view = node.as_view();
+        let _: () = unsafe { msg_send![view, setHidden: hidden] };
     }
 
     fn create_external(

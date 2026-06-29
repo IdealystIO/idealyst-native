@@ -210,7 +210,15 @@ pub(crate) fn create_icon(
     // SIGABRTs) — `setFill/StrokeColor:` take the same typed pointer.
     let ns_color: Retained<NSColor> = match color {
         Some(c) => color_to_nscolor(c),
-        None => unsafe { msg_send_id![objc2::class!(NSColor), labelColor] },
+        // No explicit color → the THEME text color (the analogue of web's
+        // `currentColor`), NOT `NSColor.labelColor`. `labelColor` tracks the OS
+        // appearance — WHITE on a dark-appearance Mac — so a colorless icon in a
+        // light-theme app painted white-on-white and vanished (the invisible
+        // password-toggle eye that prompted this). This is the exact dark-mode
+        // trap `create_text` avoids with `theme_text_color()`; resolving the
+        // theme token makes a default-colored icon visible and appearance-
+        // independent, matching iOS/web.
+        None => color_to_nscolor(&super::theme_text_color()),
     };
     let cg_color: super::CGColorRef = unsafe { msg_send![&ns_color, CGColor] };
     let clear: Retained<NSColor> = unsafe {

@@ -39,6 +39,7 @@
 mod a11y;
 mod animated;
 mod batch_queue;
+mod introspect;
 #[cfg(test)]
 mod tests;
 #[cfg(feature = "async-driver")]
@@ -630,6 +631,15 @@ pub struct WebBackend {
     /// without clobbering unrelated axes. See [`animated`] module
     /// for the per-property routing.
     pub(crate) animated_states: animated::AnimatedStateMap,
+    /// Identity set of framework primitive **root** DOM nodes, populated by
+    /// `note_introspection_root` (called from the walker as each primitive is
+    /// registered). The native-introspection walk uses object identity here
+    /// to know where one primitive's DOM ends and a child primitive's begins
+    /// — it prunes the tree at any descendant in this set. A `js_sys::Set`
+    /// (SameValueZero identity for objects) so it needs no node-id round-trip.
+    /// Populated only in robot builds (the walker calls
+    /// `note_introspection_root`); a single cheap JS Set otherwise idle.
+    pub(crate) introspection_roots: js_sys::Set,
 }
 
 /// Diagnostic snapshot returned by [`WebBackend::debug_counts`].
@@ -1095,6 +1105,7 @@ impl WebBackend {
             navigator_handlers: runtime_core::NavigatorRegistry::new(),
             nav_handler_instances: HashMap::new(),
             animated_states: HashMap::new(),
+            introspection_roots: js_sys::Set::new(&wasm_bindgen::JsValue::UNDEFINED),
         };
         backend.drain_self_registrars();
         backend
@@ -1964,6 +1975,26 @@ impl Backend for WebBackend {
         runtime_core::Platform::Web
     }
 
+    // Native render introspection (parity testing) — reads the browser's
+    // resolved `getComputedStyle`/`getBoundingClientRect`. Available whenever
+    // the robot bridge can call it (no extra feature); only the introspect
+    // phase-timer inside auto-stubs out without `debug-stats`. See
+    // `introspect.rs`.
+    fn supports_native_introspection(&self) -> bool {
+        true
+    }
+
+    fn introspect_native(
+        &self,
+        node: &Self::Node,
+    ) -> Option<runtime_core::introspect::NativeNode> {
+        self.introspect_native_impl(node)
+    }
+
+    fn note_introspection_root(&self, node: &Self::Node) {
+        self.note_introspection_root_impl(node);
+    }
+
     fn url_opener(&self) -> Option<std::rc::Rc<dyn Fn(&str)>> {
         // `_blank` opens a new tab. Without a target the navigation
         // replaces the current document, which unmounts the framework
@@ -2455,6 +2486,10 @@ impl Backend for WebBackend {
         primitives::text_input::update_secure(node, secure)
     }
 
+    fn set_text_input_focus_handler(&mut self, node: &Self::Node, handler: Rc<dyn Fn(bool)>) {
+        primitives::text_input::set_focus_handler(self, node, handler);
+    }
+
     fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
         primitives::text_input::update_placeholder(node, placeholder)
     }
@@ -2464,6 +2499,8 @@ impl Backend for WebBackend {
         initial_value: &str,
         placeholder: Option<&str>,
         wrap: bool,
+        min_rows: Option<u32>,
+        max_rows: Option<u32>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
@@ -2473,6 +2510,8 @@ impl Backend for WebBackend {
             initial_value,
             placeholder,
             wrap,
+            min_rows,
+            max_rows,
             on_change,
             on_key_down,
         );

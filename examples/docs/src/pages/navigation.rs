@@ -160,7 +160,8 @@ docs! {
           " / ", code("popstate"), "."),
 
         code(rust, r##"
-            use runtime_core::{Navigator, Ref};
+            use stack_navigator::Navigator;
+            use runtime_core::Ref;
 
             let nav: Ref<NavigatorHandle> = Ref::new();
 
@@ -215,7 +216,7 @@ docs! {
         p(code("TabNavigator"), " is a tab bar plus a switched content region."),
 
         code(rust, r##"
-            use runtime_core::{TabNavigator, TabSpec};
+            use tab_navigator::{TabNavigator, TabSpec};
 
             let tabs: Ref<TabsHandle> = Ref::new();
 
@@ -294,7 +295,7 @@ docs! {
            for; tapping an entry switches the body to that entry's screen."),
 
         code(rust, r##"
-            use runtime_core::{DrawerNavigator, DrawerSide};
+            use drawer_navigator::{DrawerNavigator, DrawerSide};
 
             let drawer: Ref<DrawerHandle> = Ref::new();
 

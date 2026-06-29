@@ -298,6 +298,11 @@ pub enum Element {
         /// vetoes the blur (focus + mobile keyboard stay). `None` = always
         /// allow. Focus-transfer to another input is never vetoed.
         on_blur: Option<crate::primitives::text_input::BlurHandler>,
+        /// Focus-change notification (the symmetric partner of `on_blur`, but
+        /// no veto). Fires `true` on focus / `false` on blur. Lets a parent
+        /// drive focus chrome the input can't — e.g. the idea-ui `Field` lights
+        /// its bordered shell's ring for an adorned (borderless-input) layout.
+        on_focus: Option<crate::primitives::text_input::FocusHandler>,
         /// Placeholder shown when empty. `Reactive<Option<String>>` — a
         /// `Static` snapshot (the common case, no effect) or a live source so
         /// the placeholder can change at runtime without rebuilding the input.
@@ -349,6 +354,17 @@ pub enum Element {
         /// textarea behaviour) or keep lines unwrapped and scroll
         /// horizontally (`false`, the code-editor shape).
         wrap: bool,
+        /// Autogrow floor in text lines: the box is at least this many
+        /// rows tall and never shrinks below it. `None` floors at one
+        /// line. Backends convert rows→pixels using their REAL font line
+        /// height (not an estimate), so the floor is exact per platform.
+        /// An explicit style `min_height` overrides this.
+        min_rows: Option<u32>,
+        /// Autogrow cap in text lines: once the content needs more than
+        /// this many rows the box stops growing and scrolls. `None`
+        /// leaves it uncapped (grows without bound). An explicit style
+        /// `max_height` overrides this.
+        max_rows: Option<u32>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
         accessibility: AccessibilityProps,
@@ -814,7 +830,9 @@ pub enum Element {
 
 impl Element {
     /// Attaches a test ID to this primitive for robot/automation queries.
-    /// Only available when the `robot` feature is enabled.
+    /// Only available when the `robot` feature is enabled (the `test_id` fields
+    /// themselves are robot-gated). The `ui!` macro reaches this through
+    /// `Bound::test_id`, which is a no-op stub when `robot` is off.
     #[cfg(feature = "robot")]
     pub fn with_test_id(mut self, id: &'static str) -> Self {
         match &mut self {

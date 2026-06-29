@@ -8,7 +8,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use runtime_core::{reducer, Effect};
+use runtime_core::{reducer, watch};
 
 #[derive(Clone, Debug, PartialEq)]
 enum Action {
@@ -46,7 +46,7 @@ fn state_signal_notifies_subscribers() {
     let count: Rc<Cell<usize>> = Rc::new(Cell::new(0));
     let ct = count.clone();
 
-    let _e = Effect::new(move || {
+    let _e = watch(move || {
         let _ = state.get();
         ct.set(ct.get() + 1);
     });
@@ -71,7 +71,7 @@ fn dispatch_from_effect_does_not_self_subscribe() {
     let dispatched: Rc<Cell<bool>> = Rc::new(Cell::new(false));
     let dispatched_for_effect = dispatched.clone();
 
-    let _e = Effect::new(move || {
+    let _e = watch(move || {
         ct.set(ct.get() + 1);
         // Dispatch exactly once on the initial run.
         if !dispatched_for_effect.get() {
@@ -101,7 +101,7 @@ fn reducer_body_reads_are_not_tracked() {
     // Initial state read.
     let count: Rc<Cell<usize>> = Rc::new(Cell::new(0));
     let ct = count.clone();
-    let _e = Effect::new(move || {
+    let _e = watch(move || {
         let _ = state.get();
         ct.set(ct.get() + 1);
     });

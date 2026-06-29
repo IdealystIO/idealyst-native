@@ -76,6 +76,15 @@ impl App {
             .to_string()
     }
 
+    /// Capture this app's **platform-native render tree** — each element's
+    /// resolved geometry + visual props as the backend reports them, keyed by a
+    /// stable element path. Use [`crate::parity::diff`] to compare two captures
+    /// (e.g. web vs macOS) for cross-platform parity. Panics on a bridge error.
+    pub fn capture_native(&mut self) -> crate::parity::Capture {
+        crate::parity::capture_native(&mut self.client)
+            .unwrap_or_else(|e| panic!("capture_native failed: {e}"))
+    }
+
     /// How many elements currently match `kind` (e.g. count every `Button`).
     pub fn count(&mut self, kind: &str) -> usize {
         let v = self

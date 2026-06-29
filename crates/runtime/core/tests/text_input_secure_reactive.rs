@@ -10,10 +10,10 @@
 //! `update_text_input_secure` call, so proving it threads end-to-end pins the
 //! contract they share.
 
-// Include only the harness pieces we need, NOT the whole `common` module —
-// `common/counted.rs` currently fails to compile against the now-`pub(crate)`
-// `Effect::new` (a separate, pre-existing harness breakage). `mock_backend` is
-// self-contained and `runtime` only needs `super::mock_backend`.
+// Include only the harness pieces we need (mock backend + TestRuntime),
+// NOT the whole `common` umbrella — this binary touches no other module.
+// `mock_backend` is self-contained and `runtime` only needs
+// `super::mock_backend`.
 #[path = "common/mock_backend.rs"]
 mod mock_backend;
 #[path = "common/runtime.rs"]
@@ -21,7 +21,7 @@ mod runtime;
 
 use mock_backend::Event;
 use runtime::TestRuntime;
-use runtime_core::{rx, signal, text_input, IntoElement, Signal};
+use runtime_core::{arena_stats, rx, signal, text_input, IntoElement, Signal};
 
 #[test]
 fn reactive_secure_toggles_in_place_without_rebuild() {
@@ -124,5 +124,64 @@ fn reactive_placeholder_updates_in_place_without_rebuild() {
         !evs.iter().any(|e| matches!(e, Event::CreateTextInput { .. })),
         "the input must NOT be rebuilt: {:?}",
         evs
+    );
+}
+
+/// Teardown: the scope-owned `Effect::new(...)` installed by
+/// `text_input(..).secure(rx!(..))` in the walker (`walker/text_input.rs`) must
+/// be FREED when the render `Owner` drops. After unmount, flipping the source
+/// must NOT reach the (now-released) backend — no further
+/// `update_text_input_secure` — and `effects_in_use` returns to baseline.
+#[test]
+fn reactive_secure_effect_is_freed_on_owner_drop() {
+    let rt = TestRuntime::new();
+    let value = signal!(String::new());
+    let visible: Signal<bool> = signal!(false);
+
+    let effects_baseline = arena_stats().effects_in_use;
+
+    let tree = text_input(value, |_| {})
+        .secure(rx!(!visible.get()))
+        .into_element();
+    let owner = rt.render(tree);
+
+    // Sanity: while mounted, flipping the source fires the in-place toggle.
+    rt.backend_mut().clear_events();
+    visible.set(true);
+    assert!(
+        rt.events()
+            .iter()
+            .any(|e| matches!(e, Event::UpdateTextInputSecure { secure: false, .. })),
+        "while mounted, revealing must fire update_text_input_secure: {:?}",
+        rt.events()
+    );
+
+    // The secure effect occupies an arena slot while the owner is alive.
+    assert!(
+        arena_stats().effects_in_use > effects_baseline,
+        "the reactive secure effect should occupy an arena slot while mounted",
+    );
+
+    // Drop the render scope: the scope-owned effect must be released with it.
+    drop(owner);
+
+    // Effect count returns toward baseline (assertion b).
+    assert_eq!(
+        arena_stats().effects_in_use,
+        effects_baseline,
+        "after Owner drop, the secure effect must be freed (effects_in_use back to baseline)",
+    );
+
+    // Behavioral proof (assertion a): flipping the source again must NOT reach
+    // the freed backend effect — no further update_text_input_secure.
+    rt.backend_mut().clear_events();
+    visible.set(false);
+    assert!(
+        !rt.events()
+            .iter()
+            .any(|e| matches!(e, Event::UpdateTextInputSecure { .. })),
+        "after Owner drop, flipping the source must NOT fire \
+         update_text_input_secure (the effect was freed with the scope): {:?}",
+        rt.events()
     );
 }

@@ -96,12 +96,50 @@ pub fn text_area<F: Fn(String) + 'static>(
         // Standard textarea default: soft-wrap on. The code-editor
         // shape is the explicit opt-out.
         wrap: true,
+        // Unbounded autogrow by default: floor at one line, no cap.
+        min_rows: None,
+        max_rows: None,
         style: None,
         ref_fill: None,
         accessibility: crate::accessibility::AccessibilityProps::default(),
         #[cfg(feature = "robot")]
         test_id: None,
     })
+}
+
+/// Resolve an autogrowing text area's border-box **height** from its measured
+/// content — the shared cross-backend autosize math. Every backend computes
+/// `content_h` (the glyph-layout height for the current width), `line_h` (the
+/// font's single-line height), and `v_pad` (the per-edge vertical padding) from
+/// its OWN real metrics, then calls this so the `min_rows`/`max_rows` → pixel
+/// conversion is identical and uses each platform's true line height instead of
+/// an estimate (the old idea-ui guess).
+///
+/// - floors at `max(1, min_rows)` lines so an empty box is never shorter than
+///   its resting row count;
+/// - caps at `max_rows` lines (the native widget then scrolls past it);
+/// - adds `v_pad` to BOTH the top and bottom edge (web `box-sizing: border-box`
+///   parity).
+///
+/// An explicit style `min_height`/`max_height` still applies on top (the layout
+/// engine clamps the returned height), so authors keep a pixel-precise override.
+pub fn resolve_text_area_height(
+    content_h: f32,
+    line_h: f32,
+    v_pad: f32,
+    min_rows: Option<u32>,
+    max_rows: Option<u32>,
+) -> f32 {
+    let pad = v_pad.max(0.0) * 2.0;
+    let line = line_h.max(0.0);
+    let floor_rows = min_rows.unwrap_or(1).max(1) as f32;
+    let mut h = content_h.max(0.0) + pad;
+    h = h.max(floor_rows * line + pad);
+    if let Some(mx) = max_rows {
+        let cap = (mx.max(1) as f32) * line + pad;
+        h = h.min(cap);
+    }
+    h
 }
 
 impl Bound<TextAreaHandle> {
@@ -139,6 +177,27 @@ impl Bound<TextAreaHandle> {
         self.wrap(false)
     }
 
+    /// Resting floor in text lines: the autogrowing box is at least this
+    /// many rows tall and never shrinks below it. The backend converts
+    /// rows→pixels using its real font line height, so the floor is exact
+    /// on every platform. An explicit style `min_height` overrides it.
+    pub fn min_rows(mut self, rows: u32) -> Self {
+        if let Element::TextArea { min_rows, .. } = &mut self.primitive {
+            *min_rows = Some(rows);
+        }
+        self
+    }
+
+    /// Growth cap in text lines: once the content needs more rows than
+    /// this the box stops growing and scrolls. Leaves the box uncapped
+    /// when never set. An explicit style `max_height` overrides it.
+    pub fn max_rows(mut self, rows: u32) -> Self {
+        if let Element::TextArea { max_rows, .. } = &mut self.primitive {
+            *max_rows = Some(rows);
+        }
+        self
+    }
+
     /// Attach a keyboard hook that fires on every keydown while the
     /// textarea has focus. Return [`KeyOutcome::PreventDefault`] to
     /// suppress the platform's default behaviour for that key. See
@@ -153,5 +212,50 @@ impl Bound<TextAreaHandle> {
             *on_key_down = Some(Rc::new(move |e: &KeyEvent| crate::cycle(|| handler(e))));
         }
         self
+    }
+}
+
+#[cfg(test)]
+mod resolve_height_tests {
+    use super::resolve_text_area_height;
+
+    // line_h = 20, v_pad = 8 → padding contributes 16; one line + pad = 36.
+
+    #[test]
+    fn empty_floors_at_one_line_when_no_min_rows() {
+        // No content, no floor → exactly one line + padding.
+        assert_eq!(resolve_text_area_height(0.0, 20.0, 8.0, None, None), 36.0);
+    }
+
+    #[test]
+    fn floors_at_min_rows() {
+        // Three-row floor with one line of content → 3 lines + padding.
+        assert_eq!(resolve_text_area_height(20.0, 20.0, 8.0, Some(3), None), 76.0);
+    }
+
+    #[test]
+    fn grows_with_content_between_floor_and_cap() {
+        // Five lines of content, floor 3, cap 8 → content wins.
+        assert_eq!(resolve_text_area_height(100.0, 20.0, 8.0, Some(3), Some(8)), 116.0);
+    }
+
+    #[test]
+    fn caps_at_max_rows_then_scrolls() {
+        // Twelve lines of content but capped at 8 → 8 lines + padding (the
+        // native widget scrolls the overflow).
+        assert_eq!(resolve_text_area_height(240.0, 20.0, 8.0, Some(3), Some(8)), 176.0);
+    }
+
+    #[test]
+    fn cap_below_floor_clamps_to_cap() {
+        // Degenerate author input (max_rows < min_rows): the cap wins so the
+        // box can't exceed its own stated maximum.
+        assert_eq!(resolve_text_area_height(200.0, 20.0, 8.0, Some(6), Some(2)), 56.0);
+    }
+
+    #[test]
+    fn zero_rows_treated_as_one_line() {
+        // `min_rows(0)` / `max_rows(0)` are nonsense → clamped up to one line.
+        assert_eq!(resolve_text_area_height(0.0, 20.0, 0.0, Some(0), Some(0)), 20.0);
     }
 }

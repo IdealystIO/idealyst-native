@@ -29,6 +29,9 @@ tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Shared render-parity model + diff (also used by the robot-test harness), for
+# the `compare_native_parity` tool.
+native-parity = { workspace = true }
 
 # File-watch (phase 5). Reuses `notify-debouncer-mini` — same crate
 # the existing `dev-reload` uses, so we don't introduce a second

@@ -466,6 +466,8 @@ impl Backend for MockBackend {
         initial_value: &str,
         _placeholder: Option<&str>,
         _wrap: bool,
+        _min_rows: Option<u32>,
+        _max_rows: Option<u32>,
         _on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
         a11y: &AccessibilityProps,

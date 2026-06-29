@@ -79,6 +79,12 @@ pub struct CatalogService {
     /// before falling back to the on-disk catalog. Empty (and
     /// harmlessly so) when no app is running.
     discovery: crate::app_discovery::DiscoveryTable,
+    /// Tracks `idealyst dev` sessions launched via the `run_dev` tool so
+    /// `list_dev_sessions` / `stop_dev` can manage them. Shared by `Arc`
+    /// so every `CatalogService` clone (and the rmcp handler) sees the
+    /// same table; the single owning `Arc` drop tears sessions down on
+    /// server shutdown.
+    dev_runner: Arc<crate::dev_runner::DevRunner>,
     // `#[tool_handler]` reads this through the trait impl, not via
     // a direct field access — the dead-code analyzer can't see it.
     #[allow(dead_code)]
@@ -133,50 +139,88 @@ impl RobotResolver {
         discovery: &crate::app_discovery::DiscoveryTable,
     ) -> Result<Arc<RobotBridge>, McpError> {
         let live = discovery.snapshot();
-        let entry = match (app, live.len()) {
-            (Some(name), _) => live
-                .iter()
-                .find(|a| a.name == name)
-                .cloned()
-                .ok_or_else(|| {
-                    let known: Vec<&str> = live.iter().map(|a| a.name.as_str()).collect();
-                    McpError::invalid_params(
-                        format!(
-                            "app {:?} not running. Live apps: {:?}. \
-                             Run `idealyst dev` in the target project.",
-                            name, known
-                        ),
-                        None,
-                    )
-                })?,
-            (None, 1) => live.into_iter().next().unwrap(),
-            (None, 0) => {
+        let entry = match app {
+            // The selector is `name` or — to disambiguate two platforms of one
+            // app — `name:platform` (e.g. `todo:web`).
+            Some(sel) => {
+                let (name, platform) = match sel.split_once(':') {
+                    Some((n, p)) => (n, Some(p)),
+                    None => (sel, None),
+                };
+                let matches: Vec<_> = live
+                    .iter()
+                    .filter(|a| a.name == name)
+                    .filter(|a| platform.map_or(true, |p| a.platform.as_deref() == Some(p)))
+                    .collect();
+                match matches.as_slice() {
+                    [one] => (*one).clone(),
+                    [] => {
+                        return Err(McpError::invalid_params(
+                            format!(
+                                "app {:?} not running. Live apps: {:?}. \
+                                 Run `idealyst dev` in the target project.",
+                                sel,
+                                app_selectors(&live)
+                            ),
+                            None,
+                        ));
+                    }
+                    _ => {
+                        return Err(McpError::invalid_params(
+                            format!(
+                                "{:?} is ambiguous across platforms; pass `name:platform` \
+                                 (one of: {:?})",
+                                sel,
+                                app_selectors(&live)
+                            ),
+                            None,
+                        ));
+                    }
+                }
+            }
+            None if live.len() == 1 => live.into_iter().next().unwrap(),
+            None if live.is_empty() => {
                 return Err(McpError::invalid_params(
-                    "no live apps discovered — run `idealyst dev` \
-                     in a project first"
+                    "no live apps discovered — run `idealyst dev` in a project first"
                         .to_string(),
                     None,
                 ));
             }
-            (None, _) => {
-                let known: Vec<&str> = live.iter().map(|a| a.name.as_str()).collect();
+            None => {
                 return Err(McpError::invalid_params(
                     format!(
                         "{} apps live; specify `app` (one of: {:?})",
                         live.len(),
-                        known
+                        app_selectors(&live)
                     ),
                     None,
                 ));
             }
         };
         let mut bridges = self.bridges.lock().await;
+        // Cache per bridge ADDRESS (unique per app), not per name — two
+        // same-name apps must not share one connection.
         let bridge = bridges
-            .entry(entry.name.clone())
+            .entry(entry.bridge_addr.clone())
             .or_insert_with(|| Arc::new(RobotBridge::new(entry.bridge_addr.clone())))
             .clone();
         Ok(bridge)
     }
+}
+
+/// The unambiguous selector string for each live app: `name` when its name is
+/// unique, else `name:platform`. What `list_apps` shows and the agent passes
+/// back as `app`.
+pub(crate) fn app_selectors(live: &[crate::app_discovery::DiscoveredApp]) -> Vec<String> {
+    live.iter()
+        .map(|a| {
+            let name_count = live.iter().filter(|b| b.name == a.name).count();
+            match (name_count, &a.platform) {
+                (n, Some(p)) if n > 1 => format!("{}:{}", a.name, p),
+                _ => a.name.clone(),
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -238,6 +282,34 @@ pub struct RobotElementId {
     pub element_id: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct RobotParityArgs {
+    /// First app selector (the `selector` field from `list_apps` — `name`, or
+    /// `name:platform` when one app runs on two platforms, e.g. `todo:web`).
+    pub app_a: String,
+    /// Second app selector. Compared against `app_a`.
+    pub app_b: String,
+    /// Per-channel color tolerance, `0.0..1.0`. Default `0.02` (absorbs
+    /// color-space round-trip drift).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_tolerance: Option<f32>,
+    /// Length/number tolerance in px (corner radius, font size, …). Default
+    /// `0.5` (sub-pixel rounding).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length_tolerance: Option<f32>,
+    /// Disable cross-platform normalization — report every representation
+    /// difference (inherited fonts on containers, transparent-vs-absent
+    /// colors, system-font name spelling). Default `false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<bool>,
+    /// Scope the comparison to the subtree rooted at this `test_id` — pass a
+    /// content anchor to EXCLUDE the navigator chrome (sidebars/headers are
+    /// built per-platform with different native structure and legitimately
+    /// don't align). Omit to compare the whole tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -333,6 +405,86 @@ pub struct RobotScreenshotArgs {
     /// typed MCP boundary and `auto` can never be overridden.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+}
+
+/// Args for `run_dev` — launch an `idealyst dev` session detached and
+/// tracked. Mirrors the subset of `idealyst dev` CLI flags worth
+/// driving from MCP: target platforms, the `--local` mode toggle, and
+/// the robot knobs.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct RunDevArgs {
+    /// Project directory to run. Optional — defaults to the MCP server's
+    /// working directory (the project it was launched in).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+    /// Target platforms — any of `web`, `ios`, `android`, `macos`,
+    /// `terminal`. Omit (and leave `all` false) to use the project
+    /// manifest's declared `targets`.
+    #[serde(default)]
+    pub platforms: Vec<String>,
+    /// Run every platform the host can build for (`--all`): web +
+    /// android everywhere, plus ios + macos on macOS hosts.
+    #[serde(default)]
+    pub all: bool,
+    /// `--local`: build the app natively per platform with a file-watch
+    /// rebuild loop, bypassing the runtime-server wire. State does not
+    /// survive saves. Default false (runtime-server hot-reload).
+    #[serde(default)]
+    pub local: bool,
+    /// `--no-robot`: disable the Robot bridge/relay for this session.
+    /// Default false — the bridge is on so the MCP Robot tools can drive
+    /// the running app.
+    #[serde(default)]
+    pub no_robot: bool,
+    /// `--bridge-port`: pin the Robot bridge to a fixed port instead of
+    /// an ephemeral one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge_port: Option<u16>,
+    /// `--screenshot-dir`: where the relay saves screenshot PNGs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screenshot_dir: Option<String>,
+    /// `--no-build` (web only): skip the initial build and just serve.
+    #[serde(default)]
+    pub no_build: bool,
+}
+
+/// Args for `stop_dev` — stop one tracked dev session by id, or all of
+/// them.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct StopDevArgs {
+    /// The session id to stop (from `run_dev` / `list_dev_sessions`).
+    /// Omit and set `all: true` to stop every tracked session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<u64>,
+    /// Stop every tracked dev session. Ignored when `session_id` is set.
+    #[serde(default)]
+    pub all: bool,
+}
+
+/// Args for `read_dev_log` — tail a tracked dev session's log file.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct ReadDevLogArgs {
+    /// The dev session id (from `run_dev` / `list_dev_sessions`).
+    pub session_id: u64,
+    /// How many lines from the end to return. Default 100, capped at 2000.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines: Option<usize>,
+    /// Case-insensitive substring filter applied BEFORE the tail, so
+    /// `"error"` returns the last N matching lines. Omit for the raw tail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
+}
+
+/// Args for `wait_for_app` — block until a running app registers.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct WaitForAppArgs {
+    /// App name to wait for (matches the registration `name`). Omit to
+    /// wait for ANY app to come up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Max seconds to wait before giving up. Default 60, capped at 600.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
 }
 
 #[allow(dead_code)]
@@ -472,6 +624,7 @@ impl CatalogService {
             resolver: Arc::new(RobotResolver::default()),
             catalog_cache: Arc::new(CatalogCache::default()),
             discovery,
+            dev_runner: Arc::new(crate::dev_runner::DevRunner::new()),
             tool_router: Self::tool_router(),
         }
     }
@@ -501,6 +654,7 @@ impl CatalogService {
                 catalog_bin: None,
                 pid: 0,
                 bridge_addr: addr.clone(),
+                platform: None,
             }],
         }
     }
@@ -877,6 +1031,24 @@ impl CatalogService {
         self.robot_call("get_absolute_frame", app.as_deref(), body).await
     }
 
+    #[tool(description = "Read an element's PLATFORM-NATIVE render state — the resolved geometry and visual properties as the backend itself reports them (a macOS `CALayer`'s backgroundColor/cornerRadius/borderWidth + the resolved NSFont; web's `getComputedStyle` + `getBoundingClientRect`), NOT the styles the author wrote. Returns a `NativeNode` tree: { class (the platform class/tag, e.g. `NSView`/`div`), role, frame (logical px, window-relative), props (canonical keys: background_color/opacity/corner_radius/border_width/border_color/text_color/font_family/font_size/font_weight/text/shadow_radius/shadow_color/hidden — each a typed `{type,value}`), children (the native sub-objects composing THIS primitive, pruned at child framework elements) }. A key is ABSENT when the platform doesn't expose it (meaningful: missing ≠ 0). Use this to compare how the same element renders across platforms — pair with `compare_native_parity`, or read both sides and reason about the diffs yourself. `null` means the element isn't laid out yet or the backend doesn't implement the read (web + macOS do today; iOS/Android/terminal stub).")]
+    async fn introspect_native(
+        &self,
+        Parameters(args): Parameters<RobotElementId>,
+    ) -> Result<CallToolResult, McpError> {
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("introspect_native", app.as_deref(), body).await
+    }
+
+    #[tool(description = "Compare the PLATFORM-NATIVE render state of two running apps — the automated cross-platform PARITY check. Aligns the two element trees STRUCTURALLY by a cross-platform signature (test_id where present, else framework kind + label — never raw positional index, which collapses when one platform nests an extra wrapper), reads each aligned element's `introspect_native`, and diffs the canonical props with cross-platform NORMALIZATION (font/text props compared only on text-bearing elements, since web reports inherited fonts everywhere and macOS doesn't; a transparent color treated as equivalent to an absent one; `font_family` matched by family class so `-apple-system`≡`.AppleSystemUIFont`=system while `ui-monospace` stays distinct). Returns { app_a, app_b, aligned (matched element count), structural: { only_a, only_b, items:[{path,kind,only_in}] } (elements one platform renders and the other doesn't — a structural divergence), prop_divergences, mismatches:[{path,key,kind,detail}] } where kind ∈ value_differs/prop_missing. Empty mismatches + empty structural = full parity. Pass `raw:true` to disable normalization and see every representation difference. Pass `root` (a test_id) to SCOPE the comparison to a content anchor and exclude the navigator chrome (sidebars/headers are built per-platform with different native structure and legitimately don't align — scoping removes that structural noise). IMPORTANT for a meaningful result: both apps must show the SAME route/screen at the SAME viewport size — otherwise responsive layout makes the trees legitimately diverge. `app_a`/`app_b` are `list_apps` selectors (`name`, or `name:platform` like `todo:web` vs `todo:macos`). This finds WHERE platforms diverge; reason about WHY (expected platform difference vs real bug) and, if asked, propose the upstream fix.")]
+    async fn compare_native_parity(
+        &self,
+        Parameters(args): Parameters<RobotParityArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.do_compare_native_parity(args).await
+    }
+
     #[tool(description = "Inject a REAL OS-level touch on an Android emulator/device via `adb shell input tap`. Unlike `click` — which calls the element's handler closure directly and bypasses the platform event system — this dispatches a genuine touch through the full Android input stack (InputManager → window → view hit-test), so it exercises hit-testing, overlays, z-order, and disabled-state the way a real finger would. Target the tap one of three ways: `element_id` (from `find_element`), `test_id` (resolved over the bridge), or raw `x`/`y` in physical device pixels. Element-based taps read the element's on-screen pixel rect via `get_device_frame` and tap its center — no host-side density math, since the device reports physical pixels directly. Requires Android platform-tools `adb` on PATH and a device/emulator attached (pass `serial` to disambiguate when more than one is). Android-only: other backends don't implement `device_frame` yet.")]
     async fn tap(
         &self,
@@ -909,11 +1081,17 @@ impl CatalogService {
     #[tool(description = "List every running idealyst app — discovered via per-process registration files at `~/.idealyst/apps/<name>-<pid>.json` that the running app's Robot bridge writes on bind. Each entry includes name, bundle_id, project_root, bridge_addr, and pid. Entries are removed automatically when the app exits (RAII cleanup on graceful shutdown; stale ones get pruned at scan time when `kill(pid, 0)` reports the process is gone).")]
     async fn list_apps(&self) -> Result<CallToolResult, McpError> {
         let live = self.live_apps();
+        // `selector` is the exact string to pass as the `app` arg — `name`
+        // when unique, else `name:platform` (two platforms of one app).
+        let selectors = app_selectors(&live);
         let json: Vec<serde_json::Value> = live
             .iter()
-            .map(|a| {
+            .zip(&selectors)
+            .map(|(a, selector)| {
                 serde_json::json!({
                     "name": a.name,
+                    "platform": a.platform,
+                    "selector": selector,
                     "bundle_id": a.bundle_id,
                     "project_root": a.project_root,
                     "bridge_addr": a.bridge_addr,
@@ -924,6 +1102,144 @@ impl CatalogService {
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&json).unwrap(),
         )]))
+    }
+
+    #[tool(description = "Launch an `idealyst dev` session for a project — the MCP-friendly equivalent of running `idealyst dev` in a terminal. Spawns the CLI detached (stdout/stderr go to `~/.idealyst/dev-logs/<name>-<id>.log`, returned as `log_path`) so it doesn't block the MCP connection, and TRACKS the process so `stop_dev` can tear the whole session down later. One call can run several platforms at once (they run in parallel inside the single dev process). Args: `platforms` (any of `web`/`ios`/`android`/`macos`/`terminal`; omit to use the project's manifest `targets`), `all` (every host-buildable platform), `local` (build natively per platform with file-watch rebuilds, no runtime-server wire — state doesn't survive saves; default is runtime-server hot-reload), `no_robot` (disable the Robot bridge/relay), `bridge_port`, `screenshot_dir`, `no_build` (web only), `dir` (project dir; defaults to the server's cwd). Returns the new session's { id, pid, dir, platforms, local, no_robot, log_path, status }. The dev process keeps running until you call `stop_dev`; read `log_path` to follow build progress or failures. Robot tools (find_element/click/screenshot/…) reach the running app once it registers — poll `list_apps`.")]
+    async fn run_dev(
+        &self,
+        Parameters(args): Parameters<RunDevArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let launch = crate::dev_runner::DevLaunch {
+            dir: args.dir.map(std::path::PathBuf::from),
+            platforms: args.platforms,
+            all: args.all,
+            local: args.local,
+            no_robot: args.no_robot,
+            bridge_port: args.bridge_port,
+            screenshot_dir: args.screenshot_dir.map(std::path::PathBuf::from),
+            no_build: args.no_build,
+        };
+        match self.dev_runner.start(launch) {
+            Ok(info) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&info).unwrap(),
+            )])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
+        }
+    }
+
+    #[tool(description = "List the `idealyst dev` sessions this MCP server launched via `run_dev`. Returns a JSON array of { id, pid, dir, platforms, local, no_robot, log_path, uptime_secs, status } where `status` is `running` or `exited(<code>)`. A session that has exited is reported once (with its exit status) and then dropped from the list on the next call. This tracks ONLY sessions started through this server — apps you launched in a terminal show up in `list_apps`, not here.")]
+    async fn list_dev_sessions(&self) -> Result<CallToolResult, McpError> {
+        let sessions = self.dev_runner.list();
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&sessions).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "Stop a tracked `idealyst dev` session (or all of them). Pass `session_id` to stop one, or `all: true` to stop every session this server launched. On unix the whole dev process GROUP is signalled — the `idealyst dev` process and its children (cargo builds, web servers, simulators) — with a graceful SIGINT first (so simulators/servers tear down cleanly) escalating to SIGKILL after a grace window. Returns the stopped session(s)' final info. Stopping a session removes it from `list_dev_sessions`.")]
+    async fn stop_dev(
+        &self,
+        Parameters(args): Parameters<StopDevArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if args.all && args.session_id.is_none() {
+            let stopped = self.dev_runner.stop_all();
+            return Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&stopped).unwrap(),
+            )]));
+        }
+        match args.session_id {
+            Some(id) => match self.dev_runner.stop(id) {
+                Ok(info) => Ok(CallToolResult::success(vec![Content::text(
+                    serde_json::to_string_pretty(&info).unwrap(),
+                )])),
+                Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
+            },
+            None => Ok(CallToolResult::error(vec![Content::text(
+                "stop_dev needs either `session_id` or `all: true`".to_string(),
+            )])),
+        }
+    }
+
+    #[tool(description = "Read the tail of a `run_dev` session's log — the way to follow a dev launch's build progress and see compile errors without filesystem access. Pass `session_id` (from `run_dev` / `list_dev_sessions`); optionally `lines` (from the end, default 100, max 2000) and `filter` (case-insensitive substring applied BEFORE the tail, so `filter:\"error\"` returns the last N matching lines — great for jumping straight to a compile failure). Logs stay readable even after the session exits and is pruned from `list_dev_sessions` (the file is found by globbing `~/.idealyst/dev-logs/`). Returns `{ session_id, log_path, lines, content }`.")]
+    async fn read_dev_log(
+        &self,
+        Parameters(args): Parameters<ReadDevLogArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(path) = self.dev_runner.log_path(args.session_id) else {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "no dev session log for id {} — it was never started here, or its \
+                 log file is gone. Check `list_dev_sessions`.",
+                args.session_id
+            ))]));
+        };
+        let lines = args.lines.unwrap_or(100).min(2000);
+        match crate::dev_runner::tail_log(&path, lines, args.filter.as_deref()) {
+            Ok(content) => {
+                let out = json!({
+                    "session_id": args.session_id,
+                    "log_path": path.to_string_lossy(),
+                    "lines": content.lines().count(),
+                    "content": content,
+                });
+                Ok(CallToolResult::success(vec![Content::text(
+                    serde_json::to_string_pretty(&out).unwrap(),
+                )]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
+        }
+    }
+
+    #[tool(description = "Block until a running idealyst app registers its Robot bridge, then return it — the bridge between `run_dev` (which returns as soon as the build is kicked off) and the Robot tools (which need the app actually up). Polls `~/.idealyst/apps/` discovery. Pass `name` to wait for a specific app (matches the registration name) or omit to wait for ANY app; `timeout_secs` defaults to 60 (max 600). On success returns the matched app(s) in `list_apps` shape (with the `selector` to pass as `app`). On timeout returns an error — if you launched via `run_dev`, check `read_dev_log` for a build still in progress or a compile failure. Errors immediately if robot control is disabled (`--no-robot`).")]
+    async fn wait_for_app(
+        &self,
+        Parameters(args): Parameters<WaitForAppArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if matches!(self.robot_mode, RobotMode::Disabled) {
+            return Ok(CallToolResult::error(vec![Content::text(
+                "robot control is disabled (--no-robot) — no app discovery to wait on."
+                    .to_string(),
+            )]));
+        }
+        let timeout = std::time::Duration::from_secs(args.timeout_secs.unwrap_or(60).min(600));
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let live = self.live_apps();
+            let matched: Vec<_> = live
+                .iter()
+                .filter(|a| args.name.as_deref().map(|n| a.name == n).unwrap_or(true))
+                .cloned()
+                .collect();
+            if !matched.is_empty() {
+                let selectors = app_selectors(&matched);
+                let json: Vec<serde_json::Value> = matched
+                    .iter()
+                    .zip(&selectors)
+                    .map(|(a, selector)| {
+                        json!({
+                            "name": a.name,
+                            "platform": a.platform,
+                            "selector": selector,
+                            "bundle_id": a.bundle_id,
+                            "project_root": a.project_root,
+                            "bridge_addr": a.bridge_addr,
+                            "pid": a.pid,
+                        })
+                    })
+                    .collect();
+                return Ok(CallToolResult::success(vec![Content::text(
+                    serde_json::to_string_pretty(&json).unwrap(),
+                )]));
+            }
+            if std::time::Instant::now() >= deadline {
+                let target = args.name.as_deref().unwrap_or("any app");
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "timed out after {}s waiting for {target} to register. If you \
+                     launched it with run_dev, the build may still be running or \
+                     failing — check read_dev_log.",
+                    timeout.as_secs()
+                ))]));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
     }
 
     /// Shared helper for every Robot tool. Resolves the target
@@ -944,6 +1260,119 @@ impl CatalogService {
             )])),
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
         }
+    }
+
+    /// Read one element's native node over `bridge`. `Ok(None)` when the
+    /// backend has no native data for it yet (or doesn't support the read).
+    async fn introspect_one(
+        &self,
+        bridge: &RobotBridge,
+        id: u64,
+    ) -> Result<Option<native_parity::NativeNode>, McpError> {
+        let v = bridge
+            .call("introspect_native", json!({ "element_id": id }))
+            .await
+            .map_err(|e| McpError::invalid_params(format!("introspect_native failed: {e}"), None))?;
+        native_parity::parse_native(v)
+            .map_err(|e| McpError::invalid_params(format!("bad introspect_native payload: {e}"), None))
+    }
+
+    /// Body of the `compare_native_parity` tool — structurally align the two
+    /// trees, introspect each aligned pair, diff with cross-platform
+    /// normalization, and report structural + prop divergences.
+    async fn do_compare_native_parity(
+        &self,
+        args: RobotParityArgs,
+    ) -> Result<CallToolResult, McpError> {
+        let bridge_a = self.resolve_bridge(Some(&args.app_a)).await?;
+        let bridge_b = self.resolve_bridge(Some(&args.app_b)).await?;
+
+        let snap_a = bridge_a.call("get_snapshot", json!({})).await
+            .map_err(|e| McpError::invalid_params(format!("get_snapshot ({}) failed: {e}", args.app_a), None))?;
+        let snap_b = bridge_b.call("get_snapshot", json!({})).await
+            .map_err(|e| McpError::invalid_params(format!("get_snapshot ({}) failed: {e}", args.app_b), None))?;
+
+        // Structural alignment on the cross-platform framework tree — scoped to
+        // the `root` content anchor when given (excludes navigator chrome).
+        let roots_a = native_parity::parse_snapshot(&snap_a);
+        let roots_b = native_parity::parse_snapshot(&snap_b);
+        let (list_a, list_b): (Vec<native_parity::SnapNode>, Vec<native_parity::SnapNode>) =
+            match args.root.as_deref() {
+                Some(tid) => {
+                    let ra = native_parity::subtree_by_test_id(&roots_a, tid).ok_or_else(|| {
+                        McpError::invalid_params(
+                            format!("root test_id {tid:?} not found in {}", args.app_a),
+                            None,
+                        )
+                    })?;
+                    let rb = native_parity::subtree_by_test_id(&roots_b, tid).ok_or_else(|| {
+                        McpError::invalid_params(
+                            format!("root test_id {tid:?} not found in {}", args.app_b),
+                            None,
+                        )
+                    })?;
+                    (vec![ra.clone()], vec![rb.clone()])
+                }
+                None => (roots_a, roots_b),
+            };
+        let alignment = native_parity::align(&list_a, &list_b);
+
+        // Introspect only the genuinely-corresponding elements, keyed by the
+        // shared aligned path so the diff compares like with like.
+        let mut cap_a = native_parity::Capture::new();
+        let mut cap_b = native_parity::Capture::new();
+        for pair in &alignment.pairs {
+            if let Some(n) = self.introspect_one(&bridge_a, pair.id_a).await? {
+                cap_a.insert(pair.path.clone(), n);
+            }
+            if let Some(n) = self.introspect_one(&bridge_b, pair.id_b).await? {
+                cap_b.insert(pair.path.clone(), n);
+            }
+        }
+
+        let opts = native_parity::DiffOptions {
+            tol: native_parity::Tolerance {
+                color: args.color_tolerance.unwrap_or(0.02),
+                length: args.length_tolerance.unwrap_or(0.5),
+                number: args.length_tolerance.unwrap_or(0.5),
+            },
+            normalize: !args.raw.unwrap_or(false),
+        };
+        let mismatches = native_parity::diff_with(&cap_a, &cap_b, opts);
+
+        let mismatches_json: Vec<serde_json::Value> = mismatches.iter().map(|m| {
+            let (kind, detail) = match &m.kind {
+                native_parity::MismatchKind::ElementMissing { in_a } =>
+                    ("prop_missing", if *in_a { format!("only in {}", args.app_a) } else { format!("only in {}", args.app_b) }),
+                native_parity::MismatchKind::PropMissing { in_a } =>
+                    ("prop_missing", if *in_a { format!("only in {}", args.app_a) } else { format!("only in {}", args.app_b) }),
+                native_parity::MismatchKind::ValueDiffers { a, b } =>
+                    ("value_differs", format!("{}={:?}  {}={:?}", args.app_a, a, args.app_b, b)),
+            };
+            json!({ "path": m.path, "key": m.key, "kind": kind, "detail": detail })
+        }).collect();
+
+        let only_a = alignment.unmatched.iter().filter(|u| u.in_a).count();
+        let only_b = alignment.unmatched.iter().filter(|u| !u.in_a).count();
+        // Cap the structural list so a wildly-divergent pair doesn't flood the
+        // response; the counts above are the full story.
+        let structural_items: Vec<serde_json::Value> = alignment.unmatched.iter().take(50).map(|u| {
+            json!({ "path": u.path, "kind": u.kind, "only_in": if u.in_a { &args.app_a } else { &args.app_b } })
+        }).collect();
+
+        let result = json!({
+            "app_a": args.app_a,
+            "app_b": args.app_b,
+            "root": args.root,
+            "aligned": alignment.pairs.len(),
+            "structural": { "only_a": only_a, "only_b": only_b, "items": structural_items },
+            "prop_divergences": mismatches.len(),
+            "mismatches": mismatches_json,
+            "note": "For a meaningful result both apps must show the same route at the same viewport size.",
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()),
+        )]))
     }
 
     /// Resolve the target app's Robot bridge — the shared front half of
@@ -2690,7 +3119,13 @@ mod tests {
 
     #[tokio::test]
     async fn list_components_returns_in_process_catalog_components() {
-        let svc = CatalogService::new();
+        // Discovery DISABLED: `list_components` serves a live app's catalog
+        // whenever one is registered in `~/.idealyst/apps/`, falling back to
+        // the in-process catalog only when none is. This test asserts the
+        // in-process path, so it must not depend on whether a `idealyst dev`
+        // session happens to be running (which would otherwise make it flaky —
+        // it'd serve that app's catalog, sans the test canary).
+        let svc = CatalogService::with_robot_mode(false, None);
         let result = svc
             .list_components(Parameters(FilterRequest::default()))
             .await
@@ -2705,7 +3140,10 @@ mod tests {
 
     #[tokio::test]
     async fn list_components_output_is_lightweight_and_filterable() {
-        let svc = CatalogService::new();
+        // Discovery disabled — see the note in
+        // `list_components_returns_in_process_catalog_components`: this asserts
+        // the in-process catalog, so it must not race a live dev app.
+        let svc = CatalogService::with_robot_mode(false, None);
 
         // Lightweight: entries carry a `summary`, not full `docs`, and
         // none of the file/line/module_path noise the old shape had.
@@ -3317,6 +3755,13 @@ mod tests {
             }))
             .await
             .expect("lint_project tool call succeeds");
+
+        let text = |r: &CallToolResult| {
+            r.content
+                .iter()
+                .find_map(|c| c.as_text().map(|t| t.text.clone()))
+                .unwrap()
+        };
 
         let v: serde_json::Value = serde_json::from_str(&text(&result)).unwrap();
         let rules: Vec<String> = v["diagnostics"]

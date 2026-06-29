@@ -241,6 +241,12 @@ pub struct FieldProps {
     /// input fill its column as usual; `Some(px)` fixes the width.
     #[schema(constraint = "pixels; None = fill column")]
     pub width: Option<f32>,
+    /// Bind the field's underlying input to a `Ref<TextInputHandle>` for
+    /// imperative `focus()` / `blur()` / `select_all()`. `None` (default) binds
+    /// nothing. Works for both plain and adorned layouts (the ref tracks the
+    /// inner input either way).
+    #[prop(static)]
+    pub field_ref: Option<runtime_core::Ref<runtime_core::primitives::text_input::TextInputHandle>>,
 }
 
 impl Default for FieldProps {
@@ -260,6 +266,7 @@ impl Default for FieldProps {
             trailing: Adornment::None,
             min_height: Reactive::Static(None),
             width: Reactive::Static(None),
+            field_ref: None,
         }
     }
 }
@@ -503,13 +510,6 @@ pub fn Field(props: &FieldProps) -> Element {
     // first-paint flicker. The tone arm preserves the D9 rule: tone matters
     // reactively only when it's a live prop, or absent-and-derived from a
     // live `error` (an explicit fixed tone makes `error` style-irrelevant).
-    let tone_is_reactive = !props.tone.is_static()
-        || (matches!(props.tone, Reactive::Static(None)) && !error.is_static());
-    let style_is_reactive = tone_is_reactive
-        || !props.size.is_static()
-        || !props.variant.is_static()
-        || !props.min_height.is_static()
-        || !props.width.is_static();
 
     // Resolve the effective tone key, reading the `tone`/`error` props LIVE.
     // Explicit tone wins; otherwise Danger when a live error is present.
@@ -537,7 +537,7 @@ pub fn Field(props: &FieldProps) -> Element {
         let variant = props.variant.clone();
         let min_height = props.min_height.clone();
         let width = props.width.clone();
-        move |tone_key: String| -> StyleApplication {
+        move |tone_key: String, focused: bool| -> StyleApplication {
             let size_str = size_key(size.get()).to_string();
             let appearance = variant.get().as_variant_str().to_string();
             let min_height = min_height.get();
@@ -546,16 +546,28 @@ pub fn Field(props: &FieldProps) -> Element {
                 .with("size", size_str)
                 .with("appearance", appearance)
                 .with("tone", tone_key);
-            // Pin an exact min-height / width on top of the size-derived
-            // box. Keyed by the px values so identical configs dedupe to
-            // one backend class.
-            if min_height.is_some() || width.is_some() {
+            // Pin min-height / width AND the focus ring in ONE computed layer.
+            // `with_computed` is single-slot (a second call overwrites the
+            // first), so dims and the focus border MUST share one layer — else
+            // focusing a field with `min_height` would drop it (the same
+            // single-slot trap that made the adorned shell grow on focus).
+            if min_height.is_some() || width.is_some() || focused {
+                let ring = if focused {
+                    let theme_rc = active_theme();
+                    let theme_ref = theme_rc.downcast_ref::<IdeaThemeRef>().expect("theme");
+                    Some(theme_ref.colors().focus_ring.clone())
+                } else {
+                    None
+                };
                 app = app.with_computed(
-                    format!("field-dim-{:?}-{:?}", min_height, width),
+                    format!("field-dim-{:?}-{:?}-{}", min_height, width, focused),
                     move || StyleRules {
-                        min_height: min_height
-                            .map(|h| Tokenized::Literal(Length::Px(h))),
+                        min_height: min_height.map(|h| Tokenized::Literal(Length::Px(h))),
                         width: width.map(|w| Tokenized::Literal(Length::Px(w))),
+                        border_top_color: ring.clone(),
+                        border_right_color: ring.clone(),
+                        border_bottom_color: ring.clone(),
+                        border_left_color: ring.clone(),
                         ..Default::default()
                     },
                 );
@@ -592,9 +604,12 @@ pub fn Field(props: &FieldProps) -> Element {
 
     // `placeholder` is routed LIVE: a reactive source updates the native
     // placeholder in place (no rebuild); a `Static` one sets it once.
-    let input = runtime_core::text_input(value, move |v: String| (on_change)(v))
+    let mut input = runtime_core::text_input(value, move |v: String| (on_change)(v))
         .secure(secure)
         .placeholder_reactive(props.placeholder.clone());
+    if let Some(field_ref) = props.field_ref.clone() {
+        input = input.bind(field_ref);
+    }
 
     // The "field box" — either the bare input (no adornments) or a flex-row
     // SHELL wrapping a bare input with leading/trailing adornments.
@@ -602,12 +617,13 @@ pub fn Field(props: &FieldProps) -> Element {
         // ADORNED: the chrome lives on the row SHELL; the input is bare so it
         // sits flush beside the adornments (any width works — flex layout).
         //
-        // KNOWN GAP: the focus ring is driven by the input's FOCUSED state,
-        // which a plain `view` shell can't receive, so adorned fields don't
-        // show the ring yet. Restoring it needs an `on_focus` event on
-        // `text_input` (the symmetric partner of the new `on_blur`) so the
-        // Field can drive a `focused` overlay on the shell — tracked as a
-        // follow-on. Non-adorned fields keep their ring (the branch below).
+        // FOCUS RING: a plain `view` shell can't receive the inner input's
+        // FOCUSED state, so the shell can't resolve the sheet's `__state_focused`
+        // overlay on its own. We bridge it with the input's `on_focus` event: it
+        // sets a `focused` signal, and the shell style is a reactive closure that
+        // overlays the theme `focus_ring` border colors while focused — the same
+        // ring the non-adorned branch gets natively, now on the shell.
+        let focused = Signal::new(false);
         let size_str = size_key(size).to_string();
         let bare_style = StyleApplication::new(field_input_sheet())
             .with("size", size_str)
@@ -637,7 +653,10 @@ pub fn Field(props: &FieldProps) -> Element {
                 background: Some(Tokenized::Literal(Color("transparent".into()))),
                 ..Default::default()
             });
-        let input_node = input.with_style(bare_style).into_element();
+        let input_node = input
+            .on_focus(move |f| focused.set(f))
+            .with_style(bare_style)
+            .into_element();
 
         // Shell = the field chrome (border/bg/radius/padding, tone border) +
         // a row layout. Static tone snapshot here (live-validation borders on
@@ -653,26 +672,55 @@ pub fn Field(props: &FieldProps) -> Element {
             _ => 12.0,
         };
         let gap_px = (edge_pad - FIELD_BARE_H_PAD).max(0.0);
-        let shell_style = make_input_style(tone_key_for()).with_computed(
-            format!("field-shell-row-{}", size.as_variant_str()),
-            move || StyleRules {
-                flex_direction: Some(FlexDirection::Row),
-                align_items: Some(AlignItems::Center),
-                gap: Some(Tokenized::Literal(Length::Px(gap_px))),
-                // Fill the FieldGroup. The group fills its own container via
-                // `align_self: stretch` (see the `FieldGroup` stylesheet — it's
-                // what makes a Field full-width even under a centering parent);
-                // this `width: 100%` then resolves against that definite width
-                // so the row spans the field and the input has room to grow.
-                width: Some(Tokenized::Literal(Length::pct(100.0))),
-                // Vertical padding lives on the INPUT (it drives the box height);
-                // zeroing it here means a tall-ish adornment centers in the
-                // input's height instead of stretching the row taller.
-                padding_top: Some(Tokenized::Literal(Length::Px(0.0))),
-                padding_bottom: Some(Tokenized::Literal(Length::Px(0.0))),
-                ..Default::default()
-            },
-        );
+        let size_key_str = size.as_variant_str().to_string();
+        // Reactive shell style: base chrome + tone border + row layout, plus a
+        // `focus_ring` border overlay while the inner input is focused (driven
+        // by `focused`, set from the input's `on_focus`). Reading `focused.get()`
+        // makes the apply-style Effect re-resolve on focus change, so the ring
+        // lights/clears in place — the adorned analogue of the sheet's
+        // `__state_focused` overlay the non-adorned input gets natively.
+        //
+        // CRITICAL: the row layout AND the focus border MUST live in ONE
+        // `with_computed`. `StyleApplication::with_computed` is single-slot —
+        // a second call OVERWRITES the first — so splitting them made focus drop
+        // the row layout's `padding_top/bottom: 0`, and the shell sprang back to
+        // the size variant's vertical padding (the field visibly grew ~16px
+        // taller on focus). One layer, keyed by size+focus, keeps both.
+        let make_shell = make_input_style.clone();
+        let tone_for_shell = tone_key_for.clone();
+        let shell_style = move || {
+            let is_focused = focused.get();
+            let key = format!("field-shell-{}-{}", size_key_str, is_focused);
+            // `false`: the shell paints its OWN focus ring in the computed layer
+            // below; make_input_style's focus would just be overwritten here.
+            make_shell(tone_for_shell(), false).with_computed(key, move || {
+                let ring = if is_focused {
+                    let theme_rc = active_theme();
+                    let theme_ref = theme_rc.downcast_ref::<IdeaThemeRef>().expect("theme");
+                    Some(theme_ref.colors().focus_ring.clone())
+                } else {
+                    None
+                };
+                StyleRules {
+                    flex_direction: Some(FlexDirection::Row),
+                    align_items: Some(AlignItems::Center),
+                    gap: Some(Tokenized::Literal(Length::Px(gap_px))),
+                    // Fill the FieldGroup (it stretches to its container), so the
+                    // row spans the field and the input has room to grow.
+                    width: Some(Tokenized::Literal(Length::pct(100.0))),
+                    // Vertical padding lives on the INPUT (it drives the box
+                    // height); zeroing it here keeps the row from stretching.
+                    padding_top: Some(Tokenized::Literal(Length::Px(0.0))),
+                    padding_bottom: Some(Tokenized::Literal(Length::Px(0.0))),
+                    // Focus ring (same layer — see CRITICAL note above).
+                    border_top_color: ring.clone(),
+                    border_right_color: ring.clone(),
+                    border_bottom_color: ring.clone(),
+                    border_left_color: ring,
+                    ..Default::default()
+                }
+            })
+        };
 
         let mut shell_children: Vec<Element> = Vec::with_capacity(3);
         if let Some(l) = leading {
@@ -682,31 +730,37 @@ pub fn Field(props: &FieldProps) -> Element {
         if let Some(t) = trailing {
             shell_children.push(t);
         }
-        ui! { view(style = shell_style) { shell_children } }
+        // Builder form (not `ui!`): the shell style is a reactive CLOSURE (it
+        // reads `focused`), and `with_style(closure)` is the canonical way to
+        // attach a live style source — mirrors switch.rs / segmented_control.rs.
+        runtime_core::view(shell_children)
+            .with_style(shell_style)
+            .into_element()
     } else {
-        // PLAIN: chrome (+ focus ring) on the input itself (unchanged).
+        // PLAIN: chrome + focus ring on the input itself. The ring is driven the
+        // SAME way as the adorned shell — `on_focus` → `focused` → a theme
+        // `focus_ring` border overlay — NOT the sheet's `__state_focused`
+        // variant. Reason: on macOS the state-overlay re-resolution does not
+        // repaint a native text input's border (the input shows no ring at all),
+        // whereas `on_focus` fires reliably from the field-editor engage/resign.
+        // Using one mechanism for both branches also makes adorned + non-adorned
+        // rings identical. Web keeps its native `:focus` too (harmless overlap).
         //
-        // INVARIANT (D9): when the tone is derived from a live `error` signal,
-        // the input style MUST be attached as a *reactive* closure (read
-        // `error.get()` inside it) so the apply-style Effect re-subscribes and
-        // re-resolves the border on every validation change. A pre-built
-        // `StyleApplication` is `StyleSource::Static` — applied once at mount,
-        // only re-run on theme swaps — so it would snapshot the border color
-        // at build time and never turn it red on live validation (the error
-        // TEXT updates regardless, via `help_combined`). Keep the static fast
-        // path when the tone is fixed to avoid a per-Field Effect + flicker.
-        // Generalized beyond tone: ANY live style prop (size/variant/dims)
-        // takes the reactive closure so the field re-styles in place when it
-        // changes — `make_input_style` reads each prop live inside.
-        if style_is_reactive {
-            let make_input_style = make_input_style.clone();
-            let tone_key_for = tone_key_for.clone();
-            input
-                .with_style(move || make_input_style(tone_key_for()))
-                .into_element()
-        } else {
-            input.with_style(make_input_style(tone_key_for())).into_element()
-        }
+        // INVARIANT (D9): the style is ALWAYS a reactive closure now (it reads
+        // `focused`, and also `tone`/`error` live), so an error tone still turns
+        // the border red and the focus ring still lights — both re-resolve in
+        // place through the apply-style Effect. (The former static fast path is
+        // gone; a non-adorned Field now always carries one style Effect.)
+        let focused = Signal::new(false);
+        let make_input_style = make_input_style.clone();
+        let tone_key_for = tone_key_for.clone();
+        // The focus ring is baked into `make_input_style`'s single computed
+        // layer (alongside any min_height/width), so it can't be clobbered.
+        let input_style = move || make_input_style(tone_key_for(), focused.get());
+        input
+            .on_focus(move |f| focused.set(f))
+            .with_style(input_style)
+            .into_element()
     };
 
     let mut children: Vec<Element> = Vec::with_capacity(3);

@@ -157,13 +157,75 @@ fn ease(easing: Easing, p: f32) -> f32 {
     }
 }
 
+/// Interpolate two colors in PREMULTIPLIED-alpha space, then un-premultiply.
+///
+/// A straight per-channel RGBA lerp darkens any fade that touches a transparent
+/// endpoint: the framework stores `transparent` as `[0, 0, 0, 0]` (black, α=0),
+/// so the midpoint of `transparent → #eef0f7` is `[0.46, 0.47, 0.49, 0.5]` — a
+/// half-opaque BLACK that composites to dark gray (the reported "jumps to a dark
+/// gray background before the desired color" on hover / sidebar-active fades).
+///
+/// Premultiplying first keeps the interpolation on the line between the two
+/// PREMULTIPLIED endpoints, so a transparent endpoint contributes no color and
+/// only the alpha ramps — the midpoint stays the target hue at half alpha and
+/// composites to a light tint, exactly how browsers interpolate
+/// `transition: background`. Opaque→opaque fades are unaffected (α stays 1, so
+/// premultiplied == straight).
 fn lerp(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
-    [
-        a[0] + (b[0] - a[0]) * t,
-        a[1] + (b[1] - a[1]) * t,
-        a[2] + (b[2] - a[2]) * t,
-        a[3] + (b[3] - a[3]) * t,
-    ]
+    let pa = [a[0] * a[3], a[1] * a[3], a[2] * a[3], a[3]];
+    let pb = [b[0] * b[3], b[1] * b[3], b[2] * b[3], b[3]];
+    let p = [
+        pa[0] + (pb[0] - pa[0]) * t,
+        pa[1] + (pb[1] - pa[1]) * t,
+        pa[2] + (pb[2] - pa[2]) * t,
+        pa[3] + (pb[3] - pa[3]) * t,
+    ];
+    let alpha = p[3];
+    if alpha <= 0.0001 {
+        // Fully transparent — RGB is irrelevant; return clear.
+        [0.0, 0.0, 0.0, 0.0]
+    } else {
+        [p[0] / alpha, p[1] / alpha, p[2] / alpha, alpha]
+    }
+}
+
+#[cfg(test)]
+mod lerp_tests {
+    use super::lerp;
+
+    // Regression: the transparent→light fade must NOT pass through dark gray.
+    #[test]
+    fn fade_from_transparent_keeps_target_hue_not_gray() {
+        let transparent = [0.0, 0.0, 0.0, 0.0];
+        let surface = [0.93, 0.94, 0.97, 1.0]; // #eef0f7
+        let mid = lerp(transparent, surface, 0.5);
+        // RGB must be the LIGHT target hue, not the ~0.46 dark-gray a straight
+        // lerp produced. Alpha ramps from 0 → 1, so it's ~0.5 at the midpoint.
+        assert!(mid[0] > 0.9 && mid[1] > 0.9 && mid[2] > 0.9, "midpoint RGB stays light, got {mid:?}");
+        assert!((mid[3] - 0.5).abs() < 0.01, "alpha ramps to ~0.5 at midpoint, got {}", mid[3]);
+    }
+
+    #[test]
+    fn opaque_to_opaque_is_plain_lerp() {
+        // Both endpoints opaque (α=1) → premultiplied == straight, no change.
+        let a = [0.0, 0.0, 0.0, 1.0];
+        let b = [1.0, 0.5, 0.0, 1.0];
+        let mid = lerp(a, b, 0.5);
+        assert!((mid[0] - 0.5).abs() < 1e-4 && (mid[1] - 0.25).abs() < 1e-4 && (mid[2]).abs() < 1e-4);
+        assert!((mid[3] - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn endpoints_are_exact() {
+        let a = [0.1, 0.2, 0.3, 0.4];
+        let b = [0.9, 0.8, 0.7, 1.0];
+        let lo = lerp(a, b, 0.0);
+        let hi = lerp(a, b, 1.0);
+        for i in 0..4 {
+            assert!((lo[i] - a[i]).abs() < 1e-4, "t=0 returns `a`");
+            assert!((hi[i] - b[i]).abs() < 1e-4, "t=1 returns `b`");
+        }
+    }
 }
 
 fn nscolor(c: [f32; 4]) -> Retained<NSColor> {

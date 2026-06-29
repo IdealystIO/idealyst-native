@@ -119,37 +119,22 @@ impl Default for TextareaProps {
     }
 }
 
-/// `(line_height_px, vertical_chrome_px)` per size — used to translate
-/// a row count into a pixel height. Mirrors Field's per-size padding/font.
-fn size_metrics(size: FieldSize) -> (f32, f32) {
-    match size.as_variant_str() {
-        "sm" => (18.0, 8.0),
-        "lg" => (28.0, 24.0),
-        _ => (22.0, 16.0),
-    }
-}
-
-/// Resolve the box's height bounds from the requested `rows` / `max_rows`
-/// at a given size, returning `(min_height_px, max_height_px, rows,
-/// max_rows)` where the trailing two are the *resolved* row counts (used
-/// to key the generated style class).
+/// Normalize the `rows` / `max_rows` props to the primitive's `min_rows` /
+/// `max_rows` (in text lines). The primitive + each backend convert rows→px
+/// using the REAL font line height, so idea-ui no longer estimates pixels here.
 ///
 /// - `rows` floors at 1 — a zero-row textarea is meaningless.
 /// - `max_rows == 0` leaves the autogrow uncapped (`None`).
-/// - a `max_rows` below the resting `rows` clamps up to `rows`, so "cap
-///   below floor" degrades to "no growth past the floor" rather than an
-///   inverted min > max.
-fn height_bounds(rows: u32, max_rows: u32, size: FieldSize) -> (f32, Option<f32>, u32, u32) {
+/// - a `max_rows` below the resting `rows` clamps up to `rows`, so "cap below
+///   floor" degrades to "no growth past the floor" rather than an inverted
+///   min > max.
+/// - an explicit `min_height` px prop overrides the rows floor, so `min_rows`
+///   is dropped (the px floor applies via style instead) when it's set.
+fn row_bounds(rows: u32, max_rows: u32, has_min_height_override: bool) -> (Option<u32>, Option<u32>) {
     let rows = rows.max(1);
-    let max_rows = if max_rows == 0 { 0 } else { max_rows.max(rows) };
-    let (line_px, chrome_px) = size_metrics(size);
-    let min_height = rows as f32 * line_px + chrome_px;
-    let max_height = if max_rows == 0 {
-        None
-    } else {
-        Some(max_rows as f32 * line_px + chrome_px)
-    };
-    (min_height, max_height, rows, max_rows)
+    let min_rows = if has_min_height_override { None } else { Some(rows) };
+    let max_rows = if max_rows == 0 { None } else { Some(max_rows.max(rows)) };
+    (min_rows, max_rows)
 }
 
 /// Renders a controlled multi-line text input with optional label,
@@ -171,11 +156,12 @@ pub fn Textarea(props: &TextareaProps) -> Element {
     // style-driving prop (size/variant/rows/max_rows/dims) is live —
     // `make_input_style` reads each `.get()` inside so the apply-style
     // Effect subscribes to them and re-resolves in place.
+    // `rows`/`max_rows` are NOT here: they drive the primitive's `min_rows`/
+    // `max_rows` (snapshotted below), not the style layer, so a live row count
+    // doesn't re-resolve the style.
     let style_is_reactive = tone_is_reactive
         || !props.size.is_static()
         || !props.variant.is_static()
-        || !props.rows.is_static()
-        || !props.max_rows.is_static()
         || !props.min_height.is_static()
         || !props.width.is_static();
     let tone_key_for = {
@@ -198,33 +184,25 @@ pub fn Textarea(props: &TextareaProps) -> Element {
     let make_input_style = {
         let size = props.size.clone();
         let variant = props.variant.clone();
-        let rows = props.rows.clone();
-        let max_rows = props.max_rows.clone();
         let min_height_prop = props.min_height.clone();
         let width_prop = props.width.clone();
         move |tone_key: String| -> StyleApplication {
             let size = size.get();
             let size_key = size.as_variant_str().to_string();
             let appearance = variant.get().as_variant_str().to_string();
-            let (rows_min_height, max_height, _rows, _max_rows) =
-                height_bounds(rows.get(), max_rows.get(), size);
-            // An explicit `min_height` prop overrides the rows-derived floor;
-            // else keep the `rows`/`size`-derived height as the default.
-            let min_height = min_height_prop.get().unwrap_or(rows_min_height);
+            // The rows-derived floor/cap now live on the PRIMITIVE
+            // (`min_rows`/`max_rows`), converted to px from the real font line
+            // height per backend. The style layer only carries an explicit px
+            // `min_height` override (when the author pins one) + width.
+            let min_height = min_height_prop.get();
             let width = width_prop.get();
-            // Key the computed dim layer by the *resolved* px values so a
-            // textarea pinned via `min_height` dedupes with same-config siblings.
-            let dim_key = format!(
-                "ta-dim-{}-{:?}-{:?}-{}",
-                min_height, max_height, width, size_key
-            );
+            let dim_key = format!("ta-dim-{:?}-{:?}-{}", min_height, width, size_key);
             StyleApplication::new(field_input_sheet())
                 .with("size", size_key)
                 .with("appearance", appearance)
                 .with("tone", tone_key)
                 .with_computed(dim_key, move || StyleRules {
-                    min_height: Some(Tokenized::Literal(Length::Px(min_height))),
-                    max_height: max_height.map(|h| Tokenized::Literal(Length::Px(h))),
+                    min_height: min_height.map(|h| Tokenized::Literal(Length::Px(h))),
                     width: width.map(|w| Tokenized::Literal(Length::Px(w))),
                     ..Default::default()
                 })
@@ -243,6 +221,18 @@ pub fn Textarea(props: &TextareaProps) -> Element {
     let help_node = crate::components::optional_reactive_text(help_combined, help_style);
 
     let mut input = runtime_core::text_area(value, move |v: String| (on_change)(v));
+    // Autogrow bounds now ride on the PRIMITIVE so every backend converts
+    // rows→px from its real line height (web included). Snapshotted at build —
+    // a live `rows`/`max_rows` source isn't routed through yet (mirrors the
+    // `placeholder` snapshot above; the primitive has no reactive row setter).
+    let (min_rows, max_rows_bound) =
+        row_bounds(props.rows.get(), props.max_rows.get(), props.min_height.get().is_some());
+    if let Some(r) = min_rows {
+        input = input.min_rows(r);
+    }
+    if let Some(r) = max_rows_bound {
+        input = input.max_rows(r);
+    }
     // TODO(reactive-sweep): the `text_area` primitive has no reactive
     // placeholder setter (unlike `text_input::placeholder_reactive`), so a
     // live `placeholder` source is snapshotted here rather than routed to the
@@ -282,43 +272,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn height_bounds_uncapped_grows_from_floor() {
-        let size = FieldSize::default();
-        let (line, chrome) = size_metrics(size);
-        let (min, max, rows, max_rows) = height_bounds(3, 0, size);
-        assert_eq!(min, 3.0 * line + chrome, "rows is the min-height floor");
-        assert_eq!(max, None, "max_rows == 0 leaves autogrow uncapped");
-        assert_eq!((rows, max_rows), (3, 0));
+    fn row_bounds_uncapped_passes_floor_only() {
+        // rows=3, max_rows=0 (uncapped), no px override → min_rows=3, no cap.
+        assert_eq!(row_bounds(3, 0, false), (Some(3), None));
     }
 
     #[test]
-    fn height_bounds_caps_at_max_rows() {
-        let size = FieldSize::default();
-        let (line, chrome) = size_metrics(size);
-        let (min, max, _, max_rows) = height_bounds(2, 8, size);
-        assert_eq!(min, 2.0 * line + chrome);
-        assert_eq!(max, Some(8.0 * line + chrome), "max_rows is the grow-then-scroll cap");
-        assert_eq!(max_rows, 8);
+    fn row_bounds_caps_at_max_rows() {
+        assert_eq!(row_bounds(2, 8, false), (Some(2), Some(8)), "max_rows is the cap");
     }
 
     #[test]
-    fn height_bounds_floors_rows_at_one() {
-        let size = FieldSize::default();
-        let (line, chrome) = size_metrics(size);
-        let (min, _, rows, _) = height_bounds(0, 0, size);
-        assert_eq!(rows, 1, "a zero-row textarea floors at one line");
-        assert_eq!(min, line + chrome);
+    fn row_bounds_floors_rows_at_one() {
+        // A zero-row textarea floors at one line.
+        assert_eq!(row_bounds(0, 0, false), (Some(1), None));
     }
 
     #[test]
-    fn height_bounds_clamps_cap_below_floor_up_to_floor() {
-        // max_rows(2) below rows(4): the cap clamps up to the floor, so
-        // the box can't grow past its resting height (min == max) rather
-        // than producing an inverted min > max.
-        let (min, max, rows, max_rows) = height_bounds(4, 2, FieldSize::default());
-        assert_eq!(rows, 4);
-        assert_eq!(max_rows, 4);
-        assert_eq!(max, Some(min));
+    fn row_bounds_clamps_cap_below_floor_up_to_floor() {
+        // max_rows(2) below rows(4): the cap clamps up to the floor so the box
+        // can't grow past its resting height, never an inverted min > max.
+        assert_eq!(row_bounds(4, 2, false), (Some(4), Some(4)));
+    }
+
+    #[test]
+    fn row_bounds_min_height_override_drops_min_rows() {
+        // An explicit px `min_height` owns the floor → no `min_rows` (the px
+        // floor applies via style instead); the cap still rides on rows.
+        assert_eq!(row_bounds(3, 8, true), (None, Some(8)));
     }
 
     use idea_theme::theme::{install_idea_theme, light_theme};
@@ -337,6 +318,47 @@ mod tests {
             }
         }
         panic!("Textarea tree has no text_area node");
+    }
+
+    /// Pull the primitive `min_rows`/`max_rows` off the built `text_area` node.
+    fn input_row_bounds(ta: Element) -> (Option<u32>, Option<u32>) {
+        let children = match ta {
+            Element::View { children, .. } => children,
+            _ => panic!("Textarea renders a view wrapper"),
+        };
+        for c in children {
+            if let Element::TextArea { min_rows, max_rows, .. } = c {
+                return (min_rows, max_rows);
+            }
+        }
+        panic!("Textarea tree has no text_area node");
+    }
+
+    // End-to-end: the component's `rows`/`max_rows` props reach the PRIMITIVE
+    // (not a synthesized style) so the backend converts them with real metrics.
+    #[test]
+    fn rows_props_flow_to_the_primitive() {
+        install_idea_theme(light_theme());
+        let props = TextareaProps {
+            rows: Reactive::Static(4),
+            max_rows: Reactive::Static(10),
+            ..Default::default()
+        };
+        assert_eq!(input_row_bounds(Textarea(&props)), (Some(4), Some(10)));
+    }
+
+    // The min_height px override drops `min_rows` from the primitive (the px
+    // floor takes over via style) while the cap still rides on `max_rows`.
+    #[test]
+    fn min_height_override_drops_primitive_min_rows() {
+        install_idea_theme(light_theme());
+        let props = TextareaProps {
+            rows: Reactive::Static(3),
+            max_rows: Reactive::Static(8),
+            min_height: Reactive::Static(Some(92.0)),
+            ..Default::default()
+        };
+        assert_eq!(input_row_bounds(Textarea(&props)), (None, Some(8)));
     }
 
     // D9 regression (mirror of Field): a live `error` signal must drive

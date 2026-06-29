@@ -27,14 +27,21 @@
 //! whereas top-level `Menu` contents are composed children. See the
 //! note on `SubMenuProps::items`.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
 use runtime_core::{
-    component, signal, ui, ChildList, IdealystSchema, IntoElement, PressableHandle, Element,
-    Reactive, Ref, Signal, StyleApplication,
+    after_ms, component, signal, ui, ChildList, IdealystSchema, IntoElement, Element, Reactive,
+    Ref, ScheduledTask, Signal, StyleApplication, ViewHandle,
 };
+
+/// Grace period before a hovered-out submenu collapses. Bridges the small gap
+/// between a SubMenu's trigger row and its flyout panel so moving the pointer
+/// from one to the other doesn't flicker the flyout shut. Standard "hover
+/// intent" delay.
+const SUBMENU_HOVER_GRACE_MS: i32 = 120;
 
 use crate::stylesheets::{MenuChevron, MenuItemRow, MenuLabel as MenuLabelStyle, MenuSeparator as MenuSeparatorStyle, SelectMenu, Spacer};
 
@@ -106,8 +113,10 @@ impl Default for MenuProps {
     }
 }
 
-/// Renders an anchored, backdrop-less command panel containing the
-/// composed menu children, positioned relative to `target`.
+/// Renders an anchored command panel containing the composed menu children,
+/// positioned relative to `target`. Dismisses on Escape and on **outside
+/// click** (a fullscreen transparent catcher behind the panel fires
+/// `on_dismiss`, the universal dropdown/menu behavior — mirrors `Popover`).
 #[component(children)]
 pub fn Menu(props: MenuProps) -> Element {
     let target = props
@@ -119,16 +128,32 @@ pub fn Menu(props: MenuProps) -> Element {
         ChildList::append_to(c, &mut content);
     }
 
+    let on_dismiss = props.on_dismiss;
+
+    // The anchored panel itself carries NO backdrop — the catcher (below) owns
+    // outside-click dismissal; this `on_dismiss` is the Escape-key path.
     let mut bound = runtime_core::anchored_overlay(target, vec![panel(content)])
         .side(props.side)
         .align(props.align)
         .offset(props.offset)
         .backdrop(BackdropMode::None)
         .trap_focus(false);
-    if let Some(d) = props.on_dismiss {
+    if let Some(d) = on_dismiss.clone() {
         bound = bound.on_dismiss(move || (d)());
     }
-    bound.into_element()
+    let anchored = bound.into_element();
+
+    // Fullscreen transparent catcher BEHIND the panel: a tap anywhere off the
+    // panel fires `on_dismiss`. A tap ON the panel lands on the panel (rendered
+    // after the catcher, so above it) and doesn't dismiss. Same proven pattern
+    // as `Popover`; without it the menu only closed on Escape / item-select.
+    let catcher = crate::components::popover::dismiss_catcher(on_dismiss);
+
+    // Out-of-flow wrapper so the two portals don't occupy a flex slot and shift
+    // the trigger's siblings on open/close (see `out_of_flow_wrapper_sheet`).
+    runtime_core::view(vec![catcher, anchored])
+        .with_style(crate::components::popover::out_of_flow_wrapper_sheet())
+        .into_element()
 }
 
 // =============================================================================
@@ -301,38 +326,87 @@ impl Default for SubMenuProps {
     }
 }
 
-/// Renders a menu row with a trailing chevron that, on click, opens a
-/// nested flyout panel built from `items` to the configured `side`.
+/// Renders a menu row with a trailing chevron whose nested flyout opens on
+/// HOVER — the desktop/web standard for nested menus. Only one submenu per
+/// level is open at a time: this falls out of hover naturally, since hovering
+/// a sibling row means the pointer has LEFT this one, which closes it (after a
+/// short grace) while the sibling opens. The grace bridges the gap between the
+/// trigger row and its flyout so moving the pointer into the flyout doesn't
+/// dismiss it. Hovering off the row/flyout collapses just this submenu; the
+/// parent Menu's catcher still closes the whole menu on an outside click.
+///
+/// Touch has no hover (`on_hover` is a no-op on iOS/Android), so the flyout
+/// won't expand there — mobile menus are a separate consideration.
 #[component]
 pub fn SubMenu(props: SubMenuProps) -> Element {
     let open: Signal<bool> = signal!(false);
-    let trigger_ref: Ref<PressableHandle> = Ref::new();
+    let trigger_ref: Ref<ViewHandle> = Ref::new();
     let items = Rc::new(props.items);
     let side = props.side;
 
-    // Trigger row: label + chevron, click toggles the flyout.
+    // Pending hover-out close. Stored (not detached) so a re-hover of the
+    // trigger OR the flyout cancels it — the "hover intent" bridge. Owned by
+    // this component scope; drops (cancelling any pending close) on unmount.
+    let close_task: Rc<RefCell<Option<ScheduledTask>>> = Rc::new(RefCell::new(None));
+
+    // Hover-in: cancel any pending close and open immediately.
+    let open_now = {
+        let ct = close_task.clone();
+        move || {
+            if let Some(mut t) = ct.borrow_mut().take() {
+                t.cancel();
+            }
+            open.set(true);
+        }
+    };
+    // Hover-out: collapse after the grace, unless re-hovered first.
+    let schedule_close = {
+        let ct = close_task.clone();
+        move || {
+            if let Some(mut t) = ct.borrow_mut().take() {
+                t.cancel();
+            }
+            let task = after_ms(SUBMENU_HOVER_GRACE_MS, move || open.set(false));
+            *ct.borrow_mut() = Some(task);
+        }
+    };
+
+    // Trigger row — a hover-tracking VIEW (`on_hover` is a view-only channel),
+    // styled like a menu row and anchoring the flyout. The chevron marks it as
+    // expandable; `active` highlights it while its flyout is open.
     let chevron = runtime_core::text(CHEVRON.to_string())
         .with_style(MenuChevron())
         .into_element();
     let label_node = runtime_core::text(props.label).into_element();
-    let trigger = runtime_core::pressable(
-        vec![label_node, grow(), chevron],
-        move || open.set(!open.get()),
-    )
-    .with_style(move || {
-        StyleApplication::new(MenuItemRow::sheet())
-            .with("active", if open.get() { "on" } else { "off" }.to_string())
-    })
-    .bind(trigger_ref)
-    .into_element();
+    let trigger = {
+        let open_now = open_now.clone();
+        let schedule_close = schedule_close.clone();
+        runtime_core::view(vec![label_node, grow(), chevron])
+            .with_style(move || {
+                StyleApplication::new(MenuItemRow::sheet())
+                    .with("active", if open.get() { "on" } else { "off" }.to_string())
+            })
+            .on_hover(move |entering| {
+                if entering {
+                    open_now();
+                } else {
+                    schedule_close();
+                }
+            })
+            .bind(trigger_ref)
+            .into_element()
+    };
 
-    // Flyout — rebuilt from `items` data each time it opens.
+    // Flyout — rebuilt from `items` each time it opens. Its panel ALSO tracks
+    // hover so the pointer can travel from the trigger into it (and dwell
+    // there) without the grace timer collapsing it.
     let flyout = runtime_core::when(
         move || open.get(),
         {
             let items = items.clone();
+            let open_now = open_now.clone();
+            let schedule_close = schedule_close.clone();
             move || {
-                let close = move || open.set(false);
                 let mut rows: Vec<Element> = Vec::with_capacity(items.len());
                 for entry in items.iter() {
                     let on_select = entry.on_select.clone();
@@ -341,14 +415,27 @@ pub fn SubMenu(props: SubMenuProps) -> Element {
                         vec![runtime_core::text(label).into_element()],
                         move || {
                             (on_select)();
-                            close();
+                            open.set(false);
                         },
                     )
                     .with_style(|| StyleApplication::new(MenuItemRow::sheet()))
                     .into_element();
                     rows.push(row);
                 }
-                runtime_core::anchored_overlay(AnchorTarget::from(trigger_ref), vec![panel(rows)])
+                // Wrap the panel in a hover-tracking view so dwelling in the
+                // flyout keeps it open (cancels the trigger's hover-out close).
+                let on_enter = open_now.clone();
+                let on_leave = schedule_close.clone();
+                let panel_view = runtime_core::view(vec![panel(rows)])
+                    .on_hover(move |entering| {
+                        if entering {
+                            on_enter();
+                        } else {
+                            on_leave();
+                        }
+                    })
+                    .into_element();
+                runtime_core::anchored_overlay(AnchorTarget::from(trigger_ref), vec![panel_view])
                     .side(side)
                     .align(ElementAlign::Start)
                     .offset(2.0)
@@ -366,5 +453,60 @@ pub fn SubMenu(props: SubMenuProps) -> Element {
             trigger
             flyout
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use runtime_core::primitives::portal::{PortalTarget, ViewportPlacement};
+    use runtime_core::Ref;
+
+    // (ViewHandle is the module's anchor handle type; any anchorable Ref works
+    // as a Menu target here.)
+
+    /// Regression: a Menu dismisses on OUTSIDE CLICK, not just Escape /
+    /// item-select. Like `Popover`, it composes a FULLSCREEN transparent
+    /// catcher (a viewport-sized `overlay()` portal whose backdrop is a
+    /// `Pressable` wired to `on_dismiss`) BEHIND the anchored panel. Menu used
+    /// to be a lone `anchored_overlay(BackdropMode::None)` with no catcher, so
+    /// clicking away never closed it. If a refactor drops the catcher (or
+    /// shrinks it from FullScreen), click-away silently disappears again.
+    #[test]
+    fn menu_has_fullscreen_catcher_behind_panel() {
+        let trigger: Ref<ViewHandle> = Ref::new();
+        let el = Menu(MenuProps {
+            target: Some(AnchorTarget::from(trigger)),
+            children: vec![runtime_core::text("Item".to_string()).into_element()],
+            ..Default::default()
+        });
+
+        // Menu = a View wrapping [catcher, anchored panel].
+        let kids = match &el {
+            Element::View { children, .. } => children,
+            _ => panic!("a targeted Menu must wrap [catcher, anchored] in a View"),
+        };
+        assert_eq!(kids.len(), 2, "Menu = fullscreen catcher + anchored panel");
+
+        // child[0]: fullscreen catcher portal with a tap-catching backdrop.
+        match &kids[0] {
+            Element::Portal { children, target, .. } => {
+                assert!(
+                    matches!(target, PortalTarget::Viewport(ViewportPlacement::FullScreen)),
+                    "the catcher must be a FULLSCREEN viewport portal"
+                );
+                assert!(
+                    matches!(children.first(), Some(Element::Pressable { .. })),
+                    "the catcher's first child must be the backdrop Pressable"
+                );
+            }
+            _ => panic!("Menu's first child must be the fullscreen catcher Portal"),
+        }
+
+        // child[1]: the anchored panel portal.
+        assert!(
+            matches!(&kids[1], Element::Portal { .. }),
+            "Menu's second child must be the anchored panel Portal"
+        );
     }
 }

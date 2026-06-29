@@ -14,7 +14,7 @@ mod common;
 
 use runtime_core::stylesheet;
 use runtime_core::{
-    install_tokens, signal, update_tokens, Color, Effect, Length, Signal, StyleRules, TokenEntry,
+    install_tokens, signal, update_tokens, watch, Color, Length, Signal, StyleRules, TokenEntry,
     TokenValue, Tokenized,
 };
 
@@ -62,6 +62,48 @@ stylesheet! {
             width: Length::Px(500.0),
         }
     }
+}
+
+// A `stylesheet!` with a `state hovered` block and NO reactive variant — so a
+// node styled with `Hoverable()` produces a STATIC `StyleSource` whose sheet
+// nonetheless declares state overlays. This is the exact shape (an idea-ui
+// `MenuItem`/`ListItem` with a static `active`) that silently lost hover on
+// native backends before the `attach_style_static` state-machine divert.
+stylesheet! {
+    Hoverable<()> {
+        base(_t) {
+            color: Color("#6b7280".into()),
+        }
+        state hovered(_t) {
+            color: Color("#111111".into()),
+        }
+    }
+}
+
+/// The `stylesheet!` macro's generated `*_style()` constructor must hand
+/// back the SAME cached `Rc<StyleSheet>` on repeat calls. This used to be
+/// backed by a per-sheet `thread_local!`; it now routes through
+/// runtime-core's single shared `cached_stylesheet` registry (one TLS key
+/// for all sheets, so Android bionic's 128 pthread-key cap isn't exhausted
+/// by binaries that link many stylesheets). The observable contract — sheet
+/// identity stable across calls, distinct sheets independent — must survive
+/// that change.
+#[test]
+fn generated_style_fn_caches_and_keys_per_sheet() {
+    use std::rc::Rc;
+    let a = nav_style_style();
+    let b = nav_style_style();
+    assert!(
+        Rc::ptr_eq(&a, &b),
+        "repeat calls to a generated `_style()` must return the cached sheet"
+    );
+    // A different stylesheet resolves to a different allocation — the
+    // shared registry keys per sheet, it doesn't conflate them.
+    let other = responsive_style();
+    assert!(
+        !Rc::ptr_eq(&a, &other),
+        "distinct stylesheets must not share a cache entry"
+    );
 }
 
 /// FUNCTIONAL, end-to-end through the walker — the native container-query
@@ -275,7 +317,7 @@ fn token_resolve_is_reactive() {
     let count: Rc<Cell<usize>> = Rc::new(Cell::new(0));
     let ct = count.clone();
 
-    let _e = Effect::new(move || {
+    let _e = watch(move || {
         let _ = t.resolve();
         ct.set(ct.get() + 1);
     });
@@ -312,7 +354,7 @@ fn token_subscribers_are_per_token() {
     let count: Rc<Cell<usize>> = Rc::new(Cell::new(0));
     let ct = count.clone();
 
-    let _e = Effect::new(move || {
+    let _e = watch(move || {
         let _ = ta.resolve();
         ct.set(ct.get() + 1);
     });
@@ -388,11 +430,11 @@ fn batched_update_tokens_fires_each_subscriber_once() {
     let ca = count_a.clone();
     let cb = count_b.clone();
 
-    let _ea = Effect::new(move || {
+    let _ea = watch(move || {
         let _ = ta.resolve();
         ca.set(ca.get() + 1);
     });
-    let _eb = Effect::new(move || {
+    let _eb = watch(move || {
         let _ = tb.resolve();
         cb.set(cb.get() + 1);
     });
@@ -456,7 +498,7 @@ fn update_tokens_populates_pending_before_firing_subscribers() {
     // assertion below can inspect the second fire's view.
     let observed: Rc<RefCell<Vec<Vec<TokenEntry>>>> = Rc::new(RefCell::new(Vec::new()));
     let obs = observed.clone();
-    let _e = Effect::new(move || {
+    let _e = watch(move || {
         let _ = tok.resolve(); // subscribe
         let drained = take_pending_token_updates();
         // Flatten the Vec<Vec<...>> so the test reads naturally — we
@@ -466,7 +508,7 @@ fn update_tokens_populates_pending_before_firing_subscribers() {
         }
     });
 
-    // First fire happens at Effect::new; pending was drained above,
+    // First fire happens at `watch()`; pending was drained above,
     // so this fire sees nothing. The test's load-bearing assertion
     // is about the SECOND fire (post-`update_tokens`).
     observed.borrow_mut().clear();
@@ -519,7 +561,7 @@ fn tokenized_value_alone_does_not_subscribe() {
     let count: Rc<Cell<usize>> = Rc::new(Cell::new(0));
     let ct = count.clone();
 
-    let _e = Effect::new(move || {
+    let _e = watch(move || {
         // `.value()` reads the fallback, not the registry — should
         // NOT subscribe to token changes.
         let _ = t.value();
@@ -685,7 +727,7 @@ fn signal_reactivity_alongside_tokens() {
     let count: Rc<Cell<usize>> = Rc::new(Cell::new(0));
     let ct = count.clone();
 
-    let _e = Effect::new(move || {
+    let _e = watch(move || {
         let _ = s.get();
         ct.set(ct.get() + 1);
     });
@@ -1061,5 +1103,64 @@ fn derived_builder_variant_reapplies_style_on_signal_change() {
          Events: {:?}",
         applies,
         after,
+    );
+}
+
+/// REGRESSION (functional, end-to-end through the walker).
+///
+/// A node with a STATIC style whose sheet declares a `state hovered` overlay
+/// must STILL wire the native state machine on an event-driven backend (the
+/// mock, like macOS / iOS / Android). Pre-fix, `attach_style_static` returned a
+/// NO-OP setter and never called `attach_states`, so hover was dead on native
+/// while web (CSS `:hover`) kept it — the reported "menu actions / sidebar rows
+/// don't hover on macOS" bug. Post-fix the static path diverts to the reactive
+/// path when the backend drives states itself AND the sheet has state overlays:
+/// it calls `attach_states` (so the backend can install hover tracking) AND
+/// re-applies when the state flips.
+#[test]
+fn static_style_with_state_overlay_wires_hover_on_native() {
+    use common::{Event, TestRuntime};
+    use runtime_core::{view, IntoElement, StateBits};
+
+    let rt = TestRuntime::new();
+    // `Hoverable()` with no reactive input resolves to a `StyleApplication`
+    // (StyleSource::Static), but its sheet declares `state hovered`.
+    let tree = view(vec![]).with_style(Hoverable()).into_element();
+    let _owner = rt.render(tree);
+
+    // The state machine must have been wired — pre-fix the static path never
+    // called `attach_states`, so the backend had no setter to flip on hover.
+    let node = rt.events().iter().find_map(|e| match e {
+        Event::AttachStates { node } => Some(*node),
+        _ => None,
+    });
+    let node = node.expect(
+        "a static style whose sheet declares `state hovered` must call \
+         attach_states on an event-driven backend (pre-fix: the static path \
+         returned a no-op setter and skipped it → no hover on native)",
+    );
+
+    // And flipping HOVERED (as a native NSTrackingArea / DOM listener would)
+    // must re-apply the style — the visible hover change. Pull the setter out
+    // FIRST, then drop the backend borrow before invoking it: the flip drives a
+    // synchronous reactive cascade that re-borrows the backend to `apply_style`,
+    // exactly as it does from a real event handler (which holds no borrow).
+    let setter = rt
+        .backend_mut()
+        .state_setter(node)
+        .expect("the attached state setter must be live, not a no-op");
+    rt.backend_mut().clear_events();
+    setter(StateBits::HOVERED, true);
+    let applies = rt
+        .events()
+        .iter()
+        .filter(|e| matches!(e, Event::ApplyStyle { .. } | Event::ApplyStyledStates { .. }))
+        .count();
+    assert!(
+        applies >= 1,
+        "flipping HOVERED on a static state-bearing style must re-apply it; got {} \
+         (pre-fix 0). Events: {:?}",
+        applies,
+        rt.events(),
     );
 }

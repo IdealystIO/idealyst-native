@@ -9,7 +9,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use runtime_core::{on_cleanup, signal, Effect, Signal};
+use runtime_core::{on_cleanup, signal, watch, Signal};
 
 /// Cleanup fires before the effect's next re-run.
 #[test]
@@ -18,7 +18,7 @@ fn cleanup_fires_before_re_run() {
     let trace: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
 
     let trace_for_effect = trace.clone();
-    let _e = Effect::new(move || {
+    let _e = watch(move || {
         trace_for_effect.borrow_mut().push("body");
         let _ = trigger.get();
         let trace_for_cleanup = trace_for_effect.clone();
@@ -53,7 +53,7 @@ fn cleanup_fires_on_effect_drop() {
     let fired_for_cleanup = fired.clone();
 
     {
-        let _e = Effect::new(move || {
+        let _e = watch(move || {
             let fired = fired_for_cleanup.clone();
             on_cleanup(move || {
                 *fired.borrow_mut() = true;
@@ -74,7 +74,7 @@ fn multiple_cleanups_fire_in_lifo_order() {
     let order: Rc<RefCell<Vec<u32>>> = Rc::new(RefCell::new(Vec::new()));
 
     let order_for_effect = order.clone();
-    let _e = Effect::new(move || {
+    let _e = watch(move || {
         let _ = trigger.get();
         for i in 0..4 {
             let o = order_for_effect.clone();
@@ -105,7 +105,7 @@ fn cleanup_does_not_double_fire() {
     let counter: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
 
     let counter_for_effect = counter.clone();
-    let _e = Effect::new(move || {
+    let _e = watch(move || {
         let _ = trigger.get();
         let c = counter_for_effect.clone();
         on_cleanup(move || {
@@ -122,30 +122,30 @@ fn cleanup_does_not_double_fire() {
     assert_eq!(*counter.borrow(), 3);
 }
 
-/// Framework behavior: outside a render scope, `Effect::new` returns
-/// a handle that owns the slot — dropping the handle frees the slot
-/// and fires its cleanups. So a nested `Effect::new(...)` whose
-/// returned handle isn't held drops at end of its lexical block,
-/// firing cleanups immediately.
+/// Framework behavior: outside a render scope, `watch(...)` returns
+/// a `Subscription` that owns the slot — dropping it frees the slot
+/// and fires its cleanups. So a nested `watch(...)` whose returned
+/// handle isn't held drops at end of its lexical block, firing
+/// cleanups immediately.
 ///
-/// Inside a render scope (where `Effect::new` slots are adopted by
-/// the active `Scope`), the returned handle's drop is a no-op and
-/// the Effect lives until the scope drops. That path is covered by
-/// the walker tests; this test pins the standalone-handle behavior.
+/// Inside a render scope (where scope-owned `effect! { … }` slots are
+/// adopted by the active `Scope`), teardown is deferred to the scope
+/// drop instead. That path is covered by the walker tests; this test
+/// pins the standalone-handle behavior.
 #[test]
 fn nested_effect_outside_scope_drops_at_block_end() {
     let parent_trigger: Signal<i32> = signal!(0);
     let nested_cleanups: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
 
     let nested_for_effect = nested_cleanups.clone();
-    let _e = Effect::new(move || {
+    let _e = watch(move || {
         let _ = parent_trigger.get();
         // The inner Effect's handle is dropped at end of this block.
         // Without a render scope to adopt it, the handle owns the
         // slot — drop = fire cleanups + free.
         let _nested = {
             let nested = nested_for_effect.clone();
-            Effect::new(move || {
+            watch(move || {
                 let n = nested.clone();
                 on_cleanup(move || {
                     *n.borrow_mut() += 1;
@@ -171,7 +171,7 @@ fn nested_effect_outside_scope_drops_at_block_end() {
 }
 
 /// Cleanup registered outside an Effect — i.e. called at the top
-/// level of a render scope but not inside an `Effect::new` body — is
+/// level of a render scope but not inside an effect body — is
 /// a no-op (or specifically: not attached to an Effect, can't fire
 /// from one). The framework should not panic in that case.
 #[test]

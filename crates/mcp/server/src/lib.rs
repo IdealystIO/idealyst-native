@@ -11,11 +11,13 @@
 mod adb;
 mod app_discovery;
 mod catalog_service;
+mod dev_runner;
 pub mod lint;
 mod robot_bridge;
 mod watch;
 
 pub use app_discovery::{DiscoveredApp, DiscoveryTable};
+pub use dev_runner::{DevLaunch, DevRunner, DevSessionInfo};
 pub use catalog_service::CatalogService;
 pub use lint::{run as lint_catalog, run_with as lint_catalog_with, LintFinding, LintOptions, Severity};
 pub use robot_bridge::{RobotBridge, DEFAULT_BRIDGE};

@@ -77,7 +77,7 @@ use crate::stylesheets::Popover as PopoverStyle;
 /// report). `position: absolute` takes the wrapper out of flow entirely, so
 /// the trigger stays put. (Same fix the `if`-without-else macro lowering
 /// applies to its empty branch.)
-fn out_of_flow_wrapper_sheet() -> Rc<StyleSheet> {
+pub(crate) fn out_of_flow_wrapper_sheet() -> Rc<StyleSheet> {
     Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
         position: Some(Position::Absolute),
         ..Default::default()
@@ -94,6 +94,27 @@ fn transparent_backdrop_sheet() -> Rc<StyleSheet> {
         background: Some(Tokenized::Literal(Color("transparent".into()))),
         ..Default::default()
     }))
+}
+
+/// A FULLSCREEN, transparent outside-click catcher portal. Rendered *behind*
+/// an anchored surface so a tap anywhere off the surface fires `on_dismiss`
+/// (an anchored overlay's own `Dismiss` backdrop only fills its small anchored
+/// box, so a click truly away from the surface would miss it). Shared by
+/// `Popover` and `Menu` — both want the universal dropdown "click-outside
+/// closes" behavior. `None` on_dismiss → an inert catcher (the tap is consumed
+/// but does nothing), so an unwired overlay can't silently no-op-close.
+pub(crate) fn dismiss_catcher(on_dismiss: Option<Rc<dyn Fn()>>) -> Element {
+    let mut c = overlay(Vec::new())
+        // FullScreen so the portal (and its inset-0 backdrop) is viewport-sized
+        // — the default Center placement would size the portal to its (empty)
+        // content, collapsing the catcher to 0×0.
+        .placement(ViewportPlacement::FullScreen)
+        .backdrop(BackdropMode::Dismiss)
+        .backdrop_style(StyleApplication::new(transparent_backdrop_sheet()));
+    if let Some(d) = on_dismiss {
+        c = c.on_dismiss(move || (d)());
+    }
+    c.into_element()
 }
 
 // Reactive-by-default: `#[props]` wraps the scalar data props (`side`/`align`
@@ -182,19 +203,7 @@ pub fn Popover(props: PopoverProps) -> Element {
     // the surface (rendered after the catcher, so above it) and never
     // reaches the catcher, so it doesn't dismiss. (Same fix as `Select`.)
     let dismiss = props.on_dismiss;
-    let catcher = {
-        let mut c = overlay(Vec::new())
-            // FullScreen so the portal (and its inset-0 backdrop) is
-            // viewport-sized — the default Center placement would size the
-            // portal to its (empty) content, collapsing the catcher to 0×0.
-            .placement(ViewportPlacement::FullScreen)
-            .backdrop(BackdropMode::Dismiss)
-            .backdrop_style(StyleApplication::new(transparent_backdrop_sheet()));
-        if let Some(d) = dismiss.clone() {
-            c = c.on_dismiss(move || (d)());
-        }
-        c.into_element()
-    };
+    let catcher = dismiss_catcher(dismiss.clone());
 
     // The anchored surface sits ABOVE the catcher (same layer, rendered
     // after). Its own backdrop is None — the catcher owns outside-click

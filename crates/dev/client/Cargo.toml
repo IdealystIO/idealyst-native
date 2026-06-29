@@ -36,3 +36,6 @@ dev-hot-reload = []
 runtime-core = { workspace = true }
 wire = { workspace = true }
 serde_json = { version = "1", optional = false }
+
+[dev-dependencies]
+mock-backend = { workspace = true }

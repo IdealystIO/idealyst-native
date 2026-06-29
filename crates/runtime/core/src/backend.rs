@@ -1348,6 +1348,21 @@ pub trait Backend {
     #[allow(unused_variables)]
     fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {}
 
+    /// Install a focus-change notifier on a text input. The framework calls this
+    /// (after `create_text_input`) only when the author attached an `on_focus`
+    /// handler. The backend must invoke `handler(true)` when the input gains
+    /// keyboard focus and `handler(false)` when it loses it — the author-facing
+    /// partner of the internal `attach_states` `FOCUSED` wiring. Default no-op so
+    /// backends without focus events keep compiling (the ring simply won't light
+    /// on an adorned idea-ui `Field` there, exactly as before this hook existed).
+    #[allow(unused_variables)]
+    fn set_text_input_focus_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: Rc<dyn Fn(bool)>,
+    ) {
+    }
+
     /// Update an existing text input's placeholder in place. Called from a
     /// reactive effect only when `placeholder` is a live source; a `Static`
     /// placeholder is set once at `create_text_input`. `None` clears it.
@@ -1367,17 +1382,27 @@ pub trait Backend {
     /// The textarea is intrinsically sized to its content: like the
     /// text primitive, a backend reports the height its text needs to
     /// the layout engine (via an intrinsic measure function on native
-    /// toolkits, or the equivalent on web), and the style's
-    /// `height` / `min_height` / `max_height` constrain it. There is no
-    /// "autogrow" flag — growing to fit is simply what an unconstrained
-    /// height does; a pinned height (or sized parent) yields a fixed,
-    /// scrolling box.
+    /// toolkits, or the equivalent on web). Growing to fit is simply
+    /// what an unconstrained height does; a pinned style `height` (or
+    /// sized parent) yields a fixed, scrolling box.
+    ///
+    /// `min_rows` / `max_rows` bound that growth **in text lines**: the
+    /// box floors at `max(1, min_rows)` lines and, once content needs
+    /// more than `max_rows` lines, stops growing and scrolls. A backend
+    /// converts rows→pixels using its OWN real font line height (see
+    /// [`primitives::text_area::resolve_text_area_height`]) so the bound
+    /// is exact per platform, then enables native scrolling past the cap.
+    /// An explicit style `min_height` / `max_height` still applies on top
+    /// (a pixel-precise override). `wrap == false` (code editor) is a
+    /// fixed-height scroller and ignores the row bounds.
     #[allow(unused_variables)]
     fn create_text_area(
         &mut self,
         initial_value: &str,
         placeholder: Option<&str>,
         wrap: bool,
+        min_rows: Option<u32>,
+        max_rows: Option<u32>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<primitives::key::KeyDownHandler>,
         a11y: &crate::accessibility::AccessibilityProps,
@@ -2068,6 +2093,53 @@ pub trait Backend {
         None
     }
 
+    /// Whether this backend can report a node's **platform-native render
+    /// state** via [`introspect_native`](Backend::introspect_native).
+    /// Default `false`. The Robot bridge's `"introspect_native"` verb
+    /// returns a clear "unsupported" error rather than empty data when
+    /// this is `false`, so a parity harness can tell "no parity data" from
+    /// "an empty tree".
+    fn supports_native_introspection(&self) -> bool {
+        false
+    }
+
+    /// Read the **platform-native render tree** rooted at `node` — the
+    /// resolved geometry and visual properties as the platform itself
+    /// reports them (a `CALayer`'s `backgroundColor`, the DOM's
+    /// `getComputedStyle`, a resolved `NSFont`), plus the native
+    /// sub-objects that compose this one primitive.
+    ///
+    /// The cardinal rule: every value MUST be read from the live native
+    /// object, **never** echoed from the framework's own style structs —
+    /// otherwise a parity diff just reports the styles we *asked* for, not
+    /// the ones the platform *applied*. See
+    /// [`crate::introspect`] for the data model and the
+    /// [`collect_native_tree`](crate::introspect::collect_native_tree)
+    /// boundary walk that prunes sibling/child framework primitives.
+    ///
+    /// Returns `None` if the node isn't laid out yet or the backend can't
+    /// introspect it. Default `None` — backends opt in alongside
+    /// [`supports_native_introspection`](Backend::supports_native_introspection).
+    #[allow(unused_variables)]
+    fn introspect_native(&self, node: &Self::Node) -> Option<crate::introspect::NativeNode> {
+        None
+    }
+
+    /// Note that `node` is a **framework primitive root** — the top native
+    /// object of one registered element. The walker calls this for every
+    /// registered primitive (alongside wiring the introspection closure), so
+    /// a backend whose [`introspect_native`](Backend::introspect_native) walk
+    /// needs to know where one primitive's native subtree ends and a child
+    /// primitive's begins can record the boundary here.
+    ///
+    /// Default no-op. The macOS backend ignores it (it consults its existing
+    /// view→layout map); the web backend records the node's identity so the
+    /// DOM walk can prune at child-primitive roots. Cheap and dev-only in
+    /// practice — only the `robot` walker calls it, and only backends that do
+    /// native introspection override it.
+    #[allow(unused_variables)]
+    fn note_introspection_root(&self, node: &Self::Node) {}
+
     /// Whether this backend can capture its rendered surface via
     /// [`capture_screenshot`](Backend::capture_screenshot). Default
     /// `false`. The Robot bridge only registers the live `"screenshot"`
@@ -2399,6 +2471,20 @@ pub trait Backend {
     /// drop event-listener handles, free observer subscriptions.
     #[allow(unused_variables)]
     fn release_portal(&mut self, node: &Self::Node) {
+        // default no-op
+    }
+
+    /// Show or hide a mounted portal's container, WITHOUT tearing it down.
+    /// Called by the portal build path's visibility `Effect` so an overlay
+    /// (modal / popover / tooltip / click-away catcher) opened on a navigator
+    /// screen is hidden while that screen isn't the active route, and shown
+    /// again on return — a portal escapes its screen's view tree to mount on
+    /// the window, so it doesn't get detached on navigation, and a persistent
+    /// screen keeps its scope (and this portal) alive. Default no-op: backends
+    /// that don't yet implement it keep the prior behavior (the overlay
+    /// survives navigation) rather than regressing.
+    #[allow(unused_variables)]
+    fn set_portal_hidden(&mut self, node: &Self::Node, hidden: bool) {
         // default no-op
     }
 

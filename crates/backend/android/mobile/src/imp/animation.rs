@@ -34,6 +34,7 @@ pub(crate) fn start_argb_animator(
 ) -> Option<GlobalRef> {
     let class = env.find_class("android/animation/ObjectAnimator").ok()?;
     let prop = env.new_string(property).ok()?;
+    let (from, to) = normalize_argb_fade(from, to);
     let values = env.new_int_array(2).ok()?;
     env.set_int_array_region(&values, 0, &[from, to]).ok()?;
     let anim = env
@@ -52,6 +53,26 @@ pub(crate) fn start_argb_animator(
         .ok()?;
     configure_and_start(env, &anim, transition)?;
     env.new_global_ref(&anim).ok()
+}
+
+/// Normalize a fully-transparent endpoint to carry its PARTNER's RGB so the
+/// JVM `ArgbEvaluator` (straight, non-premultiplied ARGB interpolation) fades
+/// only the alpha rather than through gray. `transparent` packs to `0x00000000`
+/// (RGB = black), so interpolating it to an opaque light color passes through
+/// semi-opaque BLACK at the midpoint — the dark-gray flash on press / active /
+/// focus state fades, where the resting `background` is `transparent`. Swapping
+/// the partner RGB into the transparent endpoint is invisible (alpha stays 0)
+/// and keeps the fade on the target hue — the same outcome as the macOS
+/// premultiplied-alpha tween (`transitions::lerp`).
+fn normalize_argb_fade(from: i32, to: i32) -> (i32, i32) {
+    // Arithmetic `>> 24` sign-extends for an i32 with the alpha high bit set;
+    // `& 0xFF` masks that off to recover the alpha byte. `& 0x00FF_FFFF` keeps
+    // RGB with alpha 0.
+    let from_opaque = (from >> 24) & 0xFF != 0;
+    let to_opaque = (to >> 24) & 0xFF != 0;
+    let from2 = if from_opaque { from } else { to & 0x00FF_FFFF };
+    let to2 = if to_opaque { to } else { from2 & 0x00FF_FFFF };
+    (from2, to2)
 }
 
 /// Specialized ARGB animator for `GradientDrawable.color`. The
@@ -337,4 +358,38 @@ fn build_cubic_bezier<'a>(
         ],
     )
     .ok()
+}
+
+#[cfg(test)]
+mod argb_fade_tests {
+    use super::normalize_argb_fade;
+
+    // 0x00000000 = transparent (RGB black). 0xFFEEF0F7 = opaque #eef0f7.
+    const TRANSPARENT: i32 = 0x0000_0000u32 as i32;
+    const SURFACE: i32 = 0xFFEE_F0F7u32 as i32;
+
+    #[test]
+    fn transparent_from_takes_partner_rgb_alpha_zero() {
+        // Regression: a transparent→opaque fade must NOT animate through gray.
+        // The transparent `from` gets the target RGB at alpha 0, so ArgbEvaluator
+        // ramps only alpha and the midpoint is the light hue, not dark gray.
+        let (from, to) = normalize_argb_fade(TRANSPARENT, SURFACE);
+        assert_eq!(from, 0x00EE_F0F7u32 as i32, "from = target RGB, alpha 0");
+        assert_eq!(to, SURFACE, "to unchanged");
+    }
+
+    #[test]
+    fn transparent_to_takes_partner_rgb_on_fade_out() {
+        // Fade OUT (opaque→transparent): the transparent `to` gets the source RGB.
+        let (from, to) = normalize_argb_fade(SURFACE, TRANSPARENT);
+        assert_eq!(from, SURFACE, "from unchanged");
+        assert_eq!(to, 0x00EE_F0F7u32 as i32, "to = source RGB, alpha 0");
+    }
+
+    #[test]
+    fn opaque_to_opaque_unchanged() {
+        let a = 0xFF11_2233u32 as i32;
+        let b = 0xFF99_8877u32 as i32;
+        assert_eq!(normalize_argb_fade(a, b), (a, b));
+    }
 }

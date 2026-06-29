@@ -1699,6 +1699,8 @@ impl Backend for WireRecordingBackend {
         initial_value: &str,
         placeholder: Option<&str>,
         wrap: bool,
+        min_rows: Option<u32>,
+        max_rows: Option<u32>,
         on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
@@ -1719,6 +1721,8 @@ impl Backend for WireRecordingBackend {
             initial_value: initial_value.to_string(),
             placeholder: placeholder.map(str::to_string),
             wrap,
+            min_rows,
+            max_rows,
             on_change: handler,
             a11y: wire_a11y,
         });

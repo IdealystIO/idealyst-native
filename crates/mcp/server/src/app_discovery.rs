@@ -42,6 +42,11 @@ pub struct DiscoveredApp {
     /// `127.0.0.1:<port>` — the bridge binds `0.0.0.0` but the MCP
     /// server runs on the same machine.
     pub bridge_addr: String,
+    /// Lowercase platform tag (`web`, `macos`, `ios`, `android`, …) from the
+    /// registration file. `None` for older apps / a relay that hadn't yet
+    /// seen the app's `hello`. Lets a parity caller target two platforms of
+    /// the **same** app distinctly.
+    pub platform: Option<String>,
 }
 
 /// Live, lock-protected map of `name → DiscoveredApp`. Cheap to
@@ -52,10 +57,12 @@ pub struct DiscoveryTable {
 }
 
 impl DiscoveryTable {
-    /// Look up a service by name. Returns a snapshot — safe to use
-    /// even if the entry vanishes mid-call.
+    /// Look up a service by name. Returns the first match (the map is keyed
+    /// by `name#pid` so two platforms of the same app coexist; this returns
+    /// whichever the iteration finds first — callers that must disambiguate
+    /// use [`snapshot`](Self::snapshot) + `platform`).
     pub fn get(&self, name: &str) -> Option<DiscoveredApp> {
-        self.inner.lock().ok()?.get(name).cloned()
+        self.inner.lock().ok()?.values().find(|a| a.name == name).cloned()
     }
 
     /// Snapshot of every currently-known app. Sorted by name for
@@ -126,7 +133,10 @@ fn rescan_into(dir: &Path, table: &DiscoveryTable) {
             let _ = std::fs::remove_file(&path);
             continue;
         }
-        found.insert(app.name.clone(), app);
+        // Key by name+pid (not name alone) so two platforms of the SAME app —
+        // identical name, different process — both survive instead of one
+        // clobbering the other. Parity work needs to see both.
+        found.insert(format!("{}#{}", app.name, app.pid), app);
     }
     if let Ok(mut guard) = table.inner.lock() {
         *guard = found;
@@ -151,6 +161,11 @@ fn parse_registration_file(path: &Path) -> Option<DiscoveredApp> {
         .get("catalog_bin")
         .and_then(|x| x.as_str())
         .map(|s| s.to_string());
+    let platform = v
+        .get("platform")
+        .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty() && *s != "unknown")
+        .map(|s| s.to_string());
     Some(DiscoveredApp {
         name,
         bundle_id,
@@ -158,6 +173,7 @@ fn parse_registration_file(path: &Path) -> Option<DiscoveredApp> {
         catalog_bin,
         pid,
         bridge_addr: format!("127.0.0.1:{port}"),
+        platform,
     })
 }
 

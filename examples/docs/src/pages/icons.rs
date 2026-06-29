@@ -174,7 +174,7 @@ docs! {
             use runtime_core::{StrokeAnimation, Easing};
 
             ui! {
-                icon(LOGO).draw_in(StrokeAnimation::new(600, Easing::EaseOut))
+                icon(LOGO).draw_in(600, Easing::EaseOut)
             }
         "##),
         p("The animation fires once after the icon mounts. The ",

@@ -494,14 +494,25 @@ where
                 self.nodes.insert(id, node);
             }
             Command::CreateImage { id, src, alt, a11y } => {
-                if self.nodes.contains_key(&id) { return Ok(()); }
+                // Reconnect reconciliation (see CreateTextInput): re-apply the
+                // folded src/alt onto an already-held node instead of dropping.
+                if let Some(existing) = self.nodes.get(&id).cloned() {
+                    let mut b = self.backend.borrow_mut();
+                    b.update_image_src(&existing, &src);
+                    b.update_image_alt(&existing, alt.as_deref());
+                    return Ok(());
+                }
                 let a11y = self.a11y_props(a11y);
                 let node = self.backend.borrow_mut().create_image(&src, alt.as_deref(), &a11y);
                 self.nodes.insert(id, node);
             }
             Command::CreateIcon { id, data, color, a11y } => {
-                if self.nodes.contains_key(&id) { return Ok(()); }
                 let icon = convert::wire_icon_to_static(data);
+                // Reconnect reconciliation: re-apply the folded geometry.
+                if let Some(existing) = self.nodes.get(&id).cloned() {
+                    self.backend.borrow_mut().update_icon_data(&existing, &icon);
+                    return Ok(());
+                }
                 let color = color.map(convert::wire_color_to_color);
                 let a11y = self.a11y_props(a11y);
                 let node = self.backend.borrow_mut().create_icon(&icon, color.as_ref(), &a11y);
@@ -515,7 +526,17 @@ where
                 secure,
                 a11y,
             } => {
-                if self.nodes.contains_key(&id) { return Ok(()); }
+                // Reconnect reconciliation: a persisted client already holds
+                // this node, so re-apply the snapshot's folded reactive fields
+                // (value/placeholder/secure) rather than dropping them on the
+                // early-return. The `update_*` methods no-op when unchanged.
+                if let Some(existing) = self.nodes.get(&id).cloned() {
+                    let mut b = self.backend.borrow_mut();
+                    b.update_text_input_value(&existing, &initial_value);
+                    b.update_text_input_placeholder(&existing, placeholder.as_deref());
+                    b.update_text_input_secure(&existing, secure);
+                    return Ok(());
+                }
                 let cb = self.handler_string(on_change);
                 let a11y = self.a11y_props(a11y);
                 let node = self.backend.borrow_mut().create_text_input(
@@ -536,6 +557,8 @@ where
                 initial_value,
                 placeholder,
                 wrap,
+                min_rows,
+                max_rows,
                 on_change,
                 a11y,
             } => {
@@ -546,6 +569,8 @@ where
                     &initial_value,
                     placeholder.as_deref(),
                     wrap,
+                    min_rows,
+                    max_rows,
                     cb,
                     None,
                     &a11y,
@@ -639,8 +664,12 @@ where
                 self.nodes.insert(id, node);
             }
             Command::CreateActivityIndicator { id, size, color, a11y } => {
-                if self.nodes.contains_key(&id) { return Ok(()); }
                 let size = convert::wire_activity_size(size);
+                // Reconnect reconciliation: re-apply the folded size.
+                if let Some(existing) = self.nodes.get(&id).cloned() {
+                    self.backend.borrow_mut().update_activity_indicator_size(&existing, size);
+                    return Ok(());
+                }
                 let color = color.map(convert::wire_color_to_color);
                 let a11y = self.a11y_props(a11y);
                 let node = self.backend.borrow_mut().create_activity_indicator(size, color.as_ref(), &a11y);
@@ -655,7 +684,11 @@ where
                 external,
                 a11y,
             } => {
-                if self.nodes.contains_key(&id) { return Ok(()); }
+                // Reconnect reconciliation: re-apply the folded url.
+                if let Some(existing) = self.nodes.get(&id).cloned() {
+                    self.backend.borrow_mut().update_link_url(&existing, &url);
+                    return Ok(());
+                }
                 let cb = self.handler_unit(on_activate);
                 let route_static: &'static str = Box::leak(route.into_boxed_str());
                 let config = runtime_core::primitives::link::LinkConfig {

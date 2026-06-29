@@ -10,6 +10,13 @@
 //!   switches, navigate, read/write signals).
 //! - **Introspect** reactive state (read signal values, check ref
 //!   liveness, dump arena stats).
+//! - **Compare platform output** — read each primitive's *platform-native*
+//!   render state (resolved geometry + visual props, as the backend itself
+//!   reports them) via [`Robot::introspect_native`] / the bridge's
+//!   `introspect_native` verb, so two backends' trees can be diffed for
+//!   cross-platform parity. See [`crate::introspect`]. Backed by
+//!   `Backend::introspect_native` (web + macOS today); the verb is gated on
+//!   the `debug-stats` feature.
 //!
 //! # Architecture
 //!
@@ -145,6 +152,12 @@ pub(crate) struct ElementActions {
     /// Read the element's rect in **physical device-screen pixels** for
     /// OS-level input injection. Wraps `Backend::device_frame`.
     pub device_frame: Option<Rc<dyn Fn() -> Option<crate::primitives::portal::ViewportRect>>>,
+    /// Read the element's **platform-native render tree** — resolved
+    /// geometry + visual props as the platform reports them, plus the
+    /// native sub-objects composing this one primitive. Wraps
+    /// `Backend::introspect_native`. `Some` only when the backend opts into
+    /// native introspection. The parity-testing surface.
+    pub introspect: Option<Rc<dyn Fn() -> Option<crate::introspect::NativeNode>>>,
 }
 
 impl ElementActions {
@@ -159,6 +172,7 @@ impl ElementActions {
             frame: None,
             absolute_frame: None,
             device_frame: None,
+            introspect: None,
         }
     }
 }
@@ -692,6 +706,28 @@ impl Robot {
         }
     }
 
+    /// Read the element's **platform-native render tree** — resolved
+    /// geometry + visual properties as the platform reports them, plus the
+    /// native sub-objects composing this one primitive. `Ok(None)` means
+    /// the element exists but isn't laid out / introspectable yet; `Err`
+    /// means it's unmounted or the backend doesn't support native
+    /// introspection. The cross-platform parity surface.
+    pub fn introspect_native(
+        &self,
+        element: &Element,
+    ) -> Result<Option<crate::introspect::NativeNode>, RobotError> {
+        let cb = REGISTRY.with(|r| {
+            r.borrow()
+                .get(element.id)
+                .map(|e| e.actions.introspect.clone())
+                .ok_or(RobotError::ElementGone)
+        })?;
+        match cb {
+            Some(cb) => Ok(cb()),
+            None => Err(RobotError::ActionNotAvailable("introspect_native")),
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Signal introspection
     // -------------------------------------------------------------------------
@@ -917,6 +953,41 @@ pub(crate) fn attach_frame_actions(
             entry.actions.frame = Some(frame);
             entry.actions.absolute_frame = Some(absolute_frame);
             entry.actions.device_frame = Some(device_frame);
+        }
+    });
+}
+
+/// Attach the native-introspection closure to an already-registered element.
+/// Wired by the walker alongside [`attach_frame_actions`] at the same capture
+/// site (after the backend node exists), so it covers every registered
+/// primitive. The closure reads the live platform render state on demand.
+pub(crate) fn attach_introspect_action(
+    id: ElementId,
+    introspect: Rc<dyn Fn() -> Option<crate::introspect::NativeNode>>,
+) {
+    REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        if let Some(Some(entry)) = reg.entries.get_mut(id.0 as usize) {
+            entry.actions.introspect = Some(introspect);
+        }
+    });
+}
+
+/// Attach `focus`/`blur` actions to a registered element now that its backend
+/// node exists (wired by the walker for editable text inputs). Lets the robot
+/// `focus`/`blur` verbs drive a real text input — the testing analogue of a
+/// user clicking into the field. Previously unset, so `focus` reported
+/// "action not available" for every text input.
+pub(crate) fn attach_focus_actions(
+    id: ElementId,
+    focus: Rc<dyn Fn()>,
+    blur: Rc<dyn Fn()>,
+) {
+    REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        if let Some(Some(entry)) = reg.entries.get_mut(id.0 as usize) {
+            entry.actions.focus = Some(focus);
+            entry.actions.blur = Some(blur);
         }
     });
 }

@@ -1359,6 +1359,223 @@ mod tests {
         }
     }
 
+    /// Build the docs-`forms` Bio tree and measure ancestor heights as the
+    /// autosizing `text_area` leaf grows. Mirrors the LIVE macOS structure that
+    /// clipped the counter beneath a grown Bio:
+    ///   scroll page → DemoSurfaceContent (`align_items: center`, `max_width`)
+    ///     → Stack → [ FieldGroup (`align_self: stretch`)
+    ///                   → label(16) + textarea-leaf(measure) + helper(16),
+    ///                 counter(16) ]
+    /// The text_area leaf's height is driven by `content_h` (the autosize
+    /// height a backend's measure_fn would return); each "edit" sets a taller
+    /// value + `mark_dirty(leaf)` + recomputes — exactly the autogrow path.
+    /// Returns `(surface_height, stack_height)` per edit so the test can assert
+    /// the ancestor always *contains* its child (no clip).
+    #[derive(Clone, Copy, Default)]
+    struct BioFix {
+        stack_stretch: bool,
+        stack_width_pct: bool,
+        group_width_pct: bool,
+        textarea_width_pct: bool,
+        /// Surface uses a fixed `width: 480` instead of `width:100% + max_width`.
+        surface_fixed_width: bool,
+        /// Surface uses `max_width: 480` only (auto width, hugs capped content).
+        surface_maxwidth_only: bool,
+        /// Surface uses `align_self: stretch` + `max_width: 480` (fill up to cap)
+        /// instead of `width: 100%` + `max_width`.
+        surface_stretch_maxwidth: bool,
+    }
+
+    fn bio_surface_vs_stack(edits: &[f32], fix: BioFix) -> Vec<(f32, f32)> {
+        // `glyph_run` is the total advance width of the content (chars × ~7pt).
+        // The measure FAITHFULLY models prose wrapping: lines = ceil(run / width),
+        // height = max(lines, 4 rows) × line_h — so a WIDER offered width yields
+        // FEWER lines and a SHORTER box (the property a constant-height stub hid).
+        let glyph_run = Rc::new(std::cell::Cell::new(0.0f32));
+        let gr = glyph_run.clone();
+        const LINE_H: f32 = 14.25;
+        const FLOOR_ROWS: f32 = 4.0;
+        let measure: MeasureFn = Rc::new(move |known: Size<Option<f32>>, avail| {
+            let definite_w = match avail.width {
+                AvailableSpace::Definite(w) => Some(w),
+                AvailableSpace::MaxContent => None,    // ∞ → single line
+                AvailableSpace::MinContent => Some(1.0), // 0 → max wrapping
+            };
+            let w = known.width.unwrap_or(definite_w.unwrap_or(f32::INFINITY));
+            let lines = match definite_w {
+                Some(dw) if dw >= 1.0 => (gr.get() / dw).ceil().max(1.0),
+                _ => 1.0, // unbounded probe → one line
+            };
+            let rows = lines.max(FLOOR_ROWS);
+            let h = known.height.unwrap_or(rows * LINE_H);
+            if std::env::var("BIO_TRACE").is_ok() {
+                eprintln!(
+                    "[measure] avail.w={:?} known.w={:?} -> w={w:.0} lines={lines} h={h:.1}",
+                    avail.width, known.width
+                );
+            }
+            Size { width: w, height: h }
+        });
+
+        let mut t = LayoutTree::new();
+        let root = t.new_node(); // window
+
+        // The forms page lives inside a vertical scroll view.
+        let host = t.new_node();
+        t.set_overflow_scroll(host, false);
+        t.add_child(root, host);
+
+        // DemoSurfaceContent: centers its children, capped at 480.
+        let surface = t.new_node();
+        let mut surf = StyleRules::default();
+        surf.align_items = Some(runtime_core::AlignItems::Center);
+        if fix.surface_fixed_width {
+            surf.width = Some(px(480.0));
+        } else if fix.surface_maxwidth_only {
+            surf.max_width = Some(px(480.0));
+        } else if fix.surface_stretch_maxwidth {
+            surf.align_self = Some(runtime_core::AlignSelf::Stretch);
+            surf.max_width = Some(px(480.0));
+        } else {
+            surf.width = Some(Tokenized::Literal(FwLength::Percent(100.0)));
+            surf.max_width = Some(px(480.0));
+        }
+        t.set_style(surface, &surf);
+        t.add_child(host, surface);
+
+        // Stack: holds the Textarea field and the character counter.
+        let stack = t.new_node();
+        let mut str_ = StyleRules::default();
+        if fix.stack_stretch {
+            str_.align_self = Some(runtime_core::AlignSelf::Stretch);
+        }
+        if fix.stack_width_pct {
+            str_.width = Some(Tokenized::Literal(FwLength::Percent(100.0)));
+        }
+        t.set_style(stack, &str_);
+        t.add_child(surface, stack);
+
+        // FieldGroup: align_self stretch overrides the centering parent.
+        let group = t.new_node();
+        let mut gr = StyleRules::default();
+        gr.align_self = Some(runtime_core::AlignSelf::Stretch);
+        if fix.group_width_pct {
+            gr.width = Some(Tokenized::Literal(FwLength::Percent(100.0)));
+        }
+        t.set_style(group, &gr);
+        t.add_child(stack, group);
+
+        let label = t.new_node();
+        let mut lr = StyleRules::default();
+        lr.height = Some(px(16.0));
+        t.set_style(label, &lr);
+        t.add_child(group, label);
+
+        // The autosizing text_area chrome container (the Taffy leaf).
+        let textarea = t.new_node();
+        if fix.textarea_width_pct {
+            let mut tr = StyleRules::default();
+            tr.width = Some(Tokenized::Literal(FwLength::Percent(100.0)));
+            t.set_style(textarea, &tr);
+        }
+        t.set_measure_fn(textarea, measure.clone());
+        t.add_child(group, textarea);
+
+        let helper = t.new_node();
+        let mut hr = StyleRules::default();
+        hr.height = Some(px(16.0));
+        t.set_style(helper, &hr);
+        t.add_child(group, helper);
+
+        // The character counter — the element the live bug clipped.
+        let counter = t.new_node();
+        let mut cr = StyleRules::default();
+        cr.height = Some(px(16.0));
+        t.set_style(counter, &cr);
+        t.add_child(stack, counter);
+
+        let mut out = Vec::new();
+        for &run in edits {
+            glyph_run.set(run);
+            // The ONLY invalidation the autogrow path performs: dirty the leaf
+            // whose measured height changed, then recompute from the root.
+            t.mark_dirty(textarea);
+            t.compute(root, 676.0, 5000.0);
+            out.push((t.frame_of(surface).height, t.frame_of(stack).height));
+        }
+        out
+    }
+
+    /// Regression for the macOS Bio `text_area` clipping its counter: as the
+    /// autosizing text area grew, the Stack tracked it but the ancestor
+    /// DemoSurfaceContent (and the card) FROZE at the height from the first
+    /// non-empty measure — so the card clipped everything below the text area.
+    /// Confirmed live via the robot: textarea 72→170→184 while the surface
+    /// stuck at the 170-pass height. The ancestor must always contain its
+    /// child; `mark_dirty(leaf)` + `compute(root)` has to re-size every
+    /// ancestor, not just the dirtied subtree.
+    #[test]
+    fn explore_bio_fixes() {
+        let edits = [0.0, 6160.0, 6860.0];
+        let variants = [
+            ("none", BioFix::default()),
+            ("textarea_w100", BioFix { textarea_width_pct: true, ..Default::default() }),
+            ("stack_stretch", BioFix { stack_stretch: true, ..Default::default() }),
+            ("stack_w100", BioFix { stack_width_pct: true, ..Default::default() }),
+            ("group_w100", BioFix { group_width_pct: true, ..Default::default() }),
+            ("stack_stretch+ta_w100", BioFix { stack_stretch: true, textarea_width_pct: true, ..Default::default() }),
+            ("surface_fixed_width", BioFix { surface_fixed_width: true, ..Default::default() }),
+            ("surface_maxwidth_only", BioFix { surface_maxwidth_only: true, ..Default::default() }),
+            ("surface_fixed+stack_stretch", BioFix { surface_fixed_width: true, stack_stretch: true, ..Default::default() }),
+            ("surface_stretch_maxwidth", BioFix { surface_stretch_maxwidth: true, ..Default::default() }),
+        ];
+        for (name, fix) in variants {
+            let r = bio_surface_vs_stack(&edits, fix);
+            let ok = r.iter().all(|(s, st)| *s + 0.5 >= *st);
+            eprintln!("[bio-fix] {name:<24} contains={ok} {r:?}");
+        }
+    }
+
+    #[test]
+    fn regression_autosizing_textarea_grows_ancestor_not_just_subtree() {
+        // glyph runs: empty, then two growth steps (≈880 then ≈980 chars × 7pt).
+        let edits = [0.0, 6160.0, 6860.0];
+
+        // The SHIPPED fix (TBD by explore_bio_fixes).
+        let fixed = bio_surface_vs_stack(&edits, BioFix { stack_stretch: true, ..Default::default() });
+        for (i, (surface, stack)) in fixed.iter().enumerate() {
+            assert!(
+                surface + 0.5 >= *stack,
+                "edit #{i}: ancestor surface ({surface}) must contain its child \
+                 stack ({stack}) — a shorter parent clips the content below",
+            );
+        }
+        assert!(
+            fixed.last().unwrap().0 > fixed.first().unwrap().0 + 1.0,
+            "surface must grow with the text area, not freeze: {fixed:?}",
+        );
+    }
+
+    /// Guards that the test above actually models the bug: WITHOUT the
+    /// definite-width pin, the centering ancestor sizes the prose textarea at a
+    /// width wider than its rendered column (the pre-`max_width` width), getting
+    /// fewer wrapped lines than the box actually shows → an ancestor shorter
+    /// than its child (the clip). If this ever stops reproducing, the
+    /// faithful-measure model has drifted and the fix test is vacuous.
+    #[test]
+    fn autosizing_textarea_unpinned_width_underflows_ancestor() {
+        let edits = [0.0, 6160.0, 6860.0];
+        let unpinned = bio_surface_vs_stack(&edits, BioFix::default());
+        let clipped = unpinned
+            .iter()
+            .any(|(surface, stack)| *surface + 0.5 < *stack);
+        assert!(
+            clipped,
+            "expected the unpinned (centering, max-width) tree to under-size the \
+             ancestor and clip — got {unpinned:?}; the bug model has drifted",
+        );
+    }
+
     /// Regression: a VERTICAL scroll view's content extent must clip its
     /// CROSS axis to the scroll view's frame — an over-wide child (a
     /// non-wrapping button row, a wide table) must NOT turn it into a

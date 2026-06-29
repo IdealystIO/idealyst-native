@@ -13,9 +13,9 @@
 //! `Field` rebuilt inside a `switch` (e.g. a password field toggling `secure`)
 //! stayed icon-width on native.
 //!
-//! Standalone `#[path]` includes (not `mod common`) because the shared
-//! `common/counted.rs` references a now-`pub(crate)` `Effect::new` and breaks
-//! the whole `walker` integration-test binary — mirrors `text_input_blur.rs`.
+//! Standalone `#[path]` includes (not `mod common`): this binary only needs
+//! `mock_backend` + `runtime`, so it pulls those two directly — mirrors
+//! `text_input_blur.rs`.
 
 #[path = "common/mock_backend.rs"]
 mod mock_backend;

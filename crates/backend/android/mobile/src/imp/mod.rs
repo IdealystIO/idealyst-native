@@ -607,6 +607,54 @@ fn measure_external_view(
     })
 }
 
+/// Install a `text_area`-specific measure_fn: measure the EditText's content
+/// height via [`measure_external_view`], then re-bound it by `min_rows`/
+/// `max_rows` using the widget's REAL `getLineHeight()` (the shared
+/// cross-backend rows→px contract — not an estimate). Past the cap the EditText
+/// scrolls its own content. With no row bounds it's the plain external measure.
+fn install_text_area_measure_fn(
+    b: &mut AndroidBackend,
+    view: &GlobalRef,
+    min_rows: Option<u32>,
+    max_rows: Option<u32>,
+) {
+    if min_rows.is_none() && max_rows.is_none() {
+        install_external_measure_fn(b, view);
+        return;
+    }
+    let layout = b.layout_for_view(view);
+    let view_for_measure = view.clone();
+    b.layout.set_measure_fn(
+        layout,
+        std::rc::Rc::new(move |known_dimensions, available_space| {
+            let base = measure_external_view(&view_for_measure, known_dimensions, available_space);
+            // Read the widget's line height + vertical padding (px → dp). A
+            // separate `with_env` from `measure_external_view`'s — sequential,
+            // not nested.
+            let (line_dp, vpad_dp) = with_env(|env| {
+                let obj = view_for_measure.as_obj();
+                let density = cached_density(env, &obj);
+                let read_i = |env: &mut JNIEnv, m: &str| {
+                    env.call_method(&obj, m, "()I", &[]).and_then(|v| v.i()).unwrap_or(0) as f32
+                };
+                let line = read_i(env, "getLineHeight") / density;
+                let pad = (read_i(env, "getPaddingTop") + read_i(env, "getPaddingBottom"))
+                    / density
+                    / 2.0;
+                (line, pad)
+            });
+            let content_h = base.height - vpad_dp * 2.0;
+            let h = runtime_core::primitives::text_area::resolve_text_area_height(
+                content_h, line_dp, vpad_dp, min_rows, max_rows,
+            );
+            runtime_layout::Size {
+                width: known_dimensions.width.unwrap_or(base.width),
+                height: known_dimensions.height.unwrap_or(h),
+            }
+        }),
+    );
+}
+
 /// `true` when `view` is a `TextView` (or any subclass like
 /// `EditText`, `IdealystLabel`). Used by `apply_rules` to gate the
 /// `setPadding` / text-styling branches without hitting `find_class`
@@ -2582,6 +2630,8 @@ impl Backend for AndroidBackend {
         initial_value: &str,
         placeholder: Option<&str>,
         wrap: bool,
+        min_rows: Option<u32>,
+        max_rows: Option<u32>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
@@ -2589,13 +2639,13 @@ impl Backend for AndroidBackend {
         let node = primitives::text_input::create_multiline(self, initial_value, placeholder, wrap, on_change, on_key_down);
         // Intrinsic content sizing in wrap mode (only): give the EditText
         // a `View.measure`-based measure_fn so Taffy sizes it to the
-        // height the wrapped text needs. With no pinned height it grows
-        // to fit; a `max_height` clamps it (the EditText scrolls past);
-        // a pinned `height` wins. The code-editor shape (`wrap == false`)
-        // is a fixed-height horizontal scroller, so it gets no measure_fn
-        // — mirrors iOS and web.
+        // height the wrapped text needs. With no pinned height it grows to
+        // fit; `min_rows`/`max_rows` floor/cap it in real `getLineHeight()`
+        // units (the EditText scrolls past the cap); a pinned `height` wins.
+        // The code-editor shape (`wrap == false`) is a fixed-height
+        // horizontal scroller, so it gets no measure_fn — mirrors iOS/web.
         if wrap {
-            install_external_measure_fn(self, &node);
+            install_text_area_measure_fn(self, &node, min_rows, max_rows);
         }
         a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::TextArea));
         node

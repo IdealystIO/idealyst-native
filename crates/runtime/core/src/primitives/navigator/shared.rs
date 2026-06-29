@@ -1526,6 +1526,26 @@ pub struct NavState {
     pub can_go_back: crate::Signal<bool>,
 }
 
+/// Per-screen navigation context, `provide`d into each screen's scope by
+/// `mount_screen` and `inject`ed by the portal build path (`walker::portal`).
+///
+/// A portal (modal / popover / tooltip / its click-away catcher) escapes its
+/// screen's view tree to mount on the window, so it doesn't get detached when
+/// the navigator swaps screens — and with a persistent `MountPolicy` the
+/// screen's scope (hence the portal) stays alive across navigation. Without
+/// this, an overlay opened on screen A keeps floating over screen B. The
+/// portal builder installs an `Effect` that hides the portal whenever
+/// `active_route != route` (its owning screen isn't the active one) and shows
+/// it again on return — reactive, so it tracks every navigation without the
+/// navigator imperatively reaching into portal views. `inject` resolves the
+/// NEAREST navigator, so a screen's overlays follow that screen's own
+/// navigator's active route.
+#[derive(Clone)]
+pub struct ScreenNav {
+    pub active_route: crate::Signal<&'static str>,
+    pub route: &'static str,
+}
+
 // ---------------------------------------------------------------------------
 // NavigatorConfig — shared, kind-agnostic routing config
 // ---------------------------------------------------------------------------

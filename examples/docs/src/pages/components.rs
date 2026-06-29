@@ -446,7 +446,7 @@ docs! {
         p("Tooling to make this easier (so you can describe a DSL's shape \
            declaratively rather than write a proc-macro from scratch) is on the \
            roadmap. Until that lands, the existing ", code("ui!"), " and ",
-          code("jsx!"), " sources in ", code("crates/framework/macros/src/"),
+          code("jsx!"), " sources in ", code("crates/runtime/macros/src/"),
           " are the working references."),
     },
 

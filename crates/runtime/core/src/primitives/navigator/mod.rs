@@ -36,7 +36,7 @@ pub use shared::{
     AmbientNavGuard,
     MountResult, NavBaseGuard, NavCommand, NavId, NavState, NavigatorConfig, NavigatorControl,
     NavigatorHandle, NavigatorOps, ParamsFromSegments, Route, RouteEntry, RouteParams, Screen,
-    ScreenBuilder, ScreenRouteGuard, ScreenStateGuard,
+    ScreenBuilder, ScreenNav, ScreenRouteGuard, ScreenStateGuard,
 };
 
 /// Robot-only navigator introspection surface (global registry + snapshots).

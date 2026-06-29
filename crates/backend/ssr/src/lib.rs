@@ -766,6 +766,11 @@ impl Backend for SsrBackend {
         // adopts on hydration. (Content-height growth needs no SSR
         // attribute — it's intrinsic sizing the client reproduces.)
         wrap: bool,
+        // Row bounds need no SSR attribute: the client backend's autosize
+        // reproduces the floor/cap from the same primitive props on hydration
+        // (rows→px is a client-side metric). Accepted to match the trait.
+        _min_rows: Option<u32>,
+        _max_rows: Option<u32>,
         _on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
         _a11y: &AccessibilityProps,

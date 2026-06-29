@@ -19,6 +19,8 @@ pub(crate) fn create(
     initial_value: &str,
     placeholder: Option<&str>,
     wrap: bool,
+    min_rows: Option<u32>,
+    max_rows: Option<u32>,
     on_change: Rc<dyn Fn(String)>,
     on_key_down: Option<KeyDownHandler>,
 ) -> Node {
@@ -112,6 +114,18 @@ pub(crate) fn create(
         let _ = textarea.set_attribute("autocomplete", "off");
     }
 
+    // Stash the row bounds as data-attributes so `autosize` (which runs later,
+    // once the node is laid out and has a computed line-height) can derive the
+    // pixel floor/cap from `rows × real line-height` — the same rows→px contract
+    // the native backends honor via `resolve_text_area_height`, instead of the
+    // CSS min/max-height idea-ui used to synthesize from an estimated line size.
+    if let Some(r) = min_rows {
+        let _ = textarea.set_attribute("data-min-rows", &r.to_string());
+    }
+    if let Some(r) = max_rows {
+        let _ = textarea.set_attribute("data-max-rows", &r.to_string());
+    }
+
     let textarea_clone = textarea.clone();
     let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
         autosize(&textarea_clone);
@@ -178,12 +192,15 @@ fn autosize(textarea: &web_sys::HtmlTextAreaElement) {
     if textarea.wrap() == "off" {
         return;
     }
-    // Read border + the `max-height` cap (and bail on author-owned geometry)
-    // up front. Both are constant w.r.t. the height we're about to pin, so
+    // Read border + the floor/cap inputs (and bail on author-owned geometry)
+    // up front. All are constant w.r.t. the height we're about to pin, so
     // reading them before the `height: auto` write is correct and avoids a
     // second reflow.
     let mut vertical_border = 0.0_f64;
-    let mut max_height: Option<f64> = None;
+    let mut vertical_padding = 0.0_f64;
+    let mut line_height = 0.0_f64;
+    let mut css_max_height: Option<f64> = None;
+    let mut css_min_height: Option<f64> = None;
     if let Some(win) = web_sys::window() {
         if let Ok(Some(cs)) = win.get_computed_style(textarea) {
             let pos = cs.get_property_value("position").unwrap_or_default();
@@ -194,20 +211,92 @@ fn autosize(textarea: &web_sys::HtmlTextAreaElement) {
             let bottom =
                 parse_px(&cs.get_property_value("border-bottom-width").unwrap_or_default());
             vertical_border = top + bottom;
-            // `max-height: none` (uncapped) parses to `None` → never scroll.
-            max_height = parse_px_opt(&cs.get_property_value("max-height").unwrap_or_default());
+            vertical_padding = parse_px(&cs.get_property_value("padding-top").unwrap_or_default())
+                + parse_px(&cs.get_property_value("padding-bottom").unwrap_or_default());
+            line_height = resolve_line_height(&cs);
+            // `none` (uncapped) / `auto` parse to `None`.
+            css_max_height = parse_px_opt(&cs.get_property_value("max-height").unwrap_or_default());
+            css_min_height = parse_px_opt(&cs.get_property_value("min-height").unwrap_or_default());
         }
     }
+    // Border-box chrome added to every rows→px conversion (the box-sizing is
+    // border-box, so a row count's pixel height includes padding + border).
+    let row_chrome = vertical_padding + vertical_border;
+    // Row floor/cap from the primitive's `min_rows`/`max_rows` × the REAL
+    // computed line-height — the web side of the cross-backend rows→px contract.
+    let row_floor = read_rows(textarea, "data-min-rows")
+        .map(|r| r as f64 * line_height + row_chrome);
+    let row_cap = read_rows(textarea, "data-max-rows")
+        .map(|r| r as f64 * line_height + row_chrome);
+    // The effective bounds combine rows with any explicit CSS override: the
+    // floor is the taller of the two, the cap the shorter (an explicit px
+    // min/max-height wins when it's the tighter constraint).
+    let floor = max_opt(row_floor, css_min_height);
+    let cap = min_opt(row_cap, css_max_height);
+
     let style = textarea.style();
     let _ = style.set_property("overflow-y", "hidden");
     let _ = style.set_property("height", "auto");
-    let desired = autosize_height(textarea.scroll_height(), vertical_border);
+    // The content's natural border-box height (unclamped). Captured once: it's
+    // both the clamp base and the scroll-decision input, and re-reading
+    // `scrollHeight` after pinning `height` would cost a second reflow.
+    let natural = autosize_height(textarea.scroll_height(), vertical_border);
+    let mut desired = natural;
+    if let Some(f) = floor {
+        desired = desired.max(f);
+    }
+    if let Some(c) = cap {
+        desired = desired.min(c);
+    }
     let _ = style.set_property("height", &format!("{desired}px"));
-    // Scroll only when the content genuinely outgrows the cap. CSS
-    // `max-height` clamps the rendered `height` we just pinned, so the
-    // overflow scrolls instead of clipping.
-    if should_scroll(desired, max_height) {
+    // Scroll only when the natural content genuinely outgrows the cap (the
+    // pinned `height` is clamped to it), so the overflow scrolls, not clips.
+    if should_scroll(natural, cap) {
         let _ = style.set_property("overflow-y", "auto");
+    }
+}
+
+/// Read a `data-*` row-count attribute (`data-min-rows` / `data-max-rows`) set
+/// at create time, returning `None` when absent or unparseable.
+fn read_rows(textarea: &web_sys::HtmlTextAreaElement, attr: &str) -> Option<u32> {
+    textarea.get_attribute(attr).and_then(|v| v.trim().parse().ok())
+}
+
+/// Resolve the computed `line-height` to pixels. `getComputedStyle` usually
+/// returns a px value, but `normal` (and some engines) yield a keyword — fall
+/// back to `font-size × 1.2`, the conventional `normal` ratio, so the rows→px
+/// conversion still lands close to the real line box.
+fn resolve_line_height(cs: &web_sys::CssStyleDeclaration) -> f64 {
+    if let Some(px) = parse_px_opt(&cs.get_property_value("line-height").unwrap_or_default()) {
+        return px;
+    }
+    let font_size = parse_px(&cs.get_property_value("font-size").unwrap_or_default());
+    if font_size > 0.0 {
+        font_size * 1.2
+    } else {
+        0.0
+    }
+}
+
+/// `max(a, b)` over optionals — `None` is the absence of a bound, so it never
+/// tightens the result. Used to combine the rows-derived floor with a CSS
+/// `min-height` override (the taller wins).
+fn max_opt(a: Option<f64>, b: Option<f64>) -> Option<f64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.max(y)),
+        (x, None) => x,
+        (None, y) => y,
+    }
+}
+
+/// `min(a, b)` over optionals — `None` means "no cap", so it never tightens the
+/// result. Combines the rows-derived cap with a CSS `max-height` override (the
+/// shorter wins).
+fn min_opt(a: Option<f64>, b: Option<f64>) -> Option<f64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.min(y)),
+        (x, None) => x,
+        (None, y) => y,
     }
 }
 

@@ -47,6 +47,15 @@ pub enum BlurOutcome {
 /// [`KeyDownHandler`]: crate::primitives::key::KeyDownHandler
 pub type BlurHandler = Rc<dyn Fn() -> BlurOutcome>;
 
+/// Focus-change notification carried into the backend. Fires `true` when the
+/// input gains keyboard focus and `false` when it loses it — the symmetric
+/// partner of [`BlurHandler`], but a plain notification (no veto). A parent
+/// uses it to drive focus-dependent chrome it can't otherwise observe: e.g.
+/// the idea-ui `Field` lights its bordered SHELL's focus ring when the inner
+/// (borderless) input focuses, since the shell `view` never receives the
+/// input's `FOCUSED` state itself.
+pub type FocusHandler = Rc<dyn Fn(bool)>;
+
 /// Handle exposed to a parent via `Ref<TextInputHandle>`. Backends
 /// implement the ops trait below to make `focus()`, `blur()`,
 /// `select_all()`, and `insert_text()` work.
@@ -120,6 +129,7 @@ pub fn text_input<F: Fn(String) + 'static>(
         on_change: Rc::new(move |s: String| crate::cycle(|| on_change(s))),
         on_key_down: None,
         on_blur: None,
+        on_focus: None,
         placeholder: Reactive::Static(None),
         secure: Reactive::Static(false),
         style: None,
@@ -210,5 +220,58 @@ impl Bound<TextInputHandle> {
             *on_blur = Some(Rc::new(move || crate::cycle(|| handler())));
         }
         self
+    }
+
+    /// Attach a focus-change hook: `handler(true)` fires when the input gains
+    /// keyboard focus, `handler(false)` when it loses it. Unlike
+    /// [`on_blur`](Self::on_blur) this is a plain notification (no veto) — its
+    /// purpose is to let a parent drive focus-dependent chrome the input itself
+    /// can't, e.g. the idea-ui `Field` lighting its bordered shell's focus ring
+    /// for an adorned (borderless-input) layout.
+    pub fn on_focus<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(bool) + 'static,
+    {
+        if let Element::TextInput { on_focus, .. } = &mut self.primitive {
+            // Born batched — see `reactive::cycle` — so a signal write inside the
+            // handler coalesces with the focus event's other work.
+            *on_focus = Some(Rc::new(move |f: bool| crate::cycle(|| handler(f))));
+        }
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reactive::Signal;
+    use std::cell::Cell;
+
+    // Regression: `on_focus` is the event the idea-ui `Field` uses to light an
+    // ADORNED field's shell focus ring (the bordered shell can't receive the
+    // borderless input's FOCUSED state on its own). Pin the builder contract:
+    // absent by default, installed by `.on_focus`, and fired with the bool.
+    #[test]
+    fn on_focus_builder_installs_a_bool_notifier() {
+        let val = Signal::new(String::new());
+        let ti = text_input(val, |_| {});
+        // Default: no focus notifier.
+        match &ti.primitive {
+            Element::TextInput { on_focus, .. } => assert!(on_focus.is_none(), "default is None"),
+            _ => panic!("expected TextInput"),
+        }
+        // After `.on_focus`, the handler is installed and forwards the bool.
+        let seen: Rc<Cell<Option<bool>>> = Rc::new(Cell::new(None));
+        let seen2 = seen.clone();
+        let ti = ti.on_focus(move |f| seen2.set(Some(f)));
+        match &ti.primitive {
+            Element::TextInput { on_focus: Some(h), .. } => {
+                h(true);
+                assert_eq!(seen.get(), Some(true), "focus fires true");
+                h(false);
+                assert_eq!(seen.get(), Some(false), "blur fires false");
+            }
+            _ => panic!("expected on_focus to be Some after .on_focus()"),
+        }
     }
 }

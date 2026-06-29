@@ -46,6 +46,13 @@ debug-stats = [
 ]
 default = ["debug-stats"]
 
+# Cross-platform render-parity test (`idealyst test --parity web,macos`).
+# `robot-test` drives the running app over the Robot bridge — see
+# `tests/parity.rs`.
+[dev-dependencies]
+robot-test = { workspace = true }
+serde_json = "1"
+
 [dependencies]
 runtime-core = { workspace = true }
 idea-ui = { workspace = true, features = ["docs"] }

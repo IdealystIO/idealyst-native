@@ -323,7 +323,7 @@ docs! {
             use runtime_core::resource;
             use server::with_cancel;
 
-            let user_id = signal(1u64);
+            let user_id = signal!(1u64);
 
             let user = resource(user_id, |id, resource_cancel| async move {
                 with_cancel(resource_cancel, get_user(id)).await
