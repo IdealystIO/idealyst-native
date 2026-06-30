@@ -300,6 +300,34 @@ pub trait ViewOps {
     ) {
     }
 
+    /// Install a **render-server keyframe animation** on a transform/opacity
+    /// property, running OFF the main-thread reactive clock — no per-frame
+    /// [`set_animated_f32`](ViewOps::set_animated_f32) write, and therefore no
+    /// per-frame layer-tree commit. For a forever loop (a spinner / progress
+    /// pulse / shimmer) this is the difference between taxing every frame and
+    /// taxing none: the platform compositor interpolates it.
+    ///
+    /// `keyframes` are `(time_fraction 0..=1, value)` samples of one cycle;
+    /// `duration_ms` is that cycle's length. Returns `true` if the backend ran
+    /// it natively — the caller then SKIPS the per-frame clock path. Returns
+    /// `false` (the default) when the backend has no render-server animation for
+    /// this property, so the caller must fall back to driving an
+    /// `AnimatedValue` per frame. Output converges either way (§7): only the
+    /// backends where the per-frame commit is costly (macOS/iOS CALayer)
+    /// override this; web/terminal stay per-frame, which is cheap there.
+    #[allow(unused_variables)]
+    fn install_keyframe_animation(
+        &self,
+        node: &dyn Any,
+        prop: crate::animation::AnimProp,
+        keyframes: &[(f32, f32)],
+        duration_ms: u32,
+        repeat_forever: bool,
+        autoreverse: bool,
+    ) -> bool {
+        false
+    }
+
     /// Register a callback that fires when the view's laid-out frame
     /// changes (post-layout). The callback receives `(width, height)`
     /// in DIPs. Re-fires whenever the framework's layout engine
@@ -347,6 +375,29 @@ impl ViewHandle {
     /// have to write per-platform downcast code.
     pub fn set_animated_f32(&self, prop: crate::animation::AnimProp, value: f32) {
         self.ops.set_animated_f32(&*self.node, prop, value);
+    }
+
+    /// Try to run a looping/finite animation on the render server instead of
+    /// the per-frame reactive clock. Thin wrapper around
+    /// [`ViewOps::install_keyframe_animation`]; returns `true` if the backend
+    /// took it natively (caller skips the per-frame path), `false` to fall back.
+    /// See the trait method for semantics.
+    pub fn install_keyframe_animation(
+        &self,
+        prop: crate::animation::AnimProp,
+        keyframes: &[(f32, f32)],
+        duration_ms: u32,
+        repeat_forever: bool,
+        autoreverse: bool,
+    ) -> bool {
+        self.ops.install_keyframe_animation(
+            &*self.node,
+            prop,
+            keyframes,
+            duration_ms,
+            repeat_forever,
+            autoreverse,
+        )
     }
 
     /// Write a color animation property onto the underlying node.

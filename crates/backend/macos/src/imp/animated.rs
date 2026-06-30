@@ -191,6 +191,89 @@ pub(crate) fn static_translate_offset(
 /// Write a scalar animation property on `node`. Routes through the
 /// CALayer for transforms (NSView itself has no transform property)
 /// and through NSView's `setAlphaValue:` for opacity.
+/// Install a `CAKeyframeAnimation` on the view's layer so the property animates
+/// on the **render server** (off the main thread, no per-frame reactive tick /
+/// CALayer commit). Returns `true` when handled natively, `false` to signal the
+/// framework to fall back to the per-frame `set_animated_f32` clock path.
+///
+/// First-class for **opacity** (the spinner / indeterminate-progress pulse —
+/// the case where the per-frame full-tree CA commit was measurably stealing
+/// scroll frames). Other props return `false` and keep the per-frame path until
+/// their keyPath mapping lands. Rationale: a forever opacity pulse driven per
+/// frame forces a `CA::Transaction::commit` (O(layer-tree)) every frame; the
+/// same pulse as a CAKeyframeAnimation costs the main thread nothing per frame.
+pub(crate) fn install_keyframe_animation(
+    node: &MacosNode,
+    prop: AnimProp,
+    keyframes: &[(f32, f32)],
+    duration_ms: u32,
+    repeat_forever: bool,
+    autoreverse: bool,
+) -> bool {
+    // keyPath mapping. Only opacity is wired so far; everything else falls back.
+    let key_path = match prop {
+        AnimProp::Opacity => "opacity",
+        _ => return false,
+    };
+    if keyframes.len() < 2 || duration_ms == 0 {
+        return false;
+    }
+    let view = node.as_view();
+
+    use objc2::class;
+    use objc2_foundation::NSString;
+
+    // Layer-back so the layer exists to host the animation. The pulse target
+    // (the progress fill / spinner) is already layer-backed for its background,
+    // so this is a no-op in practice — but it must be true for `layer` to exist.
+    let _: () = unsafe { msg_send![view, setWantsLayer: true] };
+    let layer: *mut NSObject = unsafe { msg_send![view, layer] };
+    if layer.is_null() {
+        return false;
+    }
+
+    // values + keyTimes as NSArray<NSNumber>.
+    let values: Retained<NSObject> = unsafe { msg_send_id![class!(NSMutableArray), array] };
+    let key_times: Retained<NSObject> = unsafe { msg_send_id![class!(NSMutableArray), array] };
+    for (t, v) in keyframes {
+        let num_v: Retained<NSObject> =
+            unsafe { msg_send_id![class!(NSNumber), numberWithDouble: *v as f64] };
+        let num_t: Retained<NSObject> = unsafe {
+            msg_send_id![class!(NSNumber), numberWithDouble: (*t).clamp(0.0, 1.0) as f64]
+        };
+        let _: () = unsafe { msg_send![&values, addObject: &*num_v] };
+        let _: () = unsafe { msg_send![&key_times, addObject: &*num_t] };
+    }
+
+    let key_path_ns = NSString::from_str(key_path);
+    let anim: Retained<NSObject> = unsafe {
+        msg_send_id![class!(CAKeyframeAnimation), animationWithKeyPath: &*key_path_ns]
+    };
+    let dur_s = duration_ms as f64 / 1000.0;
+    unsafe {
+        let _: () = msg_send![&anim, setValues: &*values];
+        let _: () = msg_send![&anim, setKeyTimes: &*key_times];
+        let _: () = msg_send![&anim, setDuration: dur_s];
+        let _: () = msg_send![&anim, setAutoreverses: autoreverse];
+        let repeat: f32 = if repeat_forever { f32::INFINITY } else { 1.0 };
+        let _: () = msg_send![&anim, setRepeatCount: repeat];
+        // Hold the last value for a finite animation; irrelevant when looping.
+        let _: () = msg_send![&anim, setRemovedOnCompletion: false];
+        let forwards = NSString::from_str("forwards");
+        let _: () = msg_send![&anim, setFillMode: &*forwards];
+        // Ease between keyframes for a natural pulse (matches the per-frame
+        // `ease_in_out` tweens closely enough that the two paths look identical).
+        let ease = NSString::from_str("easeInEaseOut");
+        let tf: Retained<NSObject> =
+            msg_send_id![class!(CAMediaTimingFunction), functionWithName: &*ease];
+        let _: () = msg_send![&anim, setTimingFunction: &*tf];
+        // Stable key so a re-install replaces rather than stacks.
+        let anim_key = NSString::from_str("idealyst.keyframe.opacity");
+        let _: () = msg_send![layer, addAnimation: &*anim, forKey: &*anim_key];
+    }
+    true
+}
+
 pub(crate) fn set_animated_f32(
     node: &MacosNode,
     prop: AnimProp,

@@ -150,10 +150,10 @@ pub fn install_scheduler() {
     #[cfg(feature = "async-driver")]
     crate::async_executor::install_async_executor();
 
-    // Frame-pacing trace (debug iOS/tvOS only) — a CADisplayLink that logs
-    // dropped frames + raf-tick starvation during gestures. Stripped from
-    // release. Self-silencing (only logs while animating).
-    #[cfg(all(any(target_os = "ios", target_os = "tvos"), debug_assertions))]
+    // Frame-pacing trace (debug iOS/tvOS/macOS) — a display link that logs
+    // dropped frames + raf-tick starvation during gestures/scroll. Stripped
+    // from release. Self-silencing (only logs while animating).
+    #[cfg(all(any(target_os = "ios", target_os = "tvos", target_os = "macos"), debug_assertions))]
     crate::perf_trace::install();
 }
 
@@ -278,6 +278,12 @@ impl Scheduler for AppleScheduler {
         {
             let state_for_block = state.clone();
             let block = StackBlock::new(move |_t: *const NSObject| {
+                // Count this animation frame for the frame-pacing trace (debug).
+                // If `frames` (display link) holds 60 but `anim` collapses during
+                // a scroll, the common-mode NSTimer is being starved by AppKit
+                // event tracking — the macOS analogue of the iOS finding.
+                #[cfg(debug_assertions)]
+                crate::perf_trace::on_raf_tick();
                 (state_for_block.borrow_mut())();
             });
             let block = block.copy();

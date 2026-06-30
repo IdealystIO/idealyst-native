@@ -301,7 +301,56 @@ fn drive<T: Animatable>(inner: Rc<RefCell<Inner<T>>>, dt: std::time::Duration) -
         .collect();
     dispatch(&snapshot, &value, &velocity);
 
+    // Debug-only: catch animations that never settle. A normal tween/spring
+    // finishes in well under a second; a tick that keeps reporting `!finished`
+    // for seconds pins the 60 Hz animation clock on forever, forcing a
+    // main-thread `CA::Transaction::commit` every frame (the macOS "All
+    // Components" scroll-jank root cause). Log its value type + velocity
+    // magnitude so the stuck animator can be traced. Keyed by the value's
+    // identity so each stuck value reports once per ~3 s window.
+    #[cfg(debug_assertions)]
+    __debug_track_long_anim::<T>(Rc::as_ptr(&inner) as usize, dt, finished, &velocity);
+
     !finished
+}
+
+#[cfg(debug_assertions)]
+thread_local! {
+    /// key = value-identity ptr → (cumulative secs, tick count, last-logged secs).
+    static LONG_ANIM: RefCell<std::collections::HashMap<usize, (f64, u32, f64)>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+/// See the call site in [`drive`]. Tracks per-value cumulative animation time
+/// and warns once every ~3 s for any animation still running past 3 s.
+#[cfg(debug_assertions)]
+fn __debug_track_long_anim<T: Animatable>(
+    key: usize,
+    dt: std::time::Duration,
+    finished: bool,
+    velocity: &T,
+) {
+    LONG_ANIM.with(|m| {
+        let mut m = m.borrow_mut();
+        if finished {
+            m.remove(&key);
+            return;
+        }
+        let e = m.entry(key).or_insert((0.0, 0, 0.0));
+        e.0 += dt.as_secs_f64();
+        e.1 += 1;
+        if e.0 >= 3.0 && (e.0 - e.2) >= 3.0 {
+            e.2 = e.0;
+            let vmag = T::norm_sq(velocity).sqrt();
+            crate::log_warn!(
+                "[anim-stuck] {} running {:.1}s ({} ticks), |vel|={:.5} — never settled (pins the 60Hz clock)",
+                std::any::type_name::<T>(),
+                e.0,
+                e.1,
+                vmag
+            );
+        }
+    });
 }
 
 /// RAII guard for a subscription. Dropping unsubscribes the

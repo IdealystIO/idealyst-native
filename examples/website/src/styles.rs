@@ -1170,3 +1170,151 @@ stylesheet! {
         }
     }
 }
+
+// =============================================================================
+// Primitives showcase — the `/primitives` page's gallery chrome. Each
+// leaf primitive sits in its own bordered cell inside a wrapping grid,
+// with a monospace tag label, a one-line blurb, and a live instance.
+// =============================================================================
+
+/// Wrapping flex-row grid that flows the primitive cells. Cells size to
+/// `flex_basis: 0 + flex_grow: 1` with a `min_width` (see `PrimCard`),
+/// so a row holds as many equal-width cells as fit and wraps the rest.
+stylesheet! {
+    pub PrimGrid<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            flex_wrap: runtime_core::FlexWrap::Wrap,
+            gap: 16.0,
+        }
+    }
+}
+
+/// One primitive cell — a bordered surface card holding the tag, blurb,
+/// and live demo. `min_width` keeps cells readable; the flex grow/basis
+/// pair makes same-row cells share width evenly.
+stylesheet! {
+    pub PrimCard<IdeaThemeRef> {
+        base(_t) {
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
+            border_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            padding: 16.0,
+            gap: 12.0,
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::FlexStart,
+            flex_basis: 0.0,
+            flex_grow: 1.0,
+            min_width: 240.0,
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_color: 250ms EaseInOut,
+        }
+    }
+}
+
+/// Monospace tag label naming the primitive (`view`, `slider`, …) at the
+/// top of each cell. Tinted with the primary intent so it reads as a
+/// code identifier, matching the lowercase-primitive convention.
+stylesheet! {
+    pub PrimTag<IdeaThemeRef> {
+        base(_t) {
+            font_family: "ui-monospace, SFMono-Regular, Menlo, monospace",
+            font_size: 14.0,
+            font_weight: runtime_core::FontWeight::SemiBold,
+            color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
+        }
+        transitions {
+            color: 250ms EaseInOut,
+        }
+    }
+}
+
+/// Inline row for a demo's controls (a button beside its state readout,
+/// a trigger beside its swatch). Wraps so narrow cells stack gracefully.
+stylesheet! {
+    pub PrimRow<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: 12.0,
+            flex_wrap: runtime_core::FlexWrap::Wrap,
+        }
+    }
+}
+
+/// Full-width wrapper so an input primitive (text field, slider) stretches
+/// to the cell width instead of collapsing to its intrinsic minimum.
+stylesheet! {
+    pub PrimControl<IdeaThemeRef> {
+        base(_t) {
+            width: Length::pct(100.0),
+            flex_direction: FlexDirection::Column,
+        }
+    }
+}
+
+/// A plain colored box — the canonical "this is a `view`" swatch, also
+/// reused as the thing a `presence` mounts/unmounts.
+stylesheet! {
+    pub PrimSwatch<IdeaThemeRef> {
+        base(_t) {
+            width: 64.0,
+            height: 64.0,
+            border_radius: 12.0,
+            background: Color("#5a4fcf".into()),
+        }
+    }
+}
+
+/// Sizing wrapper for the `icon` demo — pins the vector glyph to a
+/// 48×48 square so it reads at a comfortable size in the cell.
+stylesheet! {
+    pub PrimIcon<IdeaThemeRef> {
+        base(_t) {
+            width: 48.0,
+            height: 48.0,
+            flex_shrink: 0.0,
+        }
+    }
+}
+
+/// Fixed-height bordered box that gives `scroll_view` and `flat_list` a
+/// bounded viewport to scroll within. `overflow: Hidden` clips the
+/// rounded corners over the scrolling content.
+stylesheet! {
+    pub PrimScrollBox<IdeaThemeRef> {
+        base(_t) {
+            height: 160.0,
+            width: Length::pct(100.0),
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
+            border_radius: 8.0,
+            padding: 8.0,
+            gap: 6.0,
+            flex_direction: FlexDirection::Column,
+            background: Tokenized::token("color-surface-alt", Color("#f4eedb".into())),
+            overflow: Overflow::Hidden,
+        }
+    }
+}
+
+/// Floating card surface for the `overlay` / `anchored_overlay` demos —
+/// the content that escapes the cell's layout into a window-level portal.
+stylesheet! {
+    pub PrimPopCard<IdeaThemeRef> {
+        base(_t) {
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
+            border_radius: 12.0,
+            padding: 20.0,
+            gap: 12.0,
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::FlexStart,
+            max_width: 280.0,
+        }
+    }
+}

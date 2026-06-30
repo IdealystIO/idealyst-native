@@ -113,12 +113,57 @@ pub fn Progress(props: &ProgressProps) -> Element {
             let fill_ref: Ref<ViewHandle> = Ref::new();
             let av: AnimatedValue<f32> = AnimatedValue::new(1.0);
             av.bind(fill_ref, AnimProp::Opacity);
-            av.animate(LoopFactory::new(
-                SequenceFactory::new()
-                    .then(TweenTo::new(PULSE_MIN, Duration::from_millis(PULSE_MS)).ease_in_out())
-                    .then(TweenTo::new(1.0_f32, Duration::from_millis(PULSE_MS)).ease_in_out()),
-                Repeat::Forever,
-            ));
+            // Debug A/B knob (`IDEALYST_NO_INDETERMINATE_ANIM=1`): skip the
+            // forever opacity pulse, to isolate how much its per-frame full-tree
+            // CA commit contributes to scroll jank on heavy pages. Default
+            // (animation on) unchanged in release / when unset.
+            #[cfg(debug_assertions)]
+            let skip_pulse = std::env::var("IDEALYST_NO_INDETERMINATE_ANIM")
+                .map(|v| v != "0")
+                .unwrap_or(false);
+            #[cfg(not(debug_assertions))]
+            let skip_pulse = false;
+            if !skip_pulse {
+                // Prefer a RENDER-SERVER keyframe loop. A forever opacity pulse
+                // driven by the per-frame reactive clock forces a full-tree
+                // `CA::Transaction::commit` EVERY frame — measurably stealing
+                // scroll frames on heavy pages (the macOS scroll-jank residual).
+                // As a native `CAKeyframeAnimation` it costs the main thread
+                // nothing per frame. Deferred so the fill `Ref` is mounted before
+                // we install on its layer; falls back to the per-frame
+                // `AnimatedValue` clock when the backend declines (web, terminal,
+                // or a prop with no native keyPath yet).
+                let av_fallback = av.clone();
+                runtime_core::scheduling::after_ms_scoped(0, move || {
+                    // One full eased cycle 1.0 → PULSE_MIN → 1.0, repeating forever.
+                    let keyframes = [(0.0_f32, 1.0_f32), (0.5, PULSE_MIN), (1.0, 1.0)];
+                    let native = fill_ref
+                        .with(|h| {
+                            h.install_keyframe_animation(
+                                AnimProp::Opacity,
+                                &keyframes,
+                                (PULSE_MS * 2) as u32,
+                                true,
+                                false,
+                            )
+                        })
+                        .unwrap_or(false);
+                    if !native {
+                        av_fallback.animate(LoopFactory::new(
+                            SequenceFactory::new()
+                                .then(
+                                    TweenTo::new(PULSE_MIN, Duration::from_millis(PULSE_MS))
+                                        .ease_in_out(),
+                                )
+                                .then(
+                                    TweenTo::new(1.0_f32, Duration::from_millis(PULSE_MS))
+                                        .ease_in_out(),
+                                ),
+                            Repeat::Forever,
+                        ));
+                    }
+                });
+            }
             let fill_sheet = fill_sheet.clone();
             let appearance_for = appearance_for.clone();
             runtime_core::view(Vec::new())

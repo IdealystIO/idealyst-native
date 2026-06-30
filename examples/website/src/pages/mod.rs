@@ -15,6 +15,7 @@ pub mod home;
 pub mod install;
 pub mod navigation;
 pub mod performance;
+pub mod primitives;
 pub mod quickstart;
 pub mod reactivity;
 pub mod roadmap;

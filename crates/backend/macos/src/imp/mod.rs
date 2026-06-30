@@ -58,6 +58,26 @@ pub struct MacosBackend {
     /// host (e.g. mid-build) survive the layout walk.
     pub(crate) view_to_layout:
         HashMap<usize, (Retained<NSView>, runtime_layout::LayoutNode)>,
+    /// Last frame (origin + size, including baked static-translate offset)
+    /// applied to each view by the apply-frames pass, keyed by view pointer.
+    /// The pass skips `setFrame:` + `sync_view_after_frame` for any view whose
+    /// computed frame is unchanged since the previous pass — so a reactive event
+    /// that reflows one subtree re-frames only that subtree, not all N views on
+    /// screen. This matches the browser reflowing only the changed box, and
+    /// fixes the O(all-views) per-event cost that made large screens (e.g. the
+    /// 3856-view "All Components" page) freeze ~250 ms on every interaction on
+    /// macOS while web stayed smooth.
+    ///
+    /// Correctness rests on one invariant: a view in the active tree has its
+    /// frame written ONLY by this pass, and every `sync_view_after_frame` step
+    /// (gradient/icon sublayer resize, deferred corner radius, percent
+    /// transform, container-query feed) is SIZE-dependent — so an unchanged
+    /// frame means an unchanged result. `apply_style` applies those visuals
+    /// immediately for mounted (non-zero-bounds) views and only defers at 0×0
+    /// mount, which the first pass (empty cache → applies all) covers. Evicted
+    /// on (re)registration in `layout_for_view` so a recycled NSView pointer can
+    /// never inherit a freed view's cached frame.
+    pub(crate) last_applied_frame: HashMap<usize, (f64, f64, f64, f64)>,
     /// Per-Label text-measure signature (font / line-height / padding — the
     /// inputs to a label's intrinsic size), keyed by view pointer. `apply_style`
     /// only re-marks a label dirty + schedules a layout pass when this signature
@@ -538,6 +558,7 @@ impl MacosBackend {
             host_root: None,
             layout: runtime_layout::LayoutTree::new(),
             view_to_layout: HashMap::new(),
+            last_applied_frame: HashMap::new(),
             text_measure_sig: HashMap::new(),
             font_registry: backend_apple_core::font::FontRegistry::new(),
             callback_targets: Vec::new(),
@@ -747,6 +768,9 @@ impl MacosBackend {
         let retained = unsafe {
             Retained::retain(view as *const NSView as *mut NSView).expect("retain NSView")
         };
+        // A fresh view at this pointer must not inherit a freed view's cached
+        // frame, or the apply-frames pass could wrongly skip framing it.
+        self.last_applied_frame.remove(&key);
         self.view_to_layout.insert(key, (retained, node));
         node
     }
@@ -1727,11 +1751,187 @@ impl ScrollCompositing {
         Self { copies_on_scroll: false, document_wants_layer: true }
     }
 
+    /// `policy()` with debug-build env overrides applied, for A/B-ing scroll
+    /// perf without recompiling: `IDEALYST_MAC_SCROLL_COPIES=1` re-enables the
+    /// copy optimization, `IDEALYST_MAC_SCROLL_LAYER=0` drops the documentView
+    /// layer-backing. Identical to `policy()` in release builds.
+    pub(crate) fn resolved() -> Self {
+        #[allow(unused_mut)]
+        let mut p = Self::policy();
+        #[cfg(debug_assertions)]
+        {
+            if let Ok(v) = std::env::var("IDEALYST_MAC_SCROLL_COPIES") {
+                p.copies_on_scroll = v != "0";
+            }
+            if let Ok(v) = std::env::var("IDEALYST_MAC_SCROLL_LAYER") {
+                p.document_wants_layer = v != "0";
+            }
+        }
+        p
+    }
+
     /// The jank-free invariant: disabling the copy optimization REQUIRES
     /// layer-backed content. The forbidden state — copy off AND a
     /// non-layer-backed document — is the per-frame full-viewport CPU repaint.
     pub(crate) const fn is_jank_free(self) -> bool {
         self.copies_on_scroll || self.document_wants_layer
+    }
+}
+
+/// Debug A/B knob (`IDEALYST_MAC_NO_HOVER_TRACKING=1`): suppress all hover
+/// `NSTrackingArea` installation, to isolate per-view hover-tracking cost from
+/// raw view-count cost during scroll. Always false in release builds.
+#[cfg(debug_assertions)]
+pub(crate) fn dev_no_hover_tracking() -> bool {
+    use std::sync::OnceLock;
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| {
+        std::env::var("IDEALYST_MAC_NO_HOVER_TRACKING")
+            .map(|v| v != "0")
+            .unwrap_or(false)
+    })
+}
+
+/// Debug A/B knob (`IDEALYST_MAC_SCROLL_RESPONSIVE=1`): build a `scroll_view`'s
+/// documentView as the minimal [`ScrollDocumentView`] (no `scrollWheel:`
+/// override) instead of a full `FlippedView`, to test whether re-enabling
+/// AppKit responsive scrolling (overdraw) fixes the macOS scroll jank on heavy
+/// pages. Always false in release builds.
+#[cfg(debug_assertions)]
+pub(crate) fn dev_scroll_responsive() -> bool {
+    use std::sync::OnceLock;
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| {
+        std::env::var("IDEALYST_MAC_SCROLL_RESPONSIVE")
+            .map(|v| v != "0")
+            .unwrap_or(false)
+    })
+}
+
+/// Debug A/B knob (`IDEALYST_MAC_SCROLL_RASTERIZE=1`): flatten each
+/// section-sized subtree of a scroll view's content into a single cached
+/// bitmap via `CALayer.shouldRasterize`, to test whether compositing fewer,
+/// pre-rasterized "tiles" (what a browser does) removes the render-server
+/// rasterization stalls on fast flings. EXPERIMENT ONLY: dynamic content inside
+/// a rasterized subtree freezes until it re-rasterizes, so this is a diagnostic,
+/// not a shippable default. Always false in release.
+#[cfg(debug_assertions)]
+pub(crate) fn dev_rasterize_scroll() -> bool {
+    use std::sync::OnceLock;
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| {
+        std::env::var("IDEALYST_MAC_SCROLL_RASTERIZE")
+            .map(|v| v != "0")
+            .unwrap_or(false)
+    })
+}
+
+/// Walk a scroll documentView's subtree and set `shouldRasterize` on
+/// section-sized views (CA caps the rasterization bitmap, so a too-tall wrapper
+/// is recursed past to reach its section children). See [`dev_rasterize_scroll`].
+#[cfg(debug_assertions)]
+unsafe fn apply_section_rasterization(view: *mut NSView, scale: f64, depth: u32) {
+    if view.is_null() || depth > 4 {
+        return;
+    }
+    let bounds: CGRect = msg_send![view, bounds];
+    let h = bounds.size.height;
+    // Section-sized subtree (one-screen-ish): flatten it into one bitmap and
+    // stop — don't rasterize already-rasterized descendants.
+    if h > 40.0 && h <= 2500.0 {
+        let layer: *mut NSObject = msg_send![view, layer];
+        if !layer.is_null() {
+            let _: () = msg_send![layer, setRasterizationScale: scale];
+            let _: () = msg_send![layer, setShouldRasterize: true];
+        }
+        return;
+    }
+    // Too tall (a content wrapper) — descend to find section-sized views.
+    let subs: *mut NSObject = msg_send![view, subviews];
+    if subs.is_null() {
+        return;
+    }
+    let count: usize = msg_send![subs, count];
+    for i in 0..count {
+        let s: *mut NSView = msg_send![subs, objectAtIndex: i];
+        apply_section_rasterization(s, scale, depth + 1);
+    }
+}
+
+/// The apply-frames skip predicate: a view can be skipped this pass iff its
+/// newly-computed frame equals the frame last applied to it. The
+/// `compute_and_apply_layout` loop calls this and, on a miss, applies the frame
+/// then records it in `last_applied_frame`; eviction is plain `HashMap::remove`
+/// at (re)registration / removal sites. Pulled out as a pure fn because the full
+/// loop needs a live main-thread AppKit view tree (cargo-test worker threads
+/// have no `MainThreadMarker`, so the backend can't be constructed in a unit
+/// test). End-to-end behavior is verified live by the `IDEALYST_LAYOUT_TRACE`
+/// "applied N/M views" readout (a post-mount event re-frames 0–2 of 3856 views).
+fn frame_apply_can_skip(
+    last: &HashMap<usize, (f64, f64, f64, f64)>,
+    key: usize,
+    applied_frame: (f64, f64, f64, f64),
+) -> bool {
+    last.get(&key) == Some(&applied_frame)
+}
+
+#[cfg(test)]
+mod frame_apply_skip_tests {
+    use super::{frame_apply_can_skip, HashMap};
+
+    // Regression: a reactive event on a large screen (the idea-ui-docs "All
+    // Components" page = 3856 views) re-framed EVERY view, freezing ~250 ms per
+    // interaction on macOS while web — which reflows only the changed box —
+    // stayed smooth. The apply-frames pass now skips any view whose frame is
+    // unchanged since the previous pass. This locks the skip rule the loop uses.
+    #[test]
+    fn second_identical_pass_skips_every_view() {
+        // Model two apply-frames passes over the same 3 views with identical
+        // computed frames, recording applied frames exactly as the loop does.
+        let pass: [(usize, (f64, f64, f64, f64)); 3] = [
+            (1, (0.0, 0.0, 100.0, 20.0)),
+            (2, (0.0, 24.0, 100.0, 20.0)),
+            (3, (0.0, 48.0, 100.0, 20.0)),
+        ];
+        let mut last: HashMap<usize, (f64, f64, f64, f64)> = HashMap::new();
+
+        // Pass 1: empty cache → nothing skipped, everything applied + recorded.
+        let mut applied_1 = 0;
+        for (k, f) in pass {
+            if !frame_apply_can_skip(&last, k, f) {
+                last.insert(k, f);
+                applied_1 += 1;
+            }
+        }
+        assert_eq!(applied_1, 3, "first pass must apply all views (empty cache)");
+
+        // Pass 2: identical frames → every view skipped (the regression).
+        let applied_2 = pass
+            .iter()
+            .filter(|(k, f)| !frame_apply_can_skip(&last, *k, *f))
+            .count();
+        assert_eq!(applied_2, 0, "unchanged second pass must re-frame zero views");
+    }
+
+    #[test]
+    fn only_the_moved_view_is_reapplied() {
+        let mut last: HashMap<usize, (f64, f64, f64, f64)> = HashMap::new();
+        last.insert(1, (0.0, 0.0, 100.0, 20.0));
+        last.insert(2, (0.0, 24.0, 100.0, 20.0));
+        // View 2 grew (a checkbox toggled, reflowing its row); view 1 unchanged.
+        assert!(frame_apply_can_skip(&last, 1, (0.0, 0.0, 100.0, 20.0)));
+        assert!(!frame_apply_can_skip(&last, 2, (0.0, 24.0, 100.0, 40.0)));
+    }
+
+    #[test]
+    fn recycled_pointer_after_eviction_is_reapplied() {
+        // A freed view's entry is evicted (HashMap::remove) at re-registration,
+        // so a new view reusing the pointer is never wrongly skipped — even if
+        // its frame coincidentally equals the freed view's last frame.
+        let mut last: HashMap<usize, (f64, f64, f64, f64)> = HashMap::new();
+        last.insert(7, (0.0, 0.0, 100.0, 20.0));
+        last.remove(&7); // eviction at register/remove
+        assert!(!frame_apply_can_skip(&last, 7, (0.0, 0.0, 100.0, 20.0)));
     }
 }
 
@@ -2036,6 +2236,18 @@ impl MacosBackend {
             if doc_ptr.is_null() {
                 continue;
             }
+            // EXPERIMENT: flatten section-sized subtrees into cached bitmaps to
+            // test whether per-layer rasterization is the fast-fling bottleneck.
+            #[cfg(debug_assertions)]
+            if dev_rasterize_scroll() {
+                let win: *mut NSObject = unsafe { msg_send![doc_ptr, window] };
+                let scale: f64 = if win.is_null() {
+                    2.0
+                } else {
+                    unsafe { msg_send![win, backingScaleFactor] }
+                };
+                unsafe { apply_section_rasterization(doc_ptr, scale, 0) };
+            }
             // Guard: a documentView that lands 0×0 while the scroll view has
             // real, laid-out children (and a real clip) IS the "top-level scroll
             // page renders blank" regression. Warn loudly at the exact pass that
@@ -2136,7 +2348,11 @@ impl MacosBackend {
         width: f32,
         height: f32,
     ) {
+        let trace_split = layout_trace_enabled();
+        let t_compute = if trace_split { Some(std::time::Instant::now()) } else { None };
         self.layout.compute(root_layout, width, height);
+        let compute_us = t_compute.map(|t| t.elapsed().as_micros());
+        let t_apply = if trace_split { Some(std::time::Instant::now()) } else { None };
 
         // Apply frames to the views in the ACTIVE host tree — the nodes
         // reachable from `root_layout`. We don't recurse through
@@ -2169,6 +2385,8 @@ impl MacosBackend {
             let _: () = msg_send![objc2::class!(CATransaction), begin];
             let _: () = msg_send![objc2::class!(CATransaction), setDisableActions: true];
         }
+        let total_views = snapshot.len();
+        let mut applied_views = 0usize;
         for (key, layout_node) in snapshot {
             let frame = self.layout.frame_of(layout_node);
             // The map's retained NSView is the source of truth for
@@ -2199,14 +2417,35 @@ impl MacosBackend {
                     height: frame.height as f64,
                 },
             };
+            // Skip views whose frame is unchanged since the last pass: re-frame
+            // only the subtree a reactive event actually reflowed, not every
+            // view on screen. The compute above is deterministic, so an unchanged
+            // input frame yields bit-identical output — exact equality is right.
+            // See `last_applied_frame` for the size-dependence invariant that
+            // makes skipping `sync_view_after_frame` safe here.
+            let applied_frame = (rect.origin.x, rect.origin.y, rect.size.width, rect.size.height);
+            if frame_apply_can_skip(&self.last_applied_frame, key, applied_frame) {
+                continue;
+            }
             let _: () = unsafe { msg_send![&**view, setFrame: rect] };
             // Gradient/icon sublayer resize + deferred cornerRadius + percent
             // transform re-resolve + container-query feed. Shared verbatim with
             // the detached/portal pass so the two can't drift (see the method).
             self.sync_view_after_frame(view, frame.width, frame.height);
+            self.last_applied_frame.insert(key, applied_frame);
+            applied_views += 1;
         }
         unsafe {
             let _: () = msg_send![objc2::class!(CATransaction), commit];
+        }
+        if let (Some(cu), Some(ta)) = (compute_us, t_apply) {
+            eprintln!(
+                "[layout-split] compute {:.2}ms · apply-frames {:.2}ms — applied {}/{} views",
+                cu as f64 / 1000.0,
+                ta.elapsed().as_secs_f64() * 1000.0,
+                applied_views,
+                total_views,
+            );
         }
 
         // (Scroll documentView sizing is deferred to the END of this method — it
@@ -3515,8 +3754,18 @@ impl Backend for MacosBackend {
         // container (the framework's mental model). `insert`
         // checks `documentView` and routes children into the
         // documentView's subview tree + the Taffy graph.
-        let document_view = FlippedView::new(self.mtm);
-        let document_view: Retained<NSView> = Retained::into_super(document_view);
+        // The documentView only needs top-left origin (`isFlipped`). A full
+        // `FlippedView` ALSO overrides `scrollWheel:`, which disables AppKit
+        // responsive scrolling (overdraw). Behind the A/B knob, use the minimal
+        // `ScrollDocumentView` (no `scrollWheel:`) to test re-enabling it.
+        #[cfg(debug_assertions)]
+        let document_view: Retained<NSView> = if dev_scroll_responsive() {
+            Retained::into_super(view::ScrollDocumentView::new(self.mtm))
+        } else {
+            Retained::into_super(FlippedView::new(self.mtm))
+        };
+        #[cfg(not(debug_assertions))]
+        let document_view: Retained<NSView> = Retained::into_super(FlippedView::new(self.mtm));
 
         // Build NSScrollView via alloc/initWithFrame:CGRect.zero.
         // Frame is set by the layout pass in `finish()`.
@@ -3575,7 +3824,7 @@ impl Backend for MacosBackend {
         // instead of a per-frame CPU `drawRect` pass over the whole subtree.
         // The two flags are a coupled pair — copy-off without layer-backing is
         // the scroll-jank bug (smooth on web/iOS, janky only on macOS).
-        let compositing = ScrollCompositing::policy();
+        let compositing = ScrollCompositing::resolved();
         debug_assert!(compositing.is_jank_free());
 
         // Layer-back the documentView. AppKit propagates layer-backing to the
@@ -3949,6 +4198,8 @@ impl Backend for MacosBackend {
         // Drop the cached text-measure signature so a recycled NSView at the
         // same address can't read a stale label sig.
         self.text_measure_sig.remove(&child_key);
+        // Same for the cached applied frame (see `last_applied_frame`).
+        self.last_applied_frame.remove(&child_key);
         let _: () = unsafe { msg_send![child_view, removeFromSuperview] };
 
         // Reflow after the removal — symmetric with `insert` / `insert_at`. The
@@ -4120,6 +4371,8 @@ impl Backend for MacosBackend {
             transitions::forget_view(sub_ref);
             // Drop the cached text-measure signature (mirror `remove_child`).
             self.text_measure_sig.remove(&(sub_ptr as *const NSView as usize));
+            // Same for the cached applied frame (see `last_applied_frame`).
+            self.last_applied_frame.remove(&(sub_ptr as *const NSView as usize));
             let _: () = unsafe { msg_send![sub_ptr, removeFromSuperview] };
         }
     }

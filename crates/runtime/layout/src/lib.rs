@@ -136,6 +136,16 @@ pub struct LayoutTree {
     /// their parent (see `apply_default_max_width`). Cleared when the
     /// author sets an explicit `max_width`.
     auto_max_width: HashSet<NodeId>,
+    /// Nodes with `width: <percent>` AND an author `max_width: <definite px>`.
+    /// Taffy measures such a node's intrinsic HEIGHT at the percent-resolved
+    /// width (ignoring the cap), then renders the WIDTH capped — so a wrapping
+    /// child (a `text_area`, multi-line text) is measured at the wider pre-cap
+    /// width (fewer lines → too short) while it renders at the narrower capped
+    /// width (more lines → taller), and the ancestor clips the overflow.
+    /// Browsers measure height at the used (capped) width; [`Self::compute`]
+    /// restores that parity with a second pass over these nodes. Maintained by
+    /// `set_style`; see the `capped_percent_width` handling in `compute`.
+    capped_percent_width: HashSet<NodeId>,
     /// Nodes marked as horizontal scroll viewports (`overflow-x:
     /// scroll`). Their direct children hold content that is *meant* to
     /// be wider than the viewport (so it can scroll), so those children
@@ -172,6 +182,7 @@ impl LayoutTree {
             auto_width: HashSet::new(),
             auto_height: HashSet::new(),
             auto_max_width: HashSet::new(),
+            capped_percent_width: HashSet::new(),
             hscroll_parents: HashSet::new(),
             hscroll_content: HashSet::new(),
             author_padding: HashMap::new(),
@@ -349,6 +360,7 @@ impl LayoutTree {
         self.auto_width.remove(&node.0);
         self.auto_height.remove(&node.0);
         self.auto_max_width.remove(&node.0);
+        self.capped_percent_width.remove(&node.0);
         self.hscroll_parents.remove(&node.0);
         self.hscroll_content.remove(&node.0);
         self.author_padding.remove(&node.0);
@@ -644,6 +656,19 @@ impl LayoutTree {
         // the merged result, not the incoming `rules`).
         self.apply_default_max_width(node.0, &mut style);
 
+        // Track the `width: <percent>` + author `max_width: <definite px>`
+        // pattern so `compute` can re-resolve its height at the capped width
+        // (Taffy measures it at the pre-cap width — see the field docs). The
+        // default `Percent(1.0)` clamp is NOT a definite cap, so it never
+        // triggers this; only an author `Length` max-width does.
+        if matches!(style.size.width, Dimension::Percent(_))
+            && matches!(style.max_size.width, Dimension::Length(_))
+        {
+            self.capped_percent_width.insert(node.0);
+        } else {
+            self.capped_percent_width.remove(&node.0);
+        }
+
         // Geometry-only diff: equal Taffy `Style` ⇒ a paint-only change.
         let changed = style != existing;
         self.tree
@@ -897,6 +922,67 @@ impl LayoutTree {
             )
             .expect("taffy compute_layout");
         self.measure_fns = measure_fns;
+
+        // --- CSS-parity second pass for `width: %` + `max_width: <px>` ---
+        //
+        // Taffy sized these nodes' WIDTH correctly (it caps to the max-width),
+        // but it measured their content HEIGHT at the *pre-cap* percent width.
+        // For a wrapping child (a `text_area`, multi-line `text`) the height is
+        // therefore measured at a WIDER width than the box renders at → fewer
+        // lines → an ancestor shorter than its content → the content below
+        // clips. Browsers measure height at the used (capped) width.
+        //
+        // The width Taffy resolved IS the used width, so pin each node whose
+        // cap actually BOUND to that definite width and recompute: now the
+        // height is measured at the same width the box renders at. We only act
+        // when a cap bound (resolved width == the px max), so a viewport
+        // narrower than the cap — where the percent already governs and the
+        // height is correct — pays nothing. Restoring the percent afterwards
+        // keeps the node responsive on the next pass (a new viewport width).
+        if !self.capped_percent_width.is_empty() {
+            let mut pins: Vec<(NodeId, Dimension)> = Vec::new();
+            for &n in &self.capped_percent_width {
+                let (Ok(layout), Ok(style)) = (self.tree.layout(n), self.tree.style(n)) else {
+                    continue;
+                };
+                let resolved_w = layout.size.width;
+                // Cap bound iff the resolved width reached the definite max.
+                let bound = matches!(style.max_size.width, Dimension::Length(m)
+                    if resolved_w + 0.5 >= m && resolved_w.is_finite());
+                if bound {
+                    pins.push((n, style.size.width));
+                    let mut pinned = style.clone();
+                    pinned.size.width = Dimension::Length(resolved_w);
+                    let _ = self.tree.set_style(n, pinned);
+                }
+            }
+            if !pins.is_empty() {
+                let measure_fns = std::mem::take(&mut self.measure_fns);
+                self.tree
+                    .compute_layout_with_measure(
+                        root.0,
+                        space,
+                        |known_dimensions, available_space, node_id, _ctx, _style| {
+                            match measure_fns.get(&node_id) {
+                                Some(f) => f(known_dimensions, available_space),
+                                None => Size::ZERO,
+                            }
+                        },
+                    )
+                    .expect("taffy compute_layout (capped-width pass)");
+                self.measure_fns = measure_fns;
+                // Restore the percent widths so the next `compute()` (a resize
+                // to a new viewport) re-resolves the cap fresh. This marks the
+                // nodes dirty but leaves the just-computed frames intact for
+                // `frame_of` until that next pass.
+                for (n, original_w) in pins {
+                    if let Ok(mut style) = self.tree.style(n).cloned() {
+                        style.size.width = original_w;
+                        let _ = self.tree.set_style(n, style);
+                    }
+                }
+            }
+        }
     }
 
     /// Read the most recently computed frame for `node`. Returns the
@@ -1230,7 +1316,6 @@ mod tests {
     #[derive(Clone, Copy)]
     enum Fill {
         None,
-        WidthPct,
         AlignSelfStretch,
     }
 
@@ -1271,16 +1356,14 @@ mod tests {
         let group = t.new_node(); // FieldGroup
         let mut gr = StyleRules::default();
         // The fix under test: a Field must fill its container width even when
-        // the container centers. Two candidate strategies on the FieldGroup:
-        //   - align_self: stretch — overrides the parent's `align_items: center`
-        //     for this child (the Divider precedent), keeps width auto.
-        //   - width: 100% — a definite full width the centering can't shrink.
+        // the container centers. The shipped strategy on the FieldGroup is
+        // `align_self: stretch` — it overrides the parent's `align_items:
+        // center` for this child (the Divider precedent) and keeps width auto.
         match fill {
             Fill::None => {}
             Fill::AlignSelfStretch => {
                 gr.align_self = Some(runtime_core::AlignSelf::Stretch)
             }
-            Fill::WidthPct => gr.width = Some(Tokenized::Literal(FwLength::Percent(100.0))),
         }
         t.set_style(group, &gr);
         t.add_child(surface, group);
@@ -1321,18 +1404,6 @@ mod tests {
 
     #[test]
     fn adorned_field_shell_fills_column() {
-        for scroll in [false, true] {
-            for (name, fill) in [
-                ("none", Fill::None),
-                ("width:100%", Fill::WidthPct),
-                ("align_self:stretch", Fill::AlignSelfStretch),
-            ] {
-                let (group, shell, input) = field_widths(fill, scroll);
-                eprintln!(
-                    "[field-dbg] scroll={scroll:<5} fill={name:<18} group={group:.0} shell={shell:.0} input={input:.0}"
-                );
-            }
-        }
         // Bug repro: under a CENTERING parent (DemoSurface), a Field with no
         // cross-axis fill hugs its content and gets centered — the icon-only
         // adorned field collapsed this way on macOS.
@@ -1360,37 +1431,23 @@ mod tests {
     }
 
     /// Build the docs-`forms` Bio tree and measure ancestor heights as the
-    /// autosizing `text_area` leaf grows. Mirrors the LIVE macOS structure that
+    /// autosizing `text_area` leaf grows. Mirrors the LIVE structure that
     /// clipped the counter beneath a grown Bio:
-    ///   scroll page → DemoSurfaceContent (`align_items: center`, `max_width`)
-    ///     → Stack → [ FieldGroup (`align_self: stretch`)
-    ///                   → label(16) + textarea-leaf(measure) + helper(16),
-    ///                 counter(16) ]
-    /// The text_area leaf's height is driven by `content_h` (the autosize
-    /// height a backend's measure_fn would return); each "edit" sets a taller
-    /// value + `mark_dirty(leaf)` + recomputes — exactly the autogrow path.
-    /// Returns `(surface_height, stack_height)` per edit so the test can assert
-    /// the ancestor always *contains* its child (no clip).
-    #[derive(Clone, Copy, Default)]
-    struct BioFix {
-        stack_stretch: bool,
-        stack_width_pct: bool,
-        group_width_pct: bool,
-        textarea_width_pct: bool,
-        /// Surface uses a fixed `width: 480` instead of `width:100% + max_width`.
-        surface_fixed_width: bool,
-        /// Surface uses `max_width: 480` only (auto width, hugs capped content).
-        surface_maxwidth_only: bool,
-        /// Surface uses `align_self: stretch` + `max_width: 480` (fill up to cap)
-        /// instead of `width: 100%` + `max_width`.
-        surface_stretch_maxwidth: bool,
-    }
-
-    fn bio_surface_vs_stack(edits: &[f32], fix: BioFix) -> Vec<(f32, f32)> {
-        // `glyph_run` is the total advance width of the content (chars × ~7pt).
-        // The measure FAITHFULLY models prose wrapping: lines = ceil(run / width),
-        // height = max(lines, 4 rows) × line_h — so a WIDER offered width yields
-        // FEWER lines and a SHORTER box (the property a constant-height stub hid).
+    ///   scroll page → DemoSurface card (`align_items: center`)
+    ///     → DemoSurfaceContent (`align_items: center`, `width: 100%`,
+    ///        `max_width: 480`)
+    ///       → Stack → [ FieldGroup (`align_self: stretch`)
+    ///                     → label(16) + textarea-leaf(measure) + helper(16),
+    ///                   counter(16) ]
+    ///
+    /// The text-area leaf measures like real prose: `lines = ceil(run / width)`
+    /// (a WIDER offered width → FEWER lines → a SHORTER box), floored at 4 rows.
+    /// `glyph_run` is the content's total advance width; each entry is one
+    /// "edit" — set the run, `mark_dirty(leaf)`, recompute. `viewport_w` lets
+    /// the test exercise BOTH a wide window (the cap binds at 480) and a narrow
+    /// one (the percent governs). Returns `(surface_height, stack_height)` per
+    /// edit so the test can assert the ancestor always CONTAINS its child.
+    fn bio_surface_vs_stack(edits: &[f32], viewport_w: f32) -> Vec<(f32, f32)> {
         let glyph_run = Rc::new(std::cell::Cell::new(0.0f32));
         let gr = glyph_run.clone();
         const LINE_H: f32 = 14.25;
@@ -1398,23 +1455,16 @@ mod tests {
         let measure: MeasureFn = Rc::new(move |known: Size<Option<f32>>, avail| {
             let definite_w = match avail.width {
                 AvailableSpace::Definite(w) => Some(w),
-                AvailableSpace::MaxContent => None,    // ∞ → single line
+                AvailableSpace::MaxContent => None,      // ∞ → single line
                 AvailableSpace::MinContent => Some(1.0), // 0 → max wrapping
             };
             let w = known.width.unwrap_or(definite_w.unwrap_or(f32::INFINITY));
             let lines = match definite_w {
                 Some(dw) if dw >= 1.0 => (gr.get() / dw).ceil().max(1.0),
-                _ => 1.0, // unbounded probe → one line
+                _ => 1.0,
             };
             let rows = lines.max(FLOOR_ROWS);
-            let h = known.height.unwrap_or(rows * LINE_H);
-            if std::env::var("BIO_TRACE").is_ok() {
-                eprintln!(
-                    "[measure] avail.w={:?} known.w={:?} -> w={w:.0} lines={lines} h={h:.1}",
-                    avail.width, known.width
-                );
-            }
-            Size { width: w, height: h }
+            Size { width: w, height: known.height.unwrap_or(rows * LINE_H) }
         });
 
         let mut t = LayoutTree::new();
@@ -1425,44 +1475,34 @@ mod tests {
         t.set_overflow_scroll(host, false);
         t.add_child(root, host);
 
-        // DemoSurfaceContent: centers its children, capped at 480.
+        // DemoSurface CARD: centers its content (the parent that clipped).
+        let card = t.new_node();
+        let mut card_s = StyleRules::default();
+        card_s.align_items = Some(runtime_core::AlignItems::Center);
+        card_s.justify_content = Some(runtime_core::JustifyContent::Center);
+        t.set_style(card, &card_s);
+        t.add_child(host, card);
+
+        // DemoSurfaceContent: the EXACT shipped pattern — fill up to a 480 cap,
+        // centered. This `width: 100%` + `max_width` combo is what Taffy
+        // under-measured the height of (the bug this test guards).
         let surface = t.new_node();
         let mut surf = StyleRules::default();
         surf.align_items = Some(runtime_core::AlignItems::Center);
-        if fix.surface_fixed_width {
-            surf.width = Some(px(480.0));
-        } else if fix.surface_maxwidth_only {
-            surf.max_width = Some(px(480.0));
-        } else if fix.surface_stretch_maxwidth {
-            surf.align_self = Some(runtime_core::AlignSelf::Stretch);
-            surf.max_width = Some(px(480.0));
-        } else {
-            surf.width = Some(Tokenized::Literal(FwLength::Percent(100.0)));
-            surf.max_width = Some(px(480.0));
-        }
+        surf.width = Some(Tokenized::Literal(FwLength::Percent(100.0)));
+        surf.max_width = Some(px(480.0));
         t.set_style(surface, &surf);
-        t.add_child(host, surface);
+        t.add_child(card, surface);
 
-        // Stack: holds the Textarea field and the character counter.
+        // Stack: the Textarea field + the character counter.
         let stack = t.new_node();
-        let mut str_ = StyleRules::default();
-        if fix.stack_stretch {
-            str_.align_self = Some(runtime_core::AlignSelf::Stretch);
-        }
-        if fix.stack_width_pct {
-            str_.width = Some(Tokenized::Literal(FwLength::Percent(100.0)));
-        }
-        t.set_style(stack, &str_);
         t.add_child(surface, stack);
 
         // FieldGroup: align_self stretch overrides the centering parent.
         let group = t.new_node();
-        let mut gr = StyleRules::default();
-        gr.align_self = Some(runtime_core::AlignSelf::Stretch);
-        if fix.group_width_pct {
-            gr.width = Some(Tokenized::Literal(FwLength::Percent(100.0)));
-        }
-        t.set_style(group, &gr);
+        let mut gr_s = StyleRules::default();
+        gr_s.align_self = Some(runtime_core::AlignSelf::Stretch);
+        t.set_style(group, &gr_s);
         t.add_child(stack, group);
 
         let label = t.new_node();
@@ -1473,11 +1513,6 @@ mod tests {
 
         // The autosizing text_area chrome container (the Taffy leaf).
         let textarea = t.new_node();
-        if fix.textarea_width_pct {
-            let mut tr = StyleRules::default();
-            tr.width = Some(Tokenized::Literal(FwLength::Percent(100.0)));
-            t.set_style(textarea, &tr);
-        }
         t.set_measure_fn(textarea, measure.clone());
         t.add_child(group, textarea);
 
@@ -1497,83 +1532,47 @@ mod tests {
         let mut out = Vec::new();
         for &run in edits {
             glyph_run.set(run);
-            // The ONLY invalidation the autogrow path performs: dirty the leaf
-            // whose measured height changed, then recompute from the root.
             t.mark_dirty(textarea);
-            t.compute(root, 676.0, 5000.0);
+            t.compute(root, viewport_w, 5000.0);
             out.push((t.frame_of(surface).height, t.frame_of(stack).height));
         }
         out
     }
 
-    /// Regression for the macOS Bio `text_area` clipping its counter: as the
-    /// autosizing text area grew, the Stack tracked it but the ancestor
-    /// DemoSurfaceContent (and the card) FROZE at the height from the first
-    /// non-empty measure — so the card clipped everything below the text area.
-    /// Confirmed live via the robot: textarea 72→170→184 while the surface
-    /// stuck at the 170-pass height. The ancestor must always contain its
-    /// child; `mark_dirty(leaf)` + `compute(root)` has to re-size every
-    /// ancestor, not just the dirtied subtree.
+    /// Regression for the macOS Bio `text_area` clipping its counter, root-caused
+    /// to a Taffy/CSS divergence (NOT macOS-specific): a `width: 100%` +
+    /// `max_width` container measures a wrapping child's intrinsic HEIGHT at the
+    /// pre-cap percent width (fewer lines → too short), then renders the WIDTH
+    /// capped (more lines → taller) — so the ancestor is shorter than its child
+    /// and clips the content below. Confirmed live via the robot: the Bio
+    /// textarea grew 72→170→184 while DemoSurfaceContent stayed sized to a
+    /// 142-px-textarea height, clipping the "N characters" counter.
+    ///
+    /// `LayoutTree::compute`'s capped-percent-width second pass restores CSS
+    /// parity (measure height at the used/capped width). The ancestor must
+    /// CONTAIN its child at every growth step, in BOTH a wide window (the cap
+    /// binds at 480) and a narrow one (the percent governs) — the latter guards
+    /// against a fix that merely MOVES the bug to small viewports.
     #[test]
-    fn explore_bio_fixes() {
+    fn regression_capped_percent_width_measures_height_at_used_width() {
+        // glyph runs: empty, then two growth steps (≈880, then ≈980 chars × 7pt).
         let edits = [0.0, 6160.0, 6860.0];
-        let variants = [
-            ("none", BioFix::default()),
-            ("textarea_w100", BioFix { textarea_width_pct: true, ..Default::default() }),
-            ("stack_stretch", BioFix { stack_stretch: true, ..Default::default() }),
-            ("stack_w100", BioFix { stack_width_pct: true, ..Default::default() }),
-            ("group_w100", BioFix { group_width_pct: true, ..Default::default() }),
-            ("stack_stretch+ta_w100", BioFix { stack_stretch: true, textarea_width_pct: true, ..Default::default() }),
-            ("surface_fixed_width", BioFix { surface_fixed_width: true, ..Default::default() }),
-            ("surface_maxwidth_only", BioFix { surface_maxwidth_only: true, ..Default::default() }),
-            ("surface_fixed+stack_stretch", BioFix { surface_fixed_width: true, stack_stretch: true, ..Default::default() }),
-            ("surface_stretch_maxwidth", BioFix { surface_stretch_maxwidth: true, ..Default::default() }),
-        ];
-        for (name, fix) in variants {
-            let r = bio_surface_vs_stack(&edits, fix);
-            let ok = r.iter().all(|(s, st)| *s + 0.5 >= *st);
-            eprintln!("[bio-fix] {name:<24} contains={ok} {r:?}");
-        }
-    }
-
-    #[test]
-    fn regression_autosizing_textarea_grows_ancestor_not_just_subtree() {
-        // glyph runs: empty, then two growth steps (≈880 then ≈980 chars × 7pt).
-        let edits = [0.0, 6160.0, 6860.0];
-
-        // The SHIPPED fix (TBD by explore_bio_fixes).
-        let fixed = bio_surface_vs_stack(&edits, BioFix { stack_stretch: true, ..Default::default() });
-        for (i, (surface, stack)) in fixed.iter().enumerate() {
+        for viewport_w in [676.0_f32, 360.0] {
+            let r = bio_surface_vs_stack(&edits, viewport_w);
+            for (i, (surface, stack)) in r.iter().enumerate() {
+                assert!(
+                    surface + 0.5 >= *stack,
+                    "viewport={viewport_w}, edit #{i}: ancestor surface ({surface}) \
+                     must contain its child stack ({stack}) — a shorter parent \
+                     clips the content below the text area",
+                );
+            }
+            // It must also TRACK the growth, not freeze at the first measure.
             assert!(
-                surface + 0.5 >= *stack,
-                "edit #{i}: ancestor surface ({surface}) must contain its child \
-                 stack ({stack}) — a shorter parent clips the content below",
+                r.last().unwrap().0 > r.first().unwrap().0 + 1.0,
+                "viewport={viewport_w}: surface must grow with the text area: {r:?}",
             );
         }
-        assert!(
-            fixed.last().unwrap().0 > fixed.first().unwrap().0 + 1.0,
-            "surface must grow with the text area, not freeze: {fixed:?}",
-        );
-    }
-
-    /// Guards that the test above actually models the bug: WITHOUT the
-    /// definite-width pin, the centering ancestor sizes the prose textarea at a
-    /// width wider than its rendered column (the pre-`max_width` width), getting
-    /// fewer wrapped lines than the box actually shows → an ancestor shorter
-    /// than its child (the clip). If this ever stops reproducing, the
-    /// faithful-measure model has drifted and the fix test is vacuous.
-    #[test]
-    fn autosizing_textarea_unpinned_width_underflows_ancestor() {
-        let edits = [0.0, 6160.0, 6860.0];
-        let unpinned = bio_surface_vs_stack(&edits, BioFix::default());
-        let clipped = unpinned
-            .iter()
-            .any(|(surface, stack)| *surface + 0.5 < *stack);
-        assert!(
-            clipped,
-            "expected the unpinned (centering, max-width) tree to under-size the \
-             ancestor and clip — got {unpinned:?}; the bug model has drifted",
-        );
     }
 
     /// Regression: a VERTICAL scroll view's content extent must clip its

@@ -142,6 +142,28 @@ impl ViewOps for MacosViewOps {
             crate::imp::set_animated_color(n, prop, value);
         }
     }
+
+    fn install_keyframe_animation(
+        &self,
+        node: &dyn Any,
+        prop: runtime_core::animation::AnimProp,
+        keyframes: &[(f32, f32)],
+        duration_ms: u32,
+        repeat_forever: bool,
+        autoreverse: bool,
+    ) -> bool {
+        match node.downcast_ref::<MacosNode>() {
+            Some(n) => crate::imp::animated::install_keyframe_animation(
+                n,
+                prop,
+                keyframes,
+                duration_ms,
+                repeat_forever,
+                autoreverse,
+            ),
+            None => false,
+        }
+    }
 }
 
 pub(crate) static MACOS_VIEW_OPS: MacosViewOps = MacosViewOps;
