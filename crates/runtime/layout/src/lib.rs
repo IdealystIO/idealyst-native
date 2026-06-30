@@ -1062,12 +1062,12 @@ impl LayoutTree {
         //     For the common one-wide-column table this is the browser
         //     result — the text column gives back the overflow and wraps,
         //     short columns stay hugged to their content.
-        // We deliberately do NOT use the exact CSS min/max formula: this
+        // We deliberately do NOT use the exact CSS min/max formula: the GPU
         // backend's text engine reports min-content ≈ 0 for long/unbreakable
-        // strings (measured live — see the [table-css] trace), which would
-        // let short columns collapse below their content. Water-fill needs
-        // only the reliable max-content. The widths are pinned as fixed px
-        // tracks and the tree is laid out again.
+        // strings (its `measure_min_content` returns ~0), which would let
+        // short columns collapse below their content. Water-fill needs only
+        // the reliable max-content. The widths are pinned as fixed px tracks
+        // and the tree is laid out again.
         if !self.table_grids.is_empty() {
             let grids: Vec<(NodeId, usize)> =
                 self.table_grids.iter().map(|(k, v)| (*k, *v)).collect();
@@ -1148,9 +1148,6 @@ impl LayoutTree {
                     }
                     widths
                 };
-                if std::env::var("IDEALYST_GRID_DEBUG").is_ok() {
-                    eprintln!("[table-css] W={w} max={max_cw:?} -> {widths:?}");
-                }
                 if let Ok(mut s) = self.tree.style(*grid).cloned() {
                     s.grid_template_columns = widths
                         .iter()
@@ -1180,20 +1177,6 @@ impl LayoutTree {
             }
         }
         self.measure_fns = measure_fns;
-
-        if std::env::var("IDEALYST_GRID_DEBUG").is_ok() && !self.grid_items.is_empty() {
-            let mut items: Vec<_> = self
-                .grid_items
-                .iter()
-                .map(|n| {
-                    let l = self.tree.layout(*n).copied().unwrap_or_default();
-                    let s = self.tree.style(*n).map(|s| s.min_size.width).unwrap_or(Dimension::Auto);
-                    (l.location.x, l.size.width, s)
-                })
-                .collect();
-            items.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-            eprintln!("[grid-debug] compute root={:?} grid_items(x,w,minw)={:?}", root.0, items);
-        }
 
         // --- CSS-parity second pass for `width: %` + `max_width: <px>` ---
         //
