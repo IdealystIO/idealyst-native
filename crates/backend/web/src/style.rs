@@ -41,6 +41,67 @@ pub(crate) fn easing_to_css(e: Easing) -> &'static str {
     }
 }
 
+/// An always-parseable, inert rule used to backfill a CSSOM slot when the
+/// real rule is rejected by the engine (see [`insert_rule_or_placeholder`]).
+/// It targets a class no element ever carries, so it matches nothing.
+const REJECTED_RULE_PLACEHOLDER: &str = ".__idl-rejected-rule{}";
+
+/// Insert `rule` into `sheet` at `idx`, returning the index it landed at —
+/// **without ever panicking on a browser rejection**.
+///
+/// `CSSStyleSheet.insertRule()` is specified to THROW a `SyntaxError` when
+/// the engine can't parse the rule (most commonly a vendor-prefixed
+/// selector like `::-webkit-scrollbar*` that Gecko doesn't recognize).
+/// A `<style>`/`<link>` stylesheet silently *drops* such rules; the CSSOM
+/// `insertRule` API rejects instead. The old code did `.expect(...)` on
+/// that fallible call, so under `panic = abort` a single browser-disliked
+/// rule aborted the entire WASM module before first paint — the Firefox
+/// white-screen this guards against. A UI framework must treat unknown CSS
+/// the way browsers do: inert, not fatal.
+///
+/// On rejection we insert [`REJECTED_RULE_PLACEHOLDER`] at the same index
+/// so the slot stays physically occupied. Every absolute CSSOM index the
+/// backend tracks (`pregen`, `dynamic`, `free_rule_indices`,
+/// `app_bg_rule_index`, …) therefore stays valid — dropping the rule
+/// outright would shift them all and corrupt the bookkeeping. We log the
+/// first rejection so the portability slip is diagnosable, then stay quiet
+/// (these rules re-insert on every theme re-apply; one warning is enough).
+fn insert_rule_or_placeholder(sheet: &web_sys::CssStyleSheet, rule: &str, idx: u32) -> u32 {
+    match sheet.insert_rule_with_index(rule, idx) {
+        Ok(new_idx) => new_idx,
+        Err(_) => {
+            warn_rejected_rule_once(rule);
+            // The placeholder is trivially valid, so this insert won't
+            // itself reject; `unwrap_or(idx)` is a belt-and-suspenders
+            // last resort that can't realistically fire.
+            sheet
+                .insert_rule_with_index(REJECTED_RULE_PLACEHOLDER, idx)
+                .unwrap_or(idx)
+        }
+    }
+}
+
+/// Warn (once per thread) that the browser rejected a generated CSS rule.
+/// Deduped because rejected rules re-insert on every theme re-apply and we
+/// don't want to spam DevTools on each light/dark toggle.
+fn warn_rejected_rule_once(rule: &str) {
+    thread_local! {
+        static WARNED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    WARNED.with(|w| {
+        if !w.replace(true) {
+            web_sys::console::warn_1(
+                &format!(
+                    "idealyst: browser rejected a generated CSS rule; \
+                     skipping it (further rejections silenced). \
+                     First rejected rule: {rule}"
+                )
+                .into(),
+            );
+        }
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Stylesheet rule-index management — split out of `impl WebBackend`.
 // ---------------------------------------------------------------------------
@@ -181,18 +242,14 @@ impl WebBackend {
             // following insertRule(rule, idx) shifts them back up.
             // Net: identical, so nothing else needs updating.
             let _ = sheet.delete_rule(idx);
-            let new_idx = sheet
-                .insert_rule_with_index(rule, idx)
-                .expect("insert_rule_with_index (recycle) failed");
+            let new_idx = insert_rule_or_placeholder(&sheet, rule, idx);
             // CSSOM returns the inserted-at index; should equal `idx`.
             debug_assert_eq!(new_idx, idx);
             new_idx
         } else {
             // Append at sheet length. No existing index changes.
             let end = sheet.css_rules().map(|r| r.length()).unwrap_or(0);
-            sheet
-                .insert_rule_with_index(rule, end)
-                .expect("insert_rule_with_index (append) failed")
+            insert_rule_or_placeholder(&sheet, rule, end)
         }
     }
 
@@ -354,6 +411,18 @@ impl WebBackend {
     /// `::-webkit-scrollbar` rules below it are the fallback for older
     /// Webkit (which ignores `scrollbar-color` once any
     /// `::-webkit-scrollbar` rule is present, so the two don't fight).
+    ///
+    /// The `::-webkit-scrollbar*` selectors are vendor-prefixed and Gecko
+    /// (Firefox) rejects them — `insertRule` THROWS on an unparseable
+    /// selector rather than dropping it the way a `<style>` sheet would.
+    /// We deliberately do NOT feature-detect them away: the obvious probe,
+    /// `CSS.supports("selector(::-webkit-scrollbar)")`, relies on `selector()`
+    /// support that the very old-Webkit browsers these rules target may
+    /// lack, so it would skip the fallback on exactly the engines that need
+    /// it. Instead we emit the rules unconditionally and rely on the
+    /// non-throwing [`insert_rule_or_placeholder`] path: on Blink/Webkit
+    /// they parse and apply; on Gecko they become inert placeholders.
+    /// Progressive enhancement, robust across every engine.
     ///
     /// `track` typically wants to be a transparent literal — register
     /// a token with value `transparent` if you want a track that

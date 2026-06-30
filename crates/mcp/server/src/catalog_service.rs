@@ -502,6 +502,44 @@ fn strip_app(mut v: serde_json::Value) -> serde_json::Value {
     v
 }
 
+/// Make sure a `screenshot` response carries a `path` to a saved PNG.
+///
+/// The dev relay already decodes `png_base64` to `~/.idealyst/screenshots/`
+/// and injects `path` in the default `idealyst dev` flow, so the common case
+/// is a no-op. For a direct-bridge (`--local`) session there's no relay to do
+/// it, so we decode + write the file here. Best-effort: any failure leaves the
+/// response untouched (the caller still strips `png_base64` either way).
+fn ensure_screenshot_saved(label: &str, value: &mut serde_json::Value) {
+    use base64::Engine as _;
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+    if obj.get("path").and_then(|p| p.as_str()).is_some() {
+        return; // relay (or client) already saved it
+    }
+    let Some(b64) = obj.get("png_base64").and_then(|v| v.as_str()) else {
+        return;
+    };
+    let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) else {
+        return;
+    };
+    let Some(home) = std::env::var_os("HOME") else {
+        return;
+    };
+    let dir = std::path::Path::new(&home).join(".idealyst").join("screenshots");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let path = dir.join(format!("{label}-{millis}.png"));
+    if std::fs::write(&path, &bytes).is_ok() {
+        obj.insert("path".into(), json!(path.to_string_lossy()));
+    }
+}
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SearchRequest {
     /// Free-form query. Matched case-insensitively against component
@@ -1068,14 +1106,34 @@ impl CatalogService {
         self.robot_call("invoke_method", app.as_deref(), body).await
     }
 
-    #[tool(description = "Capture a PNG screenshot of the running app and return it as base64. Two capture sources, selected via the optional `source` arg: `client` snapshots the REAL rendered surface (macOS/iOS/Android native widgets/fonts/view-hierarchy; web rasterizes the live DOM to PNG), working both for a `--local` app and for a runtime-server session by asking the connected client to capture over the wire; `replay` rasterizes the current scene with the wgpu renderer server-side (always available, even with no client attached, but uses the framework's renderer not the platform's). `auto` (the default) tries the real client and falls back to replay. Optional `width`/`height` in physical pixels are honored by the replay path (default: the session's viewport size); real-client capture always returns the device's own pixel dimensions. Response JSON: { png_base64, width, height, path }. When reached through the dev relay (the default in `idealyst dev`), the PNG is also saved host-side to `~/.idealyst/screenshots/<app>-<timestamp>.png` and that absolute path is returned as `path` — prefer reading the file over decoding the base64. Requires the session to have registered the screenshot verb; returns an error otherwise.")]
+    #[tool(description = "Capture a PNG screenshot of the running app and save it to disk, returning the file PATH (not the image bytes). Two capture sources, selected via the optional `source` arg: `client` snapshots the REAL rendered surface (macOS/iOS/Android native widgets/fonts/view-hierarchy; web rasterizes the live DOM to PNG), working both for a `--local` app and for a runtime-server session by asking the connected client to capture over the wire; `replay` rasterizes the current scene with the wgpu renderer server-side (always available, even with no client attached, but uses the framework's renderer not the platform's). `auto` (the default) tries the real client and falls back to replay. Optional `width`/`height` in physical pixels are honored by the replay path (default: the session's viewport size); real-client capture always returns the device's own pixel dimensions. Response JSON: { path, width, height } — `path` is the absolute path to the saved PNG (`~/.idealyst/screenshots/<app>-<timestamp>.png` by default). The base64 is intentionally NOT returned: read the file at `path` to view the image. Requires the session to have registered the screenshot verb; returns an error otherwise.")]
     async fn screenshot(
         &self,
         Parameters(args): Parameters<RobotScreenshotArgs>,
     ) -> Result<CallToolResult, McpError> {
         let app = args.app.clone();
+        let label = app.clone().unwrap_or_else(|| "app".to_string());
         let body = strip_app(serde_json::to_value(args).unwrap_or_default());
-        self.robot_call("screenshot", app.as_deref(), body).await
+        let bridge = self.resolve_bridge(app.as_deref()).await?;
+        match bridge.call("screenshot", body).await {
+            Ok(mut value) => {
+                // Never serialize `png_base64` into the tool result — a
+                // full-res PNG is hundreds of KB of base64 that floods the
+                // model's context (and on large screens overflows the
+                // tool-result token cap entirely). Persist it to a file and
+                // hand back only the path. The dev relay already saves +
+                // injects `path` in the default `idealyst dev` flow; for a
+                // direct-bridge (`--local`) session we save it here.
+                ensure_screenshot_saved(&label, &mut value);
+                if let Some(obj) = value.as_object_mut() {
+                    obj.remove("png_base64");
+                }
+                Ok(CallToolResult::success(vec![Content::text(
+                    serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                )]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
     }
 
     #[tool(description = "List every running idealyst app — discovered via per-process registration files at `~/.idealyst/apps/<name>-<pid>.json` that the running app's Robot bridge writes on bind. Each entry includes name, bundle_id, project_root, bridge_addr, and pid. Entries are removed automatically when the app exits (RAII cleanup on graceful shutdown; stale ones get pruned at scan time when `kill(pid, 0)` reports the process is gone).")]
@@ -3458,6 +3516,55 @@ mod tests {
         assert!(!matches_filter(&Some("icon missing".into()), &["IconButton"]));
         // No match.
         assert!(!matches_filter(&Some("slider".into()), &["Button", "button"]));
+    }
+
+    #[test]
+    fn ensure_screenshot_saved_is_noop_when_relay_already_set_path() {
+        // The dev relay decodes + saves the PNG and injects `path`; the MCP
+        // must NOT re-save or touch the response in that case.
+        let mut v = json!({
+            "png_base64": "aGVsbG8=", // "hello"
+            "width": 10,
+            "height": 20,
+            "path": "/already/saved.png",
+        });
+        ensure_screenshot_saved("myapp", &mut v);
+        assert_eq!(v["path"], json!("/already/saved.png"));
+    }
+
+    #[test]
+    fn ensure_screenshot_saved_writes_file_for_direct_bridge() {
+        // No `path` → direct-bridge (`--local`) session. We must decode the
+        // base64, write a PNG, and inject a `path` so the model never needs
+        // the bytes.
+        let tmp = std::env::temp_dir().join(format!(
+            "idealyst-screenshot-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        // Point HOME at the temp dir so the default screenshots dir lands there.
+        // Safe in this single-threaded unit test.
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", &tmp); }
+
+        let mut v = json!({
+            "png_base64": "aGVsbG8=", // "hello"
+            "width": 10,
+            "height": 20,
+        });
+        ensure_screenshot_saved("myapp", &mut v);
+
+        let path = v["path"].as_str().expect("path was injected");
+        assert!(path.contains("myapp-"));
+        let bytes = std::fs::read(path).expect("file written");
+        assert_eq!(bytes, b"hello");
+
+        // Restore HOME and clean up.
+        match prev_home {
+            Some(h) => unsafe { std::env::set_var("HOME", h) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

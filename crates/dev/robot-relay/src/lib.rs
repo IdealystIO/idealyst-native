@@ -309,7 +309,9 @@ fn tcp_session(stream: TcpStream, inner: &Arc<Inner>) {
                 // A browser tab / device can't write to the dev host, so the
                 // relay (which IS on the host) saves screenshot PNGs to a
                 // canonical location and adds a `path` to the response. The
-                // base64 is kept so the MCP can still return the image inline.
+                // base64 stays on the wire here; the MCP strips it before the
+                // tool result so the bytes never reach the model — readers go
+                // through `path`.
                 if cmd == "screenshot" {
                     if let Some(dir) = &inner.screenshot_dir {
                         save_screenshot(dir, &inner.app_label, &mut resp);

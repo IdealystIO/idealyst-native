@@ -5456,6 +5456,7 @@ name = "mcp-server"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "base64",
  "libc",
  "lint",
  "mcp-catalog",

@@ -575,6 +575,79 @@ fn scrollbar_reapply_preserves_other_rule_indices() {
 
 /// REGRESSION TEST.
 ///
+/// `insert_rule_raw` must never panic when the browser rejects a rule.
+/// `CSSStyleSheet.insertRule()` is specified to THROW `SyntaxError` on a
+/// selector the engine can't parse — most visibly a `::-webkit-scrollbar*`
+/// pseudo on Gecko (Firefox). The old code `.expect(...)`ed that fallible
+/// call, so under `panic = abort` a single browser-disliked rule aborted
+/// the entire WASM module before first paint: the Firefox white-screen
+/// this guards against. The fix backfills an inert placeholder at the same
+/// index instead, so the app survives AND every absolute CSSOM index the
+/// backend tracks stays valid.
+///
+/// The headless test runner is Chrome/Safari, and both accept
+/// `::-webkit-scrollbar`, so a webkit pseudo wouldn't reproduce the throw
+/// here. We instead feed `insert_rule_raw` a selector that EVERY engine
+/// rejects (`!` is an illegal selector start in Chrome, Safari, and
+/// Firefox alike) and assert: (a) the call returns without panicking,
+/// (b) the rejected rule's slot holds the inert placeholder, and (c) a
+/// class registered AFTER it still round-trips to its own body — proving
+/// the placeholder kept the slot occupied so no tracked index drifted.
+#[wasm_bindgen_test]
+fn rejected_css_rule_does_not_abort_or_drift_indices() {
+    use runtime_core::{Backend, Length, StyleRules, Tokenized};
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+
+    // A class with a distinctive body, registered first.
+    let a = Rc::new(StyleRules {
+        width: Some(Tokenized::Literal(Length::Px(111.0))),
+        ..Default::default()
+    });
+    backend.register_stylesheet(std::slice::from_ref(&a));
+
+    // A rule no engine can parse. Pre-fix this `.expect()`-panics and
+    // aborts the module; post-fix it backfills the placeholder.
+    let rejected_idx = backend.insert_rule_raw("!!!bogus { color: red; }");
+
+    // A second class registered AFTER the rejected insert. Its body must
+    // round-trip intact — proving the placeholder kept the slot occupied
+    // and no index drifted.
+    let b = Rc::new(StyleRules {
+        width: Some(Tokenized::Literal(Length::Px(222.0))),
+        ..Default::default()
+    });
+    backend.register_stylesheet(std::slice::from_ref(&b));
+
+    let sheet = backend.sheet();
+    let rules = sheet.css_rules().expect("css_rules");
+
+    // The rejected rule's slot holds the inert placeholder, NOT the garbage.
+    let at_rejected = rules
+        .get(rejected_idx)
+        .map(|r| r.css_text())
+        .unwrap_or_default();
+    assert!(
+        at_rejected.contains("__idl-rejected-rule"),
+        "rejected rule slot should hold the inert placeholder, got: {at_rejected}",
+    );
+
+    // Both real classes survive with their own bodies.
+    let mut all = String::new();
+    for i in 0..rules.length() {
+        if let Some(r) = rules.get(i) {
+            all.push_str(&r.css_text());
+            all.push('\n');
+        }
+    }
+    assert!(all.contains("width: 111px"), "class A lost:\n{all}");
+    assert!(all.contains("width: 222px"), "class B lost:\n{all}");
+}
+
+/// REGRESSION TEST.
+///
 /// A pressable (idea-ui `Button`/`Chip`/`IconButton`/...) renders as a
 /// `<div>` on web, and `set_disabled` marks the disabled node with the
 /// HTML `disabled` *attribute*. The disabled state overlay used to be

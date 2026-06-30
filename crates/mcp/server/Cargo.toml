@@ -29,6 +29,9 @@ tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Decode `screenshot` PNG base64 so the tool can save it to disk and
+# return only the path — never streaming the base64 into the model.
+base64 = "0.22"
 # Shared render-parity model + diff (also used by the robot-test harness), for
 # the `compare_native_parity` tool.
 native-parity = { workspace = true }
