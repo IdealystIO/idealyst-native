@@ -1792,72 +1792,6 @@ pub(crate) fn dev_no_hover_tracking() -> bool {
     })
 }
 
-/// Debug A/B knob (`IDEALYST_MAC_SCROLL_RESPONSIVE=1`): build a `scroll_view`'s
-/// documentView as the minimal [`ScrollDocumentView`] (no `scrollWheel:`
-/// override) instead of a full `FlippedView`, to test whether re-enabling
-/// AppKit responsive scrolling (overdraw) fixes the macOS scroll jank on heavy
-/// pages. Always false in release builds.
-#[cfg(debug_assertions)]
-pub(crate) fn dev_scroll_responsive() -> bool {
-    use std::sync::OnceLock;
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| {
-        std::env::var("IDEALYST_MAC_SCROLL_RESPONSIVE")
-            .map(|v| v != "0")
-            .unwrap_or(false)
-    })
-}
-
-/// Debug A/B knob (`IDEALYST_MAC_SCROLL_RASTERIZE=1`): flatten each
-/// section-sized subtree of a scroll view's content into a single cached
-/// bitmap via `CALayer.shouldRasterize`, to test whether compositing fewer,
-/// pre-rasterized "tiles" (what a browser does) removes the render-server
-/// rasterization stalls on fast flings. EXPERIMENT ONLY: dynamic content inside
-/// a rasterized subtree freezes until it re-rasterizes, so this is a diagnostic,
-/// not a shippable default. Always false in release.
-#[cfg(debug_assertions)]
-pub(crate) fn dev_rasterize_scroll() -> bool {
-    use std::sync::OnceLock;
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| {
-        std::env::var("IDEALYST_MAC_SCROLL_RASTERIZE")
-            .map(|v| v != "0")
-            .unwrap_or(false)
-    })
-}
-
-/// Walk a scroll documentView's subtree and set `shouldRasterize` on
-/// section-sized views (CA caps the rasterization bitmap, so a too-tall wrapper
-/// is recursed past to reach its section children). See [`dev_rasterize_scroll`].
-#[cfg(debug_assertions)]
-unsafe fn apply_section_rasterization(view: *mut NSView, scale: f64, depth: u32) {
-    if view.is_null() || depth > 4 {
-        return;
-    }
-    let bounds: CGRect = msg_send![view, bounds];
-    let h = bounds.size.height;
-    // Section-sized subtree (one-screen-ish): flatten it into one bitmap and
-    // stop — don't rasterize already-rasterized descendants.
-    if h > 40.0 && h <= 2500.0 {
-        let layer: *mut NSObject = msg_send![view, layer];
-        if !layer.is_null() {
-            let _: () = msg_send![layer, setRasterizationScale: scale];
-            let _: () = msg_send![layer, setShouldRasterize: true];
-        }
-        return;
-    }
-    // Too tall (a content wrapper) — descend to find section-sized views.
-    let subs: *mut NSObject = msg_send![view, subviews];
-    if subs.is_null() {
-        return;
-    }
-    let count: usize = msg_send![subs, count];
-    for i in 0..count {
-        let s: *mut NSView = msg_send![subs, objectAtIndex: i];
-        apply_section_rasterization(s, scale, depth + 1);
-    }
-}
-
 /// The apply-frames skip predicate: a view can be skipped this pass iff its
 /// newly-computed frame equals the frame last applied to it. The
 /// `compute_and_apply_layout` loop calls this and, on a miss, applies the frame
@@ -2235,18 +2169,6 @@ impl MacosBackend {
             let doc_ptr: *mut NSView = unsafe { msg_send![&*scroll_view, documentView] };
             if doc_ptr.is_null() {
                 continue;
-            }
-            // EXPERIMENT: flatten section-sized subtrees into cached bitmaps to
-            // test whether per-layer rasterization is the fast-fling bottleneck.
-            #[cfg(debug_assertions)]
-            if dev_rasterize_scroll() {
-                let win: *mut NSObject = unsafe { msg_send![doc_ptr, window] };
-                let scale: f64 = if win.is_null() {
-                    2.0
-                } else {
-                    unsafe { msg_send![win, backingScaleFactor] }
-                };
-                unsafe { apply_section_rasterization(doc_ptr, scale, 0) };
             }
             // Guard: a documentView that lands 0×0 while the scroll view has
             // real, laid-out children (and a real clip) IS the "top-level scroll
@@ -3754,18 +3676,19 @@ impl Backend for MacosBackend {
         // container (the framework's mental model). `insert`
         // checks `documentView` and routes children into the
         // documentView's subview tree + the Taffy graph.
-        // The documentView only needs top-left origin (`isFlipped`). A full
-        // `FlippedView` ALSO overrides `scrollWheel:`, which disables AppKit
-        // responsive scrolling (overdraw). Behind the A/B knob, use the minimal
-        // `ScrollDocumentView` (no `scrollWheel:`) to test re-enabling it.
-        #[cfg(debug_assertions)]
-        let document_view: Retained<NSView> = if dev_scroll_responsive() {
-            Retained::into_super(view::ScrollDocumentView::new(self.mtm))
-        } else {
-            Retained::into_super(FlippedView::new(self.mtm))
-        };
-        #[cfg(not(debug_assertions))]
-        let document_view: Retained<NSView> = Retained::into_super(FlippedView::new(self.mtm));
+        // The documentView only needs top-left origin (`isFlipped`), so it uses
+        // the minimal `ScrollDocumentView`, NOT a full `FlippedView`. A
+        // `FlippedView` also overrides `scrollWheel:`, and AppKit disables
+        // responsive scrolling (overdraw / tile-ahead pre-rasterization — the
+        // thing that keeps native scrolling smooth) for any scroll view whose
+        // documentView overrides `scrollWheel:`. Measured: with `FlippedView` the
+        // documentView reported `preparedContentRect == visibleRect` (overdraw
+        // OFF) and heavy pages dropped to ~30 fps; with `ScrollDocumentView`
+        // overdraw engaged at ~3.8× the viewport and steady scroll held 120 fps.
+        // The wheel/touch/hover behavior lives on the CONTENT views inside (still
+        // `FlippedView`s), so `on_wheel` etc. are unaffected.
+        let document_view: Retained<NSView> =
+            Retained::into_super(view::ScrollDocumentView::new(self.mtm));
 
         // Build NSScrollView via alloc/initWithFrame:CGRect.zero.
         // Frame is set by the layout pass in `finish()`.

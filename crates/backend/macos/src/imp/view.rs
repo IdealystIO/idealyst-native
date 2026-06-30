@@ -637,16 +637,16 @@ pub(crate) fn cursor_for(c: runtime_core::Cursor) -> Option<Retained<NSCursor>> 
 pub struct ScrollDocumentViewIvars;
 
 declare_class!(
-    /// Minimal flipped container used ONLY as an `NSScrollView`'s documentView
-    /// (behind `IDEALYST_MAC_SCROLL_RESPONSIVE`). Provides top-left origin
-    /// (`isFlipped`) and NOTHING else — deliberately NOT a full `FlippedView`,
-    /// because AppKit disables **responsive scrolling** (overdraw / tile-ahead
-    /// pre-rasterization, the thing that makes native scroll smooth) for any
-    /// scroll view whose documentView overrides `scrollWheel:`. The
-    /// wheel/touch/hover/cursor behavior lives on the CONTENT views inside, not
-    /// on this positioning container. `prepareContentInRect:` is overridden only
-    /// to LOG the overdraw rect AppKit requests (debug) — proving whether
-    /// responsive scrolling engaged — and calls super unchanged.
+    /// Minimal flipped container used as an `NSScrollView`'s documentView.
+    /// Provides top-left origin (`isFlipped`) and NOTHING else — deliberately NOT
+    /// a full `FlippedView`, because AppKit disables **responsive scrolling**
+    /// (overdraw / tile-ahead pre-rasterization, the thing that keeps native
+    /// scrolling smooth) for any scroll view whose documentView overrides
+    /// `scrollWheel:`. The wheel/touch/hover/cursor behavior lives on the CONTENT
+    /// views inside (still `FlippedView`s), not on this positioning container.
+    /// Verified: with a `FlippedView` documentView, overdraw was OFF
+    /// (`preparedContentRect == visibleRect`); with this class it engages at
+    /// ~3.8× the viewport.
     pub struct ScrollDocumentView;
 
     unsafe impl ClassType for ScrollDocumentView {
@@ -663,32 +663,6 @@ declare_class!(
         #[method(isFlipped)]
         fn is_flipped(&self) -> bool {
             true
-        }
-
-        // AppKit asks the documentView to prepare content for `rect` — which, when
-        // responsive scrolling is active, is LARGER than the visible rect
-        // (overdraw). Logging prepared-vs-visible height proves whether overdraw
-        // engaged. Calling super preserves the default overdraw behavior.
-        #[method(prepareContentInRect:)]
-        fn prepare_content_in_rect(&self, rect: CGRect) {
-            #[cfg(debug_assertions)]
-            {
-                let visible: CGRect = unsafe { msg_send![self, visibleRect] };
-                use std::cell::Cell;
-                thread_local! { static N: Cell<u32> = const { Cell::new(0) }; }
-                let n = N.with(|c| { let v = c.get().wrapping_add(1); c.set(v); v });
-                if n % 30 == 0 {
-                    let vh = visible.size.height.max(1.0);
-                    eprintln!(
-                        "[overdraw] prepared {:.0}px vs visible {:.0}px (×{:.2}) — responsive scrolling {}",
-                        rect.size.height,
-                        visible.size.height,
-                        rect.size.height / vh,
-                        if rect.size.height > visible.size.height + 1.0 { "ON" } else { "off" },
-                    );
-                }
-            }
-            let _: () = unsafe { msg_send![super(self), prepareContentInRect: rect] };
         }
     }
 );
