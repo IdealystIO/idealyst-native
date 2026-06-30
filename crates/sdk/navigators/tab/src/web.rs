@@ -97,6 +97,9 @@ impl NavigatorHandler<WebBackend> for WebTabHandler {
             build_node_scoped: _,
             build_node_into: _,
             build_in_screen: _,
+            // Node-splice ops are for backend-neutral native handlers;
+            // web drives layout via the DOM.
+            ..
         } = host;
 
         // Adapter: 3-arg `mount_screen` → 2-arg; state is discarded

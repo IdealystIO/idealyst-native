@@ -159,6 +159,28 @@ pub struct NavigatorHost<N: Clone + 'static> {
     /// Same defer-via-microtask rule as `build_node` — must be called
     /// outside the outer borrow window.
     pub build_in_screen: Rc<dyn Fn(u64, crate::Element) -> N>,
+
+    /// Insert an already-built `child` node as the last child of
+    /// `parent`. The backend `Rc` is captured internally (so the
+    /// backend type stays erased from this node-typed host), letting a
+    /// **backend-neutral** handler attach a node it already holds — e.g.
+    /// a drawer's `Select` dispatcher splicing the freshly
+    /// `mount_screen`'d screen into its outlet. Per-backend handlers do
+    /// this through their backend's global-self
+    /// (`with_global_backend`); this is the portable equivalent, the
+    /// enabler for one generic native handler across every backend.
+    ///
+    /// **Must be called outside the outer `backend.borrow_mut()`**
+    /// (i.e. from a dispatcher/microtask, not synchronously from
+    /// `init`) — it re-borrows the backend, same rule as `build_node`.
+    pub insert_node: Rc<dyn Fn(N /* parent */, N /* child */)>,
+
+    /// Detach every child of `parent` (the backend's `clear_children`).
+    /// Companion to [`insert_node`](Self::insert_node) for a generic
+    /// handler's outlet swap: clear the outgoing screen before inserting
+    /// the incoming one. Same backend-erased, must-run-outside-the-outer-
+    /// borrow contract.
+    pub clear_children: Rc<dyn Fn(N /* parent */)>,
 }
 
 /// Implementation contract for a registered navigator kind. SDK

@@ -359,6 +359,24 @@ pub(super) fn build<B: Backend + 'static>(
         })
     };
 
+    // Node-typed backend ops for backend-neutral handlers: insert an
+    // already-built node / clear a parent's children, with the backend
+    // `Rc` captured (and `B` erased). Same defer-outside-the-outer-borrow
+    // rule as `build_node` — handlers call these from their dispatcher
+    // microtasks (e.g. a drawer's `Select` outlet swap).
+    let insert_node: Rc<dyn Fn(B::Node, B::Node)> = {
+        let backend = backend.clone();
+        Rc::new(move |mut parent, child| {
+            backend.borrow_mut().insert(&mut parent, child);
+        })
+    };
+    let clear_children: Rc<dyn Fn(B::Node)> = {
+        let backend = backend.clone();
+        Rc::new(move |parent| {
+            backend.borrow_mut().clear_children(&parent);
+        })
+    };
+
     let host = NavigatorHost {
         initial_route: initial,
         initial_path,
@@ -376,6 +394,8 @@ pub(super) fn build<B: Backend + 'static>(
         build_node_scoped,
         build_node_into,
         build_in_screen,
+        insert_node,
+        clear_children,
     };
 
     let node = time_backend_create(pkind!(Navigator), || {

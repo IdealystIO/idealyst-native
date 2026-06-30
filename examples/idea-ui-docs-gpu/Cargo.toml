@@ -1,0 +1,39 @@
+# Runs the existing `idea-ui-docs` app on the **GPU backend** (render-wgpu
+# + host-winit) as a real native desktop window, instead of the AppKit
+# (`backend-macos`) backend. This is the proof-of-concept for the wgpu
+# backend as a universal native renderer (Flutter-like): one app tree,
+# drawn entirely on the GPU, reporting a genuine host-OS identity via
+# `NativeSkin` (not an iOS/Android simulator skin).
+#
+# Run with: `cargo run -p idea-ui-docs-gpu`
+[package]
+name = "idea-ui-docs-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "idea-ui-docs rendered on the wgpu (GPU) backend as a native desktop window"
+
+[[bin]]
+name = "idea-ui-docs-gpu"
+path = "src/main.rs"
+
+[dependencies]
+# The app under test — its `app()` entry is host-triple-agnostic; we mount
+# it directly rather than through the CLI-generated wrapper.
+# `default-features = false` drops idea-ui-docs's default `debug-stats`
+# instrumentation: that feature forwards to `runtime-core/debug-stats`,
+# which (vs the non-instrumented runtime-core the GPU host crates pull)
+# splits runtime-core into two graph instances and trips an "Element vs
+# Element" type mismatch. The GPU preview doesn't need the phase-timer.
+idea-ui-docs = { path = "../idea-ui-docs", default-features = false }
+# The GPU backend + its desktop winit host. `headless` powers the
+# offscreen render test (`tests/render.rs`) — capturing the app to a PNG
+# with no window, so CI can prove it renders without a display.
+render-wgpu = { workspace = true, features = ["headless"] }
+host-winit = { workspace = true }
+runtime-core = { workspace = true }
+# idea-ui-docs's entire shell is a DrawerNavigator. The GPU backend has no
+# wgpu-specific drawer handler, so we register the backend-neutral
+# primitive `chrome` handler — the wgpu renderer draws those primitives
+# natively.
+drawer-navigator = { workspace = true }

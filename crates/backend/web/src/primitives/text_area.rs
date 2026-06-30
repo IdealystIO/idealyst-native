@@ -140,11 +140,25 @@ pub(crate) fn create(
     if let Some(handler) = on_key_down {
         attach_key_listener_textarea(&textarea, id, b, handler);
     }
-    // Fit to the initial value. The element isn't in the document yet,
-    // so `scrollHeight` may read 0 here; the controlled-value Effect
-    // that fires right after mount calls `update_value`, which re-runs
-    // `autosize` once the node is laid out.
+    // Fit to the initial value. The element isn't in the document yet, so a
+    // synchronous measure reads `scrollHeight == 0` AND `getComputedStyle`
+    // returns nothing — so `line-height` resolves to 0 and the `min_rows`→px
+    // floor collapses, pinning the box to ~0px ("very short on init"). The
+    // controlled-value Effect that `build_text_area` installs does NOT save us:
+    // it fires synchronously during the walker build, while the node is still
+    // detached, so it measures 0 too and only re-runs on a later `value`
+    // change. So we measure once now (best-effort; covers an already-attached
+    // hydrated node) and again after one animation frame — by which point the
+    // mount has attached the node and the browser has laid it out, so both
+    // `scrollHeight` and the computed `line-height` (the rows→px floor input)
+    // are real. Mirrors `graphics::create`'s deferred first `on_ready`.
     autosize(&textarea);
+    let textarea_for_raf = textarea.clone();
+    let raf = Closure::<dyn FnMut()>::new(move || autosize(&textarea_for_raf));
+    if let Some(win) = web_sys::window() {
+        let _ = win.request_animation_frame(raf.as_ref().unchecked_ref());
+    }
+    raf.forget();
     textarea.unchecked_into::<Node>()
 }
 
@@ -542,6 +556,88 @@ mod tests {
         );
 
         doc.body().unwrap().remove_child(&ta).unwrap();
+    }
+
+    /// Await a single animation frame so a deferred (rAF) `autosize` has run.
+    async fn next_animation_frame() {
+        let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+            let win = web_sys::window().unwrap();
+            // `once_into_js` leaks the closure into JS — fine for a one-shot
+            // test rAF; the frame fires once and the closure is collected.
+            let cb = wasm_bindgen::closure::Closure::once_into_js(move || {
+                let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
+            });
+            let _ = win.request_animation_frame(cb.unchecked_ref());
+        });
+        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    }
+
+    /// REGRESSION for "textarea very short on init" (the reported bug).
+    ///
+    /// `create` measures the box in JS (`scrollHeight` + the `min_rows`→px
+    /// floor). Both the create-time measure and the controlled-value Effect
+    /// run while the node is still DETACHED, where `getComputedStyle` is empty
+    /// → `line-height` resolves to 0 → the rows floor collapses → the box pins
+    /// to ~0px. Nothing re-measured after attach, so the field shipped a
+    /// single squashed line. The fix defers one `autosize` to the next
+    /// animation frame, by which point the node is attached + laid out.
+    ///
+    /// This drives the real `create` path, attaches the node, then awaits a
+    /// frame. PRE-FIX the height stays at the detached ~0px collapse; POST-FIX
+    /// the deferred measure floors it to `rows` (3) lines. It genuinely fails
+    /// before the fix — the only thing that sizes the box is the rAF this test
+    /// adds coverage for. Must be a browser `wasm-bindgen-test`: the bug only
+    /// exists against real layout (a detached node's empty computed style).
+    #[wasm_bindgen_test]
+    async fn regression_textarea_not_collapsed_on_init() {
+        install_mount_body();
+        let mut backend = crate::WebBackend::new("#app");
+
+        // A wrapping (prose) textarea with a 3-row floor and empty initial
+        // value — exactly the idea-ui `Textarea(rows = 3)` default shape.
+        let node = create(
+            &mut backend,
+            "",
+            Some("placeholder"),
+            /* wrap */ true,
+            /* min_rows */ Some(3),
+            /* max_rows */ None,
+            Rc::new(|_| {}),
+            None,
+        );
+        // Give it a known, non-collapsing line box so the 3-row floor is a
+        // concrete pixel target regardless of UA form-control defaults.
+        let ta: web_sys::HtmlTextAreaElement = node.clone().unchecked_into();
+        let _ = ta.style().set_property("line-height", "20px");
+        let _ = ta.style().set_property("font-size", "14px");
+        let _ = ta.style().set_property("width", "200px");
+
+        // Attach into the live document, then let one frame pass so the
+        // deferred autosize fires against real layout.
+        let doc = web_sys::window().unwrap().document().unwrap();
+        doc.get_element_by_id("app").unwrap().append_child(&node).unwrap();
+        next_animation_frame().await;
+
+        // 3 rows × 20px = 60px floor (plus any padding/border). Pre-fix the box
+        // was the detached ~0px collapse (well under one line). Assert it
+        // cleared two lines — the floor is honored once laid out.
+        let pinned = parse_px(&ta.style().get_property_value("height").unwrap());
+        assert!(
+            pinned >= 56.0,
+            "textarea must autosize to its 3-row floor (~60px) after attach, got {pinned}px"
+        );
+    }
+
+    /// `#app` mount that survives an async test (the shared `tests::install_mount`
+    /// isn't reachable from this module; inline the minimal equivalent).
+    fn install_mount_body() {
+        let doc = web_sys::window().unwrap().document().unwrap();
+        if let Some(existing) = doc.get_element_by_id("app") {
+            existing.remove();
+        }
+        let div = doc.create_element("div").unwrap();
+        div.set_id("app");
+        doc.body().unwrap().append_child(&div).unwrap();
     }
 
     /// Complement: a *capped* textarea (`max_rows`-equivalent `max-height`)

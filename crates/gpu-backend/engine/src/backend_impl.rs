@@ -370,14 +370,54 @@ impl WgpuBackend {
                 };
                 let mut text = text.borrow_mut();
                 let mut fs = fs.borrow_mut();
-                let max_w = known.width.or_else(|| match available.width {
-                    AvailableSpace::Definite(v) => Some(v),
-                    _ => None,
-                });
-                let (w, h) = text.measure(&mut fs, id, max_w);
+                // Distinguish Taffy's three width queries — collapsing
+                // MinContent into the unbounded (max-content) path is what
+                // let `min-width:0` flex/grid items shrink text to width 0
+                // (per-glyph wrapping). A known/definite width wraps there;
+                // MaxContent is the unwrapped single-line width; MinContent
+                // is the longest-word floor.
+                let (w, h) = match known.width {
+                    Some(v) => text.measure(&mut fs, id, Some(v)),
+                    None => match available.width {
+                        AvailableSpace::Definite(v) => text.measure(&mut fs, id, Some(v)),
+                        AvailableSpace::MaxContent => text.measure(&mut fs, id, None),
+                        AvailableSpace::MinContent => text.measure_min_content(&mut fs, id),
+                    },
+                };
                 TaffySize { width: w, height: h }
             }),
         );
+    }
+}
+
+/// Generic-handler registration surface. The inherent
+/// `register_navigator` / `register_external` methods above are what the
+/// per-platform leaf crates (and the wgpu host) call directly; these
+/// trait impls forward to them so SDK crates that register through the
+/// *backend-neutral* generic path — `fn register<B: RegisterNavigator>`
+/// / `fn register<B: RegisterExternal>` — also resolve on the GPU
+/// backend. The drawer navigator's primitive `chrome::register` is the
+/// motivating consumer: it renders the navigator from primitives, which
+/// the wgpu renderer draws natively, so the GPU backend can host a
+/// `DrawerNavigator` app without a wgpu-specific drawer handler. Mirrors
+/// `impl RegisterNavigator for SsrBackend`.
+impl runtime_core::primitives::navigator::RegisterNavigator for WgpuBackend {
+    fn register_navigator<P, F>(&mut self, factory: F)
+    where
+        P: 'static,
+        F: Fn() -> Box<dyn runtime_core::NavigatorHandler<Self>> + 'static,
+    {
+        self.navigator_handlers.register::<P, _>(factory);
+    }
+}
+
+impl runtime_core::RegisterExternal for WgpuBackend {
+    fn register_external<T, F>(&mut self, handler: F)
+    where
+        T: 'static,
+        F: Fn(&std::rc::Rc<T>, &mut Self) -> Self::Node + 'static,
+    {
+        self.external_handlers.register::<T, _>(handler);
     }
 }
 

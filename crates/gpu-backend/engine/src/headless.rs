@@ -37,16 +37,99 @@
 //! cosmetic approximation baked into its screenshots.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 use glyphon::Buffer;
+use runtime_core::scheduling::{
+    install_scheduler, is_scheduler_installed, ScheduleHandle, Scheduler,
+};
 use runtime_core::{ColorScheme, Element};
 
 use crate::keyboard::{KeySpec, LaidKey, LayoutMetrics};
 use crate::painter::{NavigatorHeaderChrome, NavigatorHeaderHit, Painter};
 use crate::pipeline::Instance as RectInstance;
 use crate::text::StagedText;
+
+// ---------------------------------------------------------------------------
+// Headless scheduler — buffer microtasks so deferred builds run at a safe
+// point, not inline.
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// Microtasks queued during a headless mount, drained by
+    /// `mount`'s call to `drain_buffered_microtasks` once the walk's
+    /// backend borrow is released.
+    static HEADLESS_MICROTASKS: RefCell<VecDeque<Box<dyn FnOnce() + 'static>>> =
+        RefCell::new(VecDeque::new());
+}
+
+/// A **buffering** scheduler for headless rendering.
+///
+/// Why buffering and not synchronous: SDKs that build chrome lazily — the
+/// drawer/stack navigators call `schedule_microtask` from inside
+/// `create_navigator`, which the walker invokes while holding
+/// `backend.borrow_mut()`. The synchronous no-scheduler fallback would run
+/// that microtask *immediately*, re-entering the walker (it re-borrows the
+/// same backend to build the slot's child tree) and panicking with
+/// "RefCell already borrowed". Buffering instead defers each microtask;
+/// `runtime_core::mount` drains them via `drain_buffered_microtasks` after
+/// the mount walk completes and the borrow is free, so the slot/screen
+/// builds run safely. This is what lets a `DrawerNavigator` (or any
+/// navigator) app rasterize headlessly on the GPU backend.
+///
+/// `after_ms` / `after_animation_frame` / `raf_loop` are inert: a static
+/// one-frame capture has no animation clock to drive, so deferring an
+/// animation callback that never fires is correct (and avoids spinning a
+/// raf loop that would never terminate). Apps that need post-mount async
+/// state for their *first* paint should drive frames through the windowed
+/// host instead.
+struct HeadlessScheduler;
+
+struct InertHandle;
+impl ScheduleHandle for InertHandle {
+    fn cancel(&mut self) {}
+}
+
+impl Scheduler for HeadlessScheduler {
+    fn schedule_microtask(&self, f: Box<dyn FnOnce() + 'static>) {
+        HEADLESS_MICROTASKS.with(|q| q.borrow_mut().push_back(f));
+    }
+
+    fn after_animation_frame(&self, _f: Box<dyn FnOnce() + 'static>) -> Box<dyn ScheduleHandle> {
+        Box::new(InertHandle)
+    }
+
+    fn after_ms(&self, _delay_ms: i32, _f: Box<dyn FnOnce() + 'static>) -> Box<dyn ScheduleHandle> {
+        Box::new(InertHandle)
+    }
+
+    fn raf_loop(&self, _f: Box<dyn FnMut() + 'static>) -> Box<dyn ScheduleHandle> {
+        Box::new(InertHandle)
+    }
+
+    fn drain_buffered_microtasks(&self) {
+        // Loop, not a single pass: a drained microtask (a slot builder)
+        // commonly schedules further microtasks (nested components,
+        // reactive scopes). Run until the queue is empty.
+        loop {
+            let next = HEADLESS_MICROTASKS.with(|q| q.borrow_mut().pop_front());
+            match next {
+                Some(f) => f(),
+                None => break,
+            }
+        }
+    }
+}
+
+/// Install the headless buffering scheduler unless a host already
+/// installed one (e.g. the dev-server sidecar). Idempotent and safe to
+/// call from every `Screenshotter` constructor.
+fn ensure_headless_scheduler() {
+    if !is_scheduler_installed() {
+        install_scheduler(Box::new(HeadlessScheduler));
+    }
+}
 use crate::{Host, Renderer, WgpuBackend};
 
 /// Offscreen render target format. Non-sRGB on purpose: the windowed
@@ -198,11 +281,36 @@ impl Screenshotter {
 
     /// As [`Self::new`] but lets the caller pick the color scheme the
     /// backend reports to the app (affects `@media`-style theme reads).
+    /// Uses the no-chrome [`HeadlessSkin`] (which reports `Custom("")`);
+    /// for a capture that reports a real host-OS platform — so the app
+    /// takes its native-desktop branch — use
+    /// [`Self::with_color_scheme_and_skin`] with a
+    /// [`crate::NativeSkin`].
     pub fn with_color_scheme(
         width: u32,
         height: u32,
         color_scheme: ColorScheme,
     ) -> Result<Self, String> {
+        Self::with_color_scheme_and_skin(width, height, color_scheme, Rc::new(HeadlessSkin))
+    }
+
+    /// As [`Self::with_color_scheme`] but lets the caller supply the
+    /// [`Painter`] skin. The skin's [`Painter::platform`] read-out is what
+    /// author code sees via `runtime_core::platform()`, so passing a
+    /// [`crate::NativeSkin`] built for a desktop OS makes the capture
+    /// exercise the app's native-desktop layout (e.g. idea-ui-docs's
+    /// pinned-sidebar branch under `Platform::MacOs`) rather than the
+    /// mobile branch `HeadlessSkin`'s empty identity would select.
+    pub fn with_color_scheme_and_skin(
+        width: u32,
+        height: u32,
+        color_scheme: ColorScheme,
+        skin: Rc<dyn Painter>,
+    ) -> Result<Self, String> {
+        // Navigator/lazy-chrome SDKs defer builds via `schedule_microtask`;
+        // a buffering scheduler keeps those off the borrowed walk stack so
+        // `mount` can drain them safely. See `HeadlessScheduler`.
+        ensure_headless_scheduler();
         let width = width.max(1);
         let height = height.max(1);
 
@@ -253,7 +361,6 @@ impl Screenshotter {
         }))
         .map_err(|e| format!("request_device failed for headless render: {e}"))?;
 
-        let skin: Rc<dyn Painter> = Rc::new(HeadlessSkin);
         let mut host = Host::new(skin, color_scheme);
         host.set_viewport(width as f32, height as f32);
 

@@ -310,6 +310,28 @@ pub fn run<F>(
 where
     F: FnOnce() -> Element + 'static,
 {
+    // No app-supplied extension handlers — the common case (a leaf-only
+    // app, or one whose SDKs self-register via `inventory`).
+    run_with(profile, skin, |_| {}, build_ui)
+}
+
+/// As [`run`], but invokes `register` on the wgpu backend before the app
+/// tree mounts. Use this when the app depends on `Element::Navigator` /
+/// `Element::External` SDKs whose handlers must be registered explicitly
+/// (e.g. `drawer_navigator::chrome::register`, `table::register`) — the
+/// generic-backend registrars that the AppKit/web hosts call from their
+/// `register_extensions` glue. `register` receives a mutable borrow of
+/// the `WgpuBackend` after it is built and before the first mount.
+pub fn run_with<R, F>(
+    profile: DeviceProfile,
+    skin: Rc<dyn Painter>,
+    register: R,
+    build_ui: F,
+) -> Result<(), RunError>
+where
+    R: FnOnce(&mut render_wgpu::WgpuBackend) + 'static,
+    F: FnOnce() -> Element + 'static,
+{
     let event_loop: EventLoop<AppEvent> = EventLoop::with_user_event()
         .build()
         .map_err(|e| RunError::EventLoop(e.to_string()))?;
@@ -333,7 +355,7 @@ where
     crate::scheduler::install(proxy);
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    let mut app = App::new(profile, skin, Box::new(build_ui));
+    let mut app = App::new(profile, skin, Box::new(register), Box::new(build_ui));
     event_loop
         .run_app(&mut app)
         .map_err(|e| RunError::EventLoop(e.to_string()))
@@ -438,9 +460,20 @@ impl App {
     fn new(
         profile: DeviceProfile,
         skin: Rc<dyn Painter>,
+        register: Box<dyn FnOnce(&mut render_wgpu::WgpuBackend)>,
         build_ui: Box<dyn FnOnce() -> Element>,
     ) -> Self {
         let host = Host::new(skin, profile.color_scheme);
+        // Register app-supplied External / Navigator handlers on the
+        // freshly-built backend BEFORE the tree mounts in `resumed`.
+        // `Host::new` constructs the `WgpuBackend` eagerly (no GPU device
+        // needed — registration only touches the handler registries), so
+        // the registry is populated by the time `build_ui` runs and
+        // `Element::Navigator` / `Element::External` leaves resolve their
+        // handler instead of hitting the "not registered" panic. This is
+        // the wgpu equivalent of the per-backend `register_extensions`
+        // call the AppKit/web hosts make before mount.
+        register(&mut host.backend().borrow_mut());
         let logical = (profile.logical_size.0 as f32, profile.logical_size.1 as f32);
         // Seeded with the profile's logical size at 1×; the
         // actual surface size is plugged in inside `resumed`.

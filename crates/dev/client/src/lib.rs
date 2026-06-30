@@ -1957,6 +1957,20 @@ where
                     .borrow_mut()
                     .create_view(&runtime_core::accessibility::AccessibilityProps::default())
             }),
+            // Node-splice ops for backend-neutral native handlers — the
+            // wire client builds real backend nodes, so honor them.
+            insert_node: {
+                let backend = self.backend.clone();
+                Rc::new(move |mut parent, child| {
+                    backend.borrow_mut().insert(&mut parent, child);
+                })
+            },
+            clear_children: {
+                let backend = self.backend.clone();
+                Rc::new(move |parent| {
+                    backend.borrow_mut().clear_children(&parent);
+                })
+            },
         };
 
         let nav_node = self.backend.borrow_mut().create_navigator(

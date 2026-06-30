@@ -83,6 +83,9 @@ raw-window-handle = "0.6"
 # for tests that need real DOM (the `node_id` identity invariant
 # can't be verified without it).
 wasm-bindgen-test = "0.3"
+# Await a `requestAnimationFrame` in async browser tests (the textarea
+# autosize regression needs to observe the deferred post-attach measure).
+wasm-bindgen-futures = "0.4"
 
 [dependencies.web-sys]
 version = "0.3"

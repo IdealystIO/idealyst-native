@@ -55,8 +55,9 @@ pub use taffy::{AvailableSpace, Size};
 
 use runtime_core::{
     AlignContent as FwAlignContent, AlignItems as FwAlignItems, AlignSelf as FwAlignSelf,
-    FlexDirection as FwFlexDirection, FlexWrap as FwFlexWrap, JustifyContent as FwJustifyContent,
-    Length as FwLength, Position as FwPosition, StyleRules,
+    DisplayKind as FwDisplayKind, FlexDirection as FwFlexDirection, FlexWrap as FwFlexWrap,
+    JustifyContent as FwJustifyContent, Length as FwLength, Position as FwPosition, StyleRules,
+    TrackSize as FwTrackSize,
 };
 
 /// Measure function signature. Taffy calls this for nodes that have
@@ -170,6 +171,25 @@ pub struct LayoutTree {
     /// Combined with `author_padding` to produce Taffy's effective
     /// `style.padding`.
     safe_area_extra: HashMap<NodeId, [f32; 4]>, // top, right, bottom, left
+    /// Direct children of a `Display::Grid` container. A grid item's CSS
+    /// default `min-width: auto` resolves to its content's min size,
+    /// which Taffy treats as the column's floor — so a wide cell can't
+    /// shrink and its column overflows instead of wrapping (the
+    /// `table-layout: auto` behavior every backend needs). We default
+    /// these items to `min-width: 0` (overridable by an explicit author
+    /// `min_width`) so `auto`/`fr` column tracks can size the column and
+    /// wrap the content. Tracked so a reactive restyle keeps the reset.
+    grid_items: HashSet<NodeId>,
+    /// Grid containers that want content-PROPORTIONAL columns
+    /// (`table-layout: auto`): each column's share of the width is
+    /// proportional to its content, so a text-heavy column is wider than
+    /// a short one instead of every column splitting the width evenly.
+    /// Keyed by node → column count. A grid whose `grid_template_columns`
+    /// are all `Auto` opts in (the `table` SDK's recipe). `compute` does a
+    /// measure pass to learn each column's max-content, then assigns `fr`
+    /// weights proportional to it — uniform `auto`/`fr` tracks can only
+    /// split evenly. See [`compute`](Self::compute).
+    table_grids: HashMap<NodeId, usize>,
 }
 
 impl LayoutTree {
@@ -187,6 +207,8 @@ impl LayoutTree {
             hscroll_content: HashSet::new(),
             author_padding: HashMap::new(),
             safe_area_extra: HashMap::new(),
+            grid_items: HashSet::new(),
+            table_grids: HashMap::new(),
         }
     }
 
@@ -281,6 +303,7 @@ impl LayoutTree {
         if self.hscroll_parents.contains(&parent.0) {
             self.exempt_as_hscroll_content(child.0);
         }
+        self.mark_grid_item_if_grid_parent(parent.0, child.0);
     }
 
     /// Insert `child` into `parent` at a specific `child_index` (clamped
@@ -302,6 +325,42 @@ impl LayoutTree {
             .expect("taffy insert_child_at_index");
         if self.hscroll_parents.contains(&parent.0) {
             self.exempt_as_hscroll_content(child.0);
+        }
+        self.mark_grid_item_if_grid_parent(parent.0, child.0);
+    }
+
+    /// If `parent` is a grid container, reset `child` as a grid item.
+    /// Covers the case where a child is inserted into an ALREADY-grid
+    /// parent (reactive splice). The other order — children inserted
+    /// before the parent's `display: grid` style lands, which is how
+    /// `view` builds (children then style) — is handled in `set_style`,
+    /// which resets a grid's existing children when its display becomes
+    /// Grid.
+    fn mark_grid_item_if_grid_parent(&mut self, parent: NodeId, child: NodeId) {
+        let parent_is_grid = self
+            .tree
+            .style(parent)
+            .map(|s| s.display == Display::Grid)
+            .unwrap_or(false);
+        if parent_is_grid {
+            self.reset_grid_item(child);
+        }
+    }
+
+    /// Record `child` as a grid item and reset its `min-width` to 0 unless
+    /// the author pinned one (the slot is still `Auto`) — never clobber an
+    /// explicit author minimum. A grid item's CSS default `min-width:
+    /// auto` floors the column at the cell's content size in Taffy, so a
+    /// wide cell can't shrink and its column overflows instead of
+    /// wrapping; `min-width: 0` restores `table-layout: auto` behavior.
+    /// See [`grid_items`](Self::grid_items).
+    fn reset_grid_item(&mut self, child: NodeId) {
+        self.grid_items.insert(child);
+        if let Ok(mut style) = self.tree.style(child).cloned() {
+            if style.min_size.width == Dimension::Auto {
+                style.min_size.width = Dimension::Length(0.0);
+                let _ = self.tree.set_style(child, style);
+            }
         }
     }
 
@@ -365,6 +424,8 @@ impl LayoutTree {
         self.hscroll_content.remove(&node.0);
         self.author_padding.remove(&node.0);
         self.safe_area_extra.remove(&node.0);
+        self.grid_items.remove(&node.0);
+        self.table_grids.remove(&node.0);
         self.dropped.insert(node.0);
     }
 
@@ -456,8 +517,26 @@ impl LayoutTree {
         let existing = self.tree.style(node.0).cloned().unwrap_or_default();
         let mut style = existing.clone();
 
-        // Display is always Flex for framework views.
-        style.display = Display::Flex;
+        // Display defaults to Flex (the framework's React-Native-like
+        // convention); a style may opt a node into Grid, which is what
+        // the `table` SDK uses for cross-row column alignment. We always
+        // write the field so a node that loses its `display` on a
+        // reactive re-apply reverts to Flex rather than keeping a stale
+        // Grid.
+        style.display = match rules.display {
+            Some(FwDisplayKind::Grid) => Display::Grid,
+            _ => Display::Flex,
+        };
+        // Grid column tracks. Only meaningful under `Display::Grid`;
+        // harmless (ignored by the flex algorithm) otherwise, but we
+        // clear it when absent so a reverted node doesn't keep stale
+        // tracks. Rows stay implicit (`grid_auto_flow: Row` default) so
+        // direct children fill the tracks left-to-right, wrapping every
+        // `len()` cells — one grid row per table row.
+        style.grid_template_columns = match rules.grid_template_columns.as_ref() {
+            Some(cols) => cols.iter().map(track_sizing_function).collect(),
+            None => Default::default(),
+        };
 
         // Position — always set (Relative/Absolute is binary, no
         // "unset" form in our rules).
@@ -491,6 +570,22 @@ impl LayoutTree {
                 FwJustifyContent::SpaceBetween => JustifyContent::SpaceBetween,
                 FwJustifyContent::SpaceAround => JustifyContent::SpaceAround,
                 FwJustifyContent::SpaceEvenly => JustifyContent::SpaceEvenly,
+            });
+        } else {
+            // No explicit rule. A grid container's tracks should FILL the
+            // container — `justify-content: stretch` grows `auto` tracks
+            // to absorb leftover space (the framework's flex `FlexStart`
+            // seed would instead leave them hugging content with a gap on
+            // the inline end). `stretch` also still lets a track shrink to
+            // its `min-content` when space is tight, so content sizes the
+            // column AND text wraps only when it genuinely can't fit —
+            // matching `table-layout: auto`. Flex keeps the `FlexStart`
+            // default. Set deterministically so a grid→flex revert can't
+            // leave a stale `Stretch`.
+            style.justify_content = Some(if matches!(rules.display, Some(FwDisplayKind::Grid)) {
+                JustifyContent::Stretch
+            } else {
+                JustifyContent::FlexStart
             });
         }
         if let Some(ai) = rules.align_items {
@@ -557,6 +652,12 @@ impl LayoutTree {
         }
         if let Some(w) = rules.min_width.as_ref().map(|t| *t.value()) {
             style.min_size.width = length_to_dim(w);
+        } else if self.grid_items.contains(&node.0) {
+            // Grid item with no author min-width: reset the CSS `auto`
+            // default (which Taffy floors at content size) to 0 so the
+            // column can shrink and wrap. Re-applied here on every
+            // restyle so a reactive cell keeps the reset.
+            style.min_size.width = Dimension::Length(0.0);
         }
         if let Some(h) = rules.min_height.as_ref().map(|t| *t.value()) {
             style.min_size.height = length_to_dim(h);
@@ -674,6 +775,29 @@ impl LayoutTree {
         self.tree
             .set_style(node.0, style)
             .expect("taffy set_style");
+
+        // When this node IS (or just became) a grid, reset its existing
+        // children as grid items. `view` builds children BEFORE attaching
+        // the parent's style, so `add_child` ran while this node was still
+        // the default Flex and missed them — catch them here. Idempotent.
+        if matches!(rules.display, Some(FwDisplayKind::Grid)) {
+            let children = self.tree.children(node.0).unwrap_or_default();
+            for c in children {
+                self.reset_grid_item(c);
+            }
+            // An all-`Auto` column grid is a content-proportional table:
+            // record it so `compute` can weight the columns by content.
+            // `compute` overwrites the actual Taffy tracks each pass, so
+            // we don't pin them here.
+            match rules.grid_template_columns.as_ref() {
+                Some(cols) if !cols.is_empty() && cols.iter().all(|t| matches!(t, FwTrackSize::Auto)) => {
+                    self.table_grids.insert(node.0, cols.len());
+                }
+                _ => {
+                    self.table_grids.remove(&node.0);
+                }
+            }
+        }
         changed
     }
 
@@ -909,6 +1033,7 @@ impl LayoutTree {
         // (the closure runs *inside* `self.tree.compute_layout_with_measure`
         // which holds a mutable borrow on the tree).
         let measure_fns = std::mem::take(&mut self.measure_fns);
+
         self.tree
             .compute_layout_with_measure(
                 root.0,
@@ -921,7 +1046,154 @@ impl LayoutTree {
                 },
             )
             .expect("taffy compute_layout");
+
+        // --- Table grids: `table-layout: auto` column sizing -----------
+        // Reproduce a browser's auto table. The pass above gives each grid
+        // its width `W` (a bounded stretch child reports its container's
+        // width regardless of column content). For each all-`Auto` grid we
+        // measure every column's max-content (per cell, IN ISOLATION:
+        // `compute_layout` on the cell with MaxContent available — during
+        // normal layout Taffy measures a grid item at the GRID's width and
+        // clamps to it) and size columns:
+        //   - fits (Σmax ≤ W): column = max-content + a share of the
+        //     leftover proportional to max-content.
+        //   - over-full: WATER-FILL. Short columns keep their content; the
+        //     largest columns shrink to a common cap C with Σ min(max,C)=W.
+        //     For the common one-wide-column table this is the browser
+        //     result — the text column gives back the overflow and wraps,
+        //     short columns stay hugged to their content.
+        // We deliberately do NOT use the exact CSS min/max formula: this
+        // backend's text engine reports min-content ≈ 0 for long/unbreakable
+        // strings (measured live — see the [table-css] trace), which would
+        // let short columns collapse below their content. Water-fill needs
+        // only the reliable max-content. The widths are pinned as fixed px
+        // tracks and the tree is laid out again.
+        if !self.table_grids.is_empty() {
+            let grids: Vec<(NodeId, usize)> =
+                self.table_grids.iter().map(|(k, v)| (*k, *v)).collect();
+            let mut repinned = false;
+            for (grid, n) in &grids {
+                let n = *n;
+                let w = self.tree.layout(*grid).map(|l| l.size.width).unwrap_or(0.0);
+                let children = self.tree.children(*grid).unwrap_or_default();
+                if n == 0 || children.is_empty() || w <= 0.0 {
+                    continue;
+                }
+                // Measure ONLY each column's max-content (the unwrapped
+                // single-line width). It's measured per cell IN ISOLATION
+                // (`compute_layout` on the cell with MaxContent available),
+                // because during normal layout Taffy measures a grid item
+                // at the GRID's width and clamps to it. We do NOT use
+                // min-content: this backend's text engine reports ~0
+                // min-content for long/unbreakable strings, so the CSS
+                // min/max formula collapses short columns. max-content alone
+                // is reliable and drives the water-fill below.
+                let mut max_cw = vec![0.0_f32; n];
+                for (i, c) in children.iter().enumerate() {
+                    let _ = self.tree.compute_layout_with_measure(
+                        *c,
+                        Size {
+                            width: AvailableSpace::MaxContent,
+                            height: AvailableSpace::MaxContent,
+                        },
+                        |kd, av, id, _c, _s| match measure_fns.get(&id) {
+                            Some(f) => f(kd, av),
+                            None => Size::ZERO,
+                        },
+                    );
+                    max_cw[i % n] =
+                        max_cw[i % n].max(self.tree.layout(*c).map(|l| l.size.width).unwrap_or(0.0));
+                }
+                let sum_max: f32 = max_cw.iter().sum();
+                let widths: Vec<f32> = if sum_max <= w {
+                    // Fits: every column gets its content, the leftover is
+                    // shared in proportion to content (a browser's auto
+                    // table gives wider columns more of the extra).
+                    let extra = w - sum_max;
+                    max_cw
+                        .iter()
+                        .map(|m| {
+                            m + if sum_max > 0.0 { extra * m / sum_max } else { extra / n as f32 }
+                        })
+                        .collect()
+                } else {
+                    // Over-full: water-fill. Short columns keep their
+                    // content; the largest columns shrink to a common cap C
+                    // chosen so Σ min(max_i, C) = W. This matches a browser's
+                    // table-layout: auto for the common one-wide-column table
+                    // (the text column gives back the overflow, the rest stay
+                    // hugged to their content) and needs no min-content.
+                    let mut order: Vec<usize> = (0..n).collect();
+                    order.sort_by(|a, b| {
+                        max_cw[*a]
+                            .partial_cmp(&max_cw[*b])
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    let mut widths = vec![0.0_f32; n];
+                    let mut remaining = w;
+                    let mut left = n;
+                    for (rank, &i) in order.iter().enumerate() {
+                        let fair = remaining / left as f32;
+                        if max_cw[i] <= fair {
+                            widths[i] = max_cw[i];
+                            remaining -= max_cw[i];
+                            left -= 1;
+                        } else {
+                            let cap = remaining / left as f32;
+                            for &j in &order[rank..] {
+                                widths[j] = cap;
+                            }
+                            break;
+                        }
+                    }
+                    widths
+                };
+                if std::env::var("IDEALYST_GRID_DEBUG").is_ok() {
+                    eprintln!("[table-css] W={w} max={max_cw:?} -> {widths:?}");
+                }
+                if let Ok(mut s) = self.tree.style(*grid).cloned() {
+                    s.grid_template_columns = widths
+                        .iter()
+                        .map(|px| {
+                            TrackSizingFunction::Single(NonRepeatedTrackSizingFunction {
+                                min: MinTrackSizingFunction::Fixed(LengthPercentage::Length(*px)),
+                                max: MaxTrackSizingFunction::Fixed(LengthPercentage::Length(*px)),
+                            })
+                        })
+                        .collect();
+                    let _ = self.tree.set_style(*grid, s);
+                    repinned = true;
+                }
+            }
+            if repinned {
+                // The per-cell isolation computes above scrambled the
+                // tree's layout; lay it out once more from the root with
+                // the pinned px columns.
+                self.tree
+                    .compute_layout_with_measure(root.0, space, |kd, av, id, _c, _s| {
+                        match measure_fns.get(&id) {
+                            Some(f) => f(kd, av),
+                            None => Size::ZERO,
+                        }
+                    })
+                    .expect("taffy compute_layout (table final pass)");
+            }
+        }
         self.measure_fns = measure_fns;
+
+        if std::env::var("IDEALYST_GRID_DEBUG").is_ok() && !self.grid_items.is_empty() {
+            let mut items: Vec<_> = self
+                .grid_items
+                .iter()
+                .map(|n| {
+                    let l = self.tree.layout(*n).copied().unwrap_or_default();
+                    let s = self.tree.style(*n).map(|s| s.min_size.width).unwrap_or(Dimension::Auto);
+                    (l.location.x, l.size.width, s)
+                })
+                .collect();
+            items.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            eprintln!("[grid-debug] compute root={:?} grid_items(x,w,minw)={:?}", root.0, items);
+        }
 
         // --- CSS-parity second pass for `width: %` + `max_width: <px>` ---
         //
@@ -1161,10 +1433,300 @@ fn length_to_dim(l: FwLength) -> Dimension {
     }
 }
 
+// --- Grid track translation -------------------------------------------------
+//
+// A framework `TrackSize` becomes one Taffy `TrackSizingFunction::Single`
+// = `minmax(min, max)`. We split min/max so the CSS single-value
+// semantics come out right:
+//   - `Fr(v)`  → `minmax(auto, <v>fr)`  (a bare `<flex>` track floors at
+//                auto so the column never shrinks below its content)
+//   - keyword  → `minmax(keyword, keyword)`
+//   - `Px(v)`  → fixed both sides
+//   - `Minmax(lo, hi)` takes lo's min and hi's max (the one nested form).
+
+fn track_min(t: &FwTrackSize) -> MinTrackSizingFunction {
+    match t {
+        FwTrackSize::Auto => MinTrackSizingFunction::Auto,
+        FwTrackSize::MinContent => MinTrackSizingFunction::MinContent,
+        FwTrackSize::MaxContent => MinTrackSizingFunction::MaxContent,
+        // `fr` has no min form in CSS; a bare flex track floors at auto.
+        FwTrackSize::Fr(_) => MinTrackSizingFunction::Auto,
+        FwTrackSize::Px(v) => MinTrackSizingFunction::Fixed(LengthPercentage::Length(*v)),
+        FwTrackSize::Minmax(lo, _) => track_min(lo),
+    }
+}
+
+fn track_max(t: &FwTrackSize) -> MaxTrackSizingFunction {
+    match t {
+        FwTrackSize::Auto => MaxTrackSizingFunction::Auto,
+        FwTrackSize::MinContent => MaxTrackSizingFunction::MinContent,
+        FwTrackSize::MaxContent => MaxTrackSizingFunction::MaxContent,
+        FwTrackSize::Fr(v) => MaxTrackSizingFunction::Fraction(*v),
+        FwTrackSize::Px(v) => MaxTrackSizingFunction::Fixed(LengthPercentage::Length(*v)),
+        FwTrackSize::Minmax(_, hi) => track_max(hi),
+    }
+}
+
+fn track_sizing_function(t: &FwTrackSize) -> TrackSizingFunction {
+    TrackSizingFunction::Single(NonRepeatedTrackSizingFunction {
+        min: track_min(t),
+        max: track_max(t),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use runtime_core::Tokenized;
+
+    /// `auto` grid columns with cells that measure like real text
+    /// reproduce `table-layout: auto`: a content-heavy column takes the
+    /// space it needs and the others stay tight — and the table fills its
+    /// width without overflowing — because the engine resets a grid
+    /// item's `min-width: auto` (which Taffy floors at content size) to 0
+    /// so wide columns can shrink and wrap. This is the exact behavior
+    /// the SDK's native table relies on; it regressed when columns were
+    /// split evenly (`1fr`) or overflowed (`auto` without the reset).
+    #[test]
+    fn grid_text_columns_match_table_layout_auto() {
+        // single-line (max-content) width and longest-word (min-content)
+        // width per cell. Returns extra height when forced narrower than
+        // its single-line width (i.e. it wraps).
+        fn text_measure(longest_word: f32, single_line: f32) -> MeasureFn {
+            Rc::new(move |known: Size<Option<f32>>, avail: Size<AvailableSpace>| {
+                let w = known.width.unwrap_or(match avail.width {
+                    AvailableSpace::MinContent => longest_word,
+                    AvailableSpace::MaxContent => single_line,
+                    AvailableSpace::Definite(aw) => single_line.min(aw).max(longest_word),
+                });
+                let lines = (single_line / w.max(1.0)).ceil().max(1.0);
+                Size { width: w, height: lines * 16.0 }
+            })
+        }
+        use runtime_core::TrackSize as TS;
+
+        // Over-full: a long Description (single-line 900 ≫ remaining
+        // width) must shrink to fill the remainder and wrap; the short
+        // columns stay near their content.
+        {
+            let mut t = LayoutTree::new();
+            let grid = t.new_node();
+            let mut gr = StyleRules::default();
+            gr.display = Some(runtime_core::DisplayKind::Grid);
+            gr.grid_template_columns = Some(vec![TS::Auto; 3]);
+            t.set_style(grid, &gr);
+            // (longest_word, single_line): Prop, Type, Description.
+            let specs = [(60.0_f32, 60.0_f32), (200.0, 200.0), (90.0, 900.0)];
+            let mut cells = Vec::new();
+            for (mn, mx) in specs {
+                let c = t.new_node(); // no explicit min-width → engine resets to 0
+                t.set_measure_fn(c, text_measure(mn, mx));
+                t.add_child(grid, c);
+                cells.push(c);
+            }
+            t.compute(grid, 1000.0, 400.0);
+            let w: Vec<f32> = cells.iter().map(|c| t.frame_of(*c).width).collect();
+            // Over-full water-fill: max-content=[60,200,900], W=1000.
+            // Prop (60) and Type (200) are below their fair share so they
+            // keep their content; Description is capped at the remainder
+            // 1000−60−200 = 740 and wraps. (Same result a browser gives a
+            // one-wide-column table.) Short columns never collapse.
+            assert!((w[0] - 60.0).abs() < 1.5, "Prop = its content (60): {}", w[0]);
+            assert!((w[1] - 200.0).abs() < 1.5, "Type = its content (200): {}", w[1]);
+            assert!((w[2] - 740.0).abs() < 1.5, "Description gets the remainder (740): {}", w[2]);
+            assert!(t.frame_of(cells[2]).height > 16.5, "Description wrapped to >1 line");
+        }
+
+        // Real build order: `view` inserts children BEFORE attaching the
+        // parent's style, so cells are add_child'd while the grid is still
+        // the default Flex. The grid-item min-width reset must still apply
+        // (via set_style catching existing children) or wide columns
+        // overflow. This is the exact order the bug reproduced at.
+        {
+            let mut t = LayoutTree::new();
+            let grid = t.new_node();
+            let specs = [(60.0_f32, 60.0_f32), (200.0, 200.0), (90.0, 900.0)];
+            let mut cells = Vec::new();
+            for (mn, mx) in specs {
+                let c = t.new_node();
+                t.set_measure_fn(c, text_measure(mn, mx));
+                t.add_child(grid, c); // grid still Flex here — like `view`
+                cells.push(c);
+            }
+            // Style the grid AFTER its children are inserted.
+            let mut gr = StyleRules::default();
+            gr.display = Some(runtime_core::DisplayKind::Grid);
+            gr.grid_template_columns = Some(vec![TS::Auto; 3]);
+            t.set_style(grid, &gr);
+            t.compute(grid, 1000.0, 400.0);
+            let w: Vec<f32> = cells.iter().map(|c| t.frame_of(*c).width).collect();
+            let total: f32 = w.iter().sum();
+            assert!(
+                (total - 1000.0).abs() < 1.0,
+                "children-before-style order must still fill+wrap, not overflow: {w:?} total {total}",
+            );
+            assert!(w[2] > w[0] + 300.0, "Description still takes the most room: {w:?}");
+        }
+
+        // NESTED like the real SDK: outer passthrough view → inner grid →
+        // cells. The flex parent must not let the grid size its tracks at
+        // max-content and overflow; the inner grid still fills the outer
+        // width and wraps the wide column.
+        {
+            let mut t = LayoutTree::new();
+            let outer = t.new_node(); // passthrough flex view (the SDK's outer)
+            let grid = t.new_node();
+            let specs = [(60.0_f32, 60.0_f32), (200.0, 200.0), (90.0, 900.0)];
+            let mut cells = Vec::new();
+            for (mn, mx) in specs {
+                let c = t.new_node();
+                t.set_measure_fn(c, text_measure(mn, mx));
+                t.add_child(grid, c);
+                cells.push(c);
+            }
+            let mut gr = StyleRules::default();
+            gr.display = Some(runtime_core::DisplayKind::Grid);
+            gr.grid_template_columns = Some(vec![TS::Auto; 3]);
+            t.set_style(grid, &gr);
+            t.add_child(outer, grid);
+            t.compute(outer, 1000.0, 400.0);
+            let gw = t.frame_of(grid).width;
+            let w: Vec<f32> = cells.iter().map(|c| t.frame_of(*c).width).collect();
+            let total: f32 = w.iter().sum();
+            assert!(
+                (total - 1000.0).abs() < 1.5,
+                "nested grid must fill+wrap, not overflow: grid={gw} cols={w:?} total {total}",
+            );
+            assert!(w[2] > w[0] + 300.0, "nested: Description takes the most room: {w:?}");
+        }
+
+        // REAL idea-ui nesting: grid → cell VIEW (flex column + horizontal
+        // padding, min-width reset by the engine) → text grandchild (the
+        // node that actually measures/wraps). The cell must propagate the
+        // text's small min-content so the column shrinks and the text
+        // wraps — not clip.
+        {
+            let mut t = LayoutTree::new();
+            let grid = t.new_node();
+            let mut gr = StyleRules::default();
+            gr.display = Some(runtime_core::DisplayKind::Grid);
+            gr.grid_template_columns = Some(vec![TS::Auto; 3]);
+            // build cells (view + padding) with a text grandchild each
+            let specs = [(60.0_f32, 60.0_f32), (200.0, 200.0), (90.0, 900.0)];
+            let mut texts = Vec::new();
+            let mut cells = Vec::new();
+            for (mn, mx) in specs {
+                let cell = t.new_node();
+                let mut cr = StyleRules::default();
+                cr.padding_left = Some(px(16.0));
+                cr.padding_right = Some(px(16.0));
+                t.set_style(cell, &cr);
+                let text = t.new_node();
+                t.set_measure_fn(text, text_measure(mn, mx));
+                t.add_child(cell, text);
+                t.add_child(grid, cell);
+                texts.push(text);
+                cells.push(cell);
+            }
+            t.set_style(grid, &gr); // display lands AFTER children (real order)
+            t.compute(grid, 1000.0, 400.0);
+            let cw: Vec<f32> = cells.iter().map(|c| t.frame_of(*c).width).collect();
+            let total: f32 = cw.iter().sum();
+            assert!(
+                (total - 1000.0).abs() < 1.5,
+                "cell-view nesting must fill+wrap, not overflow: cells={cw:?} total {total}",
+            );
+            assert!(cw[2] > cw[0] + 300.0, "Description cell takes the most room: {cw:?}");
+            assert!(
+                t.frame_of(texts[2]).height > 16.5,
+                "Description text wrapped to >1 line (height {})",
+                t.frame_of(texts[2]).height,
+            );
+        }
+
+        // Water-fill with TWO wide columns: the short column keeps its
+        // content; the two wide columns share the remaining width equally
+        // (neither collapses below the other). max-content=[60,400,500],
+        // W=800 → Prop keeps 60; the 400/500 columns can't fit their fair
+        // share so both cap at (800−60)/2 = 370.
+        {
+            let mut t = LayoutTree::new();
+            let grid = t.new_node();
+            let mut gr = StyleRules::default();
+            gr.display = Some(runtime_core::DisplayKind::Grid);
+            gr.grid_template_columns = Some(vec![TS::Auto; 3]);
+            t.set_style(grid, &gr);
+            let specs = [(60.0_f32, 60.0_f32), (120.0, 400.0), (140.0, 500.0)];
+            let mut cells = Vec::new();
+            for (mn, mx) in specs {
+                let c = t.new_node();
+                t.set_measure_fn(c, text_measure(mn, mx));
+                t.add_child(grid, c);
+                cells.push(c);
+            }
+            t.compute(grid, 800.0, 400.0);
+            let w: Vec<f32> = cells.iter().map(|c| t.frame_of(*c).width).collect();
+            assert!((w[0] - 60.0).abs() < 1.5, "short column keeps content (60): {}", w[0]);
+            assert!((w[1] - 370.0).abs() < 1.5, "wide column 1 capped at 370: {}", w[1]);
+            assert!((w[2] - 370.0).abs() < 1.5, "wide column 2 capped at 370: {}", w[2]);
+        }
+
+        // PROOF for the two-pass fix: per-column `fr` weights proportional
+        // to each column's max-content give content-PROPORTIONAL columns
+        // (Description dominant), unlike equal `auto`/`1fr`. min-width:0
+        // lets the wide column wrap.
+        {
+            let mut t = LayoutTree::new();
+            let grid = t.new_node();
+            let specs = [(60.0_f32, 60.0_f32), (200.0, 200.0), (90.0, 900.0)];
+            let mut cells = Vec::new();
+            for (mn, mx) in specs {
+                let c = t.new_node();
+                t.set_measure_fn(c, text_measure(mn, mx));
+                t.add_child(grid, c);
+                cells.push(c);
+            }
+            let mut gr = StyleRules::default();
+            gr.display = Some(runtime_core::DisplayKind::Grid);
+            // fr weights proportional to max-content: 60 / 200 / 900.
+            gr.grid_template_columns = Some(vec![TS::Fr(60.0), TS::Fr(200.0), TS::Fr(900.0)]);
+            t.set_style(grid, &gr);
+            t.compute(grid, 1000.0, 400.0);
+            let w: Vec<f32> = cells.iter().map(|c| t.frame_of(*c).width).collect();
+            println!("[proportional-fr] columns={w:?} total {}", w.iter().sum::<f32>());
+            assert!((w.iter().sum::<f32>() - 1000.0).abs() < 1.0, "fills: {w:?}");
+            assert!(w[2] > w[1] * 2.0, "Description ≫ Type via proportional fr: {w:?}");
+        }
+
+        // Under-full: all columns short (total content < width). They fill
+        // the table without any single column ballooning past the others
+        // absurdly — the content-heavy one is still widest.
+        {
+            let mut t = LayoutTree::new();
+            let grid = t.new_node();
+            let mut gr = StyleRules::default();
+            gr.display = Some(runtime_core::DisplayKind::Grid);
+            gr.grid_template_columns = Some(vec![TS::Auto; 3]);
+            t.set_style(grid, &gr);
+            let specs = [(60.0_f32, 60.0_f32), (120.0, 120.0), (140.0, 140.0)];
+            let mut cells = Vec::new();
+            for (mn, mx) in specs {
+                let c = t.new_node();
+                t.set_measure_fn(c, text_measure(mn, mx));
+                t.add_child(grid, c);
+                cells.push(c);
+            }
+            t.compute(grid, 1000.0, 400.0);
+            let w: Vec<f32> = cells.iter().map(|c| t.frame_of(*c).width).collect();
+            // EXACT CSS `table-layout: auto` (fits case): Min=Max=[60,120,140]
+            // (no wrap), Σmax=320 ≤ W=1000, so the leftover (680) is split in
+            // proportion to max-content: width = max + 680·max/320 →
+            // [187.5, 375, 437.5]. Columns rank by content; never split evenly.
+            assert!((w[0] - 187.5).abs() < 1.5, "Prop = 60 + share: {}", w[0]);
+            assert!((w[1] - 375.0).abs() < 1.5, "Type = 120 + share: {}", w[1]);
+            assert!((w[2] - 437.5).abs() < 1.5, "Description = 140 + share: {}", w[2]);
+        }
+    }
 
     fn px(v: f32) -> Tokenized<FwLength> {
         Tokenized::Literal(FwLength::Px(v))
@@ -1210,6 +1772,201 @@ mod tests {
         let mut wider = painted.clone();
         wider.width = Some(px(200.0));
         assert!(t.set_style(node, &wider), "width change is a layout change");
+    }
+
+    /// Regression: a `Display::Grid` container aligns its columns across
+    /// every row — column `i` has one x and one width no matter how the
+    /// cells in that column differ row to row.
+    ///
+    /// This is the layout-engine guarantee the `table` SDK relies on for
+    /// cross-platform parity. The old native table laid each row out as
+    /// an independent flex container, so a wide cell in row 0 widened
+    /// only row 0's copy of that column and columns drifted between rows.
+    /// The first half of this test reproduces that drift with two flex
+    /// rows; the second half shows the grid fixes it with the SAME cell
+    /// content. Cell widths are seeded as intrinsic sizes so the tracks
+    /// have something to size to (a real cell's text measures similarly).
+    #[test]
+    fn grid_aligns_columns_across_rows_unlike_independent_flex_rows() {
+        // Per-row, per-column intrinsic cell widths. Row 0's column 1 is
+        // wide enough (220) to exceed its equal share of a 300px row
+        // (100), so under independent flex rows it steals width from its
+        // siblings and that column's x lands differently than in row 1
+        // (where every cell fits the equal share) — the drift bug.
+        let widths = [[20.0_f32, 220.0, 20.0], [80.0, 10.0, 50.0]];
+
+        // --- Old behavior: two independent flex rows ---------------------
+        // Each row is its own flex container; a cell claims equal share
+        // (grow:1 / basis:0). The two rows therefore disagree on every
+        // column's x — this is the bug.
+        let flex_col1_x = {
+            let mut t = LayoutTree::new();
+            let root = t.new_node();
+            let mut col1_cells = Vec::new();
+            for row_widths in widths.iter() {
+                let row = t.new_node();
+                let mut rr = StyleRules::default();
+                rr.flex_direction = Some(FwFlexDirection::Row);
+                t.set_style(row, &rr);
+                t.add_child(root, row);
+                for (c, w) in row_widths.iter().enumerate() {
+                    let cell = t.new_node();
+                    let mut cr = StyleRules::default();
+                    cr.flex_grow = Some(f32t(1.0));
+                    cr.flex_basis = Some(px(0.0));
+                    t.set_style(cell, &cr);
+                    t.set_intrinsic_size(cell, *w, 10.0);
+                    t.add_child(row, cell);
+                    if c == 1 {
+                        col1_cells.push(cell);
+                    }
+                }
+            }
+            t.compute(root, 300.0, 0.0);
+            [t.frame_of(col1_cells[0]).x, t.frame_of(col1_cells[1]).x]
+        };
+        assert!(
+            (flex_col1_x[0] - flex_col1_x[1]).abs() > 1.0,
+            "independent flex rows MUST drift: row0 col1 x={} vs row1 col1 x={}",
+            flex_col1_x[0],
+            flex_col1_x[1],
+        );
+
+        // --- New behavior: one grid, columns shared across rows ----------
+        let mut t = LayoutTree::new();
+        let root = t.new_node();
+        let grid = t.new_node();
+        let mut gr = StyleRules::default();
+        gr.display = Some(runtime_core::DisplayKind::Grid);
+        // Predictable max-content tracks for the assertion: each column
+        // sizes to its widest cell across both rows.
+        gr.grid_template_columns = Some(vec![
+            runtime_core::TrackSize::MaxContent,
+            runtime_core::TrackSize::MaxContent,
+            runtime_core::TrackSize::MaxContent,
+        ]);
+        t.set_style(grid, &gr);
+        t.add_child(root, grid);
+
+        // Six cells, row-major auto-flow → row0 = cells 0..3, row1 = 3..6.
+        let mut cells = Vec::new();
+        for row_widths in widths.iter() {
+            for w in row_widths.iter() {
+                let cell = t.new_node();
+                t.set_intrinsic_size(cell, *w, 10.0);
+                t.add_child(grid, cell);
+                cells.push(cell);
+            }
+        }
+        t.compute(root, 300.0, 0.0);
+
+        for col in 0..3 {
+            let top = t.frame_of(cells[col]); // row 0
+            let bot = t.frame_of(cells[col + 3]); // row 1
+            assert!(
+                (top.x - bot.x).abs() < 0.5,
+                "grid column {col} must share one x across rows: {} vs {}",
+                top.x,
+                bot.x,
+            );
+            assert!(
+                (top.width - bot.width).abs() < 0.5,
+                "grid column {col} must share one width across rows: {} vs {}",
+                top.width,
+                bot.width,
+            );
+        }
+        // And each column sized to its widest cell (max-content).
+        let col0 = t.frame_of(cells[0]).width;
+        let col1 = t.frame_of(cells[1]).width;
+        assert!(col0 >= 80.0 - 0.5, "column 0 sizes to its widest cell (80): {col0}");
+        assert!(col1 >= 220.0 - 0.5, "column 1 sizes to its widest cell (220): {col1}");
+    }
+
+    /// `auto` grid columns (the `table` SDK's recipe) fill the container
+    /// width because a grid defaults to `justify-content: stretch`: a
+    /// `width: 100%` HTML table fills, and the native grid must match.
+    /// With equally narrow content the columns share the container evenly
+    /// rather than hugging content and leaving a gap. Guards the
+    /// grid-stretch default — without it, `auto` tracks hug content under
+    /// the framework's `flex-start` seed and this fails.
+    #[test]
+    fn grid_auto_tracks_fill_container_width() {
+        let mut t = LayoutTree::new();
+        let root = t.new_node();
+        let grid = t.new_node();
+        let mut gr = StyleRules::default();
+        gr.display = Some(runtime_core::DisplayKind::Grid);
+        gr.grid_template_columns = Some(vec![runtime_core::TrackSize::Auto; 3]);
+        t.set_style(grid, &gr);
+        t.add_child(root, grid);
+        // Three equally narrow cells (10px each) — total content 30 ≪ 300.
+        let mut cells = Vec::new();
+        for _ in 0..3 {
+            let cell = t.new_node();
+            t.set_intrinsic_size(cell, 10.0, 10.0);
+            t.add_child(grid, cell);
+            cells.push(cell);
+        }
+        t.compute(root, 300.0, 0.0);
+        let total: f32 = cells.iter().map(|c| t.frame_of(*c).width).sum();
+        assert!(
+            total >= 300.0 - 1.0,
+            "auto columns must stretch to fill the 300px container, got {total}",
+        );
+        // Equal content → equal share (~100 each).
+        for c in &cells {
+            let w = t.frame_of(*c).width;
+            assert!(
+                (w - 100.0).abs() < 1.0,
+                "equal-content auto columns share the width evenly (~100), got {w}",
+            );
+        }
+    }
+
+    /// `auto` grid columns are CONTENT-sized, like `table-layout: auto`:
+    /// a column with wider content is wider than its siblings instead of
+    /// every column being forced equal (the user-reported regression of
+    /// the earlier `1fr` recipe, which split width evenly and wrapped
+    /// long text). Wide content "pushes the cell wider"; the leftover is
+    /// still shared so the table fills its width.
+    #[test]
+    fn grid_auto_columns_are_content_sized_not_forced_equal() {
+        let mut t = LayoutTree::new();
+        let root = t.new_node();
+        let grid = t.new_node();
+        let mut gr = StyleRules::default();
+        gr.display = Some(runtime_core::DisplayKind::Grid);
+        gr.grid_template_columns = Some(vec![runtime_core::TrackSize::Auto; 3]);
+        t.set_style(grid, &gr);
+        t.add_child(root, grid);
+        // Column 0 has wide content (180); columns 1 and 2 are narrow (20).
+        // Single row so each cell maps 1:1 to its column.
+        let widths = [180.0_f32, 20.0, 20.0];
+        let mut cells = Vec::new();
+        for w in widths {
+            let cell = t.new_node();
+            t.set_intrinsic_size(cell, w, 10.0);
+            t.add_child(grid, cell);
+            cells.push(cell);
+        }
+        t.compute(root, 400.0, 0.0);
+        let col0 = t.frame_of(cells[0]).width;
+        let col1 = t.frame_of(cells[1]).width;
+        assert!(
+            col0 > col1 + 50.0,
+            "the wide-content column must be substantially wider than a \
+             narrow one (content pushes width), got col0={col0} col1={col1}",
+        );
+        assert!(
+            col0 >= 180.0 - 1.0,
+            "the wide column is at least its content width (180), got {col0}",
+        );
+        let total = col0 + col1 + t.frame_of(cells[2]).width;
+        assert!(
+            total >= 400.0 - 1.0,
+            "columns still fill the 400px container, got total {total}",
+        );
     }
 
     /// Regression: the idea-ui `Modal` card must size to its content (up to a

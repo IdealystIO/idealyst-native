@@ -124,7 +124,8 @@ pub fn table() -> Element {
             Section(title = "Status table".to_string()) {
                 P(content = "On web, Table lowers to a real HTML `<table>` via the `table` SDK, so \
                     the browser's table-layout algorithm sizes columns to widest content for free. \
-                    On native, the same shape falls through to a styled flex passthrough.".to_string())
+                    On native, the same shape lowers to a CSS-grid whose column tracks are shared \
+                    across rows, so columns line up identically on every platform.".to_string())
                 status_table()
             }
         },

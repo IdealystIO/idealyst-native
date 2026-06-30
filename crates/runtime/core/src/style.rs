@@ -360,6 +360,49 @@ pub enum AlignSelf {
     Baseline,
 }
 
+/// Which layout algorithm lays out this node's *children*.
+///
+/// The framework is flex-first: every node is `Flex` unless a style
+/// explicitly opts into `Grid`. `Grid` exists for the narrow set of
+/// primitives that need cross-row/column track alignment a single flex
+/// container can't express — most notably the `table` SDK, whose native
+/// lowering pins every column to one width across all rows the way a
+/// browser's `<table>` does. Keep this minimal: it is a layout-engine
+/// capability, not a general CSS-grid authoring surface.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum DisplayKind {
+    /// Children follow the flexbox algorithm (the framework default).
+    #[default]
+    Flex,
+    /// Children follow the CSS Grid algorithm. Pair with
+    /// [`StyleRules::grid_template_columns`] to declare the column
+    /// tracks; cells become grid items placed by row-major auto-flow.
+    Grid,
+}
+
+/// One grid column (or row) track's sizing function. A subset of CSS
+/// grid track sizing — only the forms tables actually need. `Minmax`
+/// is the single nested form (e.g. `Minmax(MinContent, Fr(1.0))` =
+/// "at least fit the content, then share leftover width to fill").
+#[derive(Clone, Debug, PartialEq)]
+pub enum TrackSize {
+    /// Content-sized; in a definite-width grid, `Auto` tracks also
+    /// absorb leftover space so the grid fills its container.
+    Auto,
+    /// Sized to the column's narrowest cell (`min-content`).
+    MinContent,
+    /// Sized to the column's widest cell (`max-content`).
+    MaxContent,
+    /// A fraction of the leftover space (CSS `fr` unit).
+    Fr(f32),
+    /// A fixed pixel width.
+    Px(f32),
+    /// `minmax(min, max)` — a floor track plus a (usually flexible)
+    /// ceiling track. The only nested form; neither side may itself be
+    /// `Minmax`.
+    Minmax(Box<TrackSize>, Box<TrackSize>),
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Position {
     #[default]
@@ -877,6 +920,18 @@ pub struct StyleRules {
     pub caret_color: Option<Tokenized<Color>>,
     pub font_size: Option<Tokenized<Length>>,
 
+    // --- Display mode (which algorithm lays out this node's children) ---
+    /// `None` ⇒ the framework default (`Flex`). Set `Grid` to lay
+    /// children out as grid items; pair with `grid_template_columns`.
+    pub display: Option<DisplayKind>,
+    /// Grid column tracks, one [`TrackSize`] per column. Only meaningful
+    /// when `display == Some(DisplayKind::Grid)`. Rows are implicit
+    /// (row-major auto-flow): direct children fill the tracks
+    /// left-to-right, wrapping to a new row every `len()` cells — which
+    /// is how the `table` SDK aligns every column to one width across
+    /// all rows. Ignored under flex.
+    pub grid_template_columns: Option<Vec<TrackSize>>,
+
     // --- Flex container (applies when this node has children) ---
     pub flex_direction: Option<FlexDirection>,
     pub flex_wrap: Option<FlexWrap>,
@@ -1051,6 +1106,7 @@ impl StyleRules {
         }
         overlay!(
             background, color, caret_color, font_size,
+            display, grid_template_columns,
             flex_direction, flex_wrap, justify_content, align_items, align_content,
             gap, row_gap, column_gap,
             flex_grow, flex_shrink, flex_basis, align_self,
@@ -1102,6 +1158,16 @@ impl StyleRules {
         write_tokenized_color(&mut s, "fg", &self.color);
         write_tokenized_color(&mut s, "cc", &self.caret_color);
         write_tokenized_length(&mut s, "fs", &self.font_size);
+
+        write_enum(&mut s, "disp", self.display.map(|x| x as u8));
+        if let Some(cols) = self.grid_template_columns.as_ref() {
+            s.push_str("gtc=");
+            for t in cols {
+                write_track_size(&mut s, t);
+                s.push(',');
+            }
+            s.push(';');
+        }
 
         write_enum(&mut s, "fd", self.flex_direction.map(|x| x as u8));
         write_enum(&mut s, "fw", self.flex_wrap.map(|x| x as u8));
@@ -1392,6 +1458,32 @@ fn write_enum(out: &mut String, label: &str, v: Option<u8>) {
     out.push('=');
     push_u32_hex(out, v as u32);
     out.push(';');
+}
+
+/// Encodes a [`TrackSize`] into a `content_key` segment. Recurses once
+/// for `Minmax`; the bit pattern of `f32` values keeps distinct sizes
+/// distinct without `format!`.
+fn write_track_size(out: &mut String, t: &TrackSize) {
+    match t {
+        TrackSize::Auto => out.push('a'),
+        TrackSize::MinContent => out.push_str("mn"),
+        TrackSize::MaxContent => out.push_str("mx"),
+        TrackSize::Fr(v) => {
+            out.push('f');
+            push_u32_hex(out, v.to_bits());
+        }
+        TrackSize::Px(v) => {
+            out.push('p');
+            push_u32_hex(out, v.to_bits());
+        }
+        TrackSize::Minmax(lo, hi) => {
+            out.push('[');
+            write_track_size(out, lo);
+            out.push(':');
+            write_track_size(out, hi);
+            out.push(']');
+        }
+    }
 }
 
 fn push_u64_hex(out: &mut String, n: u64) {

@@ -66,8 +66,9 @@ pub struct TableProps {
 }
 
 /// A themed data table — a header row plus body rows. Wraps the
-/// cross-platform `table` SDK: a real HTML `<table>` on web, styled flex
-/// columns on native. Pass `TableRow`s as children.
+/// cross-platform `table` SDK: a real HTML `<table>` on web, a CSS-grid
+/// with column tracks shared across rows on native — so columns line up
+/// the same way on every platform. Pass `TableRow`s as children.
 #[component(children)]
 pub fn Table(props: TableProps) -> Element {
     let style = TableStyle();
@@ -91,6 +92,11 @@ pub fn Table(props: TableProps) -> Element {
 /// component so future row-level affordances (hover highlight, zebra
 /// striping, density variants) have a place to land without changing
 /// call sites.
+///
+/// Note: on native the SDK lowers a row to a layout-transparent fragment
+/// (its cells become direct children of the table's grid — Taffy has no
+/// subgrid), so a row has no box of its own there. Row-level visuals must
+/// therefore be applied per-cell rather than to a single row element.
 // Reactive-by-default: only field is `children` (a LIST, auto-skipped);
 // `#[props]` is a no-op here but kept for uniformity with the family.
 #[runtime_core::props]

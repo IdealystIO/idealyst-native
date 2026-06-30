@@ -196,6 +196,7 @@ members = [
     "crates/tools/port/preview",
     "examples/hello-roku",
     "examples/idea-ui-docs",
+    "examples/idea-ui-docs-gpu",
     "examples/docs",
     "examples/docs-macro",
     "examples/animation-test",

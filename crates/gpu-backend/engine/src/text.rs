@@ -22,7 +22,7 @@ use runtime_core::{FontStyle, FontWeight, TextAlign};
 use glyphon::{
     cosmic_text::Align as GAlign, Attrs, Buffer, Cache, Color as GColor, Family, FontSystem,
     Metrics, Resolution, Shaping, Stretch as GStretch, Style as GStyle, SwashCache, TextArea,
-    TextAtlas, TextBounds, TextRenderer as GRenderer, Viewport, Weight as GWeight,
+    TextAtlas, TextBounds, TextRenderer as GRenderer, Viewport, Weight as GWeight, Wrap,
 };
 use runtime_layout::LayoutNode;
 
@@ -263,6 +263,10 @@ impl TextStore {
 
     /// Re-shape `id`'s buffer against a width constraint and return
     /// the wrapped extent. Used by the Taffy measure closure.
+    /// Measure the text wrapped to `max_width` (`None` = unbounded, a
+    /// single line). This is the **max-content** / definite-width path:
+    /// Taffy's resolved or unconstrained width. Wrap stays `WordOrGlyph`
+    /// (long words break rather than overflow), matching the render pass.
     pub fn measure(
         &mut self,
         font_system: &mut FontSystem,
@@ -281,6 +285,52 @@ impl TextStore {
             h = h.max(run.line_top + run.line_height);
         }
         (w.ceil(), h.ceil())
+    }
+
+    /// **Min-content** width: the widest the text could need if it
+    /// wrapped at every legal break — i.e. the longest single word (the
+    /// longest unbreakable run). This is the value CSS uses as a flex/grid
+    /// item's automatic minimum, so Taffy knows the text can't shrink past
+    /// it. Returning max-content here instead (the old `_ => None` bug) hid
+    /// the real floor: with `min-width:0` items the layout then shrank the
+    /// text to width 0, forcing per-glyph wrapping (the tall 1-char
+    /// columns).
+    ///
+    /// Probe with `Wrap::Word` at width 0 so a word that can't fit *stays*
+    /// on its line (overflows) rather than breaking to glyphs — the
+    /// default `WordOrGlyph` would report ~1 glyph, defeating the floor.
+    /// Wrap is restored to `WordOrGlyph` afterward; the next measure call
+    /// (Taffy's final resolved-width pass) re-shapes the buffer for the
+    /// render, so this leaves no lasting state.
+    pub fn measure_min_content(
+        &mut self,
+        font_system: &mut FontSystem,
+        id: LayoutNode,
+    ) -> (f32, f32) {
+        let Some(entry) = self.buffers.get_mut(&id) else {
+            return (0.0, 0.0);
+        };
+        entry.buffer.set_wrap(font_system, Wrap::Word);
+        entry.buffer.set_size(font_system, Some(0.0), None);
+        entry.buffer.shape_until_scroll(font_system, false);
+        let mut w: f32 = 0.0;
+        let mut line_h: f32 = entry.font_size * 1.3;
+        for run in entry.buffer.layout_runs() {
+            w = w.max(run.line_w);
+            line_h = run.line_height;
+        }
+        // Restore the buffer to the render-time wrap mode AND re-shape it
+        // unbounded, so a min-content probe never leaves the buffer shaped
+        // at width 0 (one glyph per line). Taffy is free to call this as a
+        // node's LAST measure; the renderer draws whatever the buffer was
+        // last shaped to, so a collapsed leftover would render as a single
+        // glyph. Re-shaping here makes the probe state-neutral.
+        entry.buffer.set_wrap(font_system, Wrap::WordOrGlyph);
+        entry.buffer.set_size(font_system, None, None);
+        entry.buffer.shape_until_scroll(font_system, false);
+        // Min-content height is one line tall (the cross-axis size is
+        // recomputed once the real width is known).
+        (w.ceil(), line_h.ceil())
     }
 }
 

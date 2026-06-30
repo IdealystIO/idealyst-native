@@ -1343,6 +1343,48 @@ pub use web::register;
 // SSR backend today) via `drawer_navigator::chrome::register`.
 pub mod chrome;
 
+// Backend-neutral DESKTOP handler — persistent sidebar, generic over
+// `Backend`. The portable generalization of `macos.rs`, for the universal
+// (wgpu) backend and any future desktop backend. Unlike `chrome`, it lays
+// out with real `StyleRules` (not CSS classes), so it renders correctly on
+// backends that don't interpret CSS. Registered via
+// [`register_native`] / `drawer_navigator::desktop::register`.
+pub mod desktop;
+
+/// Register the **form-appropriate** backend-neutral drawer handler on a
+/// universal backend (the wgpu GPU renderer today).
+///
+/// Form factor — desktop (persistent sidebar) vs mobile (slide-in modal)
+/// — is a **compile-time** decision via the `idealyst_form` cfg, set by
+/// the variant / build tool, NOT a runtime `platform()` check. On the
+/// universal backend one compiled binary could host either shape
+/// depending on the skin, so `target_os` can't answer "what form factor",
+/// and a runtime branch would ship both handlers + read an OS identity
+/// that's really just whatever the skin claims. The cfg picks the handler
+/// family at build time and dead-strips the other; within the desktop
+/// family, width-responsive pinning stays a runtime concern
+/// (`install_navigator_pin_width`).
+///
+/// `idealyst_form = "mobile"` is reserved for the generalized slide-in
+/// handler (the next slice, lifted from `ios.rs` / `android.rs`). It has
+/// no consumer yet — no mobile-form GPU variant exists — so until that
+/// lands every native form registers the desktop handler (also the
+/// correct default for an unset cfg: plain `cargo run`, desktop builds).
+pub fn register_native<B: runtime_core::primitives::navigator::RegisterNavigator>(
+    backend: &mut B,
+) {
+    #[cfg(idealyst_form = "mobile")]
+    {
+        // Reserved seam: `mobile::register(backend)` once generalized.
+        // Desktop fallback keeps a mobile-tagged build rendering meanwhile.
+        desktop::register(backend);
+    }
+    #[cfg(not(idealyst_form = "mobile"))]
+    {
+        desktop::register(backend);
+    }
+}
+
 // Recording handler for the runtime-server sidecar's recorder backend
 // (`dev-server::WireRecordingBackend`). Emits navigator wire commands
 // instead of rendering, so a `DrawerNavigator` app works under

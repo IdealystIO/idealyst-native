@@ -112,6 +112,9 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
             build_node_scoped: _,
             build_node_into: _,
             build_in_screen: _,
+            // Node-splice ops are for backend-neutral native handlers;
+            // web drives layout via the DOM.
+            ..
         } = host;
 
         let mount_2arg: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<Node>> = {

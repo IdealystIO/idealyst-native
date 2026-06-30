@@ -12,7 +12,7 @@ mod app;
 mod gpu;
 mod scheduler;
 
-pub use app::{run, RunError};
+pub use app::{run, run_with, RunError};
 
 #[cfg(feature = "runtime-server")]
 pub use app::run_runtime_server;

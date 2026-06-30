@@ -68,6 +68,9 @@ impl NavigatorHandler<WebBackend> for WebStackHandler {
             build_node_scoped: _,
             build_node_into: _,
             build_in_screen: _,
+            // Node-splice ops are for backend-neutral native handlers;
+            // web drives layout via the DOM.
+            ..
         } = host;
 
         // Adapter: the helpers-crate `WebNavCallbacks::mount_screen` is

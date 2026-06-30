@@ -36,6 +36,7 @@ mod host;
 mod image_pipeline;
 pub mod keyboard;
 pub mod nav_anim;
+mod native_skin;
 mod node;
 pub mod pipeline;
 mod renderer;
@@ -80,6 +81,7 @@ pub use node::{
 };
 pub use renderer::{paint_icon, Renderer};
 pub use scheduler::{install_redraw_hook, request_redraw};
+pub use native_skin::NativeSkin;
 pub use painter::{
     ButtonPressVisual, NavigatorHeaderAction, NavigatorHeaderChrome, NavigatorHeaderHit, Painter,
 };
