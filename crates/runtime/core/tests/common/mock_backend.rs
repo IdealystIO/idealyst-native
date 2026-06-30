@@ -143,6 +143,10 @@ pub enum Event {
     UpdateToggleValue { node: NodeId, value: bool },
     UpdateSliderValue { node: NodeId, value: f32 },
 
+    /// `set_disabled(node, disabled)` — recorded so a test can assert the
+    /// disabled state propagated to the backend (the native-inert hook).
+    SetDisabled { node: NodeId, disabled: bool },
+
     // --- Style ---
     ApplyStyle { node: NodeId },
     ApplyStyledStates { node: NodeId, overlays: usize },
@@ -344,6 +348,13 @@ pub struct MockBackendCore {
     /// way a native backend's event listeners would, and observe the re-apply.
     pub(crate) state_setters:
         Rc<RefCell<std::collections::HashMap<NodeId, Rc<dyn Fn(runtime_core::StateBits, bool)>>>>,
+    /// Captured pressable `on_click` closures keyed by node id. Lets tests
+    /// call [`MockBackend::fire_press`] to synthesize a tap the way a native
+    /// backend's gesture/click listener would — and verify the disabled
+    /// press-block (which the walker wires at the handler level, since a bare
+    /// pressable lowers to a non-form-control node `set_disabled` can't make
+    /// inert).
+    pub(crate) pressable_handlers: Rc<RefCell<std::collections::HashMap<NodeId, Rc<dyn Fn()>>>>,
 }
 
 impl Default for MockBackendCore {
@@ -356,6 +367,7 @@ impl Default for MockBackendCore {
             scroll_handlers: Rc::new(RefCell::new(std::collections::HashMap::new())),
             virtualizers: Rc::new(RefCell::new(std::collections::HashMap::new())),
             state_setters: Rc::new(RefCell::new(std::collections::HashMap::new())),
+            pressable_handlers: Rc::new(RefCell::new(std::collections::HashMap::new())),
         }
     }
 }
@@ -478,6 +490,21 @@ impl MockBackend {
         let handler = self.core.scroll_handlers.borrow().get(&node).cloned();
         if let Some(h) = handler {
             h(x, y);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Synthesize a press on the pressable registered for `node`, the way a
+    /// native backend's gesture/click listener (or `PressableHandle::click`)
+    /// would. Returns `false` if no pressable is registered for that id. The
+    /// captured closure is the walker-wrapped one, so a disabled press is
+    /// blocked here exactly as it would be on a real backend.
+    pub fn fire_press(&self, node: NodeId) -> bool {
+        let handler = self.core.pressable_handlers.borrow().get(&node).cloned();
+        if let Some(h) = handler {
+            h();
             true
         } else {
             false
@@ -626,12 +653,19 @@ impl Backend for MockBackend {
 
     fn create_pressable(
         &mut self,
-        _on_click: Rc<dyn Fn()>,
+        on_click: Rc<dyn Fn()>,
         _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.core.mint();
+        // Capture the (walker-wrapped) click closure so `fire_press` can
+        // synthesize a tap and verify the disabled press-block.
+        self.core.pressable_handlers.borrow_mut().insert(id, on_click);
         self.core.record(Event::CreatePressable);
         id
+    }
+
+    fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
+        self.core.record(Event::SetDisabled { node: *node, disabled });
     }
 
     fn create_reactive_anchor(&mut self) -> Self::Node {

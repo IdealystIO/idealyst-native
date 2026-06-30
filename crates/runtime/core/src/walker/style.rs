@@ -1261,11 +1261,23 @@ pub(super) fn attach_disabled<B: Backend + 'static>(
     node: &B::Node,
     disabled: Box<dyn Fn() -> bool>,
     state_setter: Option<Rc<dyn Fn(StateBits, bool)>>,
+    // Optional handler-level press-block flag. `set_disabled` only makes
+    // *native form controls* inert (a `<button disabled>` / `setEnabled:NO`);
+    // a bare pressable lowers to a `<div>`/plain view whose `set_disabled` is
+    // a CSS hook at best and a no-op at worst, so the click/keydown handler
+    // would still fire. Threading the disabled state into this shared flag —
+    // consulted by the wrapped `on_click` — blocks the press uniformly across
+    // every backend (rule #7: fix upstream, every backend converges), instead
+    // of relying on per-backend gesture plumbing that doesn't exist.
+    press_block: Option<Rc<std::cell::Cell<bool>>>,
 ) {
     let node_for_effect = node.clone();
     let backend_for_effect = backend.clone();
     let _e = Effect::new(move || {
         let d = disabled();
+        if let Some(flag) = press_block.as_ref() {
+            flag.set(d);
+        }
         backend_for_effect
             .borrow_mut()
             .set_disabled(&node_for_effect, d);

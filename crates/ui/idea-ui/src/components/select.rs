@@ -306,3 +306,46 @@ fn menu_build(
 
     runtime_core::view(vec![catcher, anchored]).into_element()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use idea_theme::theme::{install_idea_theme, light_theme};
+    use runtime_core::{resolve_style, FontFamily};
+
+    use crate::stylesheets::SelectMenu;
+
+    // Field report: on web the Select dropdown options rendered in the
+    // browser's serif default (Times), not the app font. Root cause: the
+    // menu renders inside a portal that mounts under `<body>`, escaping the
+    // app tree's inherited `font-family` — and the menu sheet pinned no font
+    // of its own, so its text fell out of the cascade. The fix stamps the
+    // theme font on the `SelectMenu` panel so the whole dropdown subtree
+    // inherits it. This test fails before the fix (`font_family` is `None`).
+    #[test]
+    fn regression_select_menu_pins_theme_font_for_portal() {
+        install_idea_theme(light_theme());
+
+        let resolved = resolve_style(&StyleApplication::new(SelectMenu::sheet()));
+        let family = resolved.font_family.clone().expect(
+            "the Select menu must pin a font_family so its portal'd options don't \
+             fall back to the browser serif default",
+        );
+
+        // It must be the theme's body font (a non-empty system sans stack),
+        // not an empty/serif fallback.
+        match (&family, &idea_theme::active_font_family()) {
+            (FontFamily::System(got), FontFamily::System(want)) => {
+                assert_eq!(got, want, "menu font must match the active theme's body font");
+                assert!(!got.is_empty(), "an empty family resolves to the browser serif default");
+            }
+            (FontFamily::Typeface(got), FontFamily::Typeface(want)) => {
+                assert_eq!(
+                    got.family_name, want.family_name,
+                    "menu typeface must match the active theme's body typeface"
+                );
+            }
+            (got, want) => panic!("menu font kind {got:?} differs from the theme font {want:?}"),
+        }
+    }
+}

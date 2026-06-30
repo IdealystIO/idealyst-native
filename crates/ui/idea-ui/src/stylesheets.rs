@@ -900,6 +900,13 @@ stylesheet! {
 stylesheet! {
     pub SelectMenu<IdeaThemeRef> {
         base(t) {
+            // The menu renders inside a portal, which on web mounts under
+            // `<body>` — OUTSIDE the app tree's inherited `font-family`. Pin
+            // the theme font on the panel so every row label inherits it
+            // here, instead of falling back to the browser's serif default
+            // (the "dropdown options render in Times" bug). Free-fn call, not
+            // the `t` binding — the stylesheet macro rejects theme-ref reads.
+            font_family: idea_theme::active_font_family(),
             background: Tokenized::token("color-surface", Color("#ffffff".into())),
             border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
             border_width: 1.0,

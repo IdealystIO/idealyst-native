@@ -28,6 +28,8 @@ mod batched_repeat;
 mod control_flow;
 #[path = "walker/key_events.rs"]
 mod key_events;
+#[path = "walker/pressable_disabled.rs"]
+mod pressable_disabled;
 #[path = "walker/scroll_view_on_scroll.rs"]
 mod scroll_view_on_scroll;
 #[path = "walker/ui_for_flattening.rs"]

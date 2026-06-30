@@ -287,6 +287,28 @@ pub fn active_theme_untracked() -> Rc<dyn Any> {
     runtime_core::untrack(active_theme)
 }
 
+/// The active idea-theme's default body [`FontFamily`](runtime_core::FontFamily).
+///
+/// Exists for sheets that style **portal'd** text — the Select dropdown,
+/// the Autocomplete menu, etc. On web a portal mounts under `<body>`,
+/// OUTSIDE the app tree's inherited `font-family`, so its text falls back
+/// to the browser's serif default unless the menu pins the font itself
+/// (the "dropdown options render in Times" bug). Stamping this onto the
+/// menu panel keeps the dropdown's font cascade self-contained instead of
+/// depending on an ancestor that the portal has escaped.
+///
+/// Reads [`active_theme`] (tracked) so a theme swap re-resolves the font
+/// in place, mirroring the Typography base sheet.
+///
+/// Panics if no theme is installed, exactly like [`active_theme`].
+pub fn active_font_family() -> runtime_core::FontFamily {
+    use crate::theme::IdeaTheme;
+    active_theme()
+        .downcast_ref::<crate::theme::IdeaThemeRef>()
+        .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first")
+        .font_family()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

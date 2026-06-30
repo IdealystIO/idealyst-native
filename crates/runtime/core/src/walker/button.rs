@@ -73,7 +73,11 @@ pub(super) fn build<B: Backend + 'static>(
         fill(handle);
     }
     if let Some(d) = disabled {
-        attach_disabled(backend, &n, d, state_setter);
+        // Native `Element::Button` lowers to a real widget (`<button>`,
+        // `UIButton`, …) that goes inert via `set_disabled` natively, so no
+        // handler-level press-block flag is needed here (unlike the bare
+        // pressable path — see `pressable::build`).
+        attach_disabled(backend, &n, d, state_setter, None);
     }
     // Reactive label effect. The first invocation re-reads
     // the closure (so the initial label and the first

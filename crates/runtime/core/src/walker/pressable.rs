@@ -27,6 +27,28 @@ pub(super) fn build<B: Backend + 'static>(
     disabled: Option<Box<dyn Fn() -> bool>>,
     a11y: AccessibilityProps,
 ) -> B::Node {
+    // A bare pressable lowers to a non-form-control node (`<div>` on web,
+    // a plain view on native), so a backend's `set_disabled` can't make it
+    // inert the way it does a real `<button>`. To block the press uniformly
+    // we wrap `on_click` behind a shared flag the disabled Effect drives, and
+    // consult it before firing. Covers mouse, keyboard, and programmatic
+    // (`PressableHandle::click`) activation since they all route through this
+    // one closure. Only allocate the flag when a `disabled` source exists.
+    let (on_click, press_block_flag): (Rc<dyn Fn()>, Option<Rc<std::cell::Cell<bool>>>) =
+        if disabled.is_some() {
+            let flag = Rc::new(std::cell::Cell::new(false));
+            let flag_for_click = flag.clone();
+            let inner = on_click;
+            let wrapped: Rc<dyn Fn()> = Rc::new(move || {
+                if !flag_for_click.get() {
+                    (inner)();
+                }
+            });
+            (wrapped, Some(flag))
+        } else {
+            (on_click, None)
+        };
+
     let mut n = time_backend_create(pkind!(Pressable), || {
         backend.borrow_mut().create_pressable(on_click, &a11y)
     });
@@ -37,7 +59,7 @@ pub(super) fn build<B: Backend + 'static>(
         fill(handle);
     }
     if let Some(d) = disabled {
-        attach_disabled(backend, &n, d, state_setter);
+        attach_disabled(backend, &n, d, state_setter, press_block_flag);
     }
     n
 }
