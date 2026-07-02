@@ -2018,6 +2018,22 @@ impl StyleApplication {
         self
     }
 
+    /// Merge an entire `StyleRules` into the override layer — the wholesale
+    /// counterpart to the per-field `override_*` setters.
+    ///
+    /// The override layer resolves LAST (after the sheet, its variants, and any
+    /// computed layer), so every field `rules` sets wins. Existing overrides are
+    /// preserved unless `rules` also sets that field, in which case `rules`
+    /// wins. This is the primitive behind idea-ui's per-slot `*_style` override
+    /// props: resolve a component's theme style for a slot, then layer the
+    /// author's override sheet on top so ad-hoc tweaks (a custom label color, a
+    /// flush/zero-padding modal body) beat the theme without editing it.
+    pub fn with_overrides(mut self, rules: StyleRules) -> Self {
+        self.has_overrides = true;
+        self.overrides = std::mem::take(&mut self.overrides).merge(&rules);
+        self
+    }
+
     /// Override the background color with a per-call-site value.
     pub fn override_background(mut self, c: impl Into<Tokenized<Color>>) -> Self {
         self.has_overrides = true;
@@ -3554,6 +3570,44 @@ mod tests {
         );
         assert_eq!(r4.font_size, Some(Tokenized::Literal(Length::Px(99.0))));
         assert!(!Rc::ptr_eq(&r3, &r4));
+    }
+
+    // The bulk `with_overrides` counterpart to the per-field `override_*`
+    // setters: a whole `StyleRules` layered on top, each set field winning over
+    // the sheet, and preserving any prior overrides it doesn't touch. This is
+    // the primitive behind idea-ui's per-slot `*_style` override props.
+    #[test]
+    fn with_overrides_layers_a_whole_rules_and_preserves_prior() {
+        let sheet = Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+            color: Some(Tokenized::Literal(Color("#111111".into()))),
+            padding_top: Some(Tokenized::Literal(Length::Px(16.0))),
+            font_size: Some(Tokenized::Literal(Length::Px(14.0))),
+            ..Default::default()
+        }));
+
+        // A wholesale override wins for every field it sets; untouched sheet
+        // fields (font_size) survive.
+        let app = StyleApplication::new(sheet.clone()).with_overrides(StyleRules {
+            color: Some(Tokenized::Literal(Color("#0b6b3a".into()))),
+            padding_top: Some(Tokenized::Literal(Length::Px(0.0))),
+            ..Default::default()
+        });
+        let r = resolve(&app);
+        assert_eq!(r.color, Some(Tokenized::Literal(Color("#0b6b3a".into()))), "override color wins");
+        assert_eq!(r.padding_top, Some(Tokenized::Literal(Length::Px(0.0))), "override zero-padding wins (flush)");
+        assert_eq!(r.font_size, Some(Tokenized::Literal(Length::Px(14.0))), "untouched sheet field survives");
+
+        // A prior per-field override is preserved when the bulk override doesn't
+        // set that field, and beaten when it does.
+        let app2 = StyleApplication::new(sheet)
+            .override_color(Color("#ff0000".into()))
+            .with_overrides(StyleRules {
+                padding_top: Some(Tokenized::Literal(Length::Px(4.0))),
+                ..Default::default()
+            });
+        let r2 = resolve(&app2);
+        assert_eq!(r2.color, Some(Tokenized::Literal(Color("#ff0000".into()))), "prior override_color preserved");
+        assert_eq!(r2.padding_top, Some(Tokenized::Literal(Length::Px(4.0))), "bulk override applied on top");
     }
 
     // ------------------------------------------------------------------

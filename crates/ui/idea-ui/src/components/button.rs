@@ -37,6 +37,8 @@ use idea_theme::extensible::{
     installed_button_sheet, ButtonSizeRef, ShapeRef, ToneRef, VariantRef,
 };
 
+use crate::slot_override::{apply_override, override_rules};
+
 /// Props for the extensible Button. Each modifier axis is a typed
 /// handle (`*Ref` newtype) so call sites can write
 /// `tone: tone::Primary.into()` instead of `Rc::new(...)`. Built-in
@@ -96,6 +98,24 @@ pub struct ButtonProps {
     /// When `true`, the button stretches to fill its container's width
     /// (a full-bleed CTA). Default `false` — the button hugs its content.
     pub block: bool,
+    /// Per-slot style overrides layered on top of the theme style. See
+    /// [`crate::slot_override`]. `style` overrides the root pressable's box
+    /// (background, border, padding, radius, …); `label_style` and `icon_style`
+    /// override the label text node and the leading/trailing icon nodes. Use
+    /// these for one-off tweaks a theme sheet shouldn't own — e.g. a custom
+    /// label colour on a neutral fill (native-safe, unlike the CSS cascade).
+    #[prop(static)]
+    pub style: Option<Rc<StyleSheet>>,
+    /// Override for the label text node. A `color` here wins over the theme
+    /// foreground and is stamped on the label's own node, so it renders on
+    /// every backend (native text doesn't inherit colour). See `style`.
+    #[prop(static)]
+    pub label_style: Option<Rc<StyleSheet>>,
+    /// Override for the leading/trailing icon nodes. A `color` here wins over
+    /// the theme foreground for the icon tint; other fields merge into the icon
+    /// box style. See `style`.
+    #[prop(static)]
+    pub icon_style: Option<Rc<StyleSheet>>,
     /// Optional robot/E2E test id, forwarded to the root pressable. Only
     /// honored when idea-ui's `robot` feature is on; ignored otherwise.
     pub test_id: Option<&'static str>,
@@ -116,6 +136,9 @@ impl Default for ButtonProps {
             leading_icon: Reactive::Static(None),
             trailing_icon: Reactive::Static(None),
             block: Reactive::Static(false),
+            style: None,
+            label_style: None,
+            icon_style: None,
             test_id: None,
         }
     }
@@ -197,6 +220,11 @@ pub fn Button(props: &ButtonProps) -> Element {
     let loading_prop = props.loading.clone();
     let block_prop = props.block.clone();
     let bind_to = props.bind_to;
+    // Per-slot style overrides (see `crate::slot_override`). Static sheets, so
+    // clone the `Rc`s into the (reactive-capable) build closures below.
+    let style_ovr = props.style.clone();
+    let label_ovr = props.label_style.clone();
+    let icon_ovr = props.icon_style.clone();
 
     // STYLE-axis reactivity (tone/variant/size/shape) is independent of
     // STRUCTURE reactivity. `make_style` reads each axis live INSIDE so the
@@ -273,6 +301,9 @@ pub fn Button(props: &ButtonProps) -> Element {
         let make_style = make_style.clone();
         let leading_icon = leading_icon.clone();
         let trailing_icon = trailing_icon.clone();
+        let style_ovr = style_ovr.clone();
+        let label_ovr = label_ovr.clone();
+        let icon_ovr = icon_ovr.clone();
         move |loading: bool, has_lead: bool, has_trail: bool, disabled: bool, block: bool| {
             // A loading spinner occupies the leading slot, so it needs the same
             // centered-row layout an icon does.
@@ -294,6 +325,11 @@ pub fn Button(props: &ButtonProps) -> Element {
                 move || resolve_style(&style_closure()).color.clone()
             };
 
+            // Icon-slot override: a `color` in `icon_style` wins over the theme
+            // foreground for the icon tint; the whole override sheet also layers
+            // onto the icon box style (size/margin/…).
+            let icon_color_ovr = override_rules(&icon_ovr).color;
+
             // Builds one inline icon node from a `Reactive<Option<IconData>>`
             // slot known to be `Some` here. LAYER 1: when the slot is a live
             // `Dynamic`, route the glyph reactively via the primitive's
@@ -304,7 +340,10 @@ pub fn Button(props: &ButtonProps) -> Element {
             // static-vs-reactive split the label uses.
             let icon_node = |slot: &Reactive<Option<IconData>>| -> Element {
                 let mut el = icon(slot.get().expect("icon slot is Some in this arm"))
-                    .with_style(button_icon_sheet());
+                    .with_style(apply_override(
+                        StyleApplication::new(button_icon_sheet()),
+                        &icon_ovr,
+                    ));
                 if !slot.is_static() {
                     // Live glyph: the slot is `Some` in this arm (presence is
                     // the switch key); read the inner data reactively. The
@@ -312,6 +351,10 @@ pub fn Button(props: &ButtonProps) -> Element {
                     // now None" — a presence flip rebuilds the arm instead.
                     let slot = slot.clone();
                     el = el.data(move || slot.get().unwrap_or(EMPTY_ICON_DATA));
+                }
+                // Explicit icon-color override takes precedence over the theme fg.
+                if let Some(oc) = icon_color_ovr.clone() {
+                    return el.color(move || oc.resolve()).into_element();
                 }
                 if style_is_reactive {
                     let resolve_fg = resolve_fg.clone();
@@ -346,32 +389,48 @@ pub fn Button(props: &ButtonProps) -> Element {
             } else if has_lead {
                 children.push(icon_node(&leading_icon));
             }
+            // A label override applies on top of the theme fg (its `color`, if
+            // set, wins). When present it forces the styled path even if there's
+            // no theme fg to stamp.
+            let has_label_ovr = label_ovr.is_some();
             let label_node = if style_is_reactive {
                 // Live tone/variant: re-resolve the fg inside a reactive style
-                // closure so the label color tracks the container fill in place.
-                match fg.clone() {
-                    Some(_) => {
-                        let resolve_fg = resolve_fg.clone();
-                        text(label.clone())
-                            .with_style(move || {
-                                let mut app = StyleApplication::new(Rc::new(StyleSheet::r#static(
-                                    StyleRules::default(),
-                                )));
-                                if let Some(c) = resolve_fg() {
-                                    app = app.override_color(c);
-                                }
-                                app
-                            })
-                            .into_element()
-                    }
-                    None => text(label.clone()).into_element(),
+                // closure so the label color tracks the container fill in place,
+                // then layer the (static) label override on top.
+                if fg.is_some() || has_label_ovr {
+                    let resolve_fg = resolve_fg.clone();
+                    let label_ovr = label_ovr.clone();
+                    text(label.clone())
+                        .with_style(move || {
+                            let mut app = StyleApplication::new(Rc::new(StyleSheet::r#static(
+                                StyleRules::default(),
+                            )));
+                            if let Some(c) = resolve_fg() {
+                                app = app.override_color(c);
+                            }
+                            apply_override(app, &label_ovr)
+                        })
+                        .into_element()
+                } else {
+                    text(label.clone()).into_element()
                 }
             } else {
-                match fg.clone() {
-                    Some(c) => text(label.clone())
-                        .with_style(label_color_style(c))
+                match (fg.clone(), has_label_ovr) {
+                    (Some(c), _) => text(label.clone())
+                        .with_style(apply_override(
+                            StyleApplication::new(label_color_style(c)),
+                            &label_ovr,
+                        ))
                         .into_element(),
-                    None => text(label.clone()).into_element(),
+                    (None, true) => text(label.clone())
+                        .with_style(apply_override(
+                            StyleApplication::new(Rc::new(StyleSheet::r#static(
+                                StyleRules::default(),
+                            ))),
+                            &label_ovr,
+                        ))
+                        .into_element(),
+                    (None, false) => text(label.clone()).into_element(),
                 }
             };
             children.push(label_node);
@@ -381,10 +440,13 @@ pub fn Button(props: &ButtonProps) -> Element {
 
             let on_click_for_p = on_click.clone();
             let mut bound = runtime_core::pressable(children, move || (on_click_for_p)());
+            // Layer the root `style` override on the pressable box (background,
+            // border, padding, radius, …) on top of the resolved theme style.
             bound = if style_is_reactive {
-                bound.with_style(style_closure)
+                let style_ovr = style_ovr.clone();
+                bound.with_style(move || apply_override(style_closure(), &style_ovr))
             } else {
-                bound.with_style(style_closure())
+                bound.with_style(apply_override(style_closure(), &style_ovr))
             };
             if inert {
                 bound = bound.disabled(true);
@@ -810,6 +872,80 @@ mod tests {
         match el {
             Element::Pressable { disabled, .. } => disabled,
             _ => panic!("Button renders a Pressable"),
+        }
+    }
+
+    /// Build a one-off static override sheet setting a single color.
+    fn color_sheet(hex: &str) -> Rc<StyleSheet> {
+        Rc::new(StyleSheet::r#static(StyleRules {
+            color: Some(Tokenized::Literal(Color(hex.into()))),
+            ..Default::default()
+        }))
+    }
+
+    // Slot override: `label_style` colour wins over the theme foreground and is
+    // stamped on the label's OWN node (native-safe). This is the "dark label on
+    // a white/neutral button" case the CSS cascade can't do on native.
+    #[test]
+    fn label_style_overrides_label_color() {
+        theme();
+        let props = ButtonProps {
+            label: Reactive::Static("Get started".into()),
+            label_style: Some(color_sheet("#0b6b3a")),
+            ..Default::default()
+        };
+        let (children, _) = pressable_parts(Button(&props));
+        let color = text_node_color(&children[0]).expect("label carries its own color");
+        assert_eq!(
+            color.0.to_ascii_lowercase(),
+            "#0b6b3a",
+            "label_style color overrides the theme foreground on the label node",
+        );
+    }
+
+    // Slot override: the root `style` layers onto the pressable box on top of
+    // the theme style (background here) without disturbing untouched fields.
+    #[test]
+    fn style_overrides_container_box() {
+        theme();
+        let ovr = Rc::new(StyleSheet::r#static(StyleRules {
+            background: Some(Tokenized::Literal(Color("#ffffff".into()))),
+            ..Default::default()
+        }));
+        let props = ButtonProps {
+            label: Reactive::Static("Go".into()),
+            style: Some(ovr),
+            ..Default::default()
+        };
+        let (_, app) = pressable_parts(Button(&props));
+        assert_eq!(
+            resolve_style(&app).background.as_ref().map(|c| c.resolve().0.to_ascii_lowercase()),
+            Some("#ffffff".to_string()),
+            "root style override wins for the container background",
+        );
+    }
+
+    // Slot override: `icon_style` colour wins for the icon tint.
+    #[test]
+    fn icon_style_overrides_icon_tint() {
+        theme();
+        let props = ButtonProps {
+            label: Reactive::Static("Go".into()),
+            leading_icon: Reactive::Static(Some(PLUS)),
+            icon_style: Some(color_sheet("#0b6b3a")),
+            ..Default::default()
+        };
+        let (children, _) = pressable_parts(Button(&props));
+        match &children[0] {
+            Element::Icon { color, .. } => {
+                let c = color.as_ref().expect("icon carries an explicit color");
+                assert_eq!(
+                    c().0.to_ascii_lowercase(),
+                    "#0b6b3a",
+                    "icon_style color overrides the theme foreground for the icon tint",
+                );
+            }
+            _ => panic!("expected the leading icon"),
         }
     }
 

@@ -102,6 +102,14 @@ impl Variant for Filled {
     }
 }
 
+/// `Solid` — an alias for [`Filled`]. "Solid" is the instinctive name for a
+/// solid-background button, so we accept it as a synonym rather than fail the
+/// build. It's a `const` (not a `type` alias) so `variant::Solid` works in
+/// value position (`variant = variant::Solid`); it *is* a `Filled`, so it
+/// carries the same `"filled"` key and shares Filled's pre-generated styles.
+#[allow(non_upper_case_globals)]
+pub const Solid: Filled = Filled;
+
 /// Soft — tinted background, intent-colored text.
 #[derive(Copy, Clone, Default)]
 pub struct Soft;

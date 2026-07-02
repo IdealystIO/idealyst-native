@@ -532,6 +532,10 @@ mod tests {
         let _t: ToneRef = tone::Danger.into();
         let _v: VariantRef = variant::Filled.into();
         let _v: VariantRef = variant::Outlined.into();
+        // `Solid` is an alias for `Filled`: coerces the same way and resolves
+        // to the same `"filled"` key.
+        let solid: VariantRef = variant::Solid.into();
+        assert_eq!(solid.key(), variant::Filled.key(), "Solid is an alias for Filled");
         let _s: ButtonSizeRef = size::Md.into();
         let _h: ShapeRef = shape::Pill.into();
         let _k: TypographyKindRef = typography::H1.into();

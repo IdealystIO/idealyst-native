@@ -22,13 +22,15 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use runtime_core::{
-    component, ui, ChildList, Easing, IdealystSchema, Length, Element, Reactive, StyleApplication,
-    StyleRules, StyleSheet, Tokenized, Transition, VariantEnum, VariantSet,
+    component, ui, ChildList, Easing, IdealystSchema, Length, Element, Overflow, Reactive,
+    StyleApplication, StyleRules, StyleSheet, Tokenized, Transition, VariantEnum, VariantSet,
 };
 
 use idea_theme::active_theme;
 use idea_theme::extensible::{tone as tones, ResolutionCtx, ToneRef, VariantRef};
 use idea_theme::theme::IdeaThemeRef;
+
+use crate::slot_override::apply_override;
 
 pub use crate::stylesheets::CardPadding;
 
@@ -231,6 +233,20 @@ pub struct CardProps {
     /// for support/crisis/info panels that need to read as intent-colored.
     /// When `None` (the default), Flat/Elevated keep their surface look.
     pub tone: Option<ToneRef>,
+    /// Style override for the card surface (background, border, radius, shadow,
+    /// …), layered on top of the resolved variant/padding/tone style — the top
+    /// resolution layer, so any field set here wins. See [`crate::slot_override`].
+    ///
+    /// This is also how you clip contents to the rounded corners: by default a
+    /// card does NOT clip (content may extend past the radius — the friendlier
+    /// default for overhanging popovers/menus), so pass an override that sets
+    /// `overflow: Overflow::Hidden` for an edge-to-edge image or coloured header
+    /// that should follow the corner curve. It clips on every backend (the same
+    /// mechanism Modal uses for its rounded frame). iOS caveat: a clipping layer
+    /// can't also cast the Elevated variant's drop shadow — pair the clip with
+    /// `Flat`, or nest a clipped inner card in an unclipped elevated one.
+    #[prop(static)]
+    pub style: Option<Rc<StyleSheet>>,
     /// Card contents. Incoming fragments are flattened via
     /// `ChildList::append_to` before rendering inside the surface.
     pub children: Vec<Element>,
@@ -242,6 +258,7 @@ impl Default for CardProps {
             variant: variant::Flat.into(),
             padding: Reactive::Static(CardPadding::default()),
             tone: Reactive::Static(None),
+            style: None,
             children: Vec::new(),
         }
     }
@@ -263,6 +280,7 @@ pub fn Card(props: CardProps) -> Element {
         let variant = props.variant.clone();
         let padding = props.padding.clone();
         let tone = props.tone.clone();
+        let style_ovr = props.style.clone();
         move || -> StyleApplication {
             let variant_key = variant.get().key().to_string();
             let padding_key = padding.get().as_variant_str().to_string();
@@ -296,7 +314,11 @@ pub fn Card(props: CardProps) -> Element {
                     }
                 });
             }
-            style
+
+            // Author surface override wins (top resolution layer). This is also
+            // where a caller opts into corner clipping — `overflow: hidden` in
+            // the override sheet clips children to the card's border radius.
+            apply_override(style, &style_ovr)
         }
     };
 
@@ -374,6 +396,58 @@ mod tests {
         assert!(
             app.computed().is_none(),
             "a tone-less Card attaches no tint layer"
+        );
+    }
+
+    // Clipping is a style attribute, not a bespoke prop: an `overflow: hidden`
+    // in the `style` override clips children to the card's border radius, while
+    // the default (no override) leaves overflow unset so content may overhang.
+    #[test]
+    fn style_override_overflow_clips_to_radius() {
+        theme();
+        let clip = Rc::new(StyleSheet::r#static(StyleRules {
+            overflow: Some(Overflow::Hidden),
+            ..Default::default()
+        }));
+        let clipped = CardProps {
+            style: Some(clip),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_style(&view_style(Card(clipped))).overflow,
+            Some(Overflow::Hidden),
+            "overflow:hidden in the style override clips children to the radius",
+        );
+
+        let default = CardProps::default();
+        assert_eq!(
+            resolve_style(&view_style(Card(default))).overflow,
+            None,
+            "the default doesn't clip — content may extend past the radius",
+        );
+    }
+
+    // Slot override: the root `style` layers onto the card surface and wins
+    // (background here) over the variant style — and can even turn clip back
+    // off, since it's the top resolution layer.
+    #[test]
+    fn style_override_wins_over_variant() {
+        theme();
+        let ovr = Rc::new(StyleSheet::r#static(StyleRules {
+            background: Some(Tokenized::Literal(runtime_core::Color("#123456".into()))),
+            ..Default::default()
+        }));
+        let props = CardProps {
+            style: Some(ovr),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_style(&view_style(Card(props)))
+                .background
+                .as_ref()
+                .map(|c| c.resolve().0.to_ascii_lowercase()),
+            Some("#123456".to_string()),
+            "style override sets the card background over the variant surface",
         );
     }
 }

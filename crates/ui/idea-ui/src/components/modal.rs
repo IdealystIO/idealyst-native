@@ -72,6 +72,7 @@ use runtime_core::{
     Tokenized, VariantSet, ViewHandle,
 };
 
+use crate::slot_override::apply_override;
 use crate::stylesheets::Modal as ModalStyle;
 
 /// Desired surface width when the viewport has room for it.
@@ -138,6 +139,18 @@ pub struct ModalProps {
     /// Must keep the backdrop full-bleed (`position: absolute` + zero
     /// insets).
     pub backdrop_style: Option<Rc<StyleSheet>>,
+    /// Style override for the card **surface** (the frame — background, border,
+    /// radius, shadow). Layered on the theme `ModalStyle`. See
+    /// [`crate::slot_override`].
+    #[prop(static)]
+    pub surface_style: Option<Rc<StyleSheet>>,
+    /// Style override for the scrollable **body** that wraps `content`. Its
+    /// most common use is padding: the body hard-codes `spacing-lg` on all four
+    /// sides, so set `padding: 0` here (a "bleed") to let an edge-to-edge
+    /// illustration header sit flush. Layered on the body style. See
+    /// [`crate::slot_override`].
+    #[prop(static)]
+    pub content_style: Option<Rc<StyleSheet>>,
 }
 
 /// The modal body builder. A newtype over `Rc<dyn Fn() -> Element>` whose
@@ -171,6 +184,8 @@ impl Default for ModalProps {
             dismissable: Reactive::Static(true),
             width: Reactive::Static(DEFAULT_MODAL_WIDTH),
             backdrop_style: None,
+            surface_style: None,
+            content_style: None,
         }
     }
 }
@@ -354,6 +369,8 @@ pub fn Modal(props: ModalProps) -> Element {
     let dismissable = props.dismissable.get();
     let desired = props.width.get();
     let backdrop_style = props.backdrop_style;
+    let surface_style = props.surface_style;
+    let content_style = props.content_style;
 
     // `presence` keeps the portal mounted through the EXIT window, then truly
     // unmounts it — so a closed modal leaves the tree on every backend (no
@@ -375,6 +392,8 @@ pub fn Modal(props: ModalProps) -> Element {
             dismissable,
             desired,
             backdrop_style.clone(),
+            surface_style.clone(),
+            content_style.clone(),
         )
     };
 
@@ -399,6 +418,8 @@ fn build_overlay(
     dismissable: bool,
     desired: f32,
     backdrop_style: Option<Rc<StyleSheet>>,
+    surface_style: Option<Rc<StyleSheet>>,
+    content_style: Option<Rc<StyleSheet>>,
 ) -> Element {
     // Resolve the backdrop press handler: explicit override wins; otherwise
     // dismiss when dismissable; otherwise the backdrop is inert.
@@ -443,6 +464,8 @@ fn build_overlay(
         backdrop_style,
         desired,
         on_dismiss,
+        surface_style,
+        content_style,
     )
 }
 
@@ -460,6 +483,8 @@ fn assemble_overlay(
     backdrop_style: Option<Rc<StyleSheet>>,
     desired: f32,
     on_dismiss: Option<Rc<dyn Fn()>>,
+    surface_style: Option<Rc<StyleSheet>>,
+    content_style: Option<Rc<StyleSheet>>,
 ) -> Element {
     // Backdrop layer: a full-bleed view (scrim color) that fades, with a
     // transparent pressable inside catching taps.
@@ -500,7 +525,10 @@ fn assemble_overlay(
     // view. Inter-item spacing is the content's own concern (wrap it in a
     // `Stack` for a gap); the body supplies padding + scroll behavior.
     let body = runtime_core::view(vec![content])
-        .with_style(StyleApplication::new(modal_body_sheet()))
+        .with_style(apply_override(
+            StyleApplication::new(modal_body_sheet()),
+            &content_style,
+        ))
         .into_element();
     // The scroller carries the viewport-derived height cap. It sizes to its
     // body's content (so a short modal hugs its content) until it hits
@@ -535,7 +563,7 @@ fn assemble_overlay(
             let insets = safe_area_insets().get();
             let effective = effective_modal_width(desired, vp.width - insets.left - insets.right);
             let max_h = effective_modal_max_height(vp.height - insets.top - insets.bottom);
-            StyleApplication::new(ModalStyle::sheet()).with_computed(
+            let app = StyleApplication::new(ModalStyle::sheet()).with_computed(
                 format!(
                     "modal-wh-{}-{}",
                     effective.round() as i32,
@@ -556,7 +584,10 @@ fn assemble_overlay(
                     gap: Some(Tokenized::Literal(Length::Px(0.0))),
                     ..Default::default()
                 },
-            )
+            );
+            // Author surface override (frame bg/border/radius/shadow) resolves
+            // last, on top of the computed width/height/clip layer.
+            apply_override(app, &surface_style)
         })
         .into_element();
 
@@ -635,6 +666,8 @@ fn assemble_overlay(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use idea_theme::theme::{install_idea_theme, light_theme};
+    use runtime_core::resolve_style;
 
     #[test]
     fn props_default_is_dismissable_with_default_width() {
@@ -735,6 +768,8 @@ mod tests {
             None,
             DEFAULT_MODAL_WIDTH,
             None,
+            None,
+            None,
         );
 
         // The portal wraps the Modal's content in a single flex-center
@@ -766,6 +801,88 @@ mod tests {
             "card layer must be a touch-consuming Pressable so a tap on \
              the card doesn't fall through to the backdrop and dismiss \
              the modal (Android FrameLayout fall-through)"
+        );
+    }
+
+    /// Find the body view — the first `View` with a direct `Text` child (the
+    /// modal wraps `content` in the padded body view) — and return its resolved
+    /// top padding in px.
+    fn body_padding_top(portal: &Element) -> f32 {
+        fn find_body(el: &Element) -> Option<&Element> {
+            match el {
+                Element::View { children, .. }
+                    if children.iter().any(|c| matches!(c, Element::Text { .. })) =>
+                {
+                    Some(el)
+                }
+                Element::View { children, .. }
+                | Element::Pressable { children, .. }
+                | Element::ScrollView { children, .. }
+                | Element::Portal { children, .. } => children.iter().find_map(find_body),
+                _ => None,
+            }
+        }
+        let body = find_body(portal).expect("modal has a body view wrapping the content");
+        let style = match body {
+            Element::View { style, .. } => style.as_ref().expect("body carries a style"),
+            _ => unreachable!(),
+        };
+        let app = match style {
+            runtime_core::StyleSource::Static(a) => a.clone(),
+            _ => panic!("body uses a static style"),
+        };
+        match resolve_style(&app).padding_top.as_ref().map(|t| t.resolve()) {
+            Some(runtime_core::Length::Px(v)) => v,
+            other => panic!("expected a px top padding, got {other:?}"),
+        }
+    }
+
+    // Regression (edge-to-edge header couldn't sit flush): the body hard-codes
+    // `spacing-lg` padding. A `content_style` override with zero padding must
+    // win, letting an illustration header bleed to the surface edge. This is the
+    // slot-override system applied to Modal's body slot.
+    #[test]
+    fn content_style_override_makes_body_flush() {
+        install_idea_theme(light_theme());
+
+        let default_portal = assemble_overlay(
+            runtime_core::text("hi").into_element(),
+            Ref::new(),
+            Ref::new(),
+            None,
+            None,
+            DEFAULT_MODAL_WIDTH,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            body_padding_top(&default_portal) > 0.0,
+            "the default body has non-zero padding (spacing-lg)"
+        );
+
+        let flush = Rc::new(StyleSheet::r#static(StyleRules {
+            padding_top: Some(Tokenized::Literal(Length::Px(0.0))),
+            padding_right: Some(Tokenized::Literal(Length::Px(0.0))),
+            padding_bottom: Some(Tokenized::Literal(Length::Px(0.0))),
+            padding_left: Some(Tokenized::Literal(Length::Px(0.0))),
+            ..Default::default()
+        }));
+        let flush_portal = assemble_overlay(
+            runtime_core::text("hi").into_element(),
+            Ref::new(),
+            Ref::new(),
+            None,
+            None,
+            DEFAULT_MODAL_WIDTH,
+            None,
+            None,
+            Some(flush),
+        );
+        assert_eq!(
+            body_padding_top(&flush_portal),
+            0.0,
+            "content_style padding:0 override makes the body flush"
         );
     }
 }

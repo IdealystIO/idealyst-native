@@ -12,26 +12,29 @@
 //! }
 //! ```
 //!
-//! Built from flex (the framework has no CSS grid): children are
-//! chunked into rows of `columns`, and each cell flexes equally
-//! (`flex-grow: 1; flex-basis: 0`). A partial final row is padded with
-//! empty filler cells so its real cells keep the same `1/columns` width
-//! as full rows and stay LEFT-aligned under the columns above (rather
-//! than flex-growing to fill the row width).
+//! It's a real CSS grid: the container sets `display: grid` with
+//! `columns` equal `1fr` tracks, and children flow into the tracks,
+//! wrapping to implicit rows. Because children are placed by the layout
+//! engine (not chunked into row-views at build time), a **reactive
+//! list** works — a `for item in signal { … }` lowers to one
+//! `Element::Each` that every backend splices as direct grid items, so
+//! the rows land in successive cells instead of piling into one. A live
+//! `columns` also re-resolves the tracks in place. This is a *layout*
+//! grid (all children mount); for very large data sets that need
+//! recycling, use `virtualized::grid`.
 
 use runtime_core::{
-    component, ChildList, IdealystSchema, IntoElement, Element, Reactive, StyleApplication,
-    VariantEnum,
+    component, IdealystSchema, IntoElement, DisplayKind, Element, Reactive, StyleApplication,
+    StyleRules, TrackSize, VariantEnum,
 };
 
 use crate::components::stack::StackGap;
-use crate::stylesheets::{GridCell, GridContainer, GridRow};
+use crate::stylesheets::GridContainer;
 
-// Reactive-by-default: `#[props]` wraps `columns`/`gap` → `Reactive<…>`. `gap`
-// routes into the GridRow/GridContainer style sinks reading `.get()` live (the
-// closures already return `StyleApplication`). `columns` is STRUCTURAL — it
-// controls how children are chunked into rows, which a style sink can't express
-// — so it's snapshotted at build with a flagged TODO. `children` is the
+// Reactive-by-default: `#[props]` wraps `columns`/`gap` → `Reactive<…>`. Both
+// route into the GridContainer style sink reading `.get()` live: `gap` picks the
+// spacing variant, `columns` re-resolves the grid track list (a computed layer),
+// so a live column count re-lays-out in place — no rebuild. `children` is the
 // children category and stays bare.
 #[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
@@ -60,60 +63,26 @@ impl Default for GridProps {
 /// rows, with `gap` spacing between rows and columns.
 #[component(children)]
 pub fn Grid(props: GridProps) -> Element {
-    // TODO(reactive-sweep): route `columns` to the row-chunking structure. A
-    // live `columns` changes how many cells fill each row (and the partial-row
-    // padding) — that's a tree-shape change, not a style sink, so it can't ride
-    // a style closure. It needs the body wrapped in a `switch`/keyed rebuild on
-    // `columns.get()`. For now `columns` is snapshotted at build (a live source
-    // sets the initial column count but won't re-chunk on change).
-    let cols = props.columns.get().max(1) as usize;
-
-    let mut flat: Vec<Element> = Vec::with_capacity(props.children.len());
-    for c in props.children {
-        ChildList::append_to(c, &mut flat);
-    }
-
-    // One equal-flex cell wrapping a child (or empty, for row padding).
-    let cell = |child: Vec<Element>| {
-        runtime_core::view(child)
-            .with_style(|| StyleApplication::new(GridCell::sheet()))
-            .into_element()
-    };
-
-    // Chunk into rows of `cols`; wrap each child in an equal-flex cell.
-    let mut rows: Vec<Element> = Vec::new();
-    let mut iter = flat.into_iter();
-    loop {
-        let chunk: Vec<Element> = iter.by_ref().take(cols).collect();
-        if chunk.is_empty() {
-            break;
-        }
-        let n = chunk.len();
-        let mut cells: Vec<Element> = chunk.into_iter().map(|c| cell(vec![c])).collect();
-        // Pad a partial final row with empty cells so the real cells keep
-        // their 1/cols width and stay left-aligned instead of stretching.
-        for _ in n..cols {
-            cells.push(cell(vec![]));
-        }
-        // `gap` routes into the GridRow style sink: read `.get()` INSIDE the
-        // closure so a live `gap` re-resolves the row spacing in place (a
-        // static one collapses to one build-time resolution).
-        let row_gap = props.gap.clone();
-        let row = runtime_core::view(cells)
-            .with_style(move || {
-                StyleApplication::new(GridRow::sheet())
-                    .with("gap", row_gap.get().as_variant_str().to_string())
-            })
-            .into_element();
-        rows.push(row);
-    }
-
-    // Same sink for the container's between-rows gap.
-    let container_gap = props.gap.clone();
-    runtime_core::view(rows)
+    // A single `display: grid` container. Children — static siblings AND a
+    // reactive `for`'s spliced rows — are placed by the layout engine into the
+    // track list, so nothing is chunked at build time. `gap` and `columns` both
+    // read `.get()` INSIDE the style closure so either changing re-resolves the
+    // grid in place (gap variant + the computed track list keyed by count).
+    let cols = props.columns.clone();
+    let gap = props.gap.clone();
+    runtime_core::view(props.children)
         .with_style(move || {
+            let n = cols.get().max(1) as usize;
             StyleApplication::new(GridContainer::sheet())
-                .with("gap", container_gap.get().as_variant_str().to_string())
+                .with("gap", gap.get().as_variant_str().to_string())
+                // `grid_template_columns` is a `Vec` (not a string-keyed variant
+                // value), so it rides a computed layer keyed by the count — the
+                // key changes with `n`, re-resolving the tracks on a live change.
+                .with_computed(format!("grid-cols-{n}"), move || StyleRules {
+                    display: Some(DisplayKind::Grid),
+                    grid_template_columns: Some(vec![TrackSize::Fr(1.0); n]),
+                    ..Default::default()
+                })
         })
         .into_element()
 }
@@ -121,7 +90,8 @@ pub fn Grid(props: GridProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_core::{view, Element};
+    use idea_theme::theme::{install_idea_theme, light_theme};
+    use runtime_core::{resolve_style, view, Element, StyleRules as RCStyleRules, StyleSource};
 
     fn view_children(el: &Element) -> &Vec<Element> {
         match el {
@@ -134,27 +104,84 @@ mod tests {
         view(vec![]).into_element()
     }
 
-    // Regression: a partial final row must be PADDED to `columns` cells so
-    // its real cells keep their 1/columns width and stay left-aligned under
-    // the columns above — not flex-grow to fill the row (the icons-page
-    // "bottom row spreads out" report).
+    /// Resolve the grid container's (reactive) style to its `StyleRules`.
+    fn container_rules(el: &Element) -> std::rc::Rc<RCStyleRules> {
+        let style = match el {
+            Element::View { style, .. } => style.as_ref().expect("Grid attaches a style"),
+            _ => panic!("Grid renders a View"),
+        };
+        let app = match style {
+            StyleSource::Reactive(f) => f(),
+            StyleSource::Static(a) => a.clone(),
+            _ => panic!("Grid uses a reactive style closure"),
+        };
+        resolve_style(&app)
+    }
+
+    // The Grid is a real CSS grid: `display: grid` with one `1fr` track per
+    // column. This is what lets the layout engine place children into cells
+    // (the previous build-time flex chunking couldn't, which broke reactive
+    // lists — see the module docs).
     #[test]
-    fn partial_final_row_is_padded_for_left_alignment() {
-        // 4 cells across 3 columns → rows of [3, 1]; the partial row is
-        // padded up to 3 cells (1 real + 2 empty fillers).
-        let props = GridProps {
+    fn grid_is_a_css_grid_with_one_fr_track_per_column() {
+        install_idea_theme(light_theme());
+        let grid = Grid(GridProps {
             columns: Reactive::Static(3),
             gap: Reactive::Static(StackGap::Md),
             children: vec![leaf(), leaf(), leaf(), leaf()],
-        };
-        let grid = Grid(props);
-        let rows = view_children(&grid);
-        assert_eq!(rows.len(), 2, "4 cells in 3 columns make 2 rows");
-        assert_eq!(view_children(&rows[0]).len(), 3, "first row is full");
+        });
+        let rules = container_rules(&grid);
+        assert_eq!(rules.display, Some(DisplayKind::Grid), "container is display:grid");
         assert_eq!(
-            view_children(&rows[1]).len(),
-            3,
-            "the partial final row is padded to `columns` cells so real cells left-align"
+            rules.grid_template_columns.as_deref(),
+            Some([TrackSize::Fr(1.0), TrackSize::Fr(1.0), TrackSize::Fr(1.0)].as_slice()),
+            "3 columns → three equal 1fr tracks",
+        );
+    }
+
+    // Children pass through as DIRECT grid items — no per-cell wrapper views and
+    // no row grouping. This is precisely why a reactive `for` (one Element::Each)
+    // works: every backend splices its rows directly into this container, so
+    // they become successive grid items instead of piling into a single wrapped
+    // cell.
+    #[test]
+    fn children_are_direct_grid_items_not_wrapped() {
+        install_idea_theme(light_theme());
+        let grid = Grid(GridProps {
+            columns: Reactive::Static(2),
+            gap: Reactive::Static(StackGap::Md),
+            children: vec![leaf(), leaf(), leaf()],
+        });
+        // 3 children in → 3 direct children out (no padding fillers, no row
+        // views, no cell wrappers).
+        assert_eq!(view_children(&grid).len(), 3, "children are the grid items themselves");
+    }
+
+    // `columns` drives the track count directly.
+    #[test]
+    fn columns_prop_sets_track_count() {
+        install_idea_theme(light_theme());
+        let grid = Grid(GridProps {
+            columns: Reactive::Static(5),
+            gap: Reactive::Static(StackGap::Sm),
+            children: vec![leaf()],
+        });
+        assert_eq!(
+            container_rules(&grid).grid_template_columns.as_ref().map(|t| t.len()),
+            Some(5),
+            "5 columns → five tracks",
+        );
+
+        // Clamps to at least one track.
+        let zero = Grid(GridProps {
+            columns: Reactive::Static(0),
+            gap: Reactive::Static(StackGap::Sm),
+            children: vec![],
+        });
+        assert_eq!(
+            container_rules(&zero).grid_template_columns.as_ref().map(|t| t.len()),
+            Some(1),
+            "columns is clamped to >= 1",
         );
     }
 }

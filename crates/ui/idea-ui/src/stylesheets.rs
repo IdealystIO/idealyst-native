@@ -13,8 +13,8 @@
 
 use runtime_core::stylesheet;
 use runtime_core::{
-    AlignItems, Color, Cursor, FlexDirection, FontWeight, JustifyContent, Length, Position,
-    TextAlign, TextTransform, Tokenized,
+    AlignItems, Color, Cursor, DisplayKind, FlexDirection, FontWeight, JustifyContent, Length,
+    Position, TextAlign, TextTransform, Tokenized,
 };
 
 #[allow(unused_imports)]
@@ -2508,13 +2508,18 @@ stylesheet! {
 }
 
 // =============================================================================
-// Grid — N equal columns via chunked flex rows
+// Grid — N equal columns via real CSS grid (display: grid)
 // =============================================================================
+//
+// The container is `display: grid`; the per-column `1fr` track list is
+// attached by the `Grid` component's computed layer (it depends on the live
+// `columns` count, which a static sheet can't express). `gap` applies to both
+// row and column gaps. See `components/grid.rs`.
 
 stylesheet! {
     pub GridContainer<IdeaThemeRef> {
         base(t) {
-            flex_direction: FlexDirection::Column,
+            display: DisplayKind::Grid,
             gap: Tokenized::token("spacing-md", Length::Px(12.0)),
         }
         variant gap {
@@ -2525,36 +2530,6 @@ stylesheet! {
             md(t)    { gap: Tokenized::token("spacing-md", Length::Px(12.0)) }
             lg(t)    { gap: Tokenized::token("spacing-lg", Length::Px(16.0)) }
             xl(t)    { gap: Tokenized::token("spacing-xl", Length::Px(24.0)) }
-        }
-    }
-}
-
-stylesheet! {
-    pub GridRow<IdeaThemeRef> {
-        base(t) {
-            flex_direction: FlexDirection::Row,
-            align_items: AlignItems::Stretch,
-            gap: Tokenized::token("spacing-md", Length::Px(12.0)),
-        }
-        variant gap {
-            none(_t) { gap: Length::Px(0.0) }
-            xs(t)    { gap: Tokenized::token("spacing-xs", Length::Px(4.0)) }
-            sm(t)    { gap: Tokenized::token("spacing-sm", Length::Px(8.0)) }
-            #[default]
-            md(t)    { gap: Tokenized::token("spacing-md", Length::Px(12.0)) }
-            lg(t)    { gap: Tokenized::token("spacing-lg", Length::Px(16.0)) }
-            xl(t)    { gap: Tokenized::token("spacing-xl", Length::Px(24.0)) }
-        }
-    }
-}
-
-// Each grid cell flexes equally and is allowed to shrink below content.
-stylesheet! {
-    pub GridCell<IdeaThemeRef> {
-        base(_t) {
-            flex_grow: 1.0,
-            flex_basis: 0.0,
-            min_width: 0.0,
         }
     }
 }

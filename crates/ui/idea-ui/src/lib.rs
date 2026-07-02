@@ -69,6 +69,7 @@ pub mod intent;
 // recipe fn by path (`idea_ui::recipes::<name>`) and render it live —
 // the whole module is still nothing in production (catalog off).
 pub mod recipes;
+pub mod slot_override;
 pub mod stylesheets;
 pub mod theme;
 mod theme_runtime;

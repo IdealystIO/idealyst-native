@@ -159,7 +159,14 @@ impl<T: std::fmt::Debug> std::fmt::Debug for Reactive<T> {
 //   - a string literal       → `Reactive::Static`  (via `From<&str>`;
 //     `ui!`/`jsx!` already append `.into()` to literals),
 //   - a `Signal<T>`/`memo`   → `Reactive::Dynamic` (via `From<Signal>`),
-//   - an `rx!(expr)`         → `Reactive::Dynamic` (already a `Reactive`).
+//   - an `rx!(expr)`         → `Reactive::Dynamic` (already a `Reactive`),
+//   - an already-built `Reactive<T>` → passes through unchanged. `ui!`
+//     emits `(value).into()` pinned to the field's `Reactive<T>` type, and
+//     the standard-library reflexive `From<T> for T` resolves it as a
+//     no-op. So you can compute a `Reactive` (e.g. store one, or build a
+//     `Reactive::Dynamic(Rc::new(move || …))`) and pass it straight to a
+//     `content =`/`label =`/etc. prop — no wrapping, no `.get()`. (There is
+//     no custom identity impl; the reflexive one already covers it.)
 //
 // Non-string-literal dynamic values opt in explicitly at the call site
 // (`sig.into()` / `rx!(...)`), keeping reactivity visible — the
@@ -238,6 +245,22 @@ impl IntoTextSource for Reactive<String> {
 mod tests {
     use super::*;
     use crate::Signal;
+
+    // An already-built `Reactive<T>` passes through `.into()` unchanged (via the
+    // std reflexive `From<T> for T`) — what lets a call site hand a pre-computed
+    // `Reactive`/`Reactive::Dynamic` to a `content =`/`label =` prop directly.
+    #[test]
+    fn prebuilt_reactive_passes_through_into() {
+        let dynamic: Reactive<i32> = Reactive::Dynamic(Rc::new(|| 7));
+        let r: Reactive<i32> = dynamic.into();
+        assert!(!r.is_static(), "a Dynamic stays Dynamic through .into()");
+        assert_eq!(r.get(), 7);
+
+        let stat: Reactive<i32> = Reactive::Static(3);
+        let r2: Reactive<i32> = stat.into();
+        assert!(r2.is_static());
+        assert_eq!(r2.get(), 3);
+    }
 
     #[test]
     fn bare_value_into_reactive_is_static() {
