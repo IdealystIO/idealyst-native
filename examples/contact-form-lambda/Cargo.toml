@@ -1,0 +1,79 @@
+[package]
+name = "contact-form-lambda"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# A serverless contact form, end to end:
+#
+#   - The web client (default features) is an idealyst app: three fields +
+#     a submit button that calls the `submit_contact` `#[server]` fn.
+#   - The same `#[server]` fn, built with `--features server`, stores the
+#     submission in DynamoDB and emails a notification via SES.
+#   - `src/bin/lambda.rs` runs the whole server-fn API as a single AWS
+#     Lambda via the `server-aws` adapter (`server_aws::run()`), fronted by
+#     a Lambda Function URL or API Gateway.
+#   - `src/bin/local.rs` runs the identical API on a local TCP port
+#     (`server::serve`) for development — set `CONTACT_DRY_RUN=1` to skip the
+#     AWS calls and exercise the round-trip without credentials.
+#
+# Deploy: `cargo lambda build --release --arm64 --features server` then
+# `cargo lambda deploy`, or use the bundled `template.yaml` (SAM). See README.
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = []
+# Server build: real `#[server]` bodies + the AWS adapter + AWS SDK clients.
+# Gated so the wasm/client build never compiles tokio, the Lambda runtime,
+# or the AWS SDK.
+server = [
+    "server/server",
+    "dep:server-aws",
+    "dep:tokio",
+    "dep:aws-config",
+    "dep:aws-sdk-dynamodb",
+    "dep:aws-sdk-sesv2",
+    "dep:uuid",
+]
+
+[dependencies]
+server = { workspace = true }
+net = { workspace = true }
+runtime-core = { workspace = true, features = ["async-driver"] }
+serde = { version = "1", features = ["derive"] }
+idea-ui = { workspace = true }
+
+# Server-only deps — pulled in only by the `server` feature.
+server-aws = { workspace = true, optional = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"], optional = true }
+aws-config = { version = "1", features = ["behavior-version-latest"], optional = true }
+aws-sdk-dynamodb = { version = "1", optional = true }
+aws-sdk-sesv2 = { version = "1", optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
+
+# web-only: read window.location.origin for server::configure.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["Window", "Location"] }
+
+[[bin]]
+name = "lambda"
+path = "src/bin/lambda.rs"
+required-features = ["server"]
+
+[[bin]]
+name = "local"
+path = "src/bin/local.rs"
+required-features = ["server"]
+
+[package.metadata.idealyst.app]
+name      = "Contact Form"
+bundle_id = "ai.truday.idealyst.contact_form_lambda"
+version   = "0.0.1"
+targets   = ["web"]
+
+# `cargo lambda` reads this to name the deployed function binary.
+[package.metadata.lambda.deploy]
+memory = 256
+timeout = 15

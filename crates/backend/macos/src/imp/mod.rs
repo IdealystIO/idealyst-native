@@ -20,6 +20,7 @@ pub(crate) mod introspect;
 pub(crate) mod keyboard;
 pub(crate) mod node;
 pub(crate) mod portal;
+pub(crate) mod presence;
 pub(crate) mod screenshot;
 pub(crate) mod text_style;
 pub(crate) mod transitions;
@@ -184,6 +185,15 @@ pub struct MacosBackend {
     /// their content is placed by the container's flex style. Mirrors the
     /// anchored half of iOS's `portal_instances`.
     pub(crate) portal_instances: portal::PortalInstances,
+    /// View-pointer keys of every `create_presence_placeholder` view. A
+    /// placeholder is created in-flow (sizing to its child, so a stack of
+    /// presences — e.g. toasts — lays out like web) and only upgraded to
+    /// fill its parent (`position: absolute; inset: 0`) when its inserted
+    /// child is itself absolute (a floating FAB / popover whose
+    /// out-of-flow content would otherwise collapse the placeholder to
+    /// 0×0 and break AppKit hit-test / cursor / hover geometry). `insert`
+    /// reads this to know a parent is a placeholder and apply the upgrade.
+    pub(crate) presence_placeholders: std::collections::HashSet<usize>,
     /// Layout node of the top-of-tree root, stashed by `finish` so a
     /// post-mount `schedule_layout_pass()` can recompute from it without
     /// the `root: Node` argument `finish` receives. `finish` runs exactly
@@ -573,6 +583,7 @@ impl MacosBackend {
             detached_window_roots: HashMap::new(),
             portal_roots: std::collections::HashSet::new(),
             portal_instances: HashMap::new(),
+            presence_placeholders: std::collections::HashSet::new(),
             root_layout: None,
         };
         backend.drain_self_registrars();
@@ -2730,38 +2741,37 @@ impl Backend for MacosBackend {
     }
 
     /// A `Presence` placeholder is a `PresencePlaceholderView` (not the plain
-    /// `FlippedView` `create_view` mints), pinned to FILL its parent
-    /// (`position: absolute; inset: 0`). Both choices fix the same problem:
-    /// presence children are `position: Absolute`, so they contribute no
-    /// in-flow size and a default placeholder collapses (e.g. 1024×0). A
-    /// collapsed NSView ancestor breaks every AppKit interaction subsystem that
-    /// clips to geometry — hit-testing, cursor rects, and `InVisibleRect` hover
-    /// tracking — so the child paints but is dead to clicks, shows no pointer
-    /// cursor, and never hovers. Filling the parent gives the child a real,
-    /// non-collapsed containing view so cursor + hover work NATIVELY (no
-    /// per-subsystem override). The `PresencePlaceholderView`'s `hitTest:` then
-    /// only has to make the now-full-size, transparent placeholder a passthrough
-    /// — returning its deepest hit subview, or `nil` (declining) over empty
-    /// space so the click reaches the canvas beneath. macOS analogue of the
-    /// `supports_child_splice` fix for `when`/`for`. See the trait default.
+    /// `FlippedView` `create_view` mints) so its `hitTest:` descends into its
+    /// subviews (a transparent passthrough) regardless of its own frame.
+    ///
+    /// The placeholder is created **in-flow** (default style — `position:
+    /// relative`, no insets), so it sizes to its child and a *stack* of
+    /// presences — the toast host's column of `presence`-wrapped cards — lays
+    /// out one-below-another exactly as on web (web's placeholder is a plain,
+    /// in-flow `<div>`). The previous unconditional `position: absolute; inset:
+    /// 0` fill took every card out of flow, so they all overlapped at the
+    /// stack's origin and the stack collapsed to 0 height (no bottom gap, no
+    /// stacking — the reported macOS toast bug).
+    ///
+    /// The fill is still needed when the presence *child* is itself `position:
+    /// absolute` (a floating FAB / popover): an out-of-flow child contributes
+    /// no in-flow size, so an in-flow placeholder would collapse to 0×0, and a
+    /// collapsed NSView ancestor breaks AppKit hit-test / cursor-rect /
+    /// `InVisibleRect` hover geometry — the child paints but is dead to clicks,
+    /// shows no cursor, never hovers. So `insert` upgrades the placeholder to
+    /// fill its parent when (and only when) the inserted child is absolute;
+    /// here we register the key and leave the in-flow default.
     fn create_presence_placeholder(
         &mut self,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let view = callbacks::PresencePlaceholderView::new(self.mtm);
         let view: Retained<NSView> = Retained::into_super(view);
-        let layout_node = self.layout_for_view(&view);
-        // Pin the placeholder to fill its parent so it (and the absolute child
-        // it hosts) has real, non-collapsed geometry — see the doc comment.
-        let fill = StyleRules {
-            position: Some(runtime_core::Position::Absolute),
-            top: Some(0.0.into()),
-            left: Some(0.0.into()),
-            right: Some(0.0.into()),
-            bottom: Some(0.0.into()),
-            ..Default::default()
-        };
-        self.layout.set_style(layout_node, &fill);
+        let _ = self.layout_for_view(&view);
+        // Register so `insert` knows this parent is a presence placeholder and
+        // can apply the absolute-fill upgrade for an out-of-flow child.
+        let key = &*view as *const NSView as usize;
+        self.presence_placeholders.insert(key);
         let node = MacosNode::View(view);
         a11y::apply(
             &node,
@@ -3997,6 +4007,28 @@ impl Backend for MacosBackend {
         let child_layout = self.layout_for_view(child_view);
         self.layout.add_child(parent_layout, child_layout);
 
+        // Presence placeholder hosting an OUT-OF-FLOW child: upgrade the
+        // placeholder to fill its parent so the absolute child has real,
+        // non-collapsed geometry (AppKit hit-test / cursor / hover all clip to
+        // the placeholder's frame). An IN-FLOW child needs no upgrade — the
+        // placeholder is created in-flow and sizes to it, so a column of
+        // presence-wrapped cards (toasts) stacks like web. See
+        // `create_presence_placeholder`.
+        let parent_key = parent_view as *const NSView as usize;
+        if self.presence_placeholders.contains(&parent_key)
+            && self.layout.is_absolute(child_layout)
+        {
+            let fill = StyleRules {
+                position: Some(runtime_core::Position::Absolute),
+                top: Some(0.0.into()),
+                left: Some(0.0.into()),
+                right: Some(0.0.into()),
+                bottom: Some(0.0.into()),
+                ..Default::default()
+            };
+            self.layout.set_style(parent_layout, &fill);
+        }
+
         // Anchored portal: position the CONTENT child absolutely against the
         // trigger and re-pin it each frame. Composition inserts children in
         // paint order — backdrop / click-away catcher FIRST, content LAST — so
@@ -4004,7 +4036,6 @@ impl Backend for MacosBackend {
         // the first would pin a full-screen backdrop and leave the content laid
         // out top-left (the reported "renders in the corner" bug). A single-child
         // tooltip is unaffected (its one child is both first and last).
-        let parent_key = parent_view as *const NSView as usize;
         if self.portal_instances.contains_key(&parent_key) {
             use crate::portal_policy::{anchored_insert_action, AnchoredInsertAction};
             let tracker_live = self
@@ -4118,11 +4149,16 @@ impl Backend for MacosBackend {
         // Drop any pending color transition keyed on this view pointer so a
         // recycled NSView can't inherit a stale `from` color.
         transitions::forget_view(child_view);
+        // Drop any in-flight presence tween (opacity/transform) on this view.
+        presence::forget_view(child_view);
         // Drop the cached text-measure signature so a recycled NSView at the
         // same address can't read a stale label sig.
         self.text_measure_sig.remove(&child_key);
         // Same for the cached applied frame (see `last_applied_frame`).
         self.last_applied_frame.remove(&child_key);
+        // If the removed view was a presence placeholder, forget its key so a
+        // recycled NSView pointer can't be mistaken for one.
+        self.presence_placeholders.remove(&child_key);
         let _: () = unsafe { msg_send![child_view, removeFromSuperview] };
 
         // Reflow after the removal — symmetric with `insert` / `insert_at`. The
@@ -4292,10 +4328,15 @@ impl Backend for MacosBackend {
             // Drop any pending color transition keyed on this view pointer so a
             // recycled NSView can't inherit a stale `from` color.
             transitions::forget_view(sub_ref);
+            // Drop any in-flight presence tween (opacity/transform) — this is
+            // the path the presence walker uses to tear a card down after its
+            // exit animation, so the just-finished tween's state must clear.
+            presence::forget_view(sub_ref);
             // Drop the cached text-measure signature (mirror `remove_child`).
             self.text_measure_sig.remove(&(sub_ptr as *const NSView as usize));
             // Same for the cached applied frame (see `last_applied_frame`).
             self.last_applied_frame.remove(&(sub_ptr as *const NSView as usize));
+            self.presence_placeholders.remove(&(sub_ptr as *const NSView as usize));
             let _: () = unsafe { msg_send![sub_ptr, removeFromSuperview] };
         }
     }
@@ -4637,6 +4678,31 @@ impl Backend for MacosBackend {
         prop: runtime_core::animation::AnimProp,
         value: f32,
     ) {
+        // `MaxHeight` is the one layout-affecting animated prop (the rest
+        // are paint/transform-only CALayer writes). It has to flow into
+        // Taffy and reflow the subtree, not into a CALayer property. The
+        // reference consumer is idea-ui's `Collapsible(transition =
+        // Measured)`, which tweens the body's max-height between `0` and
+        // its measured content height. Without this arm the body's Taffy
+        // node keeps its natural height and the section never collapses —
+        // only the padding/opacity chrome animates via the variant swap,
+        // leaving a tall empty box (the "doesn't collapse all the way"
+        // bug). Mirrors the prop's documented "iOS Taffy max_size
+        // constraint" intent.
+        if let runtime_core::animation::AnimProp::MaxHeight = prop {
+            let view = node.as_view();
+            if let Some(layout) = self.layout_of(view) {
+                self.layout.set_animated_max_height(layout, Some(value));
+                // Reflow synchronously so the new cap is committed to the
+                // view frames in THIS frame. The AV tween fires ~60×/sec
+                // from the animation clock (a CADisplayLink/timer callback,
+                // outside any `apply_style` borrow), so a same-turn pass
+                // keeps the collapse smooth instead of lagging the driver
+                // by a frame — same rationale as `note_text_area_edited`.
+                self.run_layout_pass_now();
+            }
+            return;
+        }
         animated::set_animated_f32(node, prop, value, &mut self.animated_states);
     }
 
@@ -4660,6 +4726,22 @@ impl Backend for MacosBackend {
             return;
         }
         animated::set_animated_color(node, prop, value);
+    }
+
+    /// Presence enter/exit animation (opacity + 2D translate + uniform scale).
+    /// Without this override the trait default no-ops, so presence-controlled
+    /// subtrees mounted/unmounted with no animation — the reported "toasts don't
+    /// animate at all on macOS." Drives a raf-clock tween (see `imp::presence`),
+    /// the same engine shape as the color `transitions` module, since AppKit has
+    /// no single API that animates both `NSView.alphaValue` and a layer-backed
+    /// view's transform.
+    fn apply_presence(
+        &mut self,
+        node: &Self::Node,
+        state: runtime_core::PresenceState,
+        transition: Option<(u32, runtime_core::Easing)>,
+    ) {
+        presence::apply_presence(node.as_view(), state, transition);
     }
 
     // -----------------------------------------------------------------

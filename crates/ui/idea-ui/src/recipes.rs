@@ -1020,3 +1020,70 @@ recipe!(
         }
     }
 );
+
+// ---------------------------------------------------------------------------
+// Theming recipes — how to install and customize the idea-ui theme. These
+// target the theme functions/types rather than a component, so they surface
+// via `list_recipes` / `describe_recipe` as the "how do I theme this?" answer.
+// ---------------------------------------------------------------------------
+
+recipe!(
+    install_idea_theme,
+    /// The one required setup call: install a theme once, before the first
+    /// render. `install_idea_theme` also installs every component's default
+    /// stylesheet, so this single call is the whole setup for an app that
+    /// doesn't need custom modifiers. `light_theme()`/`dark_theme()` are the
+    /// built-in starting points.
+    pub fn theme_install_light() -> ::runtime_core::Element {
+        use crate::{install_idea_theme, light_theme, Button};
+        use ::runtime_core::ui;
+
+        // Call once at app startup, before rendering the tree.
+        install_idea_theme(light_theme());
+
+        ui! { Button(label = "Themed") }
+    }
+);
+
+recipe!(
+    IdeaThemeDefaults,
+    /// Tweak individual design tokens on a built-in theme, then install it.
+    /// Color fields are `Tokenized<Color>`; spacing/radius/type-scale fields
+    /// are plain `f32`. The string passed to `Tokenized::token` is cosmetic —
+    /// install keys every field off its fixed canonical name — so a plain
+    /// `Tokenized::Literal` override is all you need.
+    pub fn theme_customize_tokens() -> ::runtime_core::Element {
+        use crate::{install_idea_theme, light_theme, Button};
+        use ::runtime_core::{ui, Color, Tokenized};
+
+        let mut theme = light_theme();
+        // A brand primary, plus a slightly larger radius / spacing / body size.
+        theme.intents.primary.solid_bg = Tokenized::Literal(Color("#0066ff".into()));
+        theme.radius.md = 10.0;
+        theme.spacing.lg = 20.0;
+        theme.typography.body_size = 15.0;
+        install_idea_theme(theme);
+
+        ui! { Button(label = "Brand") }
+    }
+);
+
+recipe!(
+    install_idea_theme_reactive,
+    /// Signal-driven light/dark. `install_idea_theme_reactive` re-runs its
+    /// selector whenever a signal the selector reads changes, swapping the
+    /// active theme — no hand-rolled `effect!` needed. Flipping the `dark`
+    /// signal re-themes the whole app; component sheets pull the new token
+    /// values automatically.
+    pub fn theme_dark_mode_toggle() -> ::runtime_core::Element {
+        use crate::{dark_theme, install_idea_theme_reactive, light_theme, Button};
+        use ::runtime_core::{signal, ui};
+        use ::std::rc::Rc;
+
+        let dark = signal!(false);
+        install_idea_theme_reactive(move || if dark.get() { dark_theme() } else { light_theme() });
+
+        let toggle: Rc<dyn Fn()> = Rc::new(move || dark.set(!dark.get()));
+        ui! { Button(label = "Toggle theme", on_click = toggle) }
+    }
+);

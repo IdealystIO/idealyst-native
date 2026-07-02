@@ -469,6 +469,35 @@ fn rebuild_transform(view: &NSView, state: &AnimatedState) {
     let _: () = unsafe { msg_send![&layer, setTransform: m] };
 }
 
+/// Apply a presence transform — uniform `scale` + (`tx`, `ty`) translate,
+/// center-pivoted — directly to `view`'s layer, WITHOUT touching the
+/// `AnimatedStateMap` cache. Presence drives its own raf tween (see
+/// [`crate::imp::presence`]) and must neither clobber nor be clobbered by the
+/// static / animated style-transform slots, so it bypasses `rebuild_transform`.
+/// The center-pivot compensation mirrors `rebuild_transform`: AppKit
+/// layer-backed NSViews default `anchorPoint` to (0, 0), so without it a scale
+/// would grow from the top-left corner instead of the center (web / iOS pivot
+/// around the center). For a pure translate (`scale == 1`) the compensation is
+/// zero, so `m41`/`m42` are exactly the translate — and `view_layer_translate`
+/// (read by `hitTest:`) still reports the right offset.
+pub(crate) fn apply_presence_transform(view: &NSView, tx: f64, ty: f64, scale: f64) {
+    let _: () = unsafe { msg_send![view, setWantsLayer: true] };
+    let layer: Option<Retained<NSObject>> = unsafe { msg_send_id![view, layer] };
+    let Some(layer) = layer else { return };
+    let bounds: objc2_foundation::CGRect = unsafe { msg_send![view, bounds] };
+    let cx = bounds.size.width / 2.0;
+    let cy = bounds.size.height / 2.0;
+    let center_tx = cx * (1.0 - scale);
+    let center_ty = cy * (1.0 - scale);
+    let m = CATransform3D {
+        m11: scale, m12: 0.0, m13: 0.0, m14: 0.0,
+        m21: 0.0, m22: scale, m23: 0.0, m24: 0.0,
+        m31: 0.0, m32: 0.0, m33: 1.0, m34: 0.0,
+        m41: tx + center_tx, m42: ty + center_ty, m43: 0.0, m44: 1.0,
+    };
+    let _: () = unsafe { msg_send![&layer, setTransform: m] };
+}
+
 /// The uniform scale currently on `layer` (its `transform.m11`). The icon
 /// backend reads this to skip re-applying an unchanged scale every layout
 /// pass.

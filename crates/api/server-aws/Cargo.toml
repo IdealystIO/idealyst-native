@@ -1,0 +1,41 @@
+[package]
+name = "server-aws"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# AWS serverless adapter for the `server` (`#[server]`) SDK.
+#
+# The `server` crate already turns every `#[server]` fn into an entry in a
+# process-wide inventory and composes them into an `axum::Router` via
+# `server::router()`. An `axum::Router` is a `tower::Service`, which is
+# exactly what the AWS Lambda Rust runtime (`lambda_http`) consumes. So
+# running the whole server-fn API as a single Lambda — fronted by a Lambda
+# Function URL or API Gateway — is a thin wrapper, not a re-implementation:
+#
+#   #[tokio::main]
+#   async fn main() -> Result<(), server_aws::Error> {
+#       server::install_state(/* DB pool, etc. */);
+#       server_aws::run().await
+#   }
+#
+# This crate is deliberately separate from `server` so the Lambda runtime
+# deps never leak into client (wasm / iOS / Android) builds, and so `server`
+# core stays minimal. It always implies `server/server` — there is no client
+# build of an AWS adapter.
+#
+# Scope: HTTP `#[server]` fns (incl. the `_batch` route) port cleanly. The
+# streaming siblings — `#[channel]`/`#[subscription]` (WebSockets) and `#[sse]`
+# — do NOT map onto plain Lambda request/response and need separate adapters
+# (API Gateway WebSocket APIs; Function URL response-streaming for SSE). See
+# the README.
+
+[dependencies]
+server = { workspace = true, features = ["server"] }
+axum = { version = "0.7" }
+# The AWS Lambda runtime's HTTP layer. Translates API Gateway / Function URL
+# events into `http::Request` and back, and accepts any `tower::Service`
+# (which `axum::Router` is). `apigw_rest` + `apigw_http` + Function URL event
+# shapes are all enabled by default.
+lambda_http = "0.13"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

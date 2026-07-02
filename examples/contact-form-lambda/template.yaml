@@ -1,0 +1,72 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Contact form API — a single AWS Lambda running every #[server] fn from the
+  contact-form-lambda crate, fronted by a Lambda Function URL, writing to
+  DynamoDB and emailing via SES. This is the deploy shape an "export to
+  serverless" tool would generate from the server-fn inventory.
+
+Parameters:
+  NotifyFrom:
+    Type: String
+    Description: Verified SES sender address (the From: of the notification).
+  NotifyTo:
+    Type: String
+    Description: Where contact-form notifications are sent.
+
+Resources:
+  SubmissionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
+  ContactFn:
+    Type: AWS::Serverless::Function
+    Metadata:
+      # `sam build --beta-features` shells out to cargo-lambda for Rust.
+      BuildMethod: rust-cargolambda
+    Properties:
+      # cargo-lambda emits a `bootstrap` binary; `provided.al2023` is the
+      # custom-runtime base that runs it. arm64 = cheapest + fastest cold start.
+      Runtime: provided.al2023
+      Handler: bootstrap
+      Architectures: [arm64]
+      # The crate's [[bin]] named `lambda` (built with --features server).
+      CodeUri: .
+      MemorySize: 256
+      Timeout: 15
+      Environment:
+        Variables:
+          CONTACT_TABLE: !Ref SubmissionsTable
+          CONTACT_FROM: !Ref NotifyFrom
+          CONTACT_TO: !Ref NotifyTo
+      Policies:
+        # Least-privilege: the function only needs to put rows + send mail.
+        - DynamoDBWritePolicy:
+            TableName: !Ref SubmissionsTable
+        - Statement:
+            - Effect: Allow
+              Action: ses:SendEmail
+              Resource: "*"
+      # A public Function URL: the browser form POSTs to
+      # <FunctionUrl>/_srv/submit_contact. Lock down with AuthType: AWS_IAM
+      # (and SigV4 from the client) if the form is not meant to be public.
+      FunctionUrlConfig:
+        AuthType: NONE
+        Cors:
+          AllowOrigins: ["*"]
+          AllowMethods: ["POST"]
+          AllowHeaders: ["content-type", "x-srv-schema"]
+
+Outputs:
+  ApiBase:
+    Description: >
+      Base URL for the server-fn client. Bake into the web build as
+      CONTACT_API_BASE (see src/lib.rs::configure_server).
+    Value: !GetAtt ContactFnUrl.FunctionUrl

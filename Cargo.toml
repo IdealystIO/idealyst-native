@@ -146,6 +146,7 @@ members = [
     # auth/middleware, storage). See crates/api/server/DESIGN.md.
     "crates/api/server",
     "crates/api/server-macros",
+    "crates/api/server-aws",
 
     # SDK — navigator-kind extensions (Primitive::NavigatorExt).
     # Grouped under navigators/: the three SDK features (stack/tab/
@@ -240,6 +241,7 @@ members = [
     "examples/dnd-demo",
     "examples/kanban-demo",
     "examples/sortable-demo",
+    "examples/contact-form-lambda",
     "benchmark",
     "benchmark/idealyst-native/wasm",
     "benchmark/idealyst-native-anim/wasm",
@@ -414,6 +416,7 @@ haptics = { path = "crates/sdk/haptics" }
 audio = { path = "crates/sdk/audio" }
 server = { path = "crates/api/server" }
 server-macros = { path = "crates/api/server-macros" }
+server-aws = { path = "crates/api/server-aws" }
 stack-navigator = { path = "crates/sdk/navigators/stack" }
 tab-navigator = { path = "crates/sdk/navigators/tab" }
 drawer-navigator = { path = "crates/sdk/navigators/drawer" }

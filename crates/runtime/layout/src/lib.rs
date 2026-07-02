@@ -946,6 +946,40 @@ impl LayoutTree {
         }
     }
 
+    /// Set (or clear) an animated `max-height` cap on a node, bypassing
+    /// the full `set_style` translation. Native backends call this to
+    /// realize [`AnimProp::MaxHeight`](runtime_core::animation::AnimProp::MaxHeight)
+    /// per animation frame — the reference consumer is idea-ui's
+    /// `Collapsible(transition = Measured)`, which tweens the body's
+    /// max-height between `0` and its measured content height to
+    /// collapse / expand. `Some(h)` clamps the node to `h` DIPs; `None`
+    /// clears the cap back to Taffy `Auto` (matching the web backend
+    /// clearing `style.maxHeight`).
+    ///
+    /// Why a dedicated setter rather than routing through `set_style`:
+    /// the animated value updates ~60×/sec and carries no other style
+    /// info, so building a `StyleRules` per frame would be wasteful.
+    /// More importantly, the Collapsible's chrome (padding / opacity /
+    /// border) animates via a *concurrent* variant swap that goes
+    /// through `set_style` and does NOT declare `max_height`. Because
+    /// `set_style` preserves Taffy fields its `StyleRules` doesn't
+    /// mention, the cap written here survives that restyle — this setter
+    /// is the single writer of `max_size.height` for an animated node.
+    /// Taffy's own `set_style` marks the node dirty, so the next
+    /// `compute()` reflows it (and its siblings).
+    pub fn set_animated_max_height(&mut self, node: LayoutNode, value: Option<f32>) {
+        let mut style = self
+            .tree
+            .style(node.0)
+            .cloned()
+            .unwrap_or(Style::default());
+        style.max_size.height = match value {
+            Some(h) => Dimension::Length(h.max(0.0)),
+            None => Dimension::Auto,
+        };
+        let _ = self.tree.set_style(node.0, style);
+    }
+
     /// Set a node's intrinsic content size. Used by native backends
     /// to seed Text / Button / Image / etc. with the size their
     /// native widget would prefer (UIView.intrinsicContentSize,
@@ -1251,6 +1285,20 @@ impl LayoutTree {
             width: layout.size.width,
             height: layout.size.height,
         }
+    }
+
+    /// Whether `node`'s current Taffy style is `position: absolute` —
+    /// i.e. it's taken out of normal flow and contributes no in-flow
+    /// size to its parent. Read by backends that must adapt a wrapper's
+    /// geometry to whether its (already-styled) child is out of flow:
+    /// the macOS presence placeholder fills its parent only for an
+    /// absolute child (a floating FAB / popover) and otherwise stays
+    /// in-flow so a stack of presences (toasts) lays out like web.
+    pub fn is_absolute(&self, node: LayoutNode) -> bool {
+        self.tree
+            .style(node.0)
+            .map(|s| s.position == Position::Absolute)
+            .unwrap_or(false)
     }
 
     /// Returns `true` if `node` has no parent in the layout tree —
@@ -1708,6 +1756,83 @@ mod tests {
             assert!((w[0] - 187.5).abs() < 1.5, "Prop = 60 + share: {}", w[0]);
             assert!((w[1] - 375.0).abs() < 1.5, "Type = 120 + share: {}", w[1]);
             assert!((w[2] - 437.5).abs() < 1.5, "Description = 140 + share: {}", w[2]);
+        }
+    }
+
+    /// Regression for the macOS toast bug: a column of `presence`-wrapped
+    /// cards must STACK, which requires each presence placeholder to be
+    /// IN-FLOW (size to its child), not `position: absolute; inset: 0`.
+    ///
+    /// This proves the mechanism the macOS `create_presence_placeholder` fix
+    /// relies on — and `is_absolute`, the getter `insert` reads to decide
+    /// whether to upgrade a placeholder to fill. With in-flow wrappers the two
+    /// cards lay out one below the other and the stack's height is their sum;
+    /// with absolute inset:0 wrappers (the old, buggy placeholder) both
+    /// collapse onto y=0 and overlap — exactly the "toasts don't stack, no
+    /// bottom gap" symptom.
+    #[test]
+    fn presence_wrappers_stack_in_flow_but_overlap_when_absolute() {
+        use runtime_core::FlexDirection;
+
+        // (column container, two wrappers, two 50×30 leaf cards), built with
+        // `wrapper_style` applied to each wrapper.
+        fn build(wrapper_style: StyleRules) -> (LayoutTree, LayoutNode, [LayoutNode; 2]) {
+            let mut t = LayoutTree::new();
+            let stack = t.new_node();
+            let mut sr = StyleRules::default();
+            sr.flex_direction = Some(FlexDirection::Column);
+            t.set_style(stack, &sr);
+
+            let mut wrappers = Vec::new();
+            for _ in 0..2 {
+                let w = t.new_node();
+                t.set_style(w, &wrapper_style);
+                let card = t.new_node();
+                let mut cr = StyleRules::default();
+                cr.width = Some(px(50.0));
+                cr.height = Some(px(30.0));
+                t.set_style(card, &cr);
+                t.add_child(w, card);
+                t.add_child(stack, w);
+                wrappers.push(w);
+            }
+            (t, stack, [wrappers[0], wrappers[1]])
+        }
+
+        // In-flow wrappers (the fixed placeholder): each sizes to its card and
+        // the second stacks below the first.
+        {
+            let (mut t, stack, [w0, w1]) = build(StyleRules::default());
+            assert!(!t.is_absolute(w0), "default wrapper is in-flow");
+            t.compute(stack, 400.0, 400.0);
+            let f0 = t.frame_of(w0);
+            let f1 = t.frame_of(w1);
+            assert_eq!(f0.height, 30.0, "wrapper sizes to its card");
+            assert!((f0.y - 0.0).abs() < 0.5, "first card at the top: y0={}", f0.y);
+            assert!(
+                (f1.y - 30.0).abs() < 0.5,
+                "second card stacks one card-height below the first: y1={} (expected ~30)",
+                f1.y
+            );
+        }
+
+        // Absolute inset:0 wrappers (the OLD, buggy placeholder): both fill the
+        // stack and pin to the same origin, so the cards overlap — they don't
+        // stack (the reported macOS toast symptom).
+        {
+            let mut abs = StyleRules::default();
+            abs.position = Some(runtime_core::Position::Absolute);
+            abs.top = Some(px(0.0));
+            abs.left = Some(px(0.0));
+            abs.right = Some(px(0.0));
+            abs.bottom = Some(px(0.0));
+            let (mut t, stack, [w0, w1]) = build(abs);
+            assert!(t.is_absolute(w0), "absolute wrapper reports out-of-flow");
+            t.compute(stack, 400.0, 400.0);
+            let f0 = t.frame_of(w0);
+            let f1 = t.frame_of(w1);
+            assert_eq!(f0.y, f1.y, "absolute wrappers pin to the same y");
+            assert_eq!(f0.y, 0.0, "both at inset:0 origin — they overlap, no stacking");
         }
     }
 
@@ -3015,6 +3140,85 @@ mod tests {
         assert!(
             (fixed - 772.0).abs() < 0.5,
             "with min-content 0 the outlet fits its 772 allotment, got {fixed}"
+        );
+    }
+
+    /// Regression: `set_animated_max_height` must clamp a node's computed
+    /// height (the AnimProp::MaxHeight path that drives idea-ui's Measured
+    /// Collapsible), AND that cap must survive a concurrent `set_style`
+    /// restyle that doesn't mention `max_height` (the Collapsible's
+    /// padding/opacity/border variant swap). Before the macOS fix the
+    /// animated max-height never reached Taffy, so a collapsed body kept
+    /// its full natural height — "doesn't collapse all the way".
+    #[test]
+    fn regression_animated_max_height_clamps_and_survives_restyle() {
+        // root(Column) → body(overflow:hidden, Column) → content(fixed 200
+        // tall). As a flex child the body hugs its 200px content; an
+        // animated max-height of 0 must collapse it to 0, and a later
+        // restyle (no max_height) must not resurrect the 200px.
+        let mut t = LayoutTree::new();
+
+        let root = t.new_node();
+        let mut root_rules = StyleRules::default();
+        root_rules.flex_direction = Some(FwFlexDirection::Column);
+        t.set_style(root, &root_rules);
+
+        let body = t.new_node();
+        let mut body_rules = StyleRules::default();
+        body_rules.flex_direction = Some(FwFlexDirection::Column);
+        body_rules.flex_shrink = Some(Tokenized::Literal(0.0));
+        body_rules.overflow = Some(runtime_core::Overflow::Hidden);
+        t.set_style(body, &body_rules);
+        t.add_child(root, body);
+
+        let content = t.new_node();
+        let mut content_rules = StyleRules::default();
+        content_rules.height = Some(px(200.0));
+        content_rules.flex_shrink = Some(Tokenized::Literal(0.0));
+        t.set_style(content, &content_rules);
+        t.add_child(body, content);
+
+        // Baseline: body hugs its content (~200) with no cap.
+        t.compute(root, 300.0, 800.0);
+        let natural = t.frame_of(body).height;
+        assert!(
+            (natural - 200.0).abs() < 0.5,
+            "uncapped body should hug its 200px content, got {natural}"
+        );
+
+        // Animate the cap to 0 (closed) — the body must collapse.
+        t.set_animated_max_height(body, Some(0.0));
+        t.compute(root, 300.0, 800.0);
+        let collapsed = t.frame_of(body).height;
+        assert!(
+            collapsed < 0.5,
+            "body capped to max-height 0 must collapse to ~0, got {collapsed}"
+        );
+
+        // A concurrent chrome restyle (the variant swap) re-runs `set_style`
+        // with NO `max_height` — the animated cap must persist, NOT revert
+        // the body to its 200px content height.
+        let mut restyle = StyleRules::default();
+        restyle.flex_direction = Some(FwFlexDirection::Column);
+        restyle.overflow = Some(runtime_core::Overflow::Hidden);
+        restyle.padding_top = Some(px(0.0));
+        t.set_style(body, &restyle);
+        t.compute(root, 300.0, 800.0);
+        let after_restyle = t.frame_of(body).height;
+        assert!(
+            after_restyle < 0.5,
+            "animated max-height cap must survive a max_height-less restyle, \
+             got {after_restyle}"
+        );
+
+        // Animate the cap back open (None clears it) — the body re-expands
+        // to its natural content height.
+        t.set_animated_max_height(body, None);
+        t.compute(root, 300.0, 800.0);
+        let reopened = t.frame_of(body).height;
+        assert!(
+            (reopened - 200.0).abs() < 0.5,
+            "clearing the cap must re-expand the body to its 200px content, got {reopened}"
         );
     }
 }
