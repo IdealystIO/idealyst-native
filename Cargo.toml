@@ -116,6 +116,7 @@ members = [
     "crates/sdk/camera",
     "crates/sdk/media-stream",
     "crates/sdk/media-writer",
+    "crates/sdk/video-compose",
     "crates/sdk/denoise",
     "crates/sdk/video-decode",
     "crates/sdk/file-export",
@@ -217,6 +218,7 @@ members = [
     "examples/screen-recorder-demo",
     "examples/camera-demo",
     "examples/camera-preview-demo",
+    "examples/video-compose-demo",
     "examples/canvas-demo",
     "examples/pdf-demo",
     "examples/markdown-demo",
@@ -392,6 +394,7 @@ microphone = { path = "crates/sdk/microphone" }
 camera = { path = "crates/sdk/camera" }
 media-stream = { path = "crates/sdk/media-stream" }
 media-writer = { path = "crates/sdk/media-writer" }
+video-compose = { path = "crates/sdk/video-compose" }
 denoise = { path = "crates/sdk/denoise" }
 video-decode = { path = "crates/sdk/video-decode" }
 file-export = { path = "crates/sdk/file-export" }

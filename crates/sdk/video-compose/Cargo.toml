@@ -1,0 +1,58 @@
+[package]
+name = "video-compose"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Real-time cross-platform video compositing SDK.
+#
+# Takes an input video `MediaStream`, applies GPU compositing ops each frame
+# (watermark image overlay, crop/scale, picture-in-picture of a second stream,
+# drawn text/graphics), and emits a NEW output `MediaStream` — "the product."
+# The input/recording source is never touched; the ops live only on the emitted
+# stream, which any downstream consumer (a preview `video`, the `media-writer`
+# recorder, WebRTC) uses like any other stream.
+#
+# It's a headless `canvas`: the input stream is the base `TextureLayer`, the
+# watermark/PiP stack above it, drawn graphics in the scene, and the composited
+# result is self-captured into the output stream. The offscreen render engine is
+# `canvas-vello`'s `HeadlessCompositor` (its own wgpu device, no window).
+#
+#   - macOS:            zero-copy IOSurface base + output ring (implemented)
+#   - iOS/Android/web:  sequenced next (see the crate docs); currently a no-op
+#                       driver so callers compile everywhere.
+
+[dependencies]
+# The stream currency (input + output) and the reactive value handles.
+media-stream = { workspace = true }
+runtime-core = { workspace = true }
+# The layer/scene model + the static-image watermark source + `Fit`.
+canvas-core = { workspace = true }
+
+# The offscreen GPU compositor engine (native only — it owns a wgpu device).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+canvas-vello = { workspace = true }
+
+# Web (wasm32): a hidden `<canvas>` composites the input `<video>` + watermark +
+# PiP via Canvas2D `drawImage`, then `captureStream()` becomes the output stream's
+# native source (previewed/recorded directly — no readback). Drawn-graphics ops
+# (`.draw()`) aren't rendered on web yet (they'd need a Canvas2D scene replay).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "Element",
+    "Node",
+    "HtmlElement",
+    "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
+    "HtmlVideoElement",
+    "MediaStream",
+    "MediaStreamTrack",
+    "CanvasCaptureMediaStreamTrack",
+    "ImageData",
+    "Performance",
+] }
+
+[dev-dependencies]

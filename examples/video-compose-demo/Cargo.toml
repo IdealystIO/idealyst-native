@@ -1,0 +1,40 @@
+[package]
+name = "video-compose-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Video compositing demo — the camera SDK yields an input MediaStream; video-compose overlays a watermark + drawn label and emits a NEW output MediaStream. Two live previews sit side by side: the untouched input and the composited output, so the 'ops live only on the product' guarantee is visible. A button drives the watermark opacity reactively."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+runtime-core = { workspace = true, features = ["async-driver"] }
+idea-ui = { workspace = true }
+camera = { workspace = true }
+video = { workspace = true }
+media-stream = { workspace = true }
+canvas-core = { workspace = true }
+video-compose = { workspace = true }
+
+# The concrete backend each platform's wrapper hands to `register_extensions`.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+backend-android-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+backend-macos = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Video Compose"
+bundle_id = "ai.truday.idealyst.videocompose"
+version   = "0.0.1"
+targets   = ["macos", "web", "ios", "android"]
+
+[package.metadata.idealyst.app.permissions]
+camera = "Video Compose overlays a watermark on your camera feed."

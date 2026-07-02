@@ -493,9 +493,18 @@ impl LayerCompositor {
                 continue;
             }
 
-            let cam_aspect = cam_w as f32 / (cam_h as f32).max(1.0);
+            // An optional source crop selects a normalized sub-rect of the
+            // texture before fitting: fit against the CROPPED aspect, then fold the
+            // crop back into the sampling UV so `suv = quad_uv*scale + offset`
+            // stays a single affine sample (no shader change).
+            let (cx, cy, cw, ch) = layer.src_crop.unwrap_or((0.0, 0.0, 1.0, 1.0));
+            let cropped_w = cam_w as f32 * cw.max(f32::EPSILON);
+            let cropped_h = cam_h as f32 * ch.max(f32::EPSILON);
+            let cam_aspect = cropped_w / cropped_h.max(1.0);
             let dst_aspect = vw / vh;
-            let (sx, sy, ox, oy) = uv_transform(layer.fit, cam_aspect, dst_aspect);
+            let (fsx, fsy, fox, foy) = uv_transform(layer.fit, cam_aspect, dst_aspect);
+            let (sx, sy, ox, oy) =
+                (fsx * cw, fsy * ch, fox * cw + cx, foy * ch + cy);
             let radius_px = ((layer.corner_radius)() * scale).max(0.0);
             let border_px = (layer.border_width * scale).max(0.0);
             let bc = layer.border_color;

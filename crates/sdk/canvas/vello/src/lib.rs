@@ -36,6 +36,15 @@ pub use render::register;
 #[cfg(not(target_arch = "wasm32"))]
 pub use render::{render_to_rgba, RenderedImage};
 
+// Surface-less persistent compositor — the engine the `video-compose` SDK drives
+// to transform one `MediaStream` into another (scene + layers → offscreen target
+// → output stream / CPU read-back). Reuses the on-screen renderer's compositor
+// passes without a window.
+#[cfg(not(target_arch = "wasm32"))]
+mod headless;
+#[cfg(not(target_arch = "wasm32"))]
+pub use headless::HeadlessCompositor;
+
 // Scene classification (`ScenePlan` / `plan_scene`) for the instanced fast path,
 // shared by the native and web renderers (pure op-list walk, no GPU).
 mod plan;

@@ -11545,6 +11545,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "video-compose"
+version = "0.0.1"
+dependencies = [
+ "canvas-core",
+ "canvas-vello",
+ "media-stream",
+ "runtime-core",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "video-compose-demo"
+version = "0.0.1"
+dependencies = [
+ "backend-android-mobile",
+ "backend-ios-mobile",
+ "backend-macos",
+ "backend-web",
+ "camera",
+ "canvas-core",
+ "idea-ui",
+ "media-stream",
+ "runtime-core",
+ "video",
+ "video-compose",
+]
+
+[[package]]
 name = "video-decode"
 version = "0.0.1"
 dependencies = [

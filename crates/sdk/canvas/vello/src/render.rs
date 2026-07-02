@@ -37,7 +37,7 @@ use vello::{AaConfig, AaSupport, Renderer, RendererOptions, RenderParams, Scene 
 
 /// vello renders into a storage texture of this format; the blitter copies
 /// it to the surface (whatever the surface's own format is).
-const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+pub(crate) const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// Register the vello canvas renderer. Generic over any backend that
 /// supports externals + graphics surfaces — the surface is obtained from
@@ -313,7 +313,7 @@ pub(crate) fn overscan_dims(w: u32, h: u32, frac: f32) -> (u32, u32) {
 /// Build a vello `Renderer` with the canvas's standard options (area AA, GPU).
 /// Shared by the main renderer, the eager `image_renderer`, and the lazy
 /// fallbacks so all three stay configured identically.
-fn new_vello_renderer(device: &wgpu::Device) -> Option<Renderer> {
+pub(crate) fn new_vello_renderer(device: &wgpu::Device) -> Option<Renderer> {
     Renderer::new(
         device,
         RendererOptions {
@@ -326,7 +326,7 @@ fn new_vello_renderer(device: &wgpu::Device) -> Option<Renderer> {
     .ok()
 }
 
-fn make_target(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView) {
+pub(crate) fn make_target(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("canvas-vello-target"),
         size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -371,9 +371,13 @@ pub struct RenderedImage {
 /// **Blocking** (drives wgpu via `pollster`): call it off the async/request path
 /// — a blocking task or a background worker. Returns `None` if no usable adapter
 /// / device is available or the render fails.
-pub fn render_to_rgba(scene: &CanvasScene, width: u32, height: u32) -> Option<RenderedImage> {
-    let (w, h) = (width.max(1), height.max(1));
-
+/// Acquire a headless wgpu `(device, queue)` — a real GPU adapter first, then a
+/// **software** adapter (Mesa lavapipe / DX WARP) so it runs where there's no
+/// GPU (CI, servers). `compatible_surface: None` (no window). Shared by the
+/// one-shot [`render_to_rgba`] export and the persistent
+/// [`HeadlessCompositor`](crate::headless::HeadlessCompositor). **Blocking**
+/// (drives wgpu via `pollster`) — call off the async/request path.
+pub(crate) fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
         flags: wgpu::InstanceFlags::default(),
@@ -390,21 +394,18 @@ pub fn render_to_rgba(scene: &CanvasScene, width: u32, height: u32) -> Option<Re
     };
     // Real GPU first; software adapter (lavapipe / WARP) if there's none.
     let adapter = request(false).or_else(|_| request(true)).ok()?;
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("canvas-vello-export"),
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("canvas-vello-headless"),
         ..Default::default()
     }))
-    .ok()?;
-    let mut renderer = Renderer::new(
-        &device,
-        RendererOptions {
-            use_cpu: false,
-            antialiasing_support: AaSupport::area_only(),
-            num_init_threads: None,
-            pipeline_cache: None,
-        },
-    )
-    .ok()?;
+    .ok()
+}
+
+pub fn render_to_rgba(scene: &CanvasScene, width: u32, height: u32) -> Option<RenderedImage> {
+    let (w, h) = (width.max(1), height.max(1));
+
+    let (device, queue) = headless_device()?;
+    let mut renderer = new_vello_renderer(&device)?;
 
     let mut vs = VelloScene::new();
     encode_scene(scene.ops(), &mut vs, Affine::scale(1.0));
@@ -419,13 +420,26 @@ pub fn render_to_rgba(scene: &CanvasScene, width: u32, height: u32) -> Option<Re
         .render_to_texture(&device, &queue, &vs, &target_view, &params)
         .ok()?;
 
-    // Read back. `bytes_per_row` must be 256-aligned, so the copy is padded;
-    // strip the per-row padding to return a tight `w*4*h` buffer.
+    Some(read_target_rgba(&device, &queue, &target, w, h))
+}
+
+/// Copy an `Rgba8Unorm` `target` texture back to CPU as tightly-packed, top-down
+/// RGBA8. `bytes_per_row` must be 256-aligned, so the copy is padded and the
+/// per-row padding is stripped to a tight `w*4*h` buffer. **Blocking** (polls the
+/// device to completion). Shared by the one-shot export and the persistent
+/// [`HeadlessCompositor`](crate::headless::HeadlessCompositor)'s `read_rgba`.
+pub(crate) fn read_target_rgba(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    target: &wgpu::Texture,
+    w: u32,
+    h: u32,
+) -> RenderedImage {
     let unpadded = (w * 4) as usize;
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
     let padded = unpadded.div_ceil(align) * align;
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("canvas-vello-export-readback"),
+        label: Some("canvas-vello-readback"),
         size: (padded * h as usize) as u64,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
@@ -433,7 +447,7 @@ pub fn render_to_rgba(scene: &CanvasScene, width: u32, height: u32) -> Option<Re
     let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     enc.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
-            texture: &target,
+            texture: target,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
@@ -458,7 +472,7 @@ pub fn render_to_rgba(scene: &CanvasScene, width: u32, height: u32) -> Option<Re
         let start = row * padded;
         data.extend_from_slice(&mapped[start..start + unpadded]);
     }
-    Some(RenderedImage { data, width: w, height: h })
+    RenderedImage { data, width: w, height: h }
 }
 
 // Scene classification (`ScenePlan` / `plan_scene`) lives in `crate::plan`, shared

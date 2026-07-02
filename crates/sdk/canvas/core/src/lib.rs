@@ -215,6 +215,13 @@ pub struct TextureLayer {
     pub rect: Rc<dyn Fn() -> (f32, f32, f32, f32)>,
     /// How the source maps into [`rect`](Self::rect).
     pub fit: Fit,
+    /// Optional NORMALIZED source crop `(x, y, w, h)` in `0.0..=1.0` — sample only
+    /// this sub-rectangle of the source before applying [`fit`](Self::fit). `None`
+    /// (the default) samples the whole source. Used by the `video-compose` crop
+    /// op to select a region of an input video. Honored by the GPU compositor
+    /// (folded into the sampling UV); the CPU renderers currently ignore it
+    /// (whole-source), so crop is a GPU-path feature for now.
+    pub src_crop: Option<(f32, f32, f32, f32)>,
     /// Corner radius in LOGICAL points (0 = square). Reactive — read each composite
     /// like [`rect`](Self::rect) — so a shape/size change (e.g. a camera widget
     /// toggling rounded-rect ↔ circle) updates the mask live without rebuilding the
@@ -258,11 +265,19 @@ impl TextureLayer {
             source,
             rect,
             fit: Fit::Cover,
+            src_crop: None,
             corner_radius: Rc::new(|| 0.0),
             opacity: 1.0,
             border_width: 0.0,
             border_color: Color::new(0, 0, 0, 0),
         }
+    }
+
+    /// Set a NORMALIZED source crop `(x, y, w, h)` in `0.0..=1.0` — sample only
+    /// this sub-rectangle of the source before fitting. See [`src_crop`](Self::src_crop).
+    pub fn src_crop(mut self, crop: (f32, f32, f32, f32)) -> Self {
+        self.src_crop = Some(crop);
+        self
     }
 
     /// Set a fixed corner radius (logical points).
