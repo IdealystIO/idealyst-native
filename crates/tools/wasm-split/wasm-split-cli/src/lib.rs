@@ -2619,4 +2619,48 @@ mod tests {
              it's the legitimate one-time-init entry point"
         );
     }
+
+    // Regression: a failed split-chunk fetch/instantiate must wake the Rust
+    // `SplitLoaderFuture` with `false`, not silently `return`. The old glue
+    // logged the error and returned, so `LazyLoader::load()` awaited forever
+    // (and the leaked `Rc<SplitLoader>` was never reclaimed) — any UI gated on
+    // `load()` hung with no recovery. See `SplitLoaderFuture::poll` in the
+    // `wasm-split` crate: it stays `Poll::Pending` until the callback fires.
+    #[test]
+    fn make_load_glue_signals_callback_on_failure() {
+        let glue = MAKE_LOAD_JS;
+
+        // The load-failure catch must exist and be followed by a `false`
+        // signal to the callback, never a bare early return.
+        let marker = "Failed to load wasm-split module";
+        let after = glue
+            .split_once(marker)
+            .expect("glue must still log the load-failure error")
+            .1;
+
+        assert!(
+            after.contains("signal(false)"),
+            "the load-failure catch must wake the Rust future with `false` \
+             so `load()` resolves — otherwise the app hangs forever"
+        );
+
+        // Guard against a regression to the old `return;`-in-catch shape:
+        // between the failure log and the next signal there must be no bare
+        // `return;` that would swallow the failure without waking the future.
+        let up_to_signal = after
+            .split_once("signal(false)")
+            .expect("checked above")
+            .0;
+        assert!(
+            !up_to_signal.contains("return;"),
+            "the load-failure catch must not early-return before signaling — \
+             that is exactly the hang this test guards against"
+        );
+
+        // And the success path must still signal `true`.
+        assert!(
+            glue.contains("signal(true)"),
+            "the success path must wake the Rust future with `true`"
+        );
+    }
 }

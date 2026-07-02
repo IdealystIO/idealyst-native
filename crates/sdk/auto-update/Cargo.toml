@@ -1,0 +1,61 @@
+[package]
+name = "auto-update"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Desktop self-update: keep a directly-distributed app current without the
+# user re-downloading it. The portable surface (`Updater`, `UpdateState`,
+# `UpdateConfig`, the signed release manifest, version/signature evaluation)
+# lives here as a reactive handle; one cfg-gated `imp` backend performs the
+# platform-specific *apply* (download the artifact, verify it, swap the
+# running app, relaunch):
+#
+#   - macOS:   Sparkle.framework via objc2 — the ecosystem-standard atomic
+#              bundle swap + EdDSA verification + privileged relaunch.
+#   - Windows: MSIX App Installer auto-update (or a Squirrel-style installer).
+#   - Linux:   AppImageUpdate (zsync delta) against the published .AppImage.
+#   - iOS:     no-op — Apple forbids self-update; the App Store owns it.
+#   - web:     no-op — a reload *is* the update.
+#
+# Security model: the manifest entry for each release carries an Ed25519
+# signature over its canonical (version|build|url|sha256) tuple, verified
+# against a public key embedded in the app at build time — independently of
+# TLS. The downloaded artifact's SHA-256 must then match the signed digest.
+# See `manifest.rs`.
+
+[dependencies]
+# Reactive state: `Updater` exposes a `Signal<UpdateState>` author UI binds
+# to (a banner / toast), so the whole check→download→relaunch lifecycle is
+# rendered once and behaves identically on every backend. `async-driver`
+# supplies `spawn_async` (with a pollster fallback) for the launch / interval
+# checks — same posture the `sync` SDK takes.
+runtime-core = { workspace = true, features = ["async-driver"] }
+
+# Fetching the release manifest is genuinely cross-platform (works on native
+# and wasm), so it is NOT a per-platform seam — only the *apply* step is.
+# Reuse the `net` client rather than reaching for platform HTTP.
+net = { workspace = true }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+
+# Version comparison for "is this release newer than what I'm running?".
+semver = "1"
+
+# Manifest-entry signature verification, independent of the transport. `sha2`
+# also backs the downloaded-artifact digest check in the apply step.
+ed25519-dalek = "2"
+sha2 = "0.10"
+
+# macOS / iOS: drive Sparkle (macOS) through the Obj-C runtime, the same
+# posture `camera` / `file-export` take. iOS compiles the module but every
+# entry point is a documented no-op (App Store distribution).
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString", "NSURL"] }
+
+# Windows: MSIX App Installer / Shell APIs for the installer hand-off.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = ["Win32_Foundation"] }

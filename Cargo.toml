@@ -120,6 +120,7 @@ members = [
     "crates/sdk/video-decode",
     "crates/sdk/file-export",
     "crates/sdk/file-picker",
+    "crates/sdk/auto-update",
     "crates/sdk/offload",
     "crates/sdk/offload-macro",
     "crates/sdk/credentials",
@@ -395,6 +396,7 @@ denoise = { path = "crates/sdk/denoise" }
 video-decode = { path = "crates/sdk/video-decode" }
 file-export = { path = "crates/sdk/file-export" }
 file-picker = { path = "crates/sdk/file-picker" }
+auto-update = { path = "crates/sdk/auto-update" }
 credentials = { path = "crates/sdk/credentials" }
 biometrics = { path = "crates/sdk/biometrics" }
 screen-recorder = { path = "crates/sdk/screen-recorder" }

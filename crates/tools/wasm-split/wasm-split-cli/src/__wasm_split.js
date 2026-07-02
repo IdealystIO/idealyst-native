@@ -5,10 +5,40 @@ export function makeLoad(url, deps, fusedImports, initIt) {
   return async (callbackIndex, callbackData) => {
     await Promise.all(deps.map((dep) => dep()));
     if (alreadyLoaded) return;
+
+    // Resolve the main module's callback table up front. The Rust
+    // `SplitLoaderFuture` stays `Poll::Pending` until this callback fires and
+    // it also reclaims the leaked `Rc<SplitLoader>` handed to `into_raw`.
+    // If we ever return without calling it, `LazyLoader::load()` hangs forever
+    // AND the loader is leaked. So we MUST signal on every exit path, including
+    // failure — resolve `load()` to `false` rather than never.
+    let signal;
+    let mainExports;
+    try {
+      const initSync = initIt || globalThis.__wasm_split_main_initSync;
+      mainExports = initSync(undefined, undefined);
+      signal = (ok) => {
+        if (callbackIndex !== undefined) {
+          mainExports.__indirect_function_table.get(callbackIndex)(
+            callbackData,
+            ok
+          );
+        }
+      };
+    } catch (e) {
+      // If even the main module's init/table lookup fails there is no way to
+      // wake the future; surface the error loudly rather than hang silently.
+      console.error(
+        "Failed to resolve wasm-split callback table",
+        e,
+        url,
+        deps
+      );
+      throw e;
+    }
+
     try {
       const response = await fetch(url);
-      const initSync = initIt || globalThis.__wasm_split_main_initSync;
-      const mainExports = initSync(undefined, undefined);
 
       let imports = {
         env: {
@@ -41,12 +71,7 @@ export function makeLoad(url, deps, fusedImports, initIt) {
         fusedImports[name] = new_exports.instance.exports[name];
       }
 
-      if (callbackIndex !== undefined) {
-        mainExports.__indirect_function_table.get(callbackIndex)(
-          callbackData,
-          true
-        );
-      }
+      signal(true);
     } catch (e) {
       console.error(
         "Failed to load wasm-split module",
@@ -55,7 +80,9 @@ export function makeLoad(url, deps, fusedImports, initIt) {
         deps,
         fusedImports
       );
-      return;
+      // Wake the Rust future with `false` so `load()` resolves and the app can
+      // fall back, instead of spinning on its loading state forever.
+      signal(false);
     }
   };
 }
