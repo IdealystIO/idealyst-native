@@ -253,24 +253,44 @@ fn draw_layers(
     layers: &[TextureLayer],
     videos: &Rc<RefCell<Vec<LayerVideo>>>,
 ) {
+    // A layer draws from either a stream's hidden `<video>` (indexed slot) or a
+    // static image rasterized to a cached offscreen `<canvas>`; both go through
+    // the same crop/clip/border below.
+    enum LayerSrc {
+        Video(usize),
+        Image(HtmlCanvasElement),
+    }
     let mut vids = videos.borrow_mut();
     for (i, layer) in layers.iter().enumerate() {
-        let Some(stream) = (layer.source)() else { continue };
-        let Some(ms) = stream
-            .native_source()
-            .and_then(|rc| rc.downcast::<MediaStream>().ok())
-        else {
-            continue;
+        let (vw, vh, src) = match &layer.source {
+            canvas_core::LayerSource::Stream(f) => {
+                let Some(stream) = f() else { continue };
+                let Some(ms) = stream
+                    .native_source()
+                    .and_then(|rc| rc.downcast::<MediaStream>().ok())
+                else {
+                    continue;
+                };
+                while vids.len() <= i {
+                    vids.push(LayerVideo::new(document));
+                }
+                let lv = &mut vids[i];
+                lv.ensure(&ms);
+                let (vw, vh) = (lv.el.video_width() as f32, lv.el.video_height() as f32);
+                if vw < 1.0 || vh < 1.0 {
+                    continue; // first frames not decoded yet
+                }
+                (vw, vh, LayerSrc::Video(i))
+            }
+            canvas_core::LayerSource::Image(f) => {
+                let Some(img) = f() else { continue };
+                if !img.is_valid() {
+                    continue;
+                }
+                let Some(canvas) = image_canvas_cached(&img) else { continue };
+                (img.width as f32, img.height as f32, LayerSrc::Image(canvas))
+            }
         };
-        while vids.len() <= i {
-            vids.push(LayerVideo::new(document));
-        }
-        let lv = &mut vids[i];
-        lv.ensure(&ms);
-        let (vw, vh) = (lv.el.video_width() as f32, lv.el.video_height() as f32);
-        if vw < 1.0 || vh < 1.0 {
-            continue; // first frames not decoded yet
-        }
         let (dx, dy, dw, dh) = (layer.rect)();
         if dw < 1.0 || dh < 1.0 {
             continue;
@@ -287,10 +307,22 @@ fn draw_layers(
         ctx.begin_path();
         let _ = ctx.round_rect_with_f64(ox as f64, oy as f64, ow as f64, oh as f64, r);
         ctx.clip();
-        let _ = ctx.draw_image_with_html_video_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
-            &lv.el, sx as f64, sy as f64, sw as f64, sh as f64, ox as f64, oy as f64, ow as f64,
-            oh as f64,
-        );
+        match &src {
+            LayerSrc::Video(idx) => {
+                let _ = ctx
+                    .draw_image_with_html_video_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
+                        &vids[*idx].el, sx as f64, sy as f64, sw as f64, sh as f64, ox as f64,
+                        oy as f64, ow as f64, oh as f64,
+                    );
+            }
+            LayerSrc::Image(canvas) => {
+                let _ = ctx
+                    .draw_image_with_html_canvas_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
+                        canvas, sx as f64, sy as f64, sw as f64, sh as f64, ox as f64, oy as f64,
+                        ow as f64, oh as f64,
+                    );
+            }
+        }
         // Border frame, composited WITH the image (stays locked to the moving
         // picture). Stroked on a rounded rect inset by half the width.
         let bw = layer.border_width as f64;

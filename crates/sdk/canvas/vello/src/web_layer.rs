@@ -21,7 +21,7 @@
 //! target uses. The shader treats video as opaque (mask by corners/fit/opacity)
 //! and the pipeline alpha-blends over the scene, matching `LayerCompositor`.
 
-use canvas_core::{Fit, TextureLayer};
+use canvas_core::{Fit, LayerSource, TextureLayer};
 use wasm_bindgen::JsCast;
 use web_sys::{Document, HtmlVideoElement, MediaStream as WebMediaStream};
 
@@ -41,7 +41,7 @@ const LAYER_BLIT_WGSL: &str = r#"
 struct Layer {
     uv: vec4<f32>,     // uv_scale.xy, uv_offset.xy
     geo: vec4<f32>,    // rect_w_px, rect_h_px, radius_px, opacity
-    border: vec4<f32>, // border_width_px, _, _, _
+    border: vec4<f32>, // border_width_px, use_src_alpha, _, _
     bcolor: vec4<f32>, // border r, g, b, a (0..1)
 };
 @group(0) @binding(0) var tex: texture_2d<f32>;
@@ -69,15 +69,19 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     let suv = in.uv * layer.uv.xy + layer.uv.zw;
     let inside = all(suv >= vec2<f32>(0.0)) && all(suv <= vec2<f32>(1.0));
     let inb = select(0.0, 1.0, inside);
-    let col = textureSample(tex, samp, clamp(suv, vec2<f32>(0.0), vec2<f32>(1.0))).rgb;
+    let texel = textureSample(tex, samp, clamp(suv, vec2<f32>(0.0), vec2<f32>(1.0)));
+    let col = texel.rgb;
     let size = layer.geo.xy;
     let radius = layer.geo.z;
     let opacity = layer.geo.w;
     let pp = (in.uv - vec2<f32>(0.5)) * size;
     let d = sd_round_box(pp, size * 0.5, radius);
     let aa = 1.0 - smoothstep(-1.0, 1.0, d);
+    // Streams are opaque (use_src_alpha=0); image layers multiply their straight
+    // alpha so transparent watermark regions read through.
+    let src_a = mix(1.0, texel.a, layer.border.y);
     var rgb = col;
-    var a = aa * inb * opacity;
+    var a = aa * inb * opacity * src_a;
     let bw = layer.border.x;
     if (bw > 0.0) {
         let inner = 1.0 - smoothstep(-1.0, 1.0, d + bw);
@@ -97,6 +101,10 @@ struct LayerSlot {
     /// The web `MediaStream.id` currently attached — only re-`set_src_object` when
     /// it changes (camera opened / swapped).
     stream_id: Option<String>,
+    /// For an IMAGE layer: the `(id, generation)` currently uploaded into `tex`, so
+    /// a static watermark is `write_texture`'d once and only re-uploaded when its
+    /// pixels change. `None` while the slot holds a stream (video) frame.
+    image_key: Option<(u64, u64)>,
     /// `(texture, view, bind_group, (w, h))`, sized to the video frame.
     tex: Option<(wgpu::Texture, wgpu::TextureView, wgpu::BindGroup, (u32, u32))>,
 }
@@ -114,7 +122,7 @@ impl LayerSlot {
         video.set_muted(true);
         video.set_autoplay(true);
         let _ = video.set_attribute("playsinline", "");
-        Self { video, stream_id: None, tex: None }
+        Self { video, stream_id: None, image_key: None, tex: None }
     }
 
     /// Attach `ms` to the `<video>` (only when the stream id changes).
@@ -294,13 +302,6 @@ impl WebLayerCompositor {
         target_h: u32,
     ) {
         for (i, layer) in layers.iter().enumerate().take(MAX_LAYERS) {
-            let Some(stream) = (layer.source)() else { continue };
-            let Some(ms) = stream
-                .native_source()
-                .and_then(|rc| rc.downcast::<WebMediaStream>().ok())
-            else {
-                continue;
-            };
             while self.slots.len() <= i {
                 self.slots.push(LayerSlot::new(&self.document));
             }
@@ -310,41 +311,93 @@ impl WebLayerCompositor {
             let sampler = &self.sampler;
             let uniforms = &self.uniforms;
             let slot = &mut self.slots[i];
-            slot.ensure_stream(&ms);
 
-            let (cam_w, cam_h) = (slot.video.video_width(), slot.video.video_height());
-            if cam_w < 1 || cam_h < 1 {
-                continue; // first frames not decoded yet
-            }
-            // A video element keeps its dimensions (metadata) even when its CURRENT
-            // frame has no GPU-importable backing — e.g. the brief window after the
-            // stream is (re)attached while toggling the camera off/on. Importing it
-            // then fails ("video element that doesn't have back resource") and wgpu
-            // `unwrap()`s that into a panic, so skip until a frame is decodable.
-            // `readyState >= HAVE_CURRENT_DATA (2)` means a current frame exists.
-            if slot.video.ready_state() < 2 {
-                continue;
-            }
-            slot.ensure_tex(device, bind_layout, sampler, uniforms, cam_w, cam_h);
-            let Some((texture, _view, bind_group, _)) = slot.tex.as_ref() else { continue };
+            // Resolve the layer's current frame into `slot.tex`, from either the
+            // stream's `<video>` (GPU copy) or a static image (`write_texture`).
+            let (cam_w, cam_h, use_src_alpha) = match &layer.source {
+                LayerSource::Stream(f) => {
+                    let Some(stream) = f() else { continue };
+                    let Some(ms) = stream
+                        .native_source()
+                        .and_then(|rc| rc.downcast::<WebMediaStream>().ok())
+                    else {
+                        continue;
+                    };
+                    slot.image_key = None;
+                    slot.ensure_stream(&ms);
 
-            // Copy the video's CURRENT frame into the texture (GPU copy, no readback).
-            queue.copy_external_image_to_texture(
-                &wgpu::CopyExternalImageSourceInfo {
-                    source: wgpu::ExternalImageSource::HTMLVideoElement(slot.video.clone()),
-                    origin: wgpu::Origin2d::ZERO,
-                    flip_y: false,
-                },
-                wgpu::CopyExternalImageDestInfo {
-                    texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                    color_space: wgpu::PredefinedColorSpace::Srgb,
-                    premultiplied_alpha: false,
-                },
-                wgpu::Extent3d { width: cam_w, height: cam_h, depth_or_array_layers: 1 },
-            );
+                    let (cam_w, cam_h) = (slot.video.video_width(), slot.video.video_height());
+                    if cam_w < 1 || cam_h < 1 {
+                        continue; // first frames not decoded yet
+                    }
+                    // A video element keeps its dimensions (metadata) even when its
+                    // CURRENT frame has no GPU-importable backing — e.g. the brief
+                    // window after the stream is (re)attached while toggling the
+                    // camera off/on. Importing it then fails ("video element that
+                    // doesn't have back resource") and wgpu `unwrap()`s that into a
+                    // panic, so skip until a frame is decodable. `readyState >=
+                    // HAVE_CURRENT_DATA (2)` means a current frame exists.
+                    if slot.video.ready_state() < 2 {
+                        continue;
+                    }
+                    slot.ensure_tex(device, bind_layout, sampler, uniforms, cam_w, cam_h);
+                    let Some((texture, _, _, _)) = slot.tex.as_ref() else { continue };
+
+                    // Copy the video's CURRENT frame into the texture (GPU copy).
+                    queue.copy_external_image_to_texture(
+                        &wgpu::CopyExternalImageSourceInfo {
+                            source: wgpu::ExternalImageSource::HTMLVideoElement(slot.video.clone()),
+                            origin: wgpu::Origin2d::ZERO,
+                            flip_y: false,
+                        },
+                        wgpu::CopyExternalImageDestInfo {
+                            texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
+                            color_space: wgpu::PredefinedColorSpace::Srgb,
+                            premultiplied_alpha: false,
+                        },
+                        wgpu::Extent3d { width: cam_w, height: cam_h, depth_or_array_layers: 1 },
+                    );
+                    (cam_w, cam_h, 0.0f32)
+                }
+                LayerSource::Image(f) => {
+                    let Some(img) = f() else { continue };
+                    if !img.is_valid() {
+                        continue;
+                    }
+                    slot.ensure_tex(device, bind_layout, sampler, uniforms, img.width, img.height);
+                    // Upload once; re-upload only when the pixels change under a
+                    // stable id (generation bump) or the slot switched sources.
+                    if slot.image_key != Some((img.id, img.generation)) {
+                        if let Some((texture, _, _, _)) = slot.tex.as_ref() {
+                            queue.write_texture(
+                                wgpu::TexelCopyTextureInfo {
+                                    texture,
+                                    mip_level: 0,
+                                    origin: wgpu::Origin3d::ZERO,
+                                    aspect: wgpu::TextureAspect::All,
+                                },
+                                &img.rgba,
+                                wgpu::TexelCopyBufferLayout {
+                                    offset: 0,
+                                    bytes_per_row: Some(img.width * 4),
+                                    rows_per_image: Some(img.height),
+                                },
+                                wgpu::Extent3d {
+                                    width: img.width,
+                                    height: img.height,
+                                    depth_or_array_layers: 1,
+                                },
+                            );
+                            slot.image_key = Some((img.id, img.generation));
+                        }
+                    }
+                    (img.width, img.height, 1.0f32)
+                }
+            };
+            let Some((_, _, bind_group, _)) = slot.tex.as_ref() else { continue };
 
             // Logical layer rect → physical-pixel viewport.
             let (lx, ly, lw, lh) = (layer.rect)();
@@ -369,7 +422,7 @@ impl WebLayerCompositor {
             let u = [
                 sx, sy, ox, oy,
                 vw, vh, radius_px, layer.opacity.clamp(0.0, 1.0),
-                border_px, 0.0, 0.0, 0.0,
+                border_px, use_src_alpha, 0.0, 0.0,
                 bc.r as f32 / 255.0, bc.g as f32 / 255.0, bc.b as f32 / 255.0, bc.a as f32 / 255.0,
             ];
             let mut bytes = [0u8; 64];

@@ -58,6 +58,7 @@ use runtime_core::{
 use std::any::Any;
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// Author-supplied props for a [`Canvas`] instance. Type-erased into an
 /// [`Element::External`](runtime_core::Element) payload at build time;
@@ -178,16 +179,35 @@ impl Fit {
     }
 }
 
-/// A `MediaStream` composited into the canvas at a reactive rectangle, with a
+/// What a [`TextureLayer`] draws: either a live video stream or a static image
+/// (a logo/watermark). Both flow through the SAME per-backend compositor path —
+/// identical fit/rounded/opacity/border handling — so an image overlay
+/// composites (and records) exactly like a camera layer, just without a
+/// per-frame source (`[[project_canvas_self_capture]]`).
+#[derive(Clone)]
+pub enum LayerSource {
+    /// A live `MediaStream` (camera, screen share, a composited output), resolved
+    /// every composite so a source that opens/closes/swaps is picked up
+    /// reactively. On the GPU backends the stream's zero-copy `native_source`
+    /// (an IOSurface on Apple) is imported; the CPU backends pull its latest RGBA.
+    Stream(Rc<dyn Fn() -> Option<media_stream::MediaStream>>),
+    /// A static RGBA image — a watermark/logo. Uploaded once and cached by
+    /// [`ImageSource::id`]; return a NEW id/`generation` only when the pixels
+    /// change. Resolved every composite so a reactive `Signal<Option<_>>` can
+    /// swap or hide it. Needs no keep-alive subscription (it isn't a producer).
+    Image(Rc<dyn Fn() -> Option<Arc<ImageSource>>>),
+}
+
+/// A source (a live [`MediaStream`](media_stream::MediaStream) or a static
+/// [`ImageSource`]) composited into the canvas at a reactive rectangle, with a
 /// fit mode, rounded corners, and opacity. See [`CanvasProps::layers`].
 #[derive(Clone)]
 pub struct TextureLayer {
-    /// The stream to draw, resolved every frame so a source that opens/closes
-    /// (or swaps) after the canvas is built is picked up reactively — read a
-    /// `Signal<Option<MediaStream>>` here. `None` → nothing drawn this frame. On
-    /// macOS the stream's `native_source` (an IOSurface) is imported as a GPU
-    /// texture; no CPU frame is touched.
-    pub source: Rc<dyn Fn() -> Option<media_stream::MediaStream>>,
+    /// What this layer draws — a live stream or a static image. Resolved every
+    /// composite so a source that opens/closes (or swaps) after the canvas is
+    /// built is picked up reactively (read a `Signal` inside the closure).
+    /// `None` → nothing drawn this frame.
+    pub source: LayerSource,
     /// The destination rectangle `(x, y, w, h)` in the canvas's LOGICAL
     /// coordinate space (the same points the author's `Scene` uses). Read every
     /// frame, so a reactive drag position follows live. The renderer scales it
@@ -214,11 +234,26 @@ pub struct TextureLayer {
 
 impl TextureLayer {
     /// A full-opacity, square, cover-fit, border-less layer from a reactive
-    /// source + rect.
+    /// stream source + rect.
     pub fn new(
         source: Rc<dyn Fn() -> Option<media_stream::MediaStream>>,
         rect: Rc<dyn Fn() -> (f32, f32, f32, f32)>,
     ) -> Self {
+        Self::with_source(LayerSource::Stream(source), rect)
+    }
+
+    /// A full-opacity, square, cover-fit, border-less layer from a reactive
+    /// static-image source + rect — the watermark/logo constructor. The image is
+    /// uploaded once and cached by [`ImageSource::id`]; return a fresh id or
+    /// bumped `generation` only when the pixels change.
+    pub fn image(
+        source: Rc<dyn Fn() -> Option<Arc<ImageSource>>>,
+        rect: Rc<dyn Fn() -> (f32, f32, f32, f32)>,
+    ) -> Self {
+        Self::with_source(LayerSource::Image(source), rect)
+    }
+
+    fn with_source(source: LayerSource, rect: Rc<dyn Fn() -> (f32, f32, f32, f32)>) -> Self {
         Self {
             source,
             rect,
@@ -263,6 +298,29 @@ impl TextureLayer {
         self.opacity = o;
         self
     }
+
+    /// Resolve this layer's current pixels into `buf` for a CPU renderer
+    /// (web `<canvas>`, iOS CoreGraphics, Android `drawBitmap`), returning the
+    /// source `(width, height)`, or `None` if there's nothing to draw this frame
+    /// (stream has no frame yet, image absent/invalid, or source is `None`). Both
+    /// source kinds funnel through here so the crop/fit/opacity path downstream is
+    /// identical for a live stream and a static watermark. The GPU renderer
+    /// (`canvas-vello`) does NOT use this — it imports the zero-copy surface / a
+    /// cached upload directly.
+    pub fn resolve_rgba(&self, buf: &mut Vec<u8>) -> Option<(u32, u32)> {
+        match &self.source {
+            LayerSource::Stream(f) => f()?.latest(buf),
+            LayerSource::Image(f) => {
+                let img = f()?;
+                if !img.is_valid() {
+                    return None;
+                }
+                buf.clear();
+                buf.extend_from_slice(&img.rgba);
+                Some((img.width, img.height))
+            }
+        }
+    }
 }
 
 #[doc(no_inline)]
@@ -289,7 +347,13 @@ pub use media_stream::FrameWriter;
 pub fn sync_layer_subscriptions(layers: &[TextureLayer], slots: &mut Vec<Option<Subscription>>) {
     slots.resize_with(layers.len(), || None);
     for (slot, layer) in slots.iter_mut().zip(layers.iter()) {
-        match ((layer.source)(), slot.is_some()) {
+        // Only live-stream layers have a producer to keep warm; an image layer
+        // is served from its own RGBA buffer and needs no subscription.
+        let stream = match &layer.source {
+            LayerSource::Stream(f) => f(),
+            LayerSource::Image(_) => None,
+        };
+        match (stream, slot.is_some()) {
             (Some(stream), false) => *slot = Some(stream.subscribe(|_| {})),
             (None, true) => *slot = None,
             _ => {}
@@ -425,7 +489,7 @@ pub fn ensure_wire_serde() {
 /// scene-model types ([`Scene`], [`Path`], [`Paint`], [`Stroke`],
 /// [`Color`], …).
 pub mod prelude {
-    pub use super::{draw, Canvas, CanvasProps, Fit, TextureLayer};
+    pub use super::{draw, Canvas, CanvasProps, Fit, LayerSource, TextureLayer};
     pub use crate::scene::{
         color, Color, FillRule, FontResource, GradientStop, LineCap, LineJoin, LinearGradient,
         Paint, PaintKind, Path, PathSeg, PositionedGlyph, RadialGradient, Scene, Stroke, Transform,
@@ -531,6 +595,41 @@ mod tests {
         let (src, dst) = Fit::Cover.map_rects(0.0, 0.0, dx, dy, dw, dh);
         assert_eq!(src, (0.0, 0.0, 0.0, 0.0));
         assert_eq!(dst, (10.0, 20.0, 100.0, 100.0));
+    }
+
+    /// An image layer resolves its pixels through the shared CPU path (used by
+    /// the web/iOS/Android renderers) exactly like a stream frame would, so a
+    /// watermark composites through the same crop/fit code as a camera.
+    #[test]
+    fn image_layer_resolves_rgba() {
+        let img = Arc::new(ImageSource::from_rgba8(9, 2, 1, vec![1, 2, 3, 4, 5, 6, 7, 8]));
+        let layer = TextureLayer::image(
+            Rc::new(move || Some(img.clone())),
+            Rc::new(|| (0.0, 0.0, 10.0, 10.0)),
+        );
+        let mut buf = Vec::new();
+        assert_eq!(layer.resolve_rgba(&mut buf), Some((2, 1)));
+        assert_eq!(buf, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+
+        // An absent image → nothing to draw this frame.
+        let none = TextureLayer::image(Rc::new(|| None), Rc::new(|| (0.0, 0.0, 1.0, 1.0)));
+        assert_eq!(none.resolve_rgba(&mut buf), None);
+    }
+
+    /// Image layers are not producers, so `sync_layer_subscriptions` must never
+    /// allocate a keep-alive subscription slot for them (only live streams need
+    /// one to keep their CPU readback warm).
+    #[test]
+    fn image_layer_needs_no_subscription() {
+        let img = Arc::new(ImageSource::from_rgba8(1, 1, 1, vec![0, 0, 0, 255]));
+        let layers = vec![TextureLayer::image(
+            Rc::new(move || Some(img.clone())),
+            Rc::new(|| (0.0, 0.0, 1.0, 1.0)),
+        )];
+        let mut slots: Vec<Option<Subscription>> = Vec::new();
+        sync_layer_subscriptions(&layers, &mut slots);
+        assert_eq!(slots.len(), 1);
+        assert!(slots[0].is_none(), "an image layer must not hold a subscription");
     }
 
     #[test]

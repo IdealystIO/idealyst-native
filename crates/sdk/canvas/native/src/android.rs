@@ -282,9 +282,8 @@ fn render_scene_into_view(view: &GlobalRef, scene: &Scene, props: &CanvasProps) 
 /// alpha-blended rect using the shared [`canvas_core::Fit::map_rects`] geometry.
 /// No-op when the stream has no frame yet (camera still warming up).
 fn composite_layer(env: &mut JNIEnv, canvas: &JObject, layer: &TextureLayer) {
-    let Some(stream) = (layer.source)() else { return };
     let mut rgba: Vec<u8> = Vec::new();
-    let Some((vw, vh)) = stream.latest(&mut rgba) else { return };
+    let Some((vw, vh)) = layer.resolve_rgba(&mut rgba) else { return };
     if vw == 0 || vh == 0 || rgba.len() < (vw as usize) * (vh as usize) * 4 {
         return;
     }

@@ -1665,23 +1665,21 @@ impl<'a> Splitter<'a> {
     ///
     /// Todo: we could chunk up the main module itself! Not going to now but it would enable parallel downloads of the main chunk
     fn build_split_chunks(&mut self) {
-        // create a single chunk that contains all functions used by multiple modules
-        let mut funcs_used_by_chunks: HashMap<Node, HashSet<usize>> = HashMap::new();
-        for split in self.split_points.iter() {
-            for item in split.reachable_graph.iter() {
-                if self.main_graph.contains(item) {
-                    continue;
-                }
-            }
-        }
-
-        // Only consider funcs that are used by multiple modules - otherwise they can just stay in their respective module
-        funcs_used_by_chunks.retain(|_, v| v.len() > 1);
-
+        // Create a single shared chunk holding every split-only symbol that
+        // more than one split module reaches. Each module then IMPORTS those
+        // (see `emit_split_module`'s `relies_on_chunks` loop) instead of
+        // embedding its own copy. Symbols already in `main` stay in `main`.
+        //
+        // With a single split point nothing is shared, so the chunk is
+        // legitimately empty — that is the common case in this repo and why
+        // the previous empty-loop-body bug (the map was never populated, so
+        // the chunk was ALWAYS empty and every module re-embedded all shared
+        // engine code) went unnoticed until a second split point appeared.
+        //
         // todo: break down this chunk if it exceeds a certain size (100kb?) by identifying different groups
-
-        self.chunks
-            .push(funcs_used_by_chunks.keys().cloned().collect());
+        let shared =
+            compute_shared_chunk(self.split_points.iter().map(|s| &s.reachable_graph), &self.main_graph);
+        self.chunks.push(shared);
     }
 
     fn unused_main_symbols(&self) -> HashSet<Node> {
@@ -2264,6 +2262,38 @@ fn reachable_graph(deps: &HashMap<Node, HashSet<Node>>, roots: &HashSet<Node>) -
     reachable
 }
 
+/// Compute the shared chunk: every split-only symbol reachable from MORE than
+/// one split point. Symbols in `main_graph` are excluded (they stay in main);
+/// symbols reached by exactly one split point stay in that split's own module.
+///
+/// Extracted as a generic free fn so the set logic is unit-testable without a
+/// live walrus module — `Node`'s arena ids can't be fabricated in a test, but
+/// the dedup rule this guards is pure set math. The bug it prevents: an empty
+/// tally loop left this chunk permanently empty, so N split points that share
+/// engine code each embedded a full private copy instead of importing one.
+fn compute_shared_chunk<'a, T: Eq + std::hash::Hash + Clone + 'a>(
+    split_graphs: impl Iterator<Item = &'a HashSet<T>>,
+    main_graph: &HashSet<T>,
+) -> HashSet<T> {
+    // A symbol is unique within one split's `reachable_graph` (it's a set), so
+    // counting occurrences across splits directly yields "how many modules use
+    // it". Anything counted >1 belongs in the shared chunk.
+    let mut used_by: HashMap<&T, usize> = HashMap::new();
+    for split in split_graphs {
+        for item in split.iter() {
+            if main_graph.contains(item) {
+                continue;
+            }
+            *used_by.entry(item).or_insert(0) += 1;
+        }
+    }
+    used_by
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .map(|(node, _)| node.clone())
+        .collect()
+}
+
 struct RawDataSection<'a> {
     data_range: Range<usize>,
     symbols: Vec<SymbolInfo<'a>>,
@@ -2661,6 +2691,66 @@ mod tests {
         assert!(
             glue.contains("signal(true)"),
             "the success path must wake the Rust future with `true`"
+        );
+    }
+
+    // Regression: shared code reachable from >1 split point must be hoisted
+    // into the shared chunk so each split module imports it once, instead of
+    // every module embedding a full private copy. The old `build_split_chunks`
+    // had an empty tally loop, so this set was always empty and a two-split
+    // app duplicated its whole engine into each module (25 MB × N).
+    #[test]
+    fn shared_chunk_holds_only_multi_module_split_symbols() {
+        // main owns {0, 1}. Split A reaches {1, 2, 3}; split B reaches {1, 3, 4}.
+        //   1 -> in main, excluded (stays in main)
+        //   2 -> only A, stays in A's module
+        //   4 -> only B, stays in B's module
+        //   3 -> both A and B, not in main -> SHARED CHUNK
+        let main: HashSet<u32> = [0, 1].into_iter().collect();
+        let a: HashSet<u32> = [1, 2, 3].into_iter().collect();
+        let b: HashSet<u32> = [1, 3, 4].into_iter().collect();
+
+        let chunk = compute_shared_chunk([&a, &b].into_iter(), &main);
+
+        assert_eq!(
+            chunk,
+            [3].into_iter().collect::<HashSet<u32>>(),
+            "shared chunk must be exactly the split-only symbols reached by \
+             >1 module; an empty chunk here means shared code is duplicated \
+             into every split module (the size regression this guards)"
+        );
+    }
+
+    #[test]
+    fn shared_chunk_is_empty_with_a_single_split_point() {
+        // One split point: nothing is shared, so an empty chunk is correct —
+        // this is the common case in this repo and must not regress.
+        let main: HashSet<u32> = [0].into_iter().collect();
+        let a: HashSet<u32> = [1, 2].into_iter().collect();
+
+        let chunk = compute_shared_chunk([&a].into_iter(), &main);
+
+        assert!(
+            chunk.is_empty(),
+            "a lone split point shares nothing, so the chunk must be empty"
+        );
+    }
+
+    #[test]
+    fn shared_chunk_excludes_symbols_promoted_to_main() {
+        // A symbol reached by both splits but ALSO in main belongs to main,
+        // not the shared chunk — main is always loaded, so re-hosting it in a
+        // lazily-loaded chunk would be wrong.
+        let main: HashSet<u32> = [7].into_iter().collect();
+        let a: HashSet<u32> = [7, 8].into_iter().collect();
+        let b: HashSet<u32> = [7, 8].into_iter().collect();
+
+        let chunk = compute_shared_chunk([&a, &b].into_iter(), &main);
+
+        assert_eq!(
+            chunk,
+            [8].into_iter().collect::<HashSet<u32>>(),
+            "symbol 7 is in main and must stay there; only 8 is chunk-shared"
         );
     }
 }

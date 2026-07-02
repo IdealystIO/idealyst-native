@@ -16,7 +16,7 @@
 //! microseconds after submit — long before the surface is reused `POOL` frames
 //! later — so no explicit fence is needed (the cadence is the sync).
 
-use canvas_core::{Fit, TextureLayer};
+use canvas_core::{Fit, LayerSource, TextureLayer};
 use media_stream::FrameWriter;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
@@ -201,7 +201,7 @@ const LAYER_BLIT_WGSL: &str = r#"
 struct Layer {
     uv: vec4<f32>,     // uv_scale.xy, uv_offset.xy
     geo: vec4<f32>,    // rect_w_px, rect_h_px, radius_px, opacity
-    border: vec4<f32>, // border_width_px, _, _, _
+    border: vec4<f32>, // border_width_px, use_src_alpha, _, _
     bcolor: vec4<f32>, // border r, g, b, a (0..1)
 };
 @group(0) @binding(0) var tex: texture_2d<f32>;
@@ -230,7 +230,8 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     // Contain letterbox: sample outside [0,1] → transparent bars.
     let inside = all(suv >= vec2<f32>(0.0)) && all(suv <= vec2<f32>(1.0));
     let inb = select(0.0, 1.0, inside);
-    let col = textureSample(tex, samp, clamp(suv, vec2<f32>(0.0), vec2<f32>(1.0))).rgb;
+    let texel = textureSample(tex, samp, clamp(suv, vec2<f32>(0.0), vec2<f32>(1.0)));
+    let col = texel.rgb;
     // Rounded-rect mask in pixel space across the rect (anti-aliased ~1px edge).
     let size = layer.geo.xy;
     let radius = layer.geo.z;
@@ -238,10 +239,15 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     let pp = (in.uv - vec2<f32>(0.5)) * size;
     let d = sd_round_box(pp, size * 0.5, radius);
     let aa = 1.0 - smoothstep(-1.0, 1.0, d);
-    // Video layers are opaque; ignore source alpha — mask by corner + fit +
-    // opacity (straight alpha; the pipeline alpha-blends over the strokes).
+    // Video layers are opaque (`use_src_alpha` = 0) → source alpha ignored, mask
+    // by corner + fit + opacity. Image layers (watermark/logo, `use_src_alpha`
+    // = 1) multiply in the texel's straight alpha so transparent PNG regions
+    // read through. Straight alpha throughout; the pipeline alpha-blends over
+    // the strokes.
+    let use_src_alpha = layer.border.y;
+    let src_a = mix(1.0, texel.a, use_src_alpha);
     var rgb = col;
-    var a = aa * inb * opacity;
+    var a = aa * inb * opacity * src_a;
     // Border ring, composited WITH the image so the frame stays locked to the
     // picture. `aa` is the outer rounded-rect coverage; `inner` is the coverage of
     // the rect shrunk inward by the border width — their difference is the ring
@@ -278,6 +284,18 @@ pub(crate) struct LayerCompositor {
     /// and reused across frames (the camera's pooled surfaces, a screen-share's,
     /// …), so there's no per-frame re-import. `(bind_group, texture, (w, h))`.
     cache: std::collections::HashMap<*const c_void, (wgpu::BindGroup, wgpu::Texture, (u32, u32))>,
+    /// Uploaded static images keyed by [`ImageSource::id`] — uploaded once and
+    /// reused across frames; the stored `generation` forces a re-upload only when
+    /// the pixels change under the same id. `(bind_group, texture, (w, h), gen)`.
+    image_cache:
+        std::collections::HashMap<u64, (wgpu::BindGroup, wgpu::Texture, (u32, u32), u64)>,
+}
+
+/// Which cache entry a resolved layer lives in, so the shared draw code can
+/// re-borrow its bind group after the (mutable) cache-fill step.
+enum Resolved {
+    Surface(*const c_void),
+    Image(u64),
 }
 
 impl LayerCompositor {
@@ -363,7 +381,14 @@ impl LayerCompositor {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        Self { pipeline, sampler, bind_layout, uniforms, cache: std::collections::HashMap::new() }
+        Self {
+            pipeline,
+            sampler,
+            bind_layout,
+            uniforms,
+            cache: std::collections::HashMap::new(),
+            image_cache: std::collections::HashMap::new(),
+        }
     }
 
     /// Composite `layers` (in order) over the target. Each layer's source is
@@ -383,33 +408,75 @@ impl LayerCompositor {
         target_h: u32,
     ) {
         for (i, layer) in layers.iter().enumerate().take(MAX_LAYERS) {
-            let Some(stream) = (layer.source)() else { continue };
-            let Some(src) = stream
-                .native_source()
-                .and_then(|ns| ns.downcast::<media_stream::SurfaceSource>().ok())
-            else {
-                continue;
-            };
-            let ptr = src.acquire();
-            if ptr.is_null() {
-                continue;
-            }
-            if !self.cache.contains_key(&ptr) {
-                if let Some(entry) = self.import(device, ptr) {
-                    if self.cache.len() >= MAX_CACHE {
-                        self.cache.clear();
+            // Resolve the layer's texture into the appropriate cache (a live
+            // stream's zero-copy IOSurface, or a static image uploaded once),
+            // then re-borrow the bind group for the shared draw below.
+            let resolved = match &layer.source {
+                LayerSource::Stream(f) => {
+                    let Some(stream) = f() else { continue };
+                    let Some(src) = stream
+                        .native_source()
+                        .and_then(|ns| ns.downcast::<media_stream::SurfaceSource>().ok())
+                    else {
+                        continue;
+                    };
+                    let ptr = src.acquire();
+                    if ptr.is_null() {
+                        continue;
                     }
-                    self.cache.insert(ptr, entry);
+                    if !self.cache.contains_key(&ptr) {
+                        if let Some(entry) = self.import(device, ptr) {
+                            if self.cache.len() >= MAX_CACHE {
+                                self.cache.clear();
+                            }
+                            self.cache.insert(ptr, entry);
+                        }
+                    }
+                    // The MTLTexture retains the IOSurface, so the cache keeps it
+                    // alive; release our acquire retain.
+                    unsafe { src.release(ptr) };
+                    if !self.cache.contains_key(&ptr) {
+                        continue;
+                    }
+                    Resolved::Surface(ptr)
                 }
-            }
-            // The MTLTexture retains the IOSurface, so the cache keeps it alive;
-            // release our acquire retain.
-            unsafe { src.release(ptr) };
-
-            let Some((bind_group, _, (cam_w, cam_h))) = self.cache.get(&ptr) else {
-                continue;
+                LayerSource::Image(f) => {
+                    let Some(img) = f() else { continue };
+                    if !img.is_valid() {
+                        continue;
+                    }
+                    let stale = match self.image_cache.get(&img.id) {
+                        Some((_, _, _, gen)) => *gen != img.generation,
+                        None => true,
+                    };
+                    if stale {
+                        if let Some(entry) = self.upload_image(device, queue, &img) {
+                            if self.image_cache.len() >= MAX_CACHE {
+                                self.image_cache.clear();
+                            }
+                            self.image_cache.insert(img.id, entry);
+                        }
+                    }
+                    if !self.image_cache.contains_key(&img.id) {
+                        continue;
+                    }
+                    Resolved::Image(img.id)
+                }
             };
-            let (cam_w, cam_h) = (*cam_w, *cam_h);
+
+            let (bind_group, cam_w, cam_h) = match &resolved {
+                Resolved::Surface(ptr) => {
+                    let (bg, _, (w, h)) = self.cache.get(ptr).expect("just inserted");
+                    (bg, *w, *h)
+                }
+                Resolved::Image(id) => {
+                    let (bg, _, (w, h), _) = self.image_cache.get(id).expect("just inserted");
+                    (bg, *w, *h)
+                }
+            };
+            // Image layers carry meaningful alpha (transparent PNG regions);
+            // stream layers are opaque and ignore source alpha.
+            let use_src_alpha = matches!(resolved, Resolved::Image(_)) as u32 as f32;
 
             let (lx, ly, lw, lh) = (layer.rect)();
             let (rx, ry, rw, rh) = (lx * scale, ly * scale, lw * scale, lh * scale);
@@ -433,11 +500,11 @@ impl LayerCompositor {
             let border_px = (layer.border_width * scale).max(0.0);
             let bc = layer.border_color;
             // [uv_scale.xy, uv_offset.xy] [rect_w, rect_h, radius_px, opacity]
-            // [border_px, _, _, _] [border r, g, b, a]
+            // [border_px, use_src_alpha, _, _] [border r, g, b, a]
             let u = [
                 sx, sy, ox, oy,
                 vw, vh, radius_px, layer.opacity.clamp(0.0, 1.0),
-                border_px, 0.0, 0.0, 0.0,
+                border_px, use_src_alpha, 0.0, 0.0,
                 bc.r as f32 / 255.0, bc.g as f32 / 255.0, bc.b as f32 / 255.0, bc.a as f32 / 255.0,
             ];
             let mut bytes = [0u8; 64];
@@ -518,11 +585,65 @@ impl LayerCompositor {
             )
         };
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = self.bind_group_for(device, &view);
+        Some((bind_group, texture, (w, h)))
+    }
+
+    /// Upload a static [`ImageSource`]'s straight-RGBA8 pixels into a sampled
+    /// `Rgba8Unorm` texture + bind group. Unlike [`import`](Self::import) (a
+    /// zero-copy IOSurface), this is a one-time `write_texture` copy; the caller
+    /// caches the result by `id`/`generation` so it isn't re-uploaded per frame.
+    /// The texture keeps its straight alpha so a transparent-PNG watermark blends
+    /// correctly (the shader's `use_src_alpha` path).
+    fn upload_image(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        img: &canvas_core::ImageSource,
+    ) -> Option<(wgpu::BindGroup, wgpu::Texture, (u32, u32), u64)> {
+        let (w, h) = (img.width, img.height);
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("layer-image"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &img.rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w * 4),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = self.bind_group_for(device, &view);
+        Some((bind_group, texture, (w, h), img.generation))
+    }
+
+    /// Build a layer bind group over `view` + the shared sampler + the dynamic
+    /// per-layer uniform slot. Shared by the IOSurface-import and image-upload
+    /// paths so both draw through the identical pipeline.
+    fn bind_group_for(&self, device: &wgpu::Device, view: &wgpu::TextureView) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("layer-bind-group"),
             layout: &self.bind_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(view) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                 wgpu::BindGroupEntry {
                     binding: 2,
@@ -535,8 +656,7 @@ impl LayerCompositor {
                     }),
                 },
             ],
-        });
-        Some((bind_group, texture, (w, h)))
+        })
     }
 }
 

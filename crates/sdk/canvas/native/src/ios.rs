@@ -356,9 +356,8 @@ extern "C" fn release_boxed_pixels(_info: *mut c_void, data: *const c_void, size
 /// [`canvas_core::Fit::map_rects`] geometry. Mirrors the web/Android paths.
 /// No-op when the stream has no frame yet.
 fn composite_layer(ctx: CGContextRef, layer: &TextureLayer) {
-    let Some(stream) = (layer.source)() else { return };
     let mut rgba: Vec<u8> = Vec::new();
-    let Some((vw, vh)) = stream.latest(&mut rgba) else { return };
+    let Some((vw, vh)) = layer.resolve_rgba(&mut rgba) else { return };
     if vw == 0 || vh == 0 || rgba.len() < (vw as usize) * (vh as usize) * 4 {
         return;
     }
