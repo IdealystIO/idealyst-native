@@ -101,12 +101,22 @@ pub(crate) struct PortalInstance {
 pub(crate) type PortalInstances = HashMap<u32, PortalInstance>;
 
 /// Base inline style applied to every portal root before the
-/// target-specific positioning rules are layered on top. `pointer-
-/// events: auto` lets the portal's content (including any
-/// backdrop child the caller provides) receive clicks; the framework
-/// no longer special-cases backdrops at the backend level.
-const PORTAL_ROOT_BASE_STYLE: &str =
-    "position: fixed; pointer-events: auto; z-index: 1000;";
+/// target-specific positioning rules are layered on top.
+///
+/// We deliberately do NOT hardcode `pointer-events` here. The CSS
+/// initial value is `auto`, so a portal with no `style` (modals,
+/// popovers, dropdowns) still hit-tests exactly as before — its
+/// content and any backdrop child receive clicks. What the old
+/// hardcoded `pointer-events: auto` prevented was a *composition*
+/// making its portal click-through: an inline declaration wins over
+/// the class `attach_style` mints, so a `pointer-events: none` in the
+/// portal's `style` field could never take effect. A non-modal
+/// overlay (e.g. `ToastHost`, which fills a viewport strip but must
+/// not swallow clicks in the empty band) now sets
+/// `pointer-events: none` on the portal root via its `style` and has
+/// its interactive descendants (the toast cards) opt back into
+/// `pointer-events: auto`.
+const PORTAL_ROOT_BASE_STYLE: &str = "position: fixed; z-index: 1000;";
 
 /// Gutter (CSS px) between the portal and the viewport edges when
 /// the anchor-positioning clamp kicks in.

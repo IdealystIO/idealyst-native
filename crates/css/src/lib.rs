@@ -1162,6 +1162,30 @@ mod tests {
         assert!(css.contains("user-select: none"), "got: {css}");
     }
 
+    // Regression (ToastHost click-through): a click-through overlay lowers to
+    // `pointer-events: none` on its portal root, and its interactive children
+    // opt back in with `Auto`. Both must emit the exact CSS keyword or the
+    // empty toast strip keeps swallowing clicks (none) / the cards stay dead
+    // (auto). An unset value emits nothing (framework imposes no default).
+    #[test]
+    fn rules_to_css_emits_pointer_events() {
+        use runtime_core::{PointerEvents, StyleRules};
+        let none = rules_to_css(&StyleRules {
+            pointer_events: Some(PointerEvents::None),
+            ..Default::default()
+        });
+        assert!(none.contains("pointer-events: none"), "got: {none}");
+
+        let auto = rules_to_css(&StyleRules {
+            pointer_events: Some(PointerEvents::Auto),
+            ..Default::default()
+        });
+        assert!(auto.contains("pointer-events: auto"), "got: {auto}");
+
+        let unset = rules_to_css(&StyleRules::default());
+        assert!(!unset.contains("pointer-events"), "got: {unset}");
+    }
+
     // The hyphenated CSS keywords must match the spec spelling (snake_case
     // enum → kebab-case CSS), or the browser silently ignores the declaration.
     #[test]

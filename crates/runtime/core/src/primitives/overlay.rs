@@ -13,6 +13,7 @@ use crate::primitives::portal::{
     AnchorTarget, ElementAlign, ElementSide, PortalHandle, PortalTarget, ViewportPlacement,
 };
 use crate::sources::{IntoStyleSource, StyleSource};
+use crate::style::{PointerEvents, StyleRules, StyleSheet};
 use crate::{ChildList, IntoElement, Element, Ref};
 use std::rc::Rc;
 
@@ -61,6 +62,7 @@ pub fn overlay(children: Vec<Element>) -> OverlayBuilder {
         trap_focus: true,
         content_style: None,
         ref_fill: None,
+        click_through: false,
     }
 }
 
@@ -75,6 +77,7 @@ pub struct OverlayBuilder {
     trap_focus: bool,
     content_style: Option<StyleSource>,
     ref_fill: Option<Box<dyn FnOnce(PortalHandle)>>,
+    click_through: bool,
 }
 
 impl OverlayBuilder {
@@ -105,6 +108,28 @@ impl OverlayBuilder {
         self
     }
 
+    /// Make the overlay's own layer transparent to pointer events, so
+    /// clicks in the empty area pass through to the page beneath. Only
+    /// interactive descendants that opt back in (via
+    /// `pointer_events: PointerEvents::Auto` in their style) receive
+    /// clicks.
+    ///
+    /// This is the non-modal case: an overlay that fills a region of
+    /// the viewport (e.g. a toast host pinned to a full-width strip) but
+    /// must not swallow clicks where it renders nothing. It is orthogonal
+    /// to `backdrop(BackdropMode::None)` — that controls whether a *scrim
+    /// child* is rendered, whereas `click_through` controls whether the
+    /// overlay's *own root* hit-tests. A click-through overlay always
+    /// wants `BackdropMode::None` (a scrim would defeat the purpose).
+    ///
+    /// Web-only in effect: it lowers to `pointer-events: none` on the
+    /// portal root. Native backends don't intercept clicks the way a
+    /// stacked DOM does, so it's a no-op there (see [`PointerEvents`]).
+    pub fn click_through(mut self, t: bool) -> Self {
+        self.click_through = t;
+        self
+    }
+
     pub fn with_style<S: IntoStyleSource>(mut self, s: S) -> Self {
         self.content_style = Some(s.into_style_source());
         self
@@ -127,6 +152,7 @@ impl From<OverlayBuilder> for Element {
             b.trap_focus,
             b.content_style,
             b.ref_fill,
+            b.click_through,
         )
     }
 }
@@ -182,6 +208,11 @@ pub fn anchored_overlay(
         ref_fill: None,
     }
 }
+
+// NOTE: `anchored_overlay` has no `click_through` — popovers, tooltips,
+// dropdowns and context menus are content-sized (not full-strip), so their
+// root only covers what they render; there's no empty band to pass through.
+// The shared lowering always receives `click_through: false` for it below.
 
 /// Builder for the element-anchored overlay composition. Lowers to
 /// [`Element::Portal`] via `From<AnchoredOverlayBuilder>`.
@@ -269,6 +300,7 @@ impl From<AnchoredOverlayBuilder> for Element {
             b.trap_focus,
             b.content_style,
             b.ref_fill,
+            false,
         )
     }
 }
@@ -297,6 +329,7 @@ impl ChildList for Option<AnchoredOverlayBuilder> {
 // Lowering — shared between both compositions
 // =============================================================================
 
+#[allow(clippy::too_many_arguments)]
 fn build_overlay_portal(
     target: PortalTarget,
     children: Vec<Element>,
@@ -306,6 +339,7 @@ fn build_overlay_portal(
     trap_focus: bool,
     content_style: Option<StyleSource>,
     ref_fill: Option<Box<dyn FnOnce(PortalHandle)>>,
+    click_through: bool,
 ) -> Element {
     let mut portal_children: Vec<Element> = Vec::with_capacity(2);
 
@@ -348,6 +382,17 @@ fn build_overlay_portal(
     }
     portal_children.push(content_view.into());
 
+    // A click-through overlay marks its portal root
+    // `pointer-events: none` so the empty area passes clicks to the page;
+    // interactive descendants (e.g. toast cards) re-enable hit-testing
+    // with `pointer_events: Auto`. Modal/anchored overlays leave `style`
+    // as `None` (portal root defaults to `pointer-events: auto`).
+    let style = if click_through {
+        Some(click_through_portal_style())
+    } else {
+        None
+    };
+
     // Build the portal. `ref_fill` goes straight onto the Element
     // since `RefFill::Portal` is the right variant for the composed
     // primitive's handle.
@@ -356,8 +401,68 @@ fn build_overlay_portal(
         target,
         on_dismiss,
         trap_focus,
-        style: None,
+        style,
         ref_fill: ref_fill.map(|f| crate::handles::RefFill::Portal(f)),
         accessibility: crate::accessibility::AccessibilityProps::default(),
+    }
+}
+
+/// The portal-root style for a click-through overlay: `pointer-events:
+/// none` and nothing else, so it layers on top of the backend's inline
+/// positioning without disturbing it.
+fn click_through_portal_style() -> StyleSource {
+    let sheet: Rc<StyleSheet> = Rc::new(StyleSheet::r#static(StyleRules {
+        pointer_events: Some(PointerEvents::None),
+        ..Default::default()
+    }));
+    sheet.into_style_source()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::style::resolve as resolve_style;
+
+    /// Resolve a portal's `style` field to its `pointer_events` value, if any.
+    fn portal_pointer_events(el: &Element) -> Option<Option<PointerEvents>> {
+        match el {
+            Element::Portal { style, .. } => match style {
+                Some(StyleSource::Static(app)) => Some(resolve_style(app).pointer_events),
+                Some(_) => None,
+                None => Some(None),
+            },
+            _ => None,
+        }
+    }
+
+    // Regression (empty ToastHost swallowed clicks): a `click_through` overlay
+    // must lower to a portal root marked `pointer-events: none`, so the strip
+    // it fills doesn't hit-test where it renders nothing. Without the flag the
+    // portal carries no such style and defaults to interactive (modals/drawers).
+    #[test]
+    fn click_through_marks_portal_root_pointer_events_none() {
+        let el: Element = overlay(vec![])
+            .backdrop(BackdropMode::None)
+            .click_through(true)
+            .into();
+        assert_eq!(
+            portal_pointer_events(&el),
+            Some(Some(PointerEvents::None)),
+            "click-through overlay must mark its portal root pointer-events:none",
+        );
+    }
+
+    // The default (modal) overlay leaves the portal style unset — its root
+    // stays interactive so backdrop taps and content clicks land. Anchored
+    // overlays (popovers/tooltips/menus) always lower with `false` too, so
+    // this "no style unless asked" invariant is the whole click-through gate.
+    #[test]
+    fn default_overlay_leaves_portal_interactive() {
+        let el: Element = overlay(vec![]).into();
+        assert_eq!(
+            portal_pointer_events(&el),
+            Some(None),
+            "a modal overlay must not mark its portal click-through",
+        );
     }
 }

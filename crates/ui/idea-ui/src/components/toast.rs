@@ -49,8 +49,8 @@ use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::ViewportPlacement;
 use runtime_core::{
     after_ms_detached, component, presence, ui, unscope, AlignItems, Easing, FlexDirection,
-    IdealystSchema, IntoElement, JustifyContent, Length, PresenceAnim, PresenceState, Element,
-    Reactive, Signal, StyleRules, StyleSheet, Tokenized, VariantSet,
+    IdealystSchema, IntoElement, JustifyContent, Length, PointerEvents, PresenceAnim,
+    PresenceState, Element, Reactive, Signal, StyleRules, StyleSheet, Tokenized, VariantSet,
 };
 
 use idea_theme::extensible::{ToneRef, VariantRef};
@@ -364,7 +364,7 @@ pub fn ToastCard(props: &ToastCardProps) -> Element {
     // The card content, re-run by `presence`.
     let surface = move || render();
 
-    presence(surface)
+    let card = presence(surface)
         // Reactively read this entry's `leaving` flag from the queue. If
         // the entry is already gone, it's leaving (present = false).
         .present(move || {
@@ -383,8 +383,26 @@ pub fn ToastCard(props: &ToastCardProps) -> Element {
             PresenceState::default().opacity(0.0).translate_y(-TOAST_SLIDE_PX),
             TOAST_ANIM_MS,
             Easing::EaseIn,
-        ))
+        ));
+
+    // The `ToastHost` overlay is click-through (`pointer-events: none` on
+    // web) so the empty viewport strip it fills doesn't swallow clicks.
+    // The cards must opt back into hit-testing — otherwise the close × and
+    // any action button inside a toast would be dead. Wrap each card in a
+    // view that re-enables pointer events for the card's box only (the gaps
+    // between cards stay transparent). No-op on native backends.
+    runtime_core::view(vec![card.into_element()])
+        .with_style(interactive_card_sheet())
         .into_element()
+}
+
+/// A card-local stylesheet whose sole job is to re-enable pointer events
+/// under the click-through toast host. See [`ToastCard`].
+fn interactive_card_sheet() -> Rc<StyleSheet> {
+    Rc::new(StyleSheet::r#static(StyleRules {
+        pointer_events: Some(PointerEvents::Auto),
+        ..Default::default()
+    }))
 }
 
 // =============================================================================
@@ -558,6 +576,11 @@ pub fn ToastHost(props: &ToastHostProps) -> Element {
         .placement(placement.viewport())
         .backdrop(BackdropMode::None)
         .trap_focus(false)
+        // Non-modal: the host fills a viewport strip (e.g. full-width along
+        // the top) but must not swallow clicks in the empty band. The strip
+        // passes pointer events through; only the cards (which re-enable
+        // hit-testing) are interactive. See `ToastCard`.
+        .click_through(true)
         .into_element()
 }
 
@@ -567,6 +590,28 @@ mod tests {
     use idea_theme::extensible::{installed_alert_sheet, tone, variant};
     use idea_theme::theme::{install_idea_theme, light_theme};
     use runtime_core::{arena_stats, resolve_style, Color, StyleApplication, StyleSource};
+
+    /// Regression (empty ToastHost swallowed clicks): the host overlay is
+    /// click-through (`pointer-events: none` on web) so its viewport strip
+    /// doesn't eat clicks in the empty band. Each card must therefore re-enable
+    /// hit-testing on its own box — otherwise the close × and any action button
+    /// inside a toast would be dead under the click-through ancestor. The card's
+    /// outermost element must resolve `pointer-events: auto`.
+    #[test]
+    fn regression_toast_card_opts_into_pointer_events() {
+        let card = ToastCard(&ToastCardProps { entry: ToastEntry { id: 1, ..Default::default() } });
+        let pe = match &card {
+            Element::View { style: Some(StyleSource::Static(app)), .. } => {
+                resolve_style(app).pointer_events
+            }
+            _ => panic!("a toast card wraps its content in a styled view"),
+        };
+        assert_eq!(
+            pe,
+            Some(PointerEvents::Auto),
+            "toast card must opt back into pointer-events under the click-through host",
+        );
+    }
 
     /// Walk the rendered tree and return the first `Text` node's resolved
     /// color (DFS, into Views and Pressables — enough for an Alert's
