@@ -198,7 +198,7 @@ they stay decoupled:
   Android keep the trait default no-op — no trackpad/wheel there; pinch covers
   them.
 
-The two converge in the `zoom` SDK (`crates/sdk/zoom`), which drives one
+The two converge in the `zoom` SDK (`crates/sdk/client/zoom`), which drives one
 `AnimatedValue<f32>` scale from both a `pinch_handler()` (`on_touch`) and a
 `wheel_handler()` (`on_wheel`) — the scale peer of the `pan` SDK.
 

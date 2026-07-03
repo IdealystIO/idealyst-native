@@ -1,0 +1,76 @@
+[package]
+name = "jobs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Server-tier background-job / queue SDK.
+#
+# Define a unit of deferred work once as an `async fn` under `#[job]`;
+# enqueue it with a typed, compile-checked call site from anywhere on the
+# server (`send_email::enqueue(addr).delay(60).await?`); a worker process
+# drains the queue and runs the body. The job body reaches app state through
+# the SAME `State<T>` / `#[ctx]` dependency-injection surface as `#[server]`
+# fns (this crate depends on `server` for it).
+#
+# The queue itself is pluggable via the `QueueBackend` trait:
+#   - `memory`   in-process reference backend (default; the test substrate)
+#   - `redis`    Redis Streams + consumer groups            (feature `redis`)
+#   - `postgres` `SELECT … FOR UPDATE SKIP LOCKED` table    (feature `postgres`)
+#   - `sqs`      AWS SQS visibility-timeout queue            (feature `sqs`)
+#
+# Build modes mirror `#[server]`:
+#   - Worker / server binary: `--features worker` → handler registration +
+#     the worker runtime (`jobs::worker().run().await`).
+#   - Client (wasm) binary: default → the typed `enqueue` surface compiles,
+#     but enqueues only actually run server-side (from a `#[server]`/`#[job]`
+#     body), never from the wasm client.
+
+[features]
+default = ["memory"]
+# In-process reference backend + its test substrate.
+memory = []
+# Emit `#[job]` handler registration (the inventory entries) + compile the
+# worker runtime. Parallel to `server`'s `server` feature: on in the
+# worker/server binary, off in the wasm client build. Enqueue does NOT need
+# it — a server that only enqueues can leave it off.
+#
+# Forwards to `server/server` because job handlers resolve `State<T>` / `#[ctx]`
+# extractors through `server`'s `FromContext` / `Context`, which live behind
+# that feature. This only affects the (native) worker build; the client/enqueue
+# path never enables it, so the wasm client stays free of axum.
+worker = ["dep:tokio", "dep:futures-util", "server/server"]
+# Real broker backends. Each pulls only its own client crate. `redis` needs a
+# tokio runtime for its async connection (enqueue-only servers turn this on
+# without `worker`).
+redis = ["dep:redis", "dep:tokio"]
+postgres = ["dep:sqlx"]
+sqs = ["dep:aws-config", "dep:aws-sdk-sqs"]
+
+[dependencies]
+# Reuse `#[server]`'s State<T> / #[ctx] / install_state / FromContext so job
+# handlers get identical dependency injection. The `server` feature is NOT
+# forwarded here — jobs only needs the extractor/state surface, which is
+# available in both build modes.
+server = { workspace = true }
+jobs-macros = { workspace = true }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+async-trait = "0.1"
+inventory = "0.3"
+
+# Worker-runtime deps (behind `worker`); `net` is also needed by the Redis
+# backend's async connection.
+tokio = { version = "1", features = ["rt", "time", "sync", "macros", "signal", "net"], optional = true }
+futures-util = { version = "0.3", default-features = false, features = ["std"], optional = true }
+
+# Backend clients — each behind its own feature.
+redis = { version = "0.27", default-features = false, features = ["tokio-comp", "connection-manager", "script"], optional = true }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "macros"], optional = true }
+aws-config = { version = "1", optional = true }
+aws-sdk-sqs = { version = "1", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"] }

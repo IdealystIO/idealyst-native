@@ -17,8 +17,8 @@ recipe. See the per-phase list near the end for detail.
 
 The full-stack API layer lives under `crates/api/` (`server`, `server-macros`,
 and the future middleware / `storage` crates), kept separate from the UI-facing
-`crates/sdk/` extension primitives. General transport primitives (`net`, and a
-future cross-platform `storage`) stay in `crates/sdk/`; the API layer composes
+`crates/sdk/client/` extension primitives. General transport primitives (`net`, and a
+future cross-platform `storage`) stay in `crates/sdk/client/`; the API layer composes
 them. Note the distinct sense of "api" in §0 below: that refers to the *author's*
 app crate that holds their `#[server]` fns, not this repo's `crates/api/` home.
 
@@ -587,9 +587,9 @@ Each phase is independently shippable and lands with tests (repo rules §1, §8)
   `Set-Cookie` (httpOnly/Secure/SameSite=Lax by default) via a per-request cookie
   jar the dispatcher drains (single + batch paths); e2e-tested. This is the server
   half of the web BFF auth pattern. ✅ **Storage split into two honest SDKs**:
-  `storage` (`crates/sdk/storage`) is now plaintext-only KV (`localStorage` /
+  `storage` (`crates/sdk/client/storage`) is now plaintext-only KV (`localStorage` /
   `UserDefaults` / `SharedPreferences` / file, via `platform_storage`); secrets
-  moved to the new `credentials` SDK (`crates/sdk/credentials`): sync object-safe
+  moved to the new `credentials` SDK (`crates/sdk/client/credentials`): sync object-safe
   `Credentials` trait + Keychain (apple, host-tested) + AndroidKeyStore AES-GCM
   (JNI, device-unverified) + web/desktop error-with-guidance. The credential
   plugs into bearer auth via `server::bearer(|| creds.get("token").ok().flatten())`

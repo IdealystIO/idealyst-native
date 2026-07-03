@@ -562,6 +562,36 @@ pub fn run(args: Args) -> Result<()> {
         }
     }
 
+    // Auto-spawn the jobs worker when the app declares one AND `dev.toml`
+    // configures a *shared* queue backend (redis / postgres / sqs). A separate
+    // worker process can only drain the same queue the server enqueues to
+    // through a shared broker; with the default in-memory backend the server is
+    // expected to run workers in-process (author calls `jobs::worker().spawn()`
+    // before `serve`), so spawning a second process here would drain an empty,
+    // unrelated queue — we skip it and say so.
+    let worker_declared =
+        manifest.app.worker_bin.is_some() || manifest.app.worker_manifest.is_some();
+    if worker_declared {
+        match dev_cfg.jobs.as_ref() {
+            Some(jobs) if jobs.is_shared() => match spawn_worker(&dir, &manifest, jobs) {
+                Ok(child) => {
+                    let pid = child.id();
+                    eprintln!(
+                        "[dev worker] jobs worker running (pid {pid}) draining `{}`",
+                        jobs.backend.as_deref().unwrap_or("?"),
+                    );
+                    children.lock().unwrap().push(child);
+                }
+                Err(e) => eprintln!("[dev worker] failed to start worker: {e:#}"),
+            },
+            _ => eprintln!(
+                "[dev worker] worker declared but no shared queue backend in dev.toml \
+                 ([jobs] backend = \"redis\"|\"postgres\"|\"sqs\"); the server is expected \
+                 to run workers in-process on the in-memory queue instead."
+            ),
+        }
+    }
+
     // Spawn one worker thread per active target. We pre-build the
     // per-target context outside the thread so a setup error
     // surfaces synchronously.
@@ -1597,6 +1627,57 @@ fn spawn_backend(
         cmd.env("WEB_DIST", d);
     }
     cmd.spawn().context("spawn server (`cargo run`)")
+}
+
+/// Spawn the jobs worker process (mirrors [`spawn_backend`]), pointing it at the
+/// shared queue backend + the dev server. The worker's `main` is the author's,
+/// and typically calls `jobs::configure_from_env().await?` to read the
+/// `IDEALYST_JOBS_*` env this sets.
+fn spawn_worker(
+    dir: &Path,
+    manifest: &build_ios::Manifest,
+    jobs: &crate::dev_config::JobsConfig,
+) -> Result<std::process::Child> {
+    let app = &manifest.app;
+    let mut cmd = std::process::Command::new("cargo");
+    cmd.arg("run");
+    if let Some(rel) = &app.worker_manifest {
+        let joined = dir.join(rel);
+        if !joined.is_file() {
+            anyhow::bail!(
+                "worker_manifest points at {}, which doesn't exist (resolved relative \
+                 to the app crate dir {}). Fix `[package.metadata.idealyst.app].worker_manifest`.",
+                joined.display(),
+                dir.display(),
+            );
+        }
+        let manifest_path = std::fs::canonicalize(&joined).unwrap_or(joined);
+        cmd.arg("--manifest-path").arg(&manifest_path);
+        if let Some(bin) = &app.worker_bin {
+            cmd.arg("--bin").arg(bin);
+        }
+    } else if let Some(bin) = &app.worker_bin {
+        cmd.arg("-p")
+            .arg(&manifest.name)
+            .arg("--bin")
+            .arg(bin)
+            .arg("--features")
+            .arg("server");
+    } else {
+        anyhow::bail!("no worker declared (set worker_bin or worker_manifest)");
+    }
+    if let Some(b) = &jobs.backend {
+        cmd.env("IDEALYST_JOBS_BACKEND", b);
+    }
+    if let Some(u) = &jobs.url {
+        cmd.env("IDEALYST_JOBS_URL", u);
+    }
+    cmd.env(
+        "IDEALYST_SERVER_URL",
+        format!("http://127.0.0.1:{}", app.server_port),
+    );
+    cmd.env("PORT", app.server_port.to_string());
+    cmd.spawn().context("spawn worker (`cargo run`)")
 }
 
 /// Open the browser at the project's web URL once the server is

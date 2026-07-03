@@ -2,7 +2,7 @@
 //!
 //! Core ships exactly one navigator primitive (`Element::Navigator`)
 //! plus its substrate. Specific navigator kinds (stack, tabs, drawer,
-//! anything third-party) live in SDK crates under `crates/sdk/` and
+//! anything third-party) live in SDK crates under `crates/sdk/client/` and
 //! register handlers into each backend's `NavigatorRegistry`.
 //!
 //! The framework never names any kind. Routing, screen scopes,

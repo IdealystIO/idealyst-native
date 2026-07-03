@@ -179,6 +179,20 @@ pub struct AppMetadata {
     /// server_port = 3000
     /// ```
     pub server_port: u16,
+    /// In-crate worker binary — the `jobs` SDK's queue drainer, analogous to
+    /// [`server_bin`]. `worker_bin = "worker"` runs `cargo run -p <pkg> --bin
+    /// worker --features server`. `idealyst worker` runs it standalone, and
+    /// `idealyst dev` auto-spawns it alongside the server when a shared queue
+    /// backend is configured (see the `[jobs]` block in `dev.toml`).
+    ///
+    /// [`server_bin`]: AppMetadata::server_bin
+    pub worker_bin: Option<String>,
+    /// Standalone-workspace worker manifest, analogous to [`server_manifest`].
+    /// When set, the worker runs via `cargo run --manifest-path <worker_manifest>`
+    /// (adding `--bin <worker_bin>` when that's also set).
+    ///
+    /// [`server_manifest`]: AppMetadata::server_manifest
+    pub worker_manifest: Option<String>,
     /// Web-target-specific knobs. Always present — empty defaults if
     /// the user didn't declare a `[package.metadata.idealyst.app.web]`
     /// block.
@@ -520,6 +534,10 @@ struct RawAppMetadata {
     #[serde(default)]
     server_port: Option<u16>,
     #[serde(default)]
+    worker_bin: Option<String>,
+    #[serde(default)]
+    worker_manifest: Option<String>,
+    #[serde(default)]
     web: Option<RawWebMetadata>,
     #[serde(default)]
     macos: Option<RawMacosMetadata>,
@@ -659,6 +677,8 @@ pub fn parse_manifest(project_dir: &Path) -> Result<Manifest> {
         server_bin: app_raw.server_bin,
         server_manifest: app_raw.server_manifest,
         server_port: app_raw.server_port.unwrap_or(3000),
+        worker_bin: app_raw.worker_bin,
+        worker_manifest: app_raw.worker_manifest,
         web,
         macos,
         permissions: app_raw.permissions.unwrap_or_default(),
@@ -958,6 +978,8 @@ mod regression_tests {
                 server_bin: None,
                 server_manifest: None,
                 server_port: 3000,
+                worker_bin: None,
+                worker_manifest: None,
                 web: WebMetadata::default(),
                 macos: Default::default(),
                 permissions: Default::default(),

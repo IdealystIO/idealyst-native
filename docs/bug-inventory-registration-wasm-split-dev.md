@@ -32,7 +32,7 @@ Navigator and external SDKs self-register with the web backend via `inventory`:
 
 - An SDK's web module `inventory::submit!`s a `WebNavigatorRegistrar`
   (carrying a `fn(&mut WebBackend)`) — e.g.
-  `crates/sdk/navigators/stack/src/web.rs:172`.
+  `crates/sdk/client/navigators/stack/src/web.rs:172`.
 - `WebBackend::new` → `drain_self_registrars()`
   (`crates/backend/web/src/lib.rs:981`) iterates
   `inventory::iter::<WebNavigatorRegistrar>` and calls each registrar to

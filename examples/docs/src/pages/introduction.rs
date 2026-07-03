@@ -190,7 +190,7 @@ docs! {
            plus per-Backend implementations, then register them through the \
            Backend's external registry."),
         p("WebView and Maps ship today as reference implementations in ",
-          code("crates/sdk/"), ". Each defines one primitive plus a per-Backend \
+          code("crates/sdk/client/"), ". Each defines one primitive plus a per-Backend \
            impl (iOS / Android / web). Nothing in ", code("runtime-core"),
           " has to know about them — the registry slot is enough."),
         p("This is how the framework grows without bloating the core: a \

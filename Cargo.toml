@@ -81,68 +81,68 @@ members = [
     # `maps` is an umbrella crate; its per-backend leaves are nested
     # under it (core/ios/web) so the flat sdk/ listing shows the SDK
     # feature, not its platform implementations.
-    "crates/sdk/maps",
-    "crates/sdk/maps/core",
-    "crates/sdk/maps/web",
-    "crates/sdk/maps/ios",
-    "crates/sdk/codeblock",
-    "crates/sdk/markdown",
-    "crates/sdk/webview",
-    "crates/sdk/video",
-    "crates/sdk/svg",
+    "crates/sdk/client/maps",
+    "crates/sdk/client/maps/core",
+    "crates/sdk/client/maps/web",
+    "crates/sdk/client/maps/ios",
+    "crates/sdk/client/codeblock",
+    "crates/sdk/client/markdown",
+    "crates/sdk/client/webview",
+    "crates/sdk/client/video",
+    "crates/sdk/client/svg",
     # `canvas` 2D-drawing SDK: umbrella facade + renderer-agnostic core.
     # Renderer crates (canvas-vello / canvas-native) added in later phases.
-    "crates/sdk/canvas",
-    "crates/sdk/canvas/core",
-    "crates/sdk/canvas/native",
-    "crates/sdk/canvas/vello",
-    "crates/sdk/toolbar",
-    "crates/sdk/pdf",
-    "crates/sdk/form",
-    "crates/sdk/table",
-    "crates/sdk/virtualized",
-    "crates/sdk/menu",
+    "crates/sdk/client/canvas",
+    "crates/sdk/client/canvas/core",
+    "crates/sdk/client/canvas/native",
+    "crates/sdk/client/canvas/vello",
+    "crates/sdk/client/toolbar",
+    "crates/sdk/client/pdf",
+    "crates/sdk/client/form",
+    "crates/sdk/client/table",
+    "crates/sdk/client/virtualized",
+    "crates/sdk/client/menu",
 
     # SDK — utility (non-primitive) crates.
-    "crates/sdk/net",
-    "crates/sdk/storage",
-    "crates/sdk/sync",
-    "crates/sdk/graphql",
-    "crates/sdk/pan",
-    "crates/sdk/zoom",
-    "crates/sdk/gesture",
-    "crates/sdk/dnd",
-    "crates/sdk/microphone",
-    "crates/sdk/camera",
-    "crates/sdk/media-stream",
-    "crates/sdk/media-writer",
-    "crates/sdk/video-compose",
-    "crates/sdk/denoise",
-    "crates/sdk/video-decode",
-    "crates/sdk/file-export",
-    "crates/sdk/file-picker",
-    "crates/sdk/auto-update",
-    "crates/sdk/offload",
-    "crates/sdk/offload-macro",
-    "crates/sdk/credentials",
-    "crates/sdk/biometrics",
-    "crates/sdk/screen-recorder",
-    "crates/sdk/files",
-    "crates/sdk/i18n",
-    "crates/sdk/i18n/macros",
+    "crates/sdk/client/net",
+    "crates/sdk/client/storage",
+    "crates/sdk/client/sync",
+    "crates/sdk/client/graphql",
+    "crates/sdk/client/pan",
+    "crates/sdk/client/zoom",
+    "crates/sdk/client/gesture",
+    "crates/sdk/client/dnd",
+    "crates/sdk/client/microphone",
+    "crates/sdk/client/camera",
+    "crates/sdk/client/media-stream",
+    "crates/sdk/client/media-writer",
+    "crates/sdk/client/video-compose",
+    "crates/sdk/client/denoise",
+    "crates/sdk/client/video-decode",
+    "crates/sdk/client/file-export",
+    "crates/sdk/client/file-picker",
+    "crates/sdk/client/auto-update",
+    "crates/sdk/client/offload",
+    "crates/sdk/client/offload-macro",
+    "crates/sdk/client/credentials",
+    "crates/sdk/client/biometrics",
+    "crates/sdk/client/screen-recorder",
+    "crates/sdk/client/files",
+    "crates/sdk/client/i18n",
+    "crates/sdk/client/i18n/macros",
 
     # SDK — device / platform-integration capability crates (Tier 1).
     # `permissions` is the shared runtime-grant substrate the others
     # (notifications, location) build on.
-    "crates/sdk/permissions",
-    "crates/sdk/notifications",
-    "crates/sdk/clipboard",
-    "crates/sdk/location",
-    "crates/sdk/share",
-    "crates/sdk/deep-link",
-    "crates/sdk/connectivity",
-    "crates/sdk/haptics",
-    "crates/sdk/audio",
+    "crates/sdk/client/permissions",
+    "crates/sdk/client/notifications",
+    "crates/sdk/client/clipboard",
+    "crates/sdk/client/location",
+    "crates/sdk/client/share",
+    "crates/sdk/client/deep-link",
+    "crates/sdk/client/connectivity",
+    "crates/sdk/client/haptics",
+    "crates/sdk/client/audio",
 
     # API — full-stack server-functions layer (server fns, transport,
     # auth/middleware, storage). See crates/api/server/DESIGN.md.
@@ -150,16 +150,21 @@ members = [
     "crates/api/server-macros",
     "crates/api/server-aws",
 
+    # SDK — server-tier capabilities (run in the server / worker binary,
+    # not the client). `jobs` = background-job / queue SDK.
+    "crates/sdk/server/jobs",
+    "crates/sdk/server/jobs/macros",
+
     # SDK — navigator-kind extensions (Primitive::NavigatorExt).
     # Grouped under navigators/: the three SDK features (stack/tab/
     # drawer) plus the shared per-platform machinery in helpers/ that
     # all three depend on.
-    "crates/sdk/navigators/stack",
-    "crates/sdk/navigators/tab",
-    "crates/sdk/navigators/drawer",
-    "crates/sdk/navigators/helpers/web",
-    "crates/sdk/navigators/helpers/ios",
-    "crates/sdk/navigators/helpers/android",
+    "crates/sdk/client/navigators/stack",
+    "crates/sdk/client/navigators/tab",
+    "crates/sdk/client/navigators/drawer",
+    "crates/sdk/client/navigators/helpers/web",
+    "crates/sdk/client/navigators/helpers/ios",
+    "crates/sdk/client/navigators/helpers/android",
 
     # Tools — CLI + per-platform build/run + source porters.
     "crates/tools/cli",
@@ -364,70 +369,72 @@ idea-theme = { path = "crates/ui/idea-theme" }
 idea-ui = { path = "crates/ui/idea-ui" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive" }
 icons-lucide = { path = "crates/ui/icons-lucide" }
-pan = { path = "crates/sdk/pan" }
-zoom = { path = "crates/sdk/zoom" }
-dnd = { path = "crates/sdk/dnd" }
-maps = { path = "crates/sdk/maps" }
-maps-core = { path = "crates/sdk/maps/core" }
-maps-web = { path = "crates/sdk/maps/web" }
-maps-ios = { path = "crates/sdk/maps/ios" }
-codeblock = { path = "crates/sdk/codeblock" }
-markdown = { path = "crates/sdk/markdown" }
-webview = { path = "crates/sdk/webview" }
-video = { path = "crates/sdk/video" }
-svg = { path = "crates/sdk/svg" }
-canvas = { path = "crates/sdk/canvas" }
-canvas-core = { path = "crates/sdk/canvas/core" }
-canvas-native = { path = "crates/sdk/canvas/native" }
-canvas-vello = { path = "crates/sdk/canvas/vello" }
-toolbar = { path = "crates/sdk/toolbar" }
-pdf = { path = "crates/sdk/pdf" }
-form = { path = "crates/sdk/form" }
-table = { path = "crates/sdk/table" }
-virtualized = { path = "crates/sdk/virtualized" }
-menu = { path = "crates/sdk/menu" }
-net = { path = "crates/sdk/net" }
-storage = { path = "crates/sdk/storage" }
-sync = { path = "crates/sdk/sync" }
-graphql = { path = "crates/sdk/graphql" }
-microphone = { path = "crates/sdk/microphone" }
-camera = { path = "crates/sdk/camera" }
-media-stream = { path = "crates/sdk/media-stream" }
-media-writer = { path = "crates/sdk/media-writer" }
-video-compose = { path = "crates/sdk/video-compose" }
-denoise = { path = "crates/sdk/denoise" }
-video-decode = { path = "crates/sdk/video-decode" }
-file-export = { path = "crates/sdk/file-export" }
-file-picker = { path = "crates/sdk/file-picker" }
-auto-update = { path = "crates/sdk/auto-update" }
-credentials = { path = "crates/sdk/credentials" }
-biometrics = { path = "crates/sdk/biometrics" }
-screen-recorder = { path = "crates/sdk/screen-recorder" }
-files = { path = "crates/sdk/files" }
-i18n = { path = "crates/sdk/i18n" }
-i18n-macros = { path = "crates/sdk/i18n/macros" }
+pan = { path = "crates/sdk/client/pan" }
+zoom = { path = "crates/sdk/client/zoom" }
+dnd = { path = "crates/sdk/client/dnd" }
+maps = { path = "crates/sdk/client/maps" }
+maps-core = { path = "crates/sdk/client/maps/core" }
+maps-web = { path = "crates/sdk/client/maps/web" }
+maps-ios = { path = "crates/sdk/client/maps/ios" }
+codeblock = { path = "crates/sdk/client/codeblock" }
+markdown = { path = "crates/sdk/client/markdown" }
+webview = { path = "crates/sdk/client/webview" }
+video = { path = "crates/sdk/client/video" }
+svg = { path = "crates/sdk/client/svg" }
+canvas = { path = "crates/sdk/client/canvas" }
+canvas-core = { path = "crates/sdk/client/canvas/core" }
+canvas-native = { path = "crates/sdk/client/canvas/native" }
+canvas-vello = { path = "crates/sdk/client/canvas/vello" }
+toolbar = { path = "crates/sdk/client/toolbar" }
+pdf = { path = "crates/sdk/client/pdf" }
+form = { path = "crates/sdk/client/form" }
+table = { path = "crates/sdk/client/table" }
+virtualized = { path = "crates/sdk/client/virtualized" }
+menu = { path = "crates/sdk/client/menu" }
+net = { path = "crates/sdk/client/net" }
+storage = { path = "crates/sdk/client/storage" }
+sync = { path = "crates/sdk/client/sync" }
+graphql = { path = "crates/sdk/client/graphql" }
+microphone = { path = "crates/sdk/client/microphone" }
+camera = { path = "crates/sdk/client/camera" }
+media-stream = { path = "crates/sdk/client/media-stream" }
+media-writer = { path = "crates/sdk/client/media-writer" }
+video-compose = { path = "crates/sdk/client/video-compose" }
+denoise = { path = "crates/sdk/client/denoise" }
+video-decode = { path = "crates/sdk/client/video-decode" }
+file-export = { path = "crates/sdk/client/file-export" }
+file-picker = { path = "crates/sdk/client/file-picker" }
+auto-update = { path = "crates/sdk/client/auto-update" }
+credentials = { path = "crates/sdk/client/credentials" }
+biometrics = { path = "crates/sdk/client/biometrics" }
+screen-recorder = { path = "crates/sdk/client/screen-recorder" }
+files = { path = "crates/sdk/client/files" }
+i18n = { path = "crates/sdk/client/i18n" }
+i18n-macros = { path = "crates/sdk/client/i18n/macros" }
 # Device / platform-integration capability SDKs (Tier 1). `permissions` is
 # the shared runtime-grant substrate; capability SDKs that prompt the user
 # (notifications, location, camera, microphone, …) depend on it rather than
 # re-implementing an OS grant flow.
-permissions = { path = "crates/sdk/permissions" }
-notifications = { path = "crates/sdk/notifications" }
-clipboard = { path = "crates/sdk/clipboard" }
-location = { path = "crates/sdk/location" }
-share = { path = "crates/sdk/share" }
-deep-link = { path = "crates/sdk/deep-link" }
-connectivity = { path = "crates/sdk/connectivity" }
-haptics = { path = "crates/sdk/haptics" }
-audio = { path = "crates/sdk/audio" }
+permissions = { path = "crates/sdk/client/permissions" }
+notifications = { path = "crates/sdk/client/notifications" }
+clipboard = { path = "crates/sdk/client/clipboard" }
+location = { path = "crates/sdk/client/location" }
+share = { path = "crates/sdk/client/share" }
+deep-link = { path = "crates/sdk/client/deep-link" }
+connectivity = { path = "crates/sdk/client/connectivity" }
+haptics = { path = "crates/sdk/client/haptics" }
+audio = { path = "crates/sdk/client/audio" }
 server = { path = "crates/api/server" }
 server-macros = { path = "crates/api/server-macros" }
 server-aws = { path = "crates/api/server-aws" }
-stack-navigator = { path = "crates/sdk/navigators/stack" }
-tab-navigator = { path = "crates/sdk/navigators/tab" }
-drawer-navigator = { path = "crates/sdk/navigators/drawer" }
-web-navigator-helpers = { path = "crates/sdk/navigators/helpers/web" }
-android-navigator-helpers = { path = "crates/sdk/navigators/helpers/android" }
-ios-navigator-helpers = { path = "crates/sdk/navigators/helpers/ios" }
+jobs = { path = "crates/sdk/server/jobs" }
+jobs-macros = { path = "crates/sdk/server/jobs/macros" }
+stack-navigator = { path = "crates/sdk/client/navigators/stack" }
+tab-navigator = { path = "crates/sdk/client/navigators/tab" }
+drawer-navigator = { path = "crates/sdk/client/navigators/drawer" }
+web-navigator-helpers = { path = "crates/sdk/client/navigators/helpers/web" }
+android-navigator-helpers = { path = "crates/sdk/client/navigators/helpers/android" }
+ios-navigator-helpers = { path = "crates/sdk/client/navigators/helpers/ios" }
 
 # Gzip for the web build's `--gzip` flag (idealyst build --web --gzip).
 # Already in the dep graph transitively (reqwest, ureq, etc.) so adding

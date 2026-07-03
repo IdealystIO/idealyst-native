@@ -31,7 +31,7 @@ Five drift surfaces matter:
 
 4. **Guide cross-references.** Each `guides/*.md` may reference catalog entries via `[[name]]`. If a primitive is renamed or removed, every dangling `[[name]]` becomes a broken link. Same for `[[memory]]` references that ship as part of in-repo memory-style cross-links.
 
-5. **SDK table vs. the `crates/{sdk,api,ui}/*` roster.** `crates/mcp/catalog/src/sdks.rs` hand-curates one `SdkEntry` per opt-in crate (networking, persistence, the component library, …). The truth is the set of crate directories under `crates/sdk/`, `crates/api/`, and `crates/ui/`. Adding a crate without a table entry makes it undiscoverable from the MCP (the A1 gap this slice closed: `net`/`storage`/`credentials`/`server` were invisible); removing/renaming one without updating the table leaves a stale claim with a dep line that won't resolve. The `dep_line` must stay copy-pasteable and the `category`/`kind` accurate.
+5. **SDK table vs. the `crates/{sdk,api,ui}/*` roster.** `crates/mcp/catalog/src/sdks.rs` hand-curates one `SdkEntry` per opt-in crate (networking, persistence, the component library, …). The truth is the set of crate directories under `crates/sdk/{client,server}/`, `crates/api/`, and `crates/ui/`. Adding a crate without a table entry makes it undiscoverable from the MCP (the A1 gap this slice closed: `net`/`storage`/`credentials`/`server` were invisible); removing/renaming one without updating the table leaves a stale claim with a dep line that won't resolve. The `dep_line` must stay copy-pasteable and the `category`/`kind` accurate.
 
 ## Checklist
 
@@ -62,7 +62,7 @@ Five drift surfaces matter:
 
 ### SDK roster coverage
 
-- [ ] List the crate directories under `crates/sdk/`, `crates/api/`, and `crates/ui/` (each with a `Cargo.toml`). Exclude internal/proc-macro-only helpers that aren't author-facing deps (e.g. `server-macros`, `idea-ui-docs-derive`).
+- [ ] List the crate directories under `crates/sdk/{client,server}/`, `crates/api/`, and `crates/ui/` (each with a `Cargo.toml`). Exclude internal/proc-macro-only helpers that aren't author-facing deps (e.g. `server-macros`, `idea-ui-docs-derive`).
 - [ ] For each author-facing crate, search `crates/mcp/catalog/src/sdks.rs` for an `sdk!("<crate>", …)` entry. Flag any crate with no entry — it's undiscoverable from `list_sdks` / `describe_sdk` / `search`.
 - [ ] Flag any `SdkEntry` whose `name` no longer matches a directory under `crates/{sdk,api,ui}/` — a stale claim whose `dep_line` won't resolve.
 - [ ] Spot-check `category` (data / media / ui / device) and `kind` (api vs external — does the crate expose plain functions/types, or a `ui!` `Element::External` primitive?). A `MapView`/`WebView`/`Video`-style primitive is `External`; `net`/`storage`/`server` are `Api`.

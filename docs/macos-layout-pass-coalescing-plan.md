@@ -39,7 +39,7 @@ the above.
 
 - **#1 — `LayoutCoalesceGuard`** (`coalesce_layout_passes()` in `imp/mod.rs`,
   used by the drawer dispatcher in
-  [`crates/sdk/navigators/drawer/src/macos.rs`](../crates/sdk/navigators/drawer/src/macos.rs)).
+  [`crates/sdk/client/navigators/drawer/src/macos.rs`](../crates/sdk/client/navigators/drawer/src/macos.rs)).
   Held across `mount_screen` + `insert` + `active_changed`;
   `run_pending_layout_pass` early-returns while it's held (the flag stays armed),
   and one pass runs on drop. Synchronous build cost dropped ~175ms → ~5ms; the

@@ -56,6 +56,9 @@ enum Command {
     Export(cmd::export::Args),
     /// Build and launch on a simulator or device.
     Run(cmd::run::Args),
+    /// Run the project's `jobs` queue worker as a dedicated process. The
+    /// standalone counterpart to the worker `idealyst dev` auto-spawns.
+    Worker(cmd::worker::Args),
     /// Run a Robot test suite (find → act → assert a signal/element) against
     /// the app on any platform. Launches the app (or `--attach` to a running
     /// one), drives it over the relay, and reports pass/fail.
@@ -138,6 +141,7 @@ fn main() -> anyhow::Result<()> {
         Command::Build(args) => cmd::build::run(args),
         Command::Export(args) => cmd::export::run(args),
         Command::Run(args) => cmd::run::run(args),
+        Command::Worker(args) => cmd::worker::run(args),
         Command::Test(args) => cmd::test::run(args),
         Command::Publish(args) => cmd::publish::run(args),
         Command::Check(args) => cmd::check::run(args),

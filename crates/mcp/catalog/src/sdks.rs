@@ -1,5 +1,5 @@
 //! Hand-curated registration table for [`SdkEntry`] — the opt-in crates
-//! under `crates/sdk/*`, `crates/api/*`, and `crates/ui/*` that ship
+//! under `crates/sdk/{client,server}/*`, `crates/api/*`, and `crates/ui/*` that ship
 //! outside `runtime-core`.
 //!
 //! Same lock pattern as `primitives.rs` / `macros.rs`: `SdkEntry` carries

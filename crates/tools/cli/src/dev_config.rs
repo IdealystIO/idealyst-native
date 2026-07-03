@@ -22,6 +22,45 @@ pub struct DevConfig {
     /// path is preferable.
     #[serde(default)]
     pub bridge_port: Option<u16>,
+
+    /// Local job-queue backend for `idealyst dev` / `idealyst worker`. Absent
+    /// means the in-process `memory` backend: `dev` runs workers inside the
+    /// server process (no separate worker process is spawned, since two
+    /// processes can't share an in-memory queue). Point this at a real broker
+    /// (redis / postgres / sqs) to have `dev` auto-spawn a dedicated worker
+    /// process that shares the queue with the server.
+    ///
+    /// ```toml
+    /// [jobs]
+    /// backend = "redis"
+    /// url = "redis://127.0.0.1:6379"
+    /// ```
+    #[serde(default)]
+    pub jobs: Option<JobsConfig>,
+}
+
+/// The `[jobs]` block in `dev.toml`.
+#[derive(Debug, Default, Deserialize, Clone)]
+pub struct JobsConfig {
+    /// `memory` (default) | `redis` | `postgres` | `sqs`.
+    #[serde(default)]
+    pub backend: Option<String>,
+    /// Connection string for the broker (redis URL, Postgres URL, SQS queue
+    /// URL). Unused for `memory`.
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+impl JobsConfig {
+    /// Whether this backend is shared across processes (so a dedicated worker
+    /// process can drain the same queue the server enqueues to). `memory` is
+    /// per-process and therefore not shared.
+    pub fn is_shared(&self) -> bool {
+        matches!(
+            self.backend.as_deref(),
+            Some("redis") | Some("postgres") | Some("sqs")
+        )
+    }
 }
 
 impl DevConfig {

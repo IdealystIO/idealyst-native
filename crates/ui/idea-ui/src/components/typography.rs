@@ -14,8 +14,8 @@
 //! the theme's default text color.
 
 use runtime_core::{
-    component, text, FontFamily, IdealystSchema, IntoElement, Element, Reactive, StyleApplication,
-    StyleRules, TextAlign,
+    component, text, FontFamily, FontWeight, IdealystSchema, IntoElement, Element, Reactive,
+    StyleApplication, StyleRules, TextAlign,
 };
 
 use idea_theme::extensible::{installed_typography_sheet, ToneRef, TypographyKindRef};
@@ -55,6 +55,18 @@ pub struct TypographyProps {
     /// omits it.
     #[cfg_attr(feature = "docs", doc_control(skip))]
     pub font: Option<FontFamily>,
+    /// Optional per-instance font-weight override. `None` inherits the
+    /// weight baked into `kind` (e.g. Body → Normal, H2 → SemiBold). Set a
+    /// `FontWeight` to keep a `kind`'s size/line-height/tracking while
+    /// rendering at a different weight — the common case being themed text
+    /// at a body size that needs Medium/SemiBold emphasis (nav links,
+    /// labels) without inventing a bespoke `kind`. Layered over the sheet
+    /// base, so it wins over the kind's weight.
+    ///
+    /// Skipped from DocControls — `FontWeight` is a framework enum the
+    /// docs-derive heuristic doesn't enumerate as a VariantEnum.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    pub weight: Option<FontWeight>,
     /// Skipped from DocControls — `TextAlign` is a framework enum
     /// without `VariantEnum`, and the docs-derive heuristic flags any
     /// `*Align` field as a VariantEnum by convention.
@@ -70,6 +82,7 @@ impl Default for TypographyProps {
             tone: Reactive::Static(None),
             muted: Reactive::Static(false),
             font: Reactive::Static(None),
+            weight: Reactive::Static(None),
             align: Reactive::Static(TextAlign::Left),
         }
     }
@@ -91,6 +104,7 @@ pub fn Typography(props: &TypographyProps) -> Element {
         || !props.tone.is_static()
         || !props.muted.is_static()
         || !props.font.is_static()
+        || !props.weight.is_static()
         || !props.align.is_static();
 
     let make_style = {
@@ -98,6 +112,7 @@ pub fn Typography(props: &TypographyProps) -> Element {
         let tone = props.tone.clone();
         let muted = props.muted.clone();
         let font = props.font.clone();
+        let weight = props.weight.clone();
         let align = props.align.clone();
         move || -> StyleApplication {
             let kind_key = kind.get().key().to_string();
@@ -127,6 +142,17 @@ pub fn Typography(props: &TypographyProps) -> Element {
                 let key = format!("font:{}", font_override_key(&font));
                 style = style.with_computed(key, move || StyleRules {
                     font_family: Some(font.clone()),
+                    ..Default::default()
+                });
+            }
+
+            // Per-instance weight override, layered over the kind's baked-in
+            // weight (added AFTER `kind` so it wins). The cache key encodes the
+            // weight so identical overrides share one resolved class.
+            if let Some(w) = weight.get() {
+                let key = format!("weight:{w:?}");
+                style = style.with_computed(key, move || StyleRules {
+                    font_weight: Some(w),
                     ..Default::default()
                 });
             }

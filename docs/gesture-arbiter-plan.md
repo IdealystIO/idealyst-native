@@ -12,7 +12,7 @@ Where it lives:
 - **The stock recognizers** (`Tap` / `LongPress` / `Pan` / `Pinch` / `Swipe` /
   `Rotate`), each an `impl Recognizer` with a thin factory wrapper preserving the
   old `tap()/…` `TouchHandler` API — [`recognizers.rs`](../crates/runtime/core/src/touch/recognizers.rs).
-- **`GestureGroup` arbiter** — [`crates/sdk/gesture/`](../crates/sdk/gesture/).
+- **`GestureGroup` arbiter** — [`crates/sdk/client/gesture/`](../crates/sdk/client/gesture/).
 
 ## Motivation
 
@@ -44,7 +44,7 @@ that layer.
   the bare `Recognizer` trait + state enum live in `runtime_core::touch`
   (so the four stock recognizers can implement them and stay in core). The
   *arbiter* — the composable multi-recognizer coordinator — lives in a new
-  `crates/sdk/gesture`.
+  `crates/sdk/client/gesture`.
 - **No new backend surface.** The arbiter installs exactly one `TouchHandler`
   into the existing `on_touch` slot and fans events to its recognizers in
   Rust. The `claim` protocol (`TouchResponse.claim`) is reused unchanged for
@@ -139,7 +139,7 @@ already hold exactly this state; we lift the private `enum TapState` /
 `update`. The existing `tap()/pan()/…` factory functions stay as thin wrappers
 that box the struct, so today's call sites and tests don't break.
 
-## Part 2 — The arbiter (`crates/sdk/gesture`)
+## Part 2 — The arbiter (`crates/sdk/client/gesture`)
 
 ```rust
 /// Owns the single `on_touch` slot for a view and coordinates N recognizers.
@@ -279,7 +279,7 @@ crates/runtime/core/src/touch/
   recognizers.rs      # the 4 stock FSMs, refactored to impl Recognizer;
                       #   existing tap()/pan()/… factories kept as wrappers
 
-crates/sdk/gesture/   # NEW
+crates/sdk/client/gesture/   # NEW
   src/lib.rs          # GestureGroup, ArbitrationRules, RecognizerRef,
                       #   require_to_fail / allow_simultaneous, handler()
   src/lib.rs tests    # arbitration matrix: priority, require-to-fail,
@@ -333,7 +333,7 @@ tests to mirror):
    `long_press_cancelled_by_competing_pan_before_timer`.
 4. **`GestureState`/`Recognizer` in core or SDK?** *Core, as leaned.* The trait +
    state/ctx/update types live in `runtime_core::touch::recognizer`; only the
-   composable `GestureGroup` arbiter is in `crates/sdk/gesture`.
+   composable `GestureGroup` arbiter is in `crates/sdk/client/gesture`.
 
 ## Stock recognizer set (all `impl Recognizer`)
 

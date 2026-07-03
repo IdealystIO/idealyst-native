@@ -76,7 +76,7 @@ docs! {
            Lives in its own crate so per-backend leaves and the umbrella \
            crate can both depend on it without forming a cycle:"),
         code(rust, r##"
-            // crates/sdk/maps/core/src/lib.rs
+            // crates/sdk/client/maps/core/src/lib.rs
 
             #[derive(Clone, Debug)]
             pub struct MapViewProps {
@@ -90,7 +90,7 @@ docs! {
            specific backend type, calls ", code("register_external"),
           " with a handler that builds a native node:"),
         code(rust, r##"
-            // crates/sdk/maps/web/src/lib.rs
+            // crates/sdk/client/maps/web/src/lib.rs
 
             use backend_web::WebBackend;
             use maps_core::MapViewProps;
@@ -118,7 +118,7 @@ docs! {
            per-backend ", code("register"), " function to the right leaf at \
            compile time:"),
         code(rust, r##"
-            // crates/sdk/maps/src/lib.rs
+            // crates/sdk/client/maps/src/lib.rs
 
             use runtime_core::{external, Bound, ExternalHandle};
             pub use maps_core::MapViewProps;

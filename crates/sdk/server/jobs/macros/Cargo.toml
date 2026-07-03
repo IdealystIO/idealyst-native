@@ -1,0 +1,18 @@
+[package]
+name = "jobs-macros"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Proc-macro half of the `jobs` SDK. Exposes the `#[job]` attribute that turns
+# an `async fn` into (a) a typed `enqueue` surface and (b) — in the server /
+# worker build — a registered handler. Modeled on `#[server]`. Re-exported as
+# `jobs::job`; depend on `jobs`, not this crate.
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"

@@ -341,9 +341,9 @@ fn generate_wrapper(
     // wrapper calls each SDK's `register` via
     // `attach_with_url_with_register`. Mirrors the per-app web wrapper's
     // `register_extensions` and the iOS `backend-ios-rs-shell`.
-    let drawer_navigator_dep = source.dep("crates/sdk/navigators/drawer", &[]);
-    let codeblock_dep = source.dep("crates/sdk/codeblock", &[]);
-    let table_dep = source.dep("crates/sdk/table", &[]);
+    let drawer_navigator_dep = source.dep("crates/sdk/client/navigators/drawer", &[]);
+    let codeblock_dep = source.dep("crates/sdk/client/codeblock", &[]);
+    let table_dep = source.dep("crates/sdk/client/table", &[]);
 
     let cargo_toml = match mode {
         BuildMode::Local => format!(
