@@ -50,6 +50,14 @@ pub use view::FlippedView;
 pub struct MacosBackend {
     mtm: MainThreadMarker,
     host_root: Option<Retained<NSView>>,
+    /// One-shot latch for enabling the host window's key-view loop (Tab focus
+    /// traversal). The window isn't reachable at `new()` — the host's
+    /// `setContentView:` wires `host_root.window` only just before the first
+    /// render — so we enable it lazily on the first layout pass that sees a
+    /// non-nil window, then never again. Without this, AppKit's key-view ring is
+    /// empty and Tab out of a text field is a no-op (the reported "Field doesn't
+    /// jump to the next element" bug).
+    key_view_loop_enabled: bool,
     /// Parallel layout tree. Same shape as iOS — every NSView pointer
     /// maps to a Taffy node; `finish()` runs `compute(host_bounds)`
     /// and walks the map to assign `frame` on every registered view.
@@ -566,6 +574,7 @@ impl MacosBackend {
         let mut backend = Self {
             mtm,
             host_root: None,
+            key_view_loop_enabled: false,
             layout: runtime_layout::LayoutTree::new(),
             view_to_layout: HashMap::new(),
             last_applied_frame: HashMap::new(),
@@ -1476,6 +1485,19 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
                 style.background_transition.as_ref(),
             );
         }
+    } else if !is_scroll_view(view) {
+        // No background in THIS restyle → clear any fill a prior style left on the
+        // layer. `backgroundColor` was otherwise only ever SET, never unset, so a
+        // view that toggles its background reactively (e.g. a nav item's active
+        // pill, a hover highlight) stayed painted after it should have cleared.
+        // Snap/animate to transparent, honoring `background_transition` if present.
+        transitions::apply_color(
+            view,
+            transitions::ColorProp::Background,
+            false,
+            [0.0, 0.0, 0.0, 0.0],
+            style.background_transition.as_ref(),
+        );
     }
 
     // Gradient background is handled by the caller (`apply_style`)
@@ -2275,12 +2297,53 @@ impl MacosBackend {
     /// (the deferred post-mount pass scheduled by reactive `apply_style`). Pure
     /// view-tree commit — the caller owns viewport derivation, root parenting,
     /// and the reactive-viewport mirror.
+    /// Turn on the host window's automatic key-view loop the first time the
+    /// window is reachable, then latch so it runs at most once.
+    ///
+    /// AppKit's Tab focus traversal walks a ring threaded through
+    /// `NSView.nextKeyView`. Idealyst builds a hand-rolled `FlippedView`/CALayer
+    /// tree with AppKit control leaves (`NSTextField`, `NSTextView`, `NSButton`,
+    /// `NSSlider`, …) dropped in, and never threads that ring — so the ring is
+    /// empty and Tab out of a focused field goes nowhere (the reported "Field
+    /// doesn't jump to the next element" bug). `autorecalculatesKeyViewLoop`
+    /// hands ring maintenance to AppKit: it derives the loop from the view
+    /// geometry/hierarchy (which is our Taffy layout order, i.e. document order)
+    /// and re-derives it as views are inserted/removed — exactly right for our
+    /// dynamic tree, and it filters to the views that answer `canBecomeKeyView`.
+    ///
+    /// Which controls Tab actually *stops* on beyond text fields is governed by
+    /// macOS's own "Full Keyboard Access" setting (`NSApp.fullKeyboardAccess`),
+    /// the platform-native convention every Mac app follows — we thread the ring;
+    /// the OS decides reachability. The window isn't available at `new()`, so we
+    /// enable this on the first layout pass that sees a non-nil window.
+    fn enable_key_view_loop(&mut self) {
+        if self.key_view_loop_enabled {
+            return;
+        }
+        let Some(root) = self.host_root.as_ref() else { return };
+        let window: *mut objc2_app_kit::NSWindow = unsafe { msg_send![&**root, window] };
+        if window.is_null() {
+            // Window not attached yet (pre-`setContentView:`); try again next pass.
+            return;
+        }
+        unsafe {
+            let _: () = msg_send![window, setAutorecalculatesKeyViewLoop: true];
+            let _: () = msg_send![window, recalculateKeyViewLoop];
+        }
+        self.key_view_loop_enabled = true;
+    }
+
     pub(crate) fn compute_and_apply_layout(
         &mut self,
         root_layout: runtime_layout::LayoutNode,
         width: f32,
         height: f32,
     ) {
+        // Enable the host window's key-view loop once it's reachable (the host
+        // wires `host_root.window` just before the first render). See
+        // `enable_key_view_loop` for the full rationale.
+        self.enable_key_view_loop();
+
         let trace_split = layout_trace_enabled();
         let t_compute = if trace_split { Some(std::time::Instant::now()) } else { None };
         self.layout.compute(root_layout, width, height);
@@ -2862,7 +2925,10 @@ impl Backend for MacosBackend {
         // framework view. (Labels are hit-transparent — see `IdealystLabel` — so
         // a click on the visible text reaches this view.)
         let flipped = FlippedView::new(self.mtm);
-        flipped.set_handler(make_tap_handler(on_click));
+        flipped.set_handler(make_tap_handler(on_click.clone()));
+        // Keyboard half of the control: Tab-focusable + Space/Return activation,
+        // firing the SAME click. See `FlippedView::set_activate`.
+        flipped.set_activate(on_click);
         let view: Retained<NSView> = Retained::into_super(flipped);
         let _ = self.layout_for_view(&view);
         let node = MacosNode::View(view);
@@ -2880,7 +2946,11 @@ impl Backend for MacosBackend {
         // right `NavCommand` — `Select` for the drawer). The trait default drops
         // it, so sidebar / in-body links never navigated on macOS.
         let flipped = FlippedView::new(self.mtm);
-        flipped.set_handler(make_tap_handler(config.on_activate));
+        let on_activate = config.on_activate;
+        flipped.set_handler(make_tap_handler(on_activate.clone()));
+        // Keyboard half: a link is a tab stop that activates on Space/Return,
+        // like web's focusable `<a href>`. See `FlippedView::set_activate`.
+        flipped.set_activate(on_activate);
         let view: Retained<NSView> = Retained::into_super(flipped);
         let _ = self.layout_for_view(&view);
         let node = MacosNode::View(view);
@@ -3218,10 +3288,15 @@ impl Backend for MacosBackend {
                 .expect("retain NSTextField as NSView")
         };
 
-        // Intrinsic-size measurer. NSTextField's
-        // `intrinsicContentSize` reports a sensible default height
-        // and (for the editable variant) ~100pt width — same shape
-        // as the Button measurer.
+        // Intrinsic-size measurer. NSTextField's `intrinsicContentSize` reports
+        // a sensible default HEIGHT, but its width hugs the current text — so an
+        // unconstrained field collapses to its content (a field showing "Sea"
+        // shrinks to a few characters). Web never does this: `<input>` sits at
+        // the UA default `size=20`, a stable box independent of content. Fall
+        // back to the framework's `DEFAULT_WIDTH_PX` for width parity; an author
+        // `width` / `width:100%` / flex-stretch still wins (Taffy passes it as
+        // `known_dimensions.width`, which takes precedence). Height stays
+        // intrinsic (Taffy adds the author `padding_*` around it).
         let layout = self.layout_for_view(&view);
         let field_for_measure = field.clone();
         self.layout.set_measure_fn(
@@ -3229,10 +3304,11 @@ impl Backend for MacosBackend {
             Rc::new(move |known_dimensions, _available_space| {
                 let intrinsic: CGSize =
                     unsafe { msg_send![&field_for_measure, intrinsicContentSize] };
-                let w = (intrinsic.width as f32).max(0.0);
                 let h = (intrinsic.height as f32).max(0.0);
                 runtime_layout::Size {
-                    width: known_dimensions.width.unwrap_or(w),
+                    width: runtime_core::primitives::text_input::measured_width(
+                        known_dimensions.width,
+                    ),
                     height: known_dimensions.height.unwrap_or(h),
                 }
             }),

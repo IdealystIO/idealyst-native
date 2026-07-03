@@ -67,10 +67,18 @@ pub(crate) fn apply_text_style(
             }
             None => 13.0 as CGFloat,
         };
-        let font = resolve_nsfont(font_registry, style.font_family.as_ref(), weight, fstyle, size);
-        if let Some(f) = font {
-            let _: () = unsafe { msg_send![view, setFont: &*f] };
-        }
+        // No explicit `font_family` still means the author-set weight/size/style
+        // must land — web applies `font-weight`/`font-size` to any text
+        // regardless of family, and iOS falls back to the system font here
+        // (`style.rs`'s `!applied` branch). macOS previously dropped the whole
+        // font when `resolve_nsfont` returned `None` (no family), so a
+        // `font_weight: SemiBold` with no family left the label at AppKit's
+        // default regular 13px — the idea-ui Button "not bold" bug. Fall back to
+        // the weighted system font so weight/size apply on every backend (Rule
+        // #7: converge output).
+        let font = resolve_nsfont(font_registry, style.font_family.as_ref(), weight, fstyle, size)
+            .unwrap_or_else(|| system_font(weight, size));
+        let _: () = unsafe { msg_send![view, setFont: &*font] };
     }
 
     // Text alignment
@@ -186,6 +194,51 @@ fn length_to_px(len: &runtime_core::Length) -> CGFloat {
     match len {
         runtime_core::Length::Px(v) => *v as CGFloat,
         runtime_core::Length::Percent(_) | runtime_core::Length::Auto => 0.0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression: macOS dropped the ENTIRE font whenever a text node set
+    // `font_weight`/`font_size` without an explicit `font_family` — `resolve_nsfont`
+    // early-returns `None` on no family, and the old `apply_text_style` only sent
+    // `setFont:` inside `if let Some(f)`. So the idea-ui Button's label (weight
+    // `SemiBold`, no family) rendered at AppKit's default regular 13px: the
+    // "not bold" bug. iOS never had this (its `!applied` branch backfills the
+    // weighted system font). `apply_text_style` now mirrors iOS via
+    // `.unwrap_or_else(|| system_font(weight, size))`.
+    //
+    // The live `setFont:` needs a main-thread NSView (the `cargo test` harness
+    // runs off the main thread), but `NSFont` is not `MainThreadOnly`, so we
+    // exercise the fallback builder + the family-None gap it covers directly —
+    // the same "test the reachable deterministic pieces" pattern the cell tests
+    // in `view.rs` use.
+    #[test]
+    fn no_family_leaves_resolve_nsfont_none_so_the_fallback_must_run() {
+        let reg = FontRegistry::new();
+        // The gap: with no family there is nothing to resolve, so the fallback
+        // in `apply_text_style` is the ONLY thing that applies the weight/size.
+        let resolved = resolve_nsfont(&reg, None, FontWeight::SemiBold, FontStyle::Normal, 14.0);
+        assert!(
+            resolved.is_none(),
+            "no font_family → resolve_nsfont is None; the system-font fallback covers it"
+        );
+    }
+
+    #[test]
+    fn system_font_fallback_honors_requested_size_and_weight() {
+        // The fallback face carries the author's size (dropped by the old bug)…
+        let f = system_font(FontWeight::SemiBold, 14.0);
+        let size: CGFloat = unsafe { msg_send![&*f, pointSize] };
+        assert_eq!(size, 14.0, "fallback system font must honor the requested font_size");
+        // …and its weight axis is threaded through: SemiBold maps to a heavier
+        // NSFontWeight than Normal, so the label is visibly bolder than default.
+        assert!(
+            font_weight_to_nsfont(FontWeight::SemiBold) > font_weight_to_nsfont(FontWeight::Normal),
+            "SemiBold must map to a heavier NSFontWeight than Normal"
+        );
     }
 }
 

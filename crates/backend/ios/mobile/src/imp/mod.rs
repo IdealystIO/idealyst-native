@@ -1611,7 +1611,11 @@ impl Backend for IosBackend {
         // for the text line, so the text/placeholder render cramped and clipped
         // (the "scuffed placeholder" bug). Report the field's intrinsic height
         // (Taffy then adds the author's `padding_*` around it), matching macOS's
-        // intrinsicContentSize measurer. Width stays Taffy-driven (`width:100%`).
+        // intrinsicContentSize measurer. Width falls back to the framework's
+        // `DEFAULT_WIDTH_PX`, not the content-hugging intrinsic width — a bare
+        // field must render at web's stable default box, not collapse to its
+        // text. An author `width` / `width:100%` still wins via
+        // `known_dimensions.width`.
         let layout = self.layout_for_view(&field);
         let field_for_measure = field.clone();
         self.layout.set_measure_fn(
@@ -1620,9 +1624,9 @@ impl Backend for IosBackend {
                 let intrinsic: objc2_foundation::CGSize =
                     unsafe { msg_send![&field_for_measure, intrinsicContentSize] };
                 runtime_layout::Size {
-                    width: known_dimensions
-                        .width
-                        .unwrap_or((intrinsic.width as f32).ceil()),
+                    width: runtime_core::primitives::text_input::measured_width(
+                        known_dimensions.width,
+                    ),
                     height: known_dimensions
                         .height
                         .unwrap_or((intrinsic.height as f32).ceil()),

@@ -173,20 +173,28 @@ fn button_icon_sheet() -> Rc<runtime_core::StyleSheet> {
     })
 }
 
-/// Wraps a resolved foreground color in a static, color-only stylesheet
-/// for a leaf text/icon node.
+/// The text-typography subset the label must carry ON ITS OWN NODE.
 ///
-/// Native `UILabel`/`TextView` (and `UIImageView`/icon shapes) do NOT
-/// inherit text color from a parent — only web's CSS cascade does. So a
-/// label colored solely via its wrapping pressable renders invisible on
-/// the colored fill on iOS/Android. We resolve the fill's foreground and
-/// stamp it directly on the label/icon node so every backend matches web
-/// (the same pattern `Typography` uses — color lives on the text node).
-/// The `Tokenized<Color>` keeps its token reference, so theme swaps still
-/// re-resolve the color in bulk via the cohort.
-fn label_color_style(color: Tokenized<Color>) -> Rc<StyleSheet> {
+/// The Button sheet sets `font_weight`/`font_size`/`text_align`/`letter_spacing`
+/// on the pressable BOX (so web's CSS cascade paints the label bold + centered).
+/// Native text leaves (`NSTextField`/`NSTextView`/`UILabel`/…) inherit NOTHING
+/// from the box — the same reason the label's *color* is stamped on its own node
+/// (native text doesn't inherit color either, only web's CSS cascade does).
+/// Weight/size/alignment need the same treatment or the native label renders at
+/// the backend default (the macOS "not bold / not centered" bug). We copy the
+/// resolved container typography onto the label so every backend matches web
+/// (Rule #7). Color is applied separately — it re-resolves reactively with
+/// tone/variant, whereas these track the (also-reactive) `size` axis and the
+/// constant base.
+fn label_typography_style(resolved: &StyleRules) -> Rc<StyleSheet> {
     Rc::new(StyleSheet::r#static(StyleRules {
-        color: Some(color),
+        font_family: resolved.font_family.clone(),
+        font_size: resolved.font_size.clone(),
+        font_weight: resolved.font_weight,
+        font_style: resolved.font_style,
+        line_height: resolved.line_height.clone(),
+        letter_spacing: resolved.letter_spacing.clone(),
+        text_align: resolved.text_align,
         ..Default::default()
     }))
 }
@@ -259,9 +267,17 @@ pub fn Button(props: &ButtonProps) -> Element {
                 );
                 style.with_computed(layer_key, move || {
                     let mut rules = StyleRules::default();
+                    // Center the content on BOTH axes. Web centers the button
+                    // label "for free" via the box's `text-align: center` + inline
+                    // flow; native flex needs it explicit or the label lands at
+                    // the box's top-left (the macOS "not centered" bug). Applies to
+                    // the plain single-label case AND the icon row — without
+                    // `justify_content` even icon buttons were only vertically
+                    // centered, left-packed horizontally.
+                    rules.align_items = Some(runtime_core::AlignItems::Center);
+                    rules.justify_content = Some(runtime_core::JustifyContent::Center);
                     if row_layout {
                         rules.flex_direction = Some(FlexDirection::Row);
-                        rules.align_items = Some(runtime_core::AlignItems::Center);
                         rules.gap = Some(Tokenized::token("spacing-xs", Length::Px(6.0)));
                     }
                     if block {
@@ -313,10 +329,15 @@ pub fn Button(props: &ButtonProps) -> Element {
             let inert = disabled || loading;
 
             let style_closure = make_style(row_layout, block, disabled);
-            // Snapshot the fg for this build (the resolved fill's foreground)
-            // so the label + icons can carry it on their own nodes (native
-            // doesn't inherit text/icon color).
-            let fg = resolve_style(&style_closure()).color.clone();
+            // Snapshot the resolved container style for this build. The label +
+            // icons carry the fg on their OWN nodes (native doesn't inherit
+            // text/icon color), and the label additionally carries the box's
+            // typography (weight/size/align/…) for the same reason (see
+            // `label_typography_style`).
+            let resolved_container = resolve_style(&style_closure());
+            let fg = resolved_container.color.clone();
+            // Static snapshot of the label typography for the non-reactive path.
+            let label_typo = label_typography_style(&resolved_container);
             // Re-resolves the container's foreground from the live tone/variant.
             // Used by the reactive icon `.color`/label-style closures so the
             // tint tracks the container in place when a style axis is live.
@@ -392,46 +413,36 @@ pub fn Button(props: &ButtonProps) -> Element {
             // A label override applies on top of the theme fg (its `color`, if
             // set, wins). When present it forces the styled path even if there's
             // no theme fg to stamp.
-            let has_label_ovr = label_ovr.is_some();
+            let _ = label_ovr.is_some();
             let label_node = if style_is_reactive {
-                // Live tone/variant: re-resolve the fg inside a reactive style
-                // closure so the label color tracks the container fill in place,
-                // then layer the (static) label override on top.
-                if fg.is_some() || has_label_ovr {
-                    let resolve_fg = resolve_fg.clone();
-                    let label_ovr = label_ovr.clone();
-                    text(label.clone())
-                        .with_style(move || {
-                            let mut app = StyleApplication::new(Rc::new(StyleSheet::r#static(
-                                StyleRules::default(),
-                            )));
-                            if let Some(c) = resolve_fg() {
-                                app = app.override_color(c);
-                            }
-                            apply_override(app, &label_ovr)
-                        })
-                        .into_element()
-                } else {
-                    text(label.clone()).into_element()
-                }
+                // Live tone/variant/size: re-resolve the container INSIDE the
+                // style closure so the label's color (tone/variant) AND its
+                // typography (the `size` axis drives font_size) both track the
+                // box in place. Then layer the (static) label override on top.
+                let style_closure = style_closure.clone();
+                let label_ovr = label_ovr.clone();
+                text(label.clone())
+                    .with_style(move || {
+                        let resolved = resolve_style(&style_closure());
+                        let mut app = StyleApplication::new(label_typography_style(&resolved));
+                        if let Some(c) = resolved.color.clone() {
+                            app = app.override_color(c);
+                        }
+                        apply_override(app, &label_ovr)
+                    })
+                    .into_element()
             } else {
-                match (fg.clone(), has_label_ovr) {
-                    (Some(c), _) => text(label.clone())
-                        .with_style(apply_override(
-                            StyleApplication::new(label_color_style(c)),
-                            &label_ovr,
-                        ))
-                        .into_element(),
-                    (None, true) => text(label.clone())
-                        .with_style(apply_override(
-                            StyleApplication::new(Rc::new(StyleSheet::r#static(
-                                StyleRules::default(),
-                            ))),
-                            &label_ovr,
-                        ))
-                        .into_element(),
-                    (None, false) => text(label.clone()).into_element(),
+                // Static: stamp the snapshot typography (weight/size/align/…),
+                // then the resolved fg color (if any), then the label override.
+                // Every label carries typography now — a transparent variant
+                // (Ghost, no fg) still needs the bold, centered text.
+                let mut app = StyleApplication::new(label_typo.clone());
+                if let Some(c) = fg.clone() {
+                    app = app.override_color(c);
                 }
+                text(label.clone())
+                    .with_style(apply_override(app, &label_ovr))
+                    .into_element()
             };
             children.push(label_node);
             if has_trail {
@@ -612,6 +623,58 @@ mod tests {
             color.0.to_ascii_lowercase(),
             "#ffffff",
             "filled-Primary label is the intent-primary-solid-text white"
+        );
+    }
+
+    // macOS "not bold / not centered": the Button sheet sets font_weight/
+    // text_align on the pressable BOX, but native text leaves inherit NOTHING
+    // from the box (the same reason the label's color is stamped on its own
+    // node). The label must carry the typography itself, and the box must center
+    // its content on both axes — web centers via the box's text-align + inline
+    // flow, native flex needs it explicit. A test that passed against the old
+    // bare label is not a valid regression test, so we assert the label node's
+    // OWN resolved typography AND the box's centering.
+    #[test]
+    fn regression_button_label_carries_weight_alignment_and_box_centers() {
+        theme();
+        let props = ButtonProps {
+            label: Reactive::Static("Create account".into()),
+            ..Default::default()
+        };
+        let (children, box_app) = pressable_parts(Button(&props));
+        let label_rules = match &children[0] {
+            Element::Text { style, .. } => match style.as_ref().expect("label carries a style") {
+                StyleSource::Static(a) => resolve_style(a),
+                _ => panic!("button label uses a static style"),
+            },
+            _ => panic!("expected a label text node at slot 0"),
+        };
+        assert_eq!(
+            label_rules.font_weight,
+            Some(runtime_core::FontWeight::SemiBold),
+            "label must carry the button's SemiBold weight on its own node (native doesn't inherit)"
+        );
+        assert_eq!(
+            label_rules.text_align,
+            Some(runtime_core::TextAlign::Center),
+            "label must carry the button's center text-align"
+        );
+        assert!(
+            label_rules.font_size.is_some(),
+            "label must carry the size axis's font_size, not fall back to the backend default"
+        );
+        // The box centers content on both axes so the label sits centered in the
+        // button, not packed at the top-left.
+        let box_rules = resolve_style(&box_app);
+        assert_eq!(
+            box_rules.align_items,
+            Some(runtime_core::AlignItems::Center),
+            "button box centers content on the cross axis"
+        );
+        assert_eq!(
+            box_rules.justify_content,
+            Some(runtime_core::JustifyContent::Center),
+            "button box centers content on the main axis"
         );
     }
 

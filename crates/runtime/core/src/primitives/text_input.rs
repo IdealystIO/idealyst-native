@@ -41,6 +41,54 @@ pub enum BlurOutcome {
     Keep,
 }
 
+/// Default preferred content width (in px) for an unconstrained `text_input`.
+///
+/// Web renders `<input type=text>` at the UA default `size=20` — a stable
+/// ~150–175px box that does NOT shrink to its content. Native fields have no
+/// such default: their measurer reports `intrinsicContentSize`, which hugs the
+/// current text (so a field showing "Sea" collapses to a few characters — the
+/// reported "no sensible min width" bug). Native `create_text_input` measurers
+/// fall back to this width when the author sets no explicit `width`/`block`,
+/// giving every backend web's stable default box (Rule #7). An author `width`,
+/// `width: 100%`, or flex-stretch still wins (the measurer only uses this when
+/// Taffy passes no known width). `200` reads as a comfortable default field and
+/// sits just above web's UA width; it does not scale with font size (a
+/// documented approximation — an explicit `width` covers the rare case that
+/// matters).
+pub const DEFAULT_WIDTH_PX: f32 = 200.0;
+
+/// Resolve a `text_input`'s measured preferred width for a native backend's
+/// `measure_fn`. An author-constrained width — `width`, `width: 100%`, or a
+/// flex-stretch that Taffy resolved to a definite size — arrives as
+/// `known_width = Some(px)` and always wins. Otherwise the field takes the
+/// stable [`DEFAULT_WIDTH_PX`] box instead of hugging its content, matching
+/// web's default `<input>`. Shared by the macOS and iOS field measurers so the
+/// fallback is defined once (Rule #7).
+pub fn measured_width(known_width: Option<f32>) -> f32 {
+    known_width.unwrap_or(DEFAULT_WIDTH_PX)
+}
+
+#[cfg(test)]
+mod width_tests {
+    use super::{measured_width, DEFAULT_WIDTH_PX};
+
+    // Regression: an unconstrained native field measured its content-hugging
+    // intrinsic width, so a field showing "Sea" collapsed to a few characters
+    // (web's `<input>` holds a stable default box). The fallback must be the
+    // framework default, and an explicit/known width must still win.
+    #[test]
+    fn unconstrained_field_takes_the_default_box_not_its_content() {
+        assert_eq!(measured_width(None), DEFAULT_WIDTH_PX);
+    }
+
+    #[test]
+    fn an_author_or_stretched_width_wins() {
+        assert_eq!(measured_width(Some(320.0)), 320.0);
+        // Even a width narrower than the default is honored — the author asked.
+        assert_eq!(measured_width(Some(80.0)), 80.0);
+    }
+}
+
 /// Shared handler type carried into the backend `create_text_input`. Aliased so
 /// the Backend trait signature stays readable. Mirrors [`KeyDownHandler`].
 ///

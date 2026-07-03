@@ -97,6 +97,14 @@ pub struct FlippedViewIvars {
     /// `state_setter` OR `hover_handler` is attached (only views that need
     /// hover — for styling or for `on_hover` — track it).
     tracking_area: RefCell<Option<Retained<NSTrackingArea>>>,
+    /// Keyboard-activation closure for an interactive host (`pressable` / `link`).
+    /// `Some` marks this view as a key-view-loop participant: it accepts first
+    /// responder, joins the Tab ring under Full Keyboard Access (exactly like an
+    /// `NSButton`), draws a focus ring while focused, and fires this closure on
+    /// Space/Return. `None` for the many non-interactive layout `view`s, which
+    /// stay Tab-transparent (a bare container must not be a tab stop). Mirrors
+    /// the `on_touch` click so keyboard and mouse converge on the same handler.
+    activate: RefCell<Option<Rc<dyn Fn()>>>,
 }
 
 declare_class!(
@@ -328,6 +336,100 @@ declare_class!(
                 let _: () = unsafe { msg_send![self, addCursorRect: bounds, cursor: &**cursor] };
             }
         }
+
+        // --- Keyboard focus (Tab traversal) for interactive hosts ------------
+        // A bare layout `view` carries no `activate` and stays Tab-transparent.
+        // A `pressable` / `link` opts in (see `set_activate`) so it behaves like
+        // an `NSButton`: reachable in the window's key-view loop, focus-ringed
+        // while focused, and activated by Space/Return. The framework's tap
+        // handler already covers mouse; this closes the keyboard half so Tab
+        // navigation reaches every control (Rule #7 parity with web's
+        // `<div role=button tabindex=0>`).
+
+        // Only interactive hosts accept first responder — a layout container
+        // must never steal focus or become a tab stop.
+        #[method(acceptsFirstResponder)]
+        fn accepts_first_responder(&self) -> bool {
+            self.ivars().activate.borrow().is_some()
+        }
+
+        // Join the Tab ring with the SAME Full-Keyboard-Access gating `NSButton`
+        // uses: a non-text control is a tab stop only when the user enabled Full
+        // Keyboard Access. Text fields (NSTextField) ignore this and always tab
+        // via their own logic — so the reported Field→Field case works
+        // unconditionally, while buttons follow the platform convention.
+        #[method(canBecomeKeyView)]
+        fn can_become_key_view(&self) -> bool {
+            // Single tail expression (no early `return`): a `#[method] -> bool`
+            // only converts the tail bool→ObjC `Bool`, so an early `return false`
+            // would type-mismatch.
+            self.ivars().activate.borrow().is_some()
+                && unsafe {
+                    let app: *mut AnyObject =
+                        msg_send![objc2::class!(NSApplication), sharedApplication];
+                    !app.is_null() && {
+                        let enabled: bool = msg_send![app, isFullKeyboardAccessEnabled];
+                        enabled
+                    }
+                }
+        }
+
+        // Repaint the exterior focus ring as focus enters/leaves.
+        #[method(becomeFirstResponder)]
+        fn become_first_responder(&self) -> bool {
+            let ok: bool = unsafe { msg_send![super(self), becomeFirstResponder] };
+            if ok {
+                let _: () = unsafe { msg_send![self, noteFocusRingMaskChanged] };
+            }
+            ok
+        }
+        #[method(resignFirstResponder)]
+        fn resign_first_responder(&self) -> bool {
+            let ok: bool = unsafe { msg_send![super(self), resignFirstResponder] };
+            if ok {
+                let _: () = unsafe { msg_send![self, noteFocusRingMaskChanged] };
+            }
+            ok
+        }
+
+        // Fill the focus-ring mask with our bounds so AppKit strokes an exterior
+        // ring around the control while it's first responder. A rectangular mask
+        // is a safe, always-visible default (rounded corners would need the
+        // layer path; the ring sits just outside the box either way).
+        #[method(drawFocusRingMask)]
+        fn draw_focus_ring_mask(&self) {
+            let bounds: CGRect = unsafe { msg_send![self, bounds] };
+            unsafe {
+                let path: *mut AnyObject =
+                    msg_send![objc2::class!(NSBezierPath), bezierPathWithRect: bounds];
+                let _: () = msg_send![path, fill];
+            }
+        }
+        #[method(focusRingMaskBounds)]
+        fn focus_ring_mask_bounds(&self) -> CGRect {
+            unsafe { msg_send![self, bounds] }
+        }
+
+        // Space (keyCode 49) / Return (36) activate the focused control, matching
+        // `NSButton` and web's Enter/Space on a `role=button`. Any other key
+        // defers to the responder chain so Tab still reaches the window's
+        // key-view navigation.
+        #[method(keyDown:)]
+        fn key_down(&self, event: &NSEvent) {
+            const KEY_SPACE: u16 = 49;
+            const KEY_RETURN: u16 = 36;
+            let key_code: u16 = unsafe { msg_send![event, keyCode] };
+            if key_code == KEY_SPACE || key_code == KEY_RETURN {
+                // Clone the Rc out before firing so a re-entrant handler can
+                // freely touch `activate` without a RefCell double-borrow.
+                let cb = self.ivars().activate.borrow().clone();
+                if let Some(cb) = cb {
+                    cb();
+                    return;
+                }
+            }
+            let _: () = unsafe { msg_send![super(self), keyDown: event] };
+        }
     }
 );
 
@@ -342,8 +444,27 @@ impl FlippedView {
             state_setter: RefCell::new(None),
             hover_handler: RefCell::new(None),
             tracking_area: RefCell::new(None),
+            activate: RefCell::new(None),
         });
         unsafe { msg_send_id![super(this), init] }
+    }
+
+    /// Mark this host as keyboard-interactive (a `pressable` / `link`): store the
+    /// closure a Tab-focus + Space/Return activation fires, and opt the view into
+    /// an exterior keyboard focus ring (the `NSButton` default). Called by
+    /// `create_pressable` / `create_link` with the SAME handler the `on_touch`
+    /// click uses, so keyboard and mouse activation converge.
+    pub(crate) fn set_activate(&self, activate: Rc<dyn Fn()>) {
+        *self.ivars().activate.borrow_mut() = Some(activate);
+        // NSFocusRingTypeExterior = 2. AppKit strokes the ring from
+        // `drawFocusRingMask` while the view is first responder.
+        let _: () = unsafe { msg_send![self, setFocusRingType: 2usize] };
+    }
+
+    /// `true` if this view opted into keyboard activation (a `pressable` /
+    /// `link`) — i.e. it participates in the Tab key-view loop. Test hook.
+    pub(crate) fn is_keyboard_interactive(&self) -> bool {
+        self.ivars().activate.borrow().is_some()
     }
 
     /// Install (or replace) the `on_touch` handler. Called by
@@ -1794,5 +1915,45 @@ mod secure_cell_tests {
         let r = centered_drawing_rect(base, natural, insets);
         assert_eq!(r.origin.y, 0.0, "no negative vertical offset");
         assert_eq!(r.size.height, 10.0, "clamped to the box height");
+    }
+}
+
+#[cfg(test)]
+mod key_view_tests {
+    use super::FlippedView;
+    use objc2::{sel, ClassType};
+    use objc2_app_kit::NSView;
+
+    // Regression: idea-ui Buttons / Links render as custom `FlippedView`s, and
+    // macOS never wired the Tab key-view loop — a focused Field never advanced,
+    // and pressables were unreachable by keyboard (web makes them focusable
+    // `<div role=button tabindex=0>`). The fix makes an interactive FlippedView
+    // OVERRIDE the responder + key-view selectors so it participates like an
+    // NSButton (accept first responder, FKA-gated key-view membership, focus
+    // ring, Space/Return activation). Exercising the live keyboard behavior needs
+    // a main-thread NSApp (the `cargo test` harness runs off the main thread), so
+    // we pin the deterministic contract: these are OUR overrides, not NSView's
+    // inherited defaults. An IMP identical to NSView's means the override was
+    // dropped (the buggy, non-focusable state); a differing IMP proves it's live.
+    #[test]
+    fn interactive_flipped_view_overrides_key_view_selectors() {
+        let sub = FlippedView::class();
+        let sup = NSView::class();
+        for s in [
+            sel!(acceptsFirstResponder),
+            sel!(canBecomeKeyView),
+            sel!(becomeFirstResponder),
+            sel!(resignFirstResponder),
+            sel!(keyDown:),
+            sel!(drawFocusRingMask),
+        ] {
+            let sub_imp = sub.instance_method(s).map(|m| m.implementation());
+            let sup_imp = sup.instance_method(s).map(|m| m.implementation());
+            assert!(sub_imp.is_some(), "FlippedView must respond to {s:?}");
+            assert_ne!(
+                sub_imp, sup_imp,
+                "FlippedView must OVERRIDE {s:?} (not inherit NSView's) for Tab focus/activation"
+            );
+        }
     }
 }
