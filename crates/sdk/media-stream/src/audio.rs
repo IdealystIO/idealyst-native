@@ -286,6 +286,12 @@ struct AudioStreamInner {
     channel: Arc<AudioChannel>,
     native: RefCell<Option<Rc<dyn Any>>>,
     stopper: RefCell<Option<Box<dyn FnOnce()>>>,
+    /// Web-only: the lazily-built WebAudio bridge that backs a *synthetic*
+    /// stream (no producer-set native source) with a real `MediaStreamTrack`,
+    /// materialized on the first [`native_source`](AudioStream::native_source)
+    /// call and cached here for the stream's life. See [`audio_web_bridge`].
+    #[cfg(target_arch = "wasm32")]
+    web_bridge: RefCell<Option<crate::audio_web_bridge::WebAudioBridge>>,
 }
 
 impl Drop for AudioStreamInner {
@@ -317,6 +323,8 @@ impl AudioStream {
                 channel: channel.clone(),
                 native: RefCell::new(None),
                 stopper: RefCell::new(None),
+                #[cfg(target_arch = "wasm32")]
+                web_bridge: RefCell::new(None),
             }),
         };
         (stream, AudioWriter { channel })
@@ -329,9 +337,39 @@ impl AudioStream {
         *self.inner.native.borrow_mut() = Some(src);
     }
 
-    /// The platform's native audio source, if the producer set one.
+    /// The platform's native audio source a same-platform sink binds to.
+    ///
+    /// If the producer set one (a capture stream publishes its `getUserMedia`
+    /// `MediaStream` on web), that's returned. Otherwise, on **web**, a
+    /// *synthetic* stream (fed via [`AudioWriter`] — a denoiser's or mixer's
+    /// output) has no native object, so browser sinks like `MediaRecorder`
+    /// could not consume it. In that case this lazily builds a WebAudio bridge
+    /// that renders the stream's PCM into a real `MediaStream` audio track,
+    /// caches it for the stream's life, and returns it — so a synthetic stream
+    /// is as recordable/playable as a mic-backed one. See [`audio_web_bridge`].
+    ///
+    /// On native this simply returns the producer-set source (or `None`); native
+    /// sinks consume PCM via [`subscribe`](Self::subscribe) and never need this.
     pub fn native_source(&self) -> Option<Rc<dyn Any>> {
-        self.inner.native.borrow().clone()
+        if let Some(src) = self.inner.native.borrow().clone() {
+            return Some(src);
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            // No producer-set source: materialize (once) a WebAudio-backed track
+            // for this synthetic stream. Seed the graph rate from the stream's
+            // observed format (its steady rate) when known.
+            let rate = self.format().map(|f| f.sample_rate).unwrap_or(48_000);
+            if let Some(bridge) = crate::audio_web_bridge::build(self, rate) {
+                let ms: Rc<dyn Any> = Rc::new(bridge.media_stream());
+                *self.inner.native.borrow_mut() = Some(ms.clone());
+                *self.inner.web_bridge.borrow_mut() = Some(bridge);
+                return Some(ms);
+            }
+        }
+
+        None
     }
 
     /// Attach the capture teardown closure, run when the last clone drops.

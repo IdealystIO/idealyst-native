@@ -43,4 +43,8 @@ wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = [
     "Window", "Document", "Element", "HtmlMediaElement", "HtmlVideoElement",
     "HtmlCanvasElement", "CanvasRenderingContext2d", "ImageData", "MediaStream",
+    # Synthetic-AudioStream -> real MediaStreamTrack bridge (audio_web_bridge):
+    "AudioContext", "AudioContextOptions", "BaseAudioContext", "AudioNode",
+    "MediaStreamAudioDestinationNode", "ScriptProcessorNode",
+    "AudioProcessingEvent", "AudioBuffer",
 ] }

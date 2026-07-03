@@ -71,6 +71,11 @@ pub use audio::{
     AudioFormat, AudioFrame, AudioFrameCallback, AudioStream, AudioSubscription, AudioWriter,
 };
 
+// Web-only: lazily back a synthetic `AudioStream` with a real `MediaStreamTrack`
+// so browser sinks (recorder, playback) can consume it — see the module docs.
+#[cfg(target_arch = "wasm32")]
+mod audio_web_bridge;
+
 // ---------------------------------------------------------------------------
 // Frame types — the normalized currency every producer emits.
 // ---------------------------------------------------------------------------
