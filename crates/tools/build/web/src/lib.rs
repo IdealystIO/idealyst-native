@@ -1171,15 +1171,16 @@ fn cargo_build_wasm(
         cmd.arg("--release");
     }
     if strip_panics {
-        // Rebuild std so the panic-strip feature actually applies to it
-        // (not just the user crates). `panic_abort` must be listed
-        // explicitly alongside `std` for `panic = "abort"` builds.
-        cmd.args([
-            "-Z",
-            "build-std=std,panic_abort",
-            "-Z",
-            "build-std-features=panic_immediate_abort",
-        ]);
+        // Rebuild std so the panic-strip applies to it (not just the user
+        // crates). `panic_abort` must be listed explicitly alongside `std`.
+        //
+        // NOTE: `panic_immediate_abort` was promoted from a std/core *feature*
+        // to a real panic strategy in recent nightlies (rustc ~1.98): the old
+        // `-Z build-std-features=panic_immediate_abort` now `compile_error!`s
+        // in `core::panicking`. The replacement is the `immediate-abort` panic
+        // strategy, selected via `-Zunstable-options -Cpanic=immediate-abort`
+        // in RUSTFLAGS below (still requires `-Z build-std` to recompile core).
+        cmd.args(["-Z", "build-std=std,panic_abort"]);
     }
     if !user_features.is_empty() {
         cmd.arg("--features").arg(user_features.join(","));
@@ -1191,9 +1192,17 @@ fn cargo_build_wasm(
     // No `SharedArrayBuffer` / cross-origin isolation involved (that's wasm
     // *threads*); this is pure codegen and orthogonal to wasm-split. Supported by
     // all evergreen browsers (Chrome/Firefox 2021+, Safari 16.4+).
-    let base_flags = "-C target-feature=+simd128 -C link-args=--emit-relocs";
+    let mut base_flags =
+        String::from("-C target-feature=+simd128 -C link-args=--emit-relocs");
+    if strip_panics {
+        // Select the `immediate-abort` panic strategy (the modern replacement
+        // for the removed `panic_immediate_abort` build-std feature). Applies to
+        // every crate incl. the `-Z build-std` core/std rebuild above, so panic
+        // paths + their `#[track_caller]` location strings are dropped bundle-wide.
+        base_flags.push_str(" -Zunstable-options -Cpanic=immediate-abort");
+    }
     let combined = if existing_rustflags.is_empty() {
-        base_flags.to_string()
+        base_flags.clone()
     } else {
         format!("{existing_rustflags} {base_flags}")
     };
