@@ -11551,6 +11551,7 @@ dependencies = [
  "canvas-core",
  "canvas-vello",
  "cosmic-text",
+ "js-sys",
  "media-stream",
  "resvg",
  "runtime-core",

@@ -48,6 +48,9 @@ canvas-vello = { workspace = true }
 # (`.draw()`) aren't rendered on web yet (they'd need a Canvas2D scene replay).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
+# `requestVideoFrameCallback` isn't in web-sys yet — bound manually (see driver.rs);
+# js-sys provides `Function`/`Reflect` for the binding + feature detection.
+js-sys = "0.3"
 web-sys = { version = "0.3", features = [
     "Window",
     "Document",

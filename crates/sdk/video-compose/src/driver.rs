@@ -294,16 +294,54 @@ mod web {
     use crate::{normalized_crop, watermark_rect, Corner};
     use canvas_core::Fit;
     use runtime_core::{raf_loop, RafLoop};
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
-    use wasm_bindgen::{Clamped, JsCast};
+    use wasm_bindgen::{prelude::Closure, Clamped, JsCast, JsValue};
     use web_sys::{
         CanvasCaptureMediaStreamTrack, CanvasRenderingContext2d, Document, HtmlCanvasElement,
         HtmlVideoElement, ImageData, MediaStream as WebMediaStream,
     };
 
+    // `HTMLVideoElement.requestVideoFrameCallback` isn't in web-sys 0.3.x and can't
+    // be bound as an inherent method on the foreign type, so reach it reflectively.
+    // It fires once per PRESENTED video frame (returning a handle to cancel), which
+    // lets the compositor emit exactly one output frame per real input frame —
+    // locking the output's cadence to the input's true framerate instead of a
+    // free-running raf that duplicates/drops frames. `None` ⇒ the browser lacks
+    // rVFC, so the caller falls back to the raf driver.
+    fn request_video_frame_callback(video: &HtmlVideoElement, cb: &js_sys::Function) -> Option<f64> {
+        let f = js_sys::Reflect::get(video, &JsValue::from_str("requestVideoFrameCallback")).ok()?;
+        let f = f.dyn_ref::<js_sys::Function>()?;
+        f.call1(video, cb).ok()?.as_f64()
+    }
+
+    fn cancel_video_frame_callback(video: &HtmlVideoElement, handle: f64) {
+        if let Ok(f) = js_sys::Reflect::get(video, &JsValue::from_str("cancelVideoFrameCallback")) {
+            if let Some(f) = f.dyn_ref::<js_sys::Function>() {
+                let _ = f.call1(video, &JsValue::from_f64(handle));
+            }
+        }
+    }
+
     pub(crate) struct DriverHandle {
         _raf: Option<RafLoop>,
+        _rvfc: Option<RvfcState>,
+    }
+
+    /// Keeps a `requestVideoFrameCallback` loop alive: the self-re-arming closure
+    /// and the latest pending handle. Dropping it cancels the pending callback and
+    /// releases the closure (breaking the closure↔slot cycle), stopping the loop.
+    struct RvfcState {
+        video: HtmlVideoElement,
+        handle: Rc<Cell<f64>>,
+        cb: Rc<RefCell<Option<Closure<dyn FnMut(JsValue, JsValue)>>>>,
+    }
+
+    impl Drop for RvfcState {
+        fn drop(&mut self) {
+            cancel_video_frame_callback(&self.video, self.handle.get());
+            self.cb.borrow_mut().take();
+        }
     }
 
     /// One resolved op with its web resources (built once; only params reactive).
@@ -395,12 +433,27 @@ mod web {
     }
 
     impl Driver {
+        /// Attach the input stream to the `<video>` (idempotent). Returns whether a
+        /// stream is attached — the rVFC path needs this true before its first frame
+        /// can present.
+        fn ensure_input(&self) -> bool {
+            ensure_srcobject(&self.input_video, &self.input_id, &self.input)
+        }
+
+        /// The raf-driven tick (fallback path): attach the input, then composite +
+        /// emit one frame. On the rVFC path the input is attached at spawn and only
+        /// `render_and_emit` runs, once per presented frame.
         fn tick(&self) {
             // Feed the input `<video>` FIRST — before any early-return — or it
             // never gets its stream, so it never reports a size, so we'd bail here
             // forever (a deadlock: no size ⇒ no draw ⇒ no source set).
-            let _ = ensure_srcobject(&self.input_video, &self.input_id, &self.input);
+            let _ = self.ensure_input();
+            self.render_and_emit();
+        }
 
+        /// Composite the current input frame + ops into the output canvas and pin
+        /// one captured frame. Assumes the input `<video>` is already attached.
+        fn render_and_emit(&self) {
             // Output size: fixed, or the input video's intrinsic size once known.
             let (iw, ih) = (self.input_video.video_width(), self.input_video.video_height());
             let (out_w, out_h) = match self.output_size {
@@ -499,14 +552,14 @@ mod web {
         ops: Vec<Op>,
     ) -> DriverHandle {
         let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
-            return DriverHandle { _raf: None };
+            return DriverHandle { _raf: None, _rvfc: None };
         };
         let Some(canvas) = doc
             .create_element("canvas")
             .ok()
             .and_then(|e| e.dyn_into::<HtmlCanvasElement>().ok())
         else {
-            return DriverHandle { _raf: None };
+            return DriverHandle { _raf: None, _rvfc: None };
         };
         let (w, h) = output_size.unwrap_or((640, 480));
         canvas.set_width(w);
@@ -526,12 +579,12 @@ mod web {
             .flatten()
             .and_then(|c| c.dyn_into::<CanvasRenderingContext2d>().ok())
         else {
-            return DriverHandle { _raf: None };
+            return DriverHandle { _raf: None, _rvfc: None };
         };
         // `captureStream` in manual mode: one frame per `request_frame` (a fixed
         // auto rate under-delivers). Publish it as the output stream's source.
         let Ok(stream) = canvas.capture_stream_with_frame_request_rate(0.0) else {
-            return DriverHandle { _raf: None };
+            return DriverHandle { _raf: None, _rvfc: None };
         };
         let Some(track) = stream
             .get_video_tracks()
@@ -539,7 +592,7 @@ mod web {
             .dyn_into::<CanvasCaptureMediaStreamTrack>()
             .ok()
         else {
-            return DriverHandle { _raf: None };
+            return DriverHandle { _raf: None, _rvfc: None };
         };
         writer.publish_native_source(Rc::new(stream));
 
@@ -581,7 +634,49 @@ mod web {
             output_size,
         });
 
+        // Prefer `requestVideoFrameCallback`: emit exactly one output frame per REAL
+        // presented input frame, so the recording's cadence locks to the input's
+        // true framerate (no free-running-raf resampling → no duplicated/dropped
+        // frames = smooth capture). Requires the input stream to be attachable now
+        // (rVFC won't fire until the `<video>` plays) AND the browser to support rVFC
+        // (the helper returns `None` otherwise). Either miss falls through to the raf
+        // driver below (older browsers, or a stream not yet published).
+        if driver.ensure_input() {
+            let video = driver.input_video.clone();
+            let handle = Rc::new(Cell::new(0.0f64));
+            let cb: Rc<RefCell<Option<Closure<dyn FnMut(JsValue, JsValue)>>>> =
+                Rc::new(RefCell::new(None));
+            let closure = {
+                let driver = driver.clone();
+                let video = video.clone();
+                let cb_slot = cb.clone();
+                let handle = handle.clone();
+                Closure::wrap(Box::new(move |_now: JsValue, _meta: JsValue| {
+                    driver.render_and_emit();
+                    // rVFC is one-shot — re-arm for the next presented frame.
+                    if let Some(cb) = cb_slot.borrow().as_ref() {
+                        if let Some(h) =
+                            request_video_frame_callback(&video, cb.as_ref().unchecked_ref())
+                        {
+                            handle.set(h);
+                        }
+                    }
+                }) as Box<dyn FnMut(JsValue, JsValue)>)
+            };
+            if let Some(h) =
+                request_video_frame_callback(&video, closure.as_ref().unchecked_ref())
+            {
+                handle.set(h);
+                *cb.borrow_mut() = Some(closure);
+                return DriverHandle {
+                    _raf: None,
+                    _rvfc: Some(RvfcState { video, handle, cb }),
+                };
+            }
+            // rVFC unsupported — drop the closure and fall through to the raf driver.
+        }
+
         let raf = raf_loop(move || driver.tick());
-        DriverHandle { _raf: Some(raf) }
+        DriverHandle { _raf: Some(raf), _rvfc: None }
     }
 }
