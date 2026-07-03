@@ -2973,6 +2973,16 @@ impl Backend for IosBackend {
         let view = node.as_view();
         apply_style_to_view(view, style);
 
+        // Image content-fit. `object_fit` maps to the image view's
+        // `contentMode`; `None` ⇒ the framework default `Contain`. A no-op on
+        // non-image views (the helper guards). Kept out of
+        // `apply_style_to_view` because that runs on every UIView and this is
+        // image-only.
+        image::apply_object_fit(
+            view,
+            style.object_fit.unwrap_or(runtime_core::ObjectFit::Contain),
+        );
+
         // Position::Sticky → register against the enclosing
         // UIScrollView so the per-vsync sticky tick pins this view
         // when scrolled past the threshold. Any other Position

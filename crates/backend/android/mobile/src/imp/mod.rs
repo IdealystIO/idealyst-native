@@ -3217,6 +3217,15 @@ impl Backend for AndroidBackend {
         let font_registry = &self.font_registry;
         with_env(|env| {
             style::apply_rules(env, node, state, style, font_registry);
+            // Image content-fit. `object_fit` maps to the ImageView's
+            // `ScaleType`; `None` ⇒ the framework default `Contain`. A no-op
+            // on non-image views (the helper guards). Kept out of `apply_rules`
+            // because that runs on every View and this is image-only.
+            primitives::image::apply_object_fit(
+                env,
+                &node.as_obj(),
+                style.object_fit.unwrap_or(runtime_core::ObjectFit::Contain),
+            );
         });
         // Mirror the style into Taffy so flex direction, gaps,
         // `position: absolute`, percent widths, inset top/right/

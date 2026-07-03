@@ -316,7 +316,7 @@ pub use style::{
     update_tokens,
     AlignContent, AlignItems, AlignSelf, Color, Cursor, Derive, DisplayKind, Easing, FlexDirection, FlexWrap,
     FontFamily, FontStyle, FontWeight, Gradient, GradientKind, GradientStop, TrackSize,
-    IntoOverrideSource, IntoVariantSource, JustifyContent, Length, RadialExtent, Overflow,
+    IntoOverrideSource, IntoVariantSource, JustifyContent, Length, ObjectFit, RadialExtent, Overflow,
     PointerEvents, Position, Shadow, StyleApplication, StyleRules, StyleSheet, TextAlign,
     TextTransform, UserSelect,
     TokenEntry, TokenValue, Tokenized, Transform, Transition, VariantAxis, VariantEnum,

@@ -234,9 +234,20 @@ pub const BUTTON_RESET: &str = ":where(button) { all: unset; box-sizing: border-
 pub const FORM_FONT_RESET: &str =
     ":where(input, textarea) { font-family: inherit; outline: none; }";
 
+/// `<img>` object-fit default. The browser's UA default is `fill` (stretch),
+/// but the framework's cross-backend default for [`ObjectFit`] is `Contain`
+/// (aspect-fit) — the native backends letterbox, so web must not stretch or
+/// the same author code looks different per platform. `:where(img)` is
+/// specificity 0, so a minted author class that sets `object-fit` (e.g.
+/// `ObjectFit::Cover`, specificity 0,1,0) always wins; this only supplies the
+/// default for images whose sheet leaves `object_fit` unset.
+///
+/// [`ObjectFit`]: runtime_core::ObjectFit
+pub const IMG_FIT_RESET: &str = ":where(img) { object-fit: contain; }";
+
 /// The full base reset stylesheet ([`BOX_SIZING_RESET`] + [`BUTTON_RESET`]
-/// + [`FORM_FONT_RESET`]). The SSR backend emits this once in `<head>`; the
-/// web backend inserts the three rules at sheet indices 0/1/2.
+/// + [`FORM_FONT_RESET`] + [`IMG_FIT_RESET`]). The SSR backend emits this
+/// once in `<head>`; the web backend inserts the rules at low sheet indices.
 ///
 /// Host-surface theming (body background, scrollbar) is **not** part of
 /// the reset — it's owned by the theme SDK and routed through
@@ -247,7 +258,7 @@ pub const FORM_FONT_RESET: &str =
 /// `box-sizing` + `<button>` baseline without inheriting opinions about
 /// color tokens that may not exist.
 pub fn base_reset_css() -> String {
-    format!("{BOX_SIZING_RESET}{BUTTON_RESET}{FORM_FONT_RESET}")
+    format!("{BOX_SIZING_RESET}{BUTTON_RESET}{FORM_FONT_RESET}{IMG_FIT_RESET}")
 }
 
 /// Default inline style for a `Link` primitive's `<a>`: strip the
@@ -803,6 +814,17 @@ pub fn overflow_css(v: runtime_core::Overflow) -> &'static str {
     }
 }
 
+/// CSS `object-fit` keyword for a [`runtime_core::ObjectFit`]. Meaningful
+/// only on `<img>` (replaced content); harmless on other elements.
+pub fn object_fit_css(v: runtime_core::ObjectFit) -> &'static str {
+    use runtime_core::ObjectFit;
+    match v {
+        ObjectFit::Fill => "fill",
+        ObjectFit::Contain => "contain",
+        ObjectFit::Cover => "cover",
+    }
+}
+
 /// CSS `cursor` keyword for a [`runtime_core::Cursor`].
 pub fn cursor_css(v: runtime_core::Cursor) -> &'static str {
     use runtime_core::Cursor;
@@ -1022,6 +1044,7 @@ pub fn rules_to_css(rules: &StyleRules) -> String {
     // Visual.
     if let Some(t) = &rules.opacity { parts.push(format!("opacity: {}", tokenized_f32_css(t))); }
     if let Some(v) = rules.overflow { parts.push(format!("overflow: {}", overflow_css(v))); }
+    if let Some(v) = rules.object_fit { parts.push(format!("object-fit: {}", object_fit_css(v))); }
     if let Some(sh) = &rules.shadow {
         parts.push(format!(
             "box-shadow: {}px {}px {}px {}",
@@ -1143,6 +1166,31 @@ mod tests {
     #[test]
     fn tokens_to_root_css_empty_is_blank() {
         assert_eq!(tokens_to_root_css(&[]), "");
+    }
+
+    // `object_fit` emits the matching CSS `object-fit` keyword. Cover is the
+    // one that fixes the tile "fill + center-crop" pattern; only an explicit
+    // value emits (an unset field defers to the `:where(img)` reset default).
+    #[test]
+    fn rules_to_css_emits_object_fit() {
+        use runtime_core::ObjectFit;
+        let cover = StyleRules { object_fit: Some(ObjectFit::Cover), ..Default::default() };
+        assert!(rules_to_css(&cover).contains("object-fit: cover"));
+        let fill = StyleRules { object_fit: Some(ObjectFit::Fill), ..Default::default() };
+        assert!(rules_to_css(&fill).contains("object-fit: fill"));
+        // Unset → nothing emitted (the base `:where(img)` reset supplies contain).
+        assert!(!rules_to_css(&StyleRules::default()).contains("object-fit"));
+    }
+
+    // The base reset pins `<img>` to `object-fit: contain` at specificity 0
+    // (`:where(img)`), so the framework's cross-backend default matches the
+    // native letterbox instead of the UA `fill` stretch. A minted author
+    // class wins (0,1,0 > 0). Guards the web-stretch regression.
+    #[test]
+    fn base_reset_includes_img_object_fit_contain() {
+        let reset = base_reset_css();
+        assert!(reset.contains(":where(img)"));
+        assert!(reset.contains("object-fit: contain"));
     }
 
     // `cursor` emits the CSS keyword; `user-select` emits BOTH the prefixed

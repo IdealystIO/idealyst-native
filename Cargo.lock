@@ -11550,7 +11550,9 @@ version = "0.0.1"
 dependencies = [
  "canvas-core",
  "canvas-vello",
+ "cosmic-text",
  "media-stream",
+ "resvg",
  "runtime-core",
  "wasm-bindgen",
  "web-sys",

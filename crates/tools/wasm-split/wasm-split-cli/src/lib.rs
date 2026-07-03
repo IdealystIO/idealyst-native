@@ -510,16 +510,34 @@ impl<'a> Splitter<'a> {
 
         let unique_symbols = &self.chunks[idx];
 
-        // The functions we'll need to import
-        let symbols_to_import: HashSet<_> = unique_symbols
+        // The chunk physically OWNS `unique_symbols`, but those functions also
+        // call INTO the main module. Every such callee main func must be
+        // imported (routed through the ifunc table) — NOT deleted — or the kept
+        // chunk funcs are left with dangling calls and walrus `gc::run` panics
+        // (`assertion failed: !self.dead.contains(&id)` in `Used::new`).
+        //
+        // The previous code computed `symbols_to_import = unique_symbols ∩ main`,
+        // but `unique_symbols` (the shared set from `compute_shared_chunk`) is
+        // DISJOINT from `main` by construction — so it imported nothing and
+        // deleted every main func the shared code calls. This was latent while
+        // the shared chunk was always empty; it only fires once a second split
+        // point makes the chunk non-empty. Mirror `emit_split_module`: take the
+        // chunk's transitive closure over the call graph and partition `main` by
+        // it. (Any main func reachable from the chunk is reachable from every
+        // split point that shares it, so it's already in `self.shared_symbols`
+        // and gets a stub in `convert_shared_to_imports`.)
+        let chunk_reachable = reachable_graph(&self.call_graph, unique_symbols);
+
+        // Main funcs this chunk calls → import (stub via the ifunc table).
+        let symbols_to_import: HashSet<_> = chunk_reachable
             .intersection(&self.main_graph)
             .cloned()
             .collect();
 
-        // Delete everything except the symbols that are reachable from this module
+        // Main funcs this chunk never calls → delete.
         let symbols_to_delete: HashSet<_> = self
             .main_graph
-            .difference(unique_symbols)
+            .difference(&chunk_reachable)
             .cloned()
             .collect();
 

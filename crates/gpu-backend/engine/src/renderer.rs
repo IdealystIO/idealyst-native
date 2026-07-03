@@ -210,6 +210,10 @@ pub struct ImageRequest {
     /// Screen-space rect in logical px: `(x, y, w, h)`.
     pub rect: (f32, f32, f32, f32),
     pub opacity: f32,
+    /// How the bitmap fits `rect` — applied in `resolve_draws` against the
+    /// loaded texture's natural size (adjusts the quad rect for Contain, the
+    /// UVs for Cover; Fill stretches).
+    pub fit: runtime_core::ObjectFit,
 }
 
 /// One Graphics node recorded during the tree walk. Resolved
@@ -722,16 +726,13 @@ impl Renderer {
                 let mut out = Vec::new();
                 for req in reqs {
                     match cache.get(&req.src) {
-                        Some(ImageCacheState::Loaded(_)) => {
+                        Some(ImageCacheState::Loaded(entry)) => {
+                            let (rect, uv_rect) =
+                                fit_image(req.fit, req.rect, entry.size);
                             out.push((
                                 ImageInstance {
-                                    rect: [
-                                        req.rect.0,
-                                        req.rect.1,
-                                        req.rect.2,
-                                        req.rect.3,
-                                    ],
-                                    uv_rect: [0.0, 0.0, 1.0, 1.0],
+                                    rect,
+                                    uv_rect,
                                     tint: [1.0, 1.0, 1.0, 1.0],
                                     rotation: 0.0,
                                     opacity: req.opacity,
@@ -1772,6 +1773,7 @@ fn walk<'a>(
                     alt: alt.clone(),
                     rect: (x, y, w, h),
                     opacity: r.opacity,
+                    fit: r.object_fit,
                 });
             }
             NodeKind::Graphics { .. } => {
@@ -2759,6 +2761,60 @@ fn position_anchored(
 const PLACEHOLDER_BG: [f32; 4] = [0.94, 0.94, 0.96, 1.0];
 const PLACEHOLDER_BORDER: [f32; 4] = [0.78, 0.78, 0.82, 1.0];
 const PLACEHOLDER_ACCENT: [f32; 4] = [0.55, 0.55, 0.58, 1.0];
+
+/// Resolve `object-fit` into a `(rect, uv_rect)` pair for the textured quad.
+///
+/// - `Fill`: stretch the bitmap over the whole box — rect = box, UVs = full.
+/// - `Contain`: shrink the quad to the largest box-fitting rect that keeps
+///   the image's aspect, centered; UVs stay full (letterbox is the empty
+///   space around the smaller quad).
+/// - `Cover`: keep the quad = box, but crop the UVs to the box's aspect so
+///   the bitmap fills and center-crops without distortion.
+///
+/// `natural` is the texture's `(w, h)` in pixels. Degenerate sizes (a 0-px
+/// dimension) fall back to `Fill` to avoid a divide-by-zero.
+fn fit_image(
+    fit: runtime_core::ObjectFit,
+    box_rect: (f32, f32, f32, f32),
+    natural: (u32, u32),
+) -> ([f32; 4], [f32; 4]) {
+    use runtime_core::ObjectFit;
+    let (bx, by, bw, bh) = box_rect;
+    let full_rect = [bx, by, bw, bh];
+    let full_uv = [0.0, 0.0, 1.0, 1.0];
+    let (iw, ih) = (natural.0 as f32, natural.1 as f32);
+    if matches!(fit, ObjectFit::Fill) || iw <= 0.0 || ih <= 0.0 || bw <= 0.0 || bh <= 0.0 {
+        return (full_rect, full_uv);
+    }
+    let image_aspect = iw / ih;
+    let box_aspect = bw / bh;
+    match fit {
+        ObjectFit::Fill => (full_rect, full_uv),
+        ObjectFit::Contain => {
+            // Scale the image to fit inside the box; center the smaller quad.
+            let scale = (bw / iw).min(bh / ih);
+            let dw = iw * scale;
+            let dh = ih * scale;
+            let dx = bx + (bw - dw) * 0.5;
+            let dy = by + (bh - dh) * 0.5;
+            ([dx, dy, dw, dh], full_uv)
+        }
+        ObjectFit::Cover => {
+            // Keep the quad = box; crop the UVs along the over-long axis.
+            if image_aspect > box_aspect {
+                // Image is wider than the box → crop left/right.
+                let vis = box_aspect / image_aspect; // fraction of width shown
+                let u0 = (1.0 - vis) * 0.5;
+                (full_rect, [u0, 0.0, vis, 1.0])
+            } else {
+                // Image is taller than the box → crop top/bottom.
+                let vis = image_aspect / box_aspect; // fraction of height shown
+                let v0 = (1.0 - vis) * 0.5;
+                (full_rect, [0.0, v0, 1.0, vis])
+            }
+        }
+    }
+}
 
 /// Image placeholder — light-gray box with a diagonal accent
 /// stripe so it reads as "image missing" instead of an empty
@@ -3791,4 +3847,57 @@ fn resolve_asset_path(src: &str) -> Option<std::path::PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod fit_image_tests {
+    use super::fit_image;
+    use runtime_core::ObjectFit;
+
+    // Fill stretches: quad = box, UVs full — regardless of aspect mismatch.
+    #[test]
+    fn fill_stretches_to_box() {
+        let (rect, uv) = fit_image(ObjectFit::Fill, (10.0, 20.0, 100.0, 50.0), (200, 200));
+        assert_eq!(rect, [10.0, 20.0, 100.0, 50.0]);
+        assert_eq!(uv, [0.0, 0.0, 1.0, 1.0]);
+    }
+
+    // Contain fits a square image into a wide box: the quad shrinks to the
+    // box height (the limiting axis) and centers horizontally; UVs stay full.
+    #[test]
+    fn contain_letterboxes_square_in_wide_box() {
+        let (rect, uv) = fit_image(ObjectFit::Contain, (0.0, 0.0, 100.0, 50.0), (200, 200));
+        // scale = min(100/200, 50/200) = 0.25 → 50×50 quad, centered in 100 wide.
+        assert_eq!(rect, [25.0, 0.0, 50.0, 50.0]);
+        assert_eq!(uv, [0.0, 0.0, 1.0, 1.0]);
+    }
+
+    // Cover fills a wide box with a square image by cropping top/bottom:
+    // quad = box, UV height shrinks to box_aspect/image_aspect, centered.
+    #[test]
+    fn cover_crops_square_into_wide_box() {
+        let (rect, uv) = fit_image(ObjectFit::Cover, (0.0, 0.0, 100.0, 50.0), (200, 200));
+        assert_eq!(rect, [0.0, 0.0, 100.0, 50.0]);
+        // image_aspect = 1.0, box_aspect = 2.0 → image is taller → crop vertically.
+        // vis = image_aspect/box_aspect = 0.5, v0 = 0.25.
+        assert_eq!(uv, [0.0, 0.25, 1.0, 0.5]);
+    }
+
+    // Cover with a wide image in a tall box crops left/right instead.
+    #[test]
+    fn cover_crops_wide_image_into_tall_box() {
+        let (rect, uv) = fit_image(ObjectFit::Cover, (0.0, 0.0, 50.0, 100.0), (200, 100));
+        assert_eq!(rect, [0.0, 0.0, 50.0, 100.0]);
+        // image_aspect = 2.0, box_aspect = 0.5 → image wider → crop horizontally.
+        // vis = box_aspect/image_aspect = 0.25, u0 = 0.375.
+        assert_eq!(uv, [0.375, 0.0, 0.25, 1.0]);
+    }
+
+    // A degenerate 0-px natural dimension falls back to Fill (no divide-by-zero).
+    #[test]
+    fn zero_natural_size_falls_back_to_fill() {
+        let (rect, uv) = fit_image(ObjectFit::Contain, (0.0, 0.0, 100.0, 50.0), (0, 0));
+        assert_eq!(rect, [0.0, 0.0, 100.0, 50.0]);
+        assert_eq!(uv, [0.0, 0.0, 1.0, 1.0]);
+    }
 }

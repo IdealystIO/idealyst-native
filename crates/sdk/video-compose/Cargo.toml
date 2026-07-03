@@ -26,8 +26,17 @@ license.workspace = true
 # The stream currency (input + output) and the reactive value handles.
 media-stream = { workspace = true }
 runtime-core = { workspace = true }
-# The layer/scene model + the static-image watermark source + `Fit`.
-canvas-core = { workspace = true }
+# The layer/scene model + the static-image watermark source + `Fit`. `decode`
+# pulls the `image` crate so `.watermark_image(png_or_jpeg_bytes)` can decode an
+# asset to RGBA (pure-Rust, wasm-safe).
+canvas-core = { workspace = true, features = ["decode"] }
+# Text-watermark rasterization: shape a string with a caller-supplied font and
+# rasterize it to an RGBA `ImageSource` (cross-platform incl. wasm — no system
+# fonts). Same shaper the GPU backend uses via `glyphon`. No fontconfig (wasm).
+cosmic-text = { version = "0.18", default-features = false, features = ["std", "swash"] }
+# SVG-watermark rasterization (opt-in via the `svg` feature — resvg is a heavy
+# dep). Renders an SVG to RGBA; pure-Rust/wasm-safe. Re-exports usvg + tiny_skia.
+resvg = { version = "0.45", default-features = false, optional = true }
 
 # The offscreen GPU compositor engine (native only — it owns a wgpu device).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -54,5 +63,10 @@ web-sys = { version = "0.3", features = [
     "ImageData",
     "Performance",
 ] }
+
+[features]
+# Enable `VideoPipeline::watermark_svg` (rasterize an SVG asset to a watermark).
+# Off by default because resvg pulls a sizeable dependency tree.
+svg = ["dep:resvg"]
 
 [dev-dependencies]

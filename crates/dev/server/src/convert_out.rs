@@ -11,8 +11,8 @@ use runtime_core::accessibility::{AccessibilityProps, LiveRegionPriority, Role};
 use runtime_core::primitives;
 use runtime_core::{
     AlignItems, AssetId, AssetSource, AssetTag, Color, Easing, FlexDirection, FontFamily,
-    FontStyle, FontWeight, Gradient, GradientKind, GradientStop, JustifyContent, Length, Overflow,
-    Position, RadialExtent, StateBits, StyleRules, SystemFallback, TextAlign, Tokenized,
+    FontStyle, FontWeight, Gradient, GradientKind, GradientStop, JustifyContent, Length, ObjectFit,
+    Overflow, Position, RadialExtent, StateBits, StyleRules, SystemFallback, TextAlign, Tokenized,
     Transform, TypefaceFace, TypefaceId,
 };
 use wire::{
@@ -20,7 +20,7 @@ use wire::{
     WireAccessibilityProps, WireAlignItems, WireAssetSource, WireAssetTag, WireColor, WireEasing,
     WireFillRule, WireFlexDirection, WireFontFamily, WireFontStyle, WireFontWeight, WireGradient,
     WireGradientKind, WireGradientStop, WireIconData, WireJustifyContent, WireLength,
-    WireLiveRegionPriority, WireOverflow, WirePosition, WireRadialExtent, WireRole, WireStateBit,
+    WireLiveRegionPriority, WireObjectFit, WireOverflow, WirePosition, WireRadialExtent, WireRole, WireStateBit,
     WireStyleRules, WireSystemFallback, WireTextAlign, WireTransform, WireTypefaceFace,
 };
 
@@ -232,6 +232,15 @@ pub fn style_rules_to_wire(r: &StyleRules) -> WireStyleRules {
             t.iter().map(transform_to_wire).collect()
         }),
         background_gradient: r.background_gradient.as_ref().map(gradient_to_wire),
+        object_fit: r.object_fit.map(object_fit_to_wire),
+    }
+}
+
+pub fn object_fit_to_wire(o: ObjectFit) -> WireObjectFit {
+    match o {
+        ObjectFit::Fill => WireObjectFit::Fill,
+        ObjectFit::Contain => WireObjectFit::Contain,
+        ObjectFit::Cover => WireObjectFit::Cover,
     }
 }
 

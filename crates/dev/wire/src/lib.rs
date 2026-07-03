@@ -141,7 +141,7 @@ use serde::{Deserialize, Serialize};
 /// (autogrow row bounds; the client backend converts rows→px from its real
 /// font metrics). Both `#[serde(default)]` → a pre-15 sender omits them and the
 /// client reads `None` (unbounded growth), so the field is backward-compatible.
-pub const PROTOCOL_VERSION: u32 = 15;
+pub const PROTOCOL_VERSION: u32 = 16;
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
 /// than the canonical [`PROTOCOL_VERSION`] name. Both point at the same
@@ -1252,6 +1252,12 @@ pub struct WireStyleRules {
     pub transform: Option<Vec<WireTransform>>,
     #[serde(default)]
     pub background_gradient: Option<WireGradient>,
+
+    // --- Image content-fit (added in PROTOCOL_VERSION 16). `#[serde(default)]`
+    // so older sidecars/clients that omit it still decode; a missing value
+    // means the client falls back to its `ObjectFit::Contain` default. ---
+    #[serde(default)]
+    pub object_fit: Option<WireObjectFit>,
 }
 
 /// Wire mirror of `runtime_core::Position`. The mobile-flavored
@@ -1274,6 +1280,15 @@ pub enum WirePosition {
 pub enum WireOverflow {
     Visible,
     Hidden,
+}
+
+/// Wire mirror of `runtime_core::ObjectFit` — how an `image`'s bitmap fits
+/// its box. A missing field decodes as the client's `Contain` default.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum WireObjectFit {
+    Fill,
+    Contain,
+    Cover,
 }
 
 /// Wire mirror of `runtime_core::Transform`. The stack of transform

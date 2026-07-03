@@ -186,6 +186,20 @@ impl WebBackend {
             // also beats the UA origin, so the monospace default is
             // overridden. Shared with the SSR backend via `base_reset_css`.
             let _ = sheet.insert_rule_with_index(css::FORM_FONT_RESET, 2);
+
+            // Index 3 — `<img>` object-fit default.
+            //
+            // The UA default for `<img>` is `object-fit: fill` (stretch),
+            // but the framework's cross-backend default is `contain`
+            // (aspect-fit) — the native backends letterbox, so web must
+            // match or the same author code renders differently per
+            // platform. `:where(img)` is specificity 0, so a minted author
+            // class that sets `object-fit` (e.g. `ObjectFit::Cover`,
+            // specificity 0,1,0) always wins. Shared with the SSR backend
+            // via `base_reset_css`. These four fixed resets occupy indices
+            // 0–3; author rules append at sheet length (index 4+) or recycle
+            // deleted author slots, so this index never collides.
+            let _ = sheet.insert_rule_with_index(css::IMG_FIT_RESET, 3);
         }
         self.style_element.as_ref().unwrap().clone()
     }

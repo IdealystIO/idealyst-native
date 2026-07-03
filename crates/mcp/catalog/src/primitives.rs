@@ -169,7 +169,7 @@ inventory::submit! {
     PrimitiveEntry {
         name: "image",
         pascal_name: "Image",
-        docs: "Bitmap / vector image. Source is platform-aware (asset path, URL, base64); backends use `UIImageView`, `ImageView`, `<img>`, `NSImageView`.",
+        docs: "Bitmap / vector image. Source is platform-aware (asset path, URL, base64); backends use `UIImageView` (iOS), `ImageView` (Android), `<img>` (web), and a layer-backed image view (macOS). Content fit is controlled by the `object_fit` style property (`Fill` / `Contain` / `Cover`); the default is `Contain` (aspect-fit) on every backend.",
         props: &[
             PropFieldSpec {
                 name: "source",

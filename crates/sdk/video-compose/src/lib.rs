@@ -36,12 +36,15 @@
 //! stream rather than failing, so callers compile and run everywhere.
 #![deny(missing_docs)]
 
-use canvas_core::{Fit, ImageSource, Scene, TextureLayer};
+use canvas_core::{Color, Fit, ImageSource, Scene, TextureLayer};
 use media_stream::MediaStream;
 use std::rc::Rc;
 use std::sync::Arc;
 
 mod driver;
+#[cfg(feature = "svg")]
+mod svg;
+mod text;
 
 /// Upload-cache id for the CPU-input base layer (one texture slot, overwritten
 /// each frame via a bumped generation). Kept distinct from any watermark id.
@@ -137,6 +140,79 @@ impl VideoPipeline {
             opacity: Rc::new(opacity),
         });
         self
+    }
+
+    /// Overlay an IMAGE-ASSET watermark: decode `bytes` (a PNG or JPEG — e.g.
+    /// `include_bytes!("logo.png")`) to RGBA and pin it to `corner` with a `margin`
+    /// inset and reactive `opacity`, drawn at the image's native pixel size.
+    /// Transparent PNG regions blend through. Works on every backend. Decoding is
+    /// pure-Rust (wasm-safe); a no-op if the bytes can't be decoded.
+    ///
+    /// For raw RGBA you already hold, build an [`ImageSource`] and use
+    /// [`watermark`](Self::watermark) directly instead.
+    #[allow(clippy::too_many_arguments)]
+    pub fn watermark_image(
+        self,
+        bytes: &[u8],
+        corner: Corner,
+        margin: f32,
+        opacity: impl Fn() -> f32 + 'static,
+    ) -> Self {
+        // Cache id = hash of the encoded bytes, so re-decoding identical assets
+        // reuses the renderer's upload slot.
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        bytes.hash(&mut hasher);
+        match ImageSource::decode(hasher.finish(), bytes) {
+            Ok(image) => self.watermark(image, corner, margin, opacity),
+            Err(_) => self,
+        }
+    }
+
+    /// Overlay an SVG watermark: rasterize `bytes` (an SVG document) at
+    /// `width_px` wide (height from the SVG's aspect ratio) and pin it to `corner`
+    /// with a `margin` inset and reactive `opacity`. Works on every backend (it
+    /// becomes a normal watermark image). Requires the `svg` feature. Text and
+    /// embedded raster images inside the SVG are dropped (convert text to paths);
+    /// a no-op if the SVG can't be parsed.
+    #[cfg(feature = "svg")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn watermark_svg(
+        self,
+        bytes: &[u8],
+        width_px: u32,
+        corner: Corner,
+        margin: f32,
+        opacity: impl Fn() -> f32 + 'static,
+    ) -> Self {
+        match svg::rasterize(bytes, width_px) {
+            Some(image) => self.watermark(image, corner, margin, opacity),
+            None => self,
+        }
+    }
+
+    /// Overlay a TEXT watermark: shape `text` in the caller-supplied `font`
+    /// (`.ttf`/`.otf` bytes — e.g. `include_bytes!("Font.ttf")`) at `size_px`,
+    /// rasterize it to an image tinted `color`, and pin it to `corner` with a
+    /// `margin` inset and reactive `opacity`. Works on every backend (it becomes a
+    /// normal watermark image), unlike the low-level `.draw()` glyph path. A font
+    /// is required because web has no system fonts. Rasterized once; a no-op if the
+    /// font can't be parsed.
+    #[allow(clippy::too_many_arguments)]
+    pub fn watermark_text(
+        self,
+        text: &str,
+        font: &[u8],
+        size_px: f32,
+        color: Color,
+        corner: Corner,
+        margin: f32,
+        opacity: impl Fn() -> f32 + 'static,
+    ) -> Self {
+        match text::rasterize(text, font, size_px, color) {
+            Some(image) => self.watermark(image, corner, margin, opacity),
+            None => self,
+        }
     }
 
     /// Composite a second live `stream` (picture-in-picture) at a reactive output
@@ -365,6 +441,14 @@ mod tests {
         assert_eq!(layers.len(), 2, "base input + one watermark");
         // The watermark layer sits above the base and carries the resolved opacity.
         assert_eq!(layers[1].opacity, 0.5);
+    }
+
+    #[test]
+    fn watermark_image_ignores_undecodable_bytes() {
+        let (input, _w) = MediaStream::new();
+        // Not a PNG/JPEG → decode fails → no watermark op is added (no panic).
+        let p = VideoPipeline::new(input).watermark_image(&[1, 2, 3, 4], Corner::TopLeft, 4.0, || 1.0);
+        assert!(p.ops.is_empty(), "an undecodable asset must add no op");
     }
 
     #[test]

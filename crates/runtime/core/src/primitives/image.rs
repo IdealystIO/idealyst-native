@@ -1,7 +1,11 @@
 //! Image primitive.
 //!
 //! Backed by `<img>` on web, `UIImageView` on iOS, `ImageView` on
-//! Android. Two construction paths:
+//! Android, and a layer-backed image view on macOS. How the bitmap
+//! fits its box is controlled by the `object_fit` style property
+//! ([`ObjectFit`](crate::ObjectFit)) — `Fill` / `Contain` / `Cover`,
+//! defaulting to `Contain` (aspect-fit) on every backend. Two
+//! construction paths:
 //!
 //! - **URL-based**: [`image`] takes a free-form `&str`/`String` or a
 //!   closure returning `String`. The framework hands the URL to the

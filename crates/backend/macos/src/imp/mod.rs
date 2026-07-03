@@ -3089,7 +3089,7 @@ impl Backend for MacosBackend {
         alt: Option<&str>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        let node = image::create_image(&self.image_cache, src, alt);
+        let node = image::create_image(self.mtm, &self.image_cache, src, alt);
         if let MacosNode::View(view) = &node {
             let view_clone = view.clone();
             self.install_image_measure(&view_clone);
@@ -4344,6 +4344,16 @@ impl Backend for MacosBackend {
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
         let view = node.as_view();
         apply_style_to_view(view, style);
+
+        // Image content-fit. `object_fit` maps to the image view's layer
+        // `contentsGravity`; `None` ⇒ the framework default `Contain`. A no-op
+        // on non-image views (the helper guards). Kept out of
+        // `apply_style_to_view` because that runs on every NSView and this is
+        // image-only.
+        image::apply_object_fit(
+            view,
+            style.object_fit.unwrap_or(runtime_core::ObjectFit::Contain),
+        );
 
         // Gradient install lives outside `apply_style_to_view` because
         // we need to stash the returned state in the per-view cache —

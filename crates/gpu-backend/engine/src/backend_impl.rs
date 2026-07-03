@@ -3098,8 +3098,10 @@ mod a11y_tests {
             "initial",
             Some("placeholder"),
             true,
+            None, // min_rows
+            None, // max_rows
             on_change,
-            None,
+            None, // on_key_down
             &AccessibilityProps::default(),
         );
         assert!(

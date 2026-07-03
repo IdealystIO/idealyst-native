@@ -21,6 +21,9 @@ use runtime_core::{
 use std::rc::Rc;
 use video_compose::{Corner, VideoPipeline};
 
+/// A font for the text watermark (web has no system fonts, so it must be bundled).
+static FONT: &[u8] = include_bytes!("../../welcome/fonts/Inter-Bold.ttf");
+
 // `camera` and `video` self-register their externals via `inventory` at backend
 // construction; the compositor owns its own GPU device. Nothing to register.
 pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
@@ -98,8 +101,20 @@ pub fn app() -> Element {
                     // The input stream stays untouched; only `output` carries the ops.
                     let out = VideoPipeline::new(input.clone())
                         .watermark(make_watermark(), Corner::BottomRight, 18.0, move || opacity.get())
+                        // A TEXT watermark — rasterized from the bundled font, so it
+                        // shows on macOS AND web (unlike the `.draw()` glyph path).
+                        .watermark_text(
+                            "© 2026 idealyst",
+                            FONT,
+                            26.0,
+                            Color::new(255, 255, 255, 210),
+                            Corner::TopRight,
+                            16.0,
+                            move || opacity.get(),
+                        )
                         .draw(|s| {
-                            // A drawn "LIVE" bar in the top-left, ON TOP of the video.
+                            // A drawn "LIVE" bar in the top-left, ON TOP of the video
+                            // (macOS only for now — `.draw()` isn't rendered on web).
                             s.path().add_path(Path::rounded_rect(14.0, 14.0, 92.0, 30.0, 8.0));
                             s.fill(Color::new(232, 46, 150, 220));
                         })

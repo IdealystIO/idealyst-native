@@ -6,8 +6,8 @@
 //! node so the per-frame walk is cheap (just read fields).
 
 use runtime_core::{
-    Color, FontFamily, FontStyle, FontWeight, Gradient, GradientKind, Length, RadialExtent,
-    StyleRules, TextAlign, Tokenized, Transform,
+    Color, FontFamily, FontStyle, FontWeight, Gradient, GradientKind, Length, ObjectFit,
+    RadialExtent, StyleRules, TextAlign, Tokenized, Transform,
 };
 
 /// Render-time projection of a node's style. Default = "no painted
@@ -26,6 +26,12 @@ pub struct RenderStyle {
 
     pub font_size: f32,
     pub opacity: f32,
+
+    /// How an `image`'s bitmap fits its box (CSS `object-fit`). The
+    /// renderer adjusts the textured quad's rect (Contain) or UVs (Cover)
+    /// against the image's natural size; `Fill` stretches to the box. The
+    /// framework-wide default is `Contain`.
+    pub object_fit: ObjectFit,
 
     /// Resolved drop shadow, if the author set `shadow: ...` on the
     /// node. The renderer emits a shadow rect instance underneath
@@ -157,6 +163,7 @@ impl Default for RenderStyle {
             border_color: [[0.0, 0.0, 0.0, 0.0]; 4],
             font_size: 14.0,
             opacity: 1.0,
+            object_fit: ObjectFit::Contain,
             shadow: None,
             gradient: None,
             static_translate: [TransformLength::default(); 2],
@@ -206,6 +213,9 @@ impl RenderStyle {
         }
         if let Some(s) = rules.font_style.as_ref() {
             self.font_style = *s;
+        }
+        if let Some(fit) = rules.object_fit {
+            self.object_fit = fit;
         }
         if let Some(a) = rules.text_align.as_ref() {
             self.text_align = *a;

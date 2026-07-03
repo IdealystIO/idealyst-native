@@ -132,16 +132,48 @@ pub(crate) fn create_image(
         // No embedded asset — fetch the remote URL (web's `<img src>` analog).
         load_url_image_async(&view, src);
     }
-    // `contentMode = UIViewContentModeScaleAspectFit` (= 1) so the
-    // bitmap scales to fit the layout frame without distortion. The
-    // default `scaleToFill` (= 0) stretches arbitrarily and looks
-    // wrong as soon as Taffy gives the view a non-square frame.
+    // Default `contentMode = UIViewContentModeScaleAspectFit` (= 1) — the
+    // framework-wide `ObjectFit::Contain` default; `apply_style` overrides
+    // it when the node's style sets `object_fit`. The UIView default
+    // `scaleToFill` (= 0) stretches arbitrarily and looks wrong as soon as
+    // Taffy gives the view a non-square frame.
     let _: () = unsafe { msg_send![&view, setContentMode: 1i64] };
     // Pin tintAdjustmentMode to Normal so a dimmed-tint ancestor
     // (e.g. a modal presentation context) can't repaint the image as
     // a flat silhouette. 1 = UIViewTintAdjustmentModeNormal.
     let _: () = unsafe { msg_send![&view, setTintAdjustmentMode: 1i64] };
     IosNode::View(view)
+}
+
+/// `true` when `view` is a `UIImageView` — lets the generic `apply_style`
+/// path apply `object_fit` only to images. `isKindOfClass:` is safe on any
+/// `UIView`.
+pub(crate) fn is_image_view(view: &UIView) -> bool {
+    let cls = objc2::class!(UIImageView);
+    unsafe { msg_send![view, isKindOfClass: cls] }
+}
+
+/// Apply an [`ObjectFit`](runtime_core::ObjectFit) to an image view via
+/// `UIView.contentMode`. No-op on non-image views (the helper guards). For
+/// `Cover` (`scaleAspectFill`) the bitmap overflows the frame, so
+/// `clipsToBounds` is enabled to crop it — mirroring web `object-fit: cover`
+/// + `overflow: hidden`. Called from `apply_style`.
+pub(crate) fn apply_object_fit(view: &UIView, fit: runtime_core::ObjectFit) {
+    if !is_image_view(view) {
+        return;
+    }
+    use runtime_core::ObjectFit;
+    // UIViewContentMode: scaleToFill = 0, scaleAspectFit = 1, scaleAspectFill = 2.
+    let mode: i64 = match fit {
+        ObjectFit::Fill => 0,
+        ObjectFit::Contain => 1,
+        ObjectFit::Cover => 2,
+    };
+    let _: () = unsafe { msg_send![view, setContentMode: mode] };
+    // Crop the overflow of an aspect-fill (cover) bitmap to the frame.
+    if matches!(fit, ObjectFit::Cover) {
+        let _: () = unsafe { msg_send![view, setClipsToBounds: true] };
+    }
 }
 
 /// Update a `UIImageView`'s image when its `src` changes reactively.

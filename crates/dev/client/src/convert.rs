@@ -13,15 +13,15 @@ use runtime_core::primitives;
 use runtime_core::{
     AlignItems, AssetId as CoreAssetId, AssetSource, AssetTag, Color, Easing, FlexDirection,
     FontFamily, FontStyle, FontWeight, Gradient, GradientKind, GradientStop, JustifyContent,
-    Length, Overflow, Position, RadialExtent, StateBits, StyleRules, SystemFallback, TextAlign,
-    Tokenized, Transform, TypefaceFace, TypefaceId as CoreTypefaceId,
+    Length, ObjectFit, Overflow, Position, RadialExtent, StateBits, StyleRules, SystemFallback,
+    TextAlign, Tokenized, Transform, TypefaceFace, TypefaceId as CoreTypefaceId,
 };
 use wire::{
     AssetId as WireAssetId, HandlerId, TypefaceId as WireTypefaceId, WireAccessibilityProps,
     WireAlignItems, WireAssetSource, WireAssetTag, WireColor, WireEasing, WireFillRule,
     WireFlexDirection, WireFontFamily, WireFontStyle, WireFontWeight, WireGradient,
     WireGradientKind, WireGradientStop, WireIconData, WireJustifyContent, WireLength,
-    WireLiveRegionPriority, WireMountPolicy, WireOverflow, WirePosition, WirePresenceState,
+    WireLiveRegionPriority, WireMountPolicy, WireObjectFit, WireOverflow, WirePosition, WirePresenceState,
     WireRadialExtent, WireRole, WireScreenOptions, WireStateBit, WireStyleRules, WireSystemFallback,
     WireTextAlign, WireTransform, WireTypefaceFace,
 };
@@ -291,8 +291,17 @@ pub fn wire_style_to_rules(w: WireStyleRules) -> StyleRules {
     s.overflow = w.overflow.map(wire_overflow);
     s.transform = w.transform.map(|t| t.into_iter().map(wire_transform).collect());
     s.background_gradient = w.background_gradient.map(wire_gradient);
+    s.object_fit = w.object_fit.map(wire_object_fit);
 
     s
+}
+
+pub fn wire_object_fit(o: WireObjectFit) -> ObjectFit {
+    match o {
+        WireObjectFit::Fill => ObjectFit::Fill,
+        WireObjectFit::Contain => ObjectFit::Contain,
+        WireObjectFit::Cover => ObjectFit::Cover,
+    }
 }
 
 pub fn wire_position(p: WirePosition) -> Position {

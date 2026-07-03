@@ -603,6 +603,41 @@ pub enum Overflow {
     Hidden,
 }
 
+/// How a replaced element's content (an `image`'s bitmap) is fitted into
+/// its layout box. Mirrors CSS `object-fit`. Only meaningful on the
+/// `image` primitive — every other primitive silently ignores it (there is
+/// no replaced content to fit).
+///
+/// The framework's default (a `None` field) is [`ObjectFit::Contain`] on
+/// **every** backend — aspect-fit, no distortion, letterboxed if the box's
+/// aspect differs. This deliberately overrides the browser's native `<img>`
+/// default of `fill` (stretch): a bare `image` sized to a non-matching box
+/// must look the same on web as on the native backends. Authors opt into
+/// [`ObjectFit::Cover`] for the thumbnail/tile "fill and center-crop"
+/// pattern.
+///
+/// Per-backend mapping:
+/// - Web / SSR: CSS `object-fit: {fill|contain|cover}`.
+/// - iOS (UIKit): `UIView.contentMode` = `scaleToFill` / `scaleAspectFit` /
+///   `scaleAspectFill`.
+/// - Android: `ImageView.ScaleType` = `FIT_XY` / `FIT_CENTER` / `CENTER_CROP`.
+/// - macOS (AppKit): the image view's backing-layer `contentsGravity` =
+///   `resize` / `resizeAspect` / `resizeAspectFill` (`NSImageView.imageScaling`
+///   has no aspect-fill mode, so the macOS image path renders through the
+///   layer's `contents`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ObjectFit {
+    /// Stretch to fill the box exactly, ignoring aspect ratio (CSS `fill`).
+    Fill,
+    /// Scale to fit inside the box, preserving aspect ratio; letterbox the
+    /// remainder (CSS `contain`). The framework default.
+    #[default]
+    Contain,
+    /// Scale to fill the box, preserving aspect ratio; crop the overflow
+    /// (CSS `cover`). The thumbnail/tile "fill + center-crop" mode.
+    Cover,
+}
+
 /// Pointer affordance for a node — the shape the OS pointer takes when
 /// hovering it. A **desktop / web** concern: it has no meaning on touch
 /// backends (there is no pointer), so iOS and Android silently ignore
@@ -1017,6 +1052,11 @@ pub struct StyleRules {
     // --- Visual ---
     pub opacity: Option<Tokenized<f32>>,
     pub overflow: Option<Overflow>,
+    /// How an `image`'s bitmap fits its box (CSS `object-fit`). `None` ⇒
+    /// the framework default [`ObjectFit::Contain`] on every backend.
+    /// Ignored by every primitive except `image` (no replaced content to
+    /// fit). See [`ObjectFit`].
+    pub object_fit: Option<ObjectFit>,
     pub shadow: Option<Shadow>,
     /// Gradient background, rendered over (replacing) the solid
     /// `background` color when both are set. Each backend maps to its
@@ -1120,7 +1160,7 @@ impl StyleRules {
             position, top, right, bottom, left,
             font_family, font_weight, font_style, line_height, letter_spacing,
             text_align, underline, strikethrough, text_transform,
-            opacity, overflow, shadow, background_gradient, transform, transform_origin,
+            opacity, overflow, object_fit, shadow, background_gradient, transform, transform_origin,
             cursor, user_select, pointer_events,
             background_transition, color_transition, caret_color_transition,
             opacity_transition,
@@ -1245,6 +1285,7 @@ impl StyleRules {
         // Visual
         write_tokenized_f32(&mut s, "op", &self.opacity);
         write_enum(&mut s, "ov", self.overflow.map(|x| x as u8));
+        write_enum(&mut s, "objf", self.object_fit.map(|x| x as u8));
         if let Some(sh) = &self.shadow {
             s.push_str("sh=");
             push_u32_hex(&mut s, sh.x.to_bits());
@@ -3394,6 +3435,45 @@ mod tests {
         let all_sel = StyleRules { user_select: Some(UserSelect::All), ..Default::default() };
         assert_ne!(no_sel.content_key(), all_sel.content_key());
         assert_ne!(no_sel.content_key(), none.content_key());
+    }
+
+    // ----- object_fit: default + merge + content_key ------------------------
+
+    /// A bare `StyleRules` leaves `object_fit` unset; backends read that as
+    /// the framework default `Contain`. (The default is applied at the
+    /// backend, not baked into the field, so an unset image inherits it
+    /// without every sheet carrying an explicit value.)
+    #[test]
+    fn object_fit_defaults_to_unset() {
+        assert_eq!(StyleRules::default().object_fit, None);
+        // The enum's own default is Contain — the value backends fall back to.
+        assert_eq!(ObjectFit::default(), ObjectFit::Contain);
+    }
+
+    /// `object_fit` round-trips through `merge`: an overlay that sets it
+    /// wins; an empty overlay leaves the base value intact. Guards the
+    /// "merge forgets a new field" bug class (the field must be in the
+    /// `overlay!` list).
+    #[test]
+    fn merge_overlays_object_fit() {
+        let base = StyleRules { object_fit: Some(ObjectFit::Cover), ..Default::default() };
+        let unchanged = base.clone().merge(&StyleRules::default());
+        assert_eq!(unchanged.object_fit, Some(ObjectFit::Cover));
+        let over = StyleRules { object_fit: Some(ObjectFit::Fill), ..Default::default() };
+        assert_eq!(base.merge(&over).object_fit, Some(ObjectFit::Fill));
+    }
+
+    /// Distinct `object_fit` values mint distinct content keys (else a Cover
+    /// image and a Contain image sharing a sheet shape would collide on one
+    /// minted class); equal values share a key; Some differs from None.
+    #[test]
+    fn content_key_distinguishes_object_fit() {
+        let cover = StyleRules { object_fit: Some(ObjectFit::Cover), ..Default::default() };
+        let contain = StyleRules { object_fit: Some(ObjectFit::Contain), ..Default::default() };
+        let none = StyleRules::default();
+        assert_ne!(cover.content_key(), contain.content_key());
+        assert_ne!(cover.content_key(), none.content_key());
+        assert_eq!(cover.content_key(), cover.clone().content_key());
     }
 
     /// Pass-through no-op closures for the non-key params of
