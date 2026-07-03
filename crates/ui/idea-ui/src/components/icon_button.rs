@@ -25,7 +25,7 @@ use std::rc::Rc;
 
 use runtime_core::{
     component, icon, text, AlignSelf, Color, Element, IconData, IdealystSchema, IntoElement, Length,
-    Reactive, StyleApplication, StyleRules, StyleSheet, Tokenized, VariantEnum,
+    PressableHandle, Reactive, Ref, StyleApplication, StyleRules, StyleSheet, Tokenized, VariantEnum,
 };
 
 use idea_theme::extensible::{installed_icon_button_sheet, tone, variant, ToneRef, VariantRef};
@@ -119,6 +119,11 @@ pub struct IconButtonProps {
     /// the `selected` accent fill still supplies its own contrasting text — pass
     /// the ink color only on the un-selected instance.
     pub color: Option<Color>,
+    /// When `Some`, fills the given `Ref<PressableHandle>` on mount. Useful for
+    /// anchoring an `Overlay`/`Popover` to this button. A `Ref` fills exactly
+    /// once; IconButton always snapshots its child structure at build, so the
+    /// bind is unconditional (no `switch` rebuild that could re-fill it).
+    pub bind_to: Option<Ref<PressableHandle>>,
 }
 
 impl Default for IconButtonProps {
@@ -135,6 +140,7 @@ impl Default for IconButtonProps {
             size_px: Reactive::Static(None),
             radius: Reactive::Static(None),
             color: Reactive::Static(None),
+            bind_to: None,
         }
     }
 }
@@ -246,6 +252,13 @@ pub fn IconButton(props: &IconButtonProps) -> Element {
     } else if props.disabled.get() {
         bound = bound.disabled(true);
     }
+
+    // `bind_to` fills its `Ref` on mount. IconButton's child structure is
+    // always built statically (no reactive `switch` — see the TODO above), so
+    // the bind is unconditional and fills exactly once.
+    if let Some(r) = props.bind_to {
+        bound = bound.bind(r);
+    }
     bound.into_element()
 }
 
@@ -304,6 +317,33 @@ mod tests {
             matches!(only_child(IconButton(&props)), Element::Text { .. }),
             "with no `icon`, the glyph renders as text"
         );
+    }
+
+    // `bind_to` wires a `ref_fill` closure onto the root Pressable so the
+    // framework fills the caller's `Ref<PressableHandle>` on mount (for
+    // anchoring an Overlay/Popover to the icon button). Absent `bind_to`,
+    // no fill is installed.
+    #[test]
+    fn bind_to_installs_ref_fill_on_pressable() {
+        theme();
+        let anchor: Ref<PressableHandle> = Ref::new();
+        let bound = IconButtonProps {
+            bind_to: Some(anchor),
+            ..Default::default()
+        };
+        match IconButton(&bound) {
+            Element::Pressable { ref_fill, .. } => {
+                assert!(ref_fill.is_some(), "bind_to must install a ref_fill on the Pressable");
+            }
+            _ => panic!("IconButton renders a Pressable"),
+        }
+
+        match IconButton(&IconButtonProps::default()) {
+            Element::Pressable { ref_fill, .. } => {
+                assert!(ref_fill.is_none(), "without bind_to there is no ref_fill");
+            }
+            _ => panic!("IconButton renders a Pressable"),
+        }
     }
 
     #[test]

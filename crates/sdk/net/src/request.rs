@@ -166,15 +166,31 @@ impl RequestBuilder {
 ///   used as-is.
 /// - Otherwise, if a base URL is set, the request URL is appended to
 ///   the base. Exactly one `/` is enforced at the join.
-/// - Otherwise it's an error.
+/// - Otherwise:
+///   - **web (wasm32):** passed through untouched. There *is* an implicit
+///     base — the document origin — and the `fetch`-based transport resolves
+///     a scheme-less URL (`/assets/x`, `foo/bar`) against `window.location`
+///     natively, exactly like an `<a href>` would. Erroring here would make
+///     `net::Client` unable to fetch same-origin assets without the caller
+///     redundantly plumbing in the origin.
+///   - **native:** an error. The `reqwest`-based transport has no document
+///     base, so a scheme-less URL is genuinely unresolvable.
 fn resolve_url(base: Option<&str>, request: &str) -> Result<String, Error> {
     if has_scheme(request) {
         return Ok(request.to_string());
     }
     let Some(base) = base else {
-        return Err(Error::InvalidUrl(format!(
-            "relative url '{request}' but no base_url configured"
-        )));
+        #[cfg(target_arch = "wasm32")]
+        {
+            // Let the browser's fetch resolve it against the document origin.
+            return Ok(request.to_string());
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            return Err(Error::InvalidUrl(format!(
+                "relative url '{request}' but no base_url configured"
+            )));
+        }
     };
     let base = base.trim_end_matches('/');
     let req = request.trim_start_matches('/');
