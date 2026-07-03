@@ -1,0 +1,11 @@
+# Local dev config for `idealyst dev`.
+#
+# By default (this block commented out) the queue is the in-memory backend and
+# the server runs the worker in-process — no external broker needed.
+#
+# Uncomment and point at a shared broker to have `idealyst dev` auto-spawn the
+# dedicated worker process (src/bin/worker.rs) draining the same queue:
+#
+# [jobs]
+# backend = "redis"
+# url = "redis://127.0.0.1:6379"

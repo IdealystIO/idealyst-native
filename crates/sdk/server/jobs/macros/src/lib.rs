@@ -9,10 +9,11 @@
 //!     // Typed enqueue (compiles in every build). WIRE args only.
 //!     pub fn enqueue(to: String) -> ::jobs::Enqueue { … }
 //!
-//!     // The body + handler registration (worker build only).
-//!     #[cfg(feature = "worker")]
+//!     // The body + handler registration (server / worker build only, gated on
+//!     // the invoking crate's `server` feature — the same one `#[server]` uses).
+//!     #[cfg(feature = "server")]
 //!     pub async fn run(to: String, db: State<Db>) -> Result<(), JobError> { … }
-//!     #[cfg(feature = "worker")]
+//!     #[cfg(feature = "server")]
 //!     inventory::submit! { JobEntry { name: "send_email", handler: … } }
 //! }
 //! ```
@@ -210,12 +211,12 @@ fn expand(attr: JobAttr, func: ItemFn) -> syn::Result<TokenStream2> {
     };
 
     let run_fn = quote! {
-        #[cfg(feature = "worker")]
+        #[cfg(feature = "server")]
         pub async fn run(#(#run_inputs),*) #output #body
     };
 
     let register = quote! {
-        #[cfg(feature = "worker")]
+        #[cfg(feature = "server")]
         ::jobs::__private::inventory::submit! {
             ::jobs::__private::JobEntry {
                 name: #job_name,

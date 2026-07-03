@@ -5989,6 +5989,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "jobs-demo"
+version = "0.0.1"
+dependencies = [
+ "axum",
+ "idea-ui",
+ "jobs",
+ "runtime-core",
+ "serde",
+ "server",
+ "tokio",
+ "tower-http",
+ "web-sys",
+]
+
+[[package]]
 name = "jobs-macros"
 version = "0.0.1"
 dependencies = [

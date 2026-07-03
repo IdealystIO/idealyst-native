@@ -1,4 +1,15 @@
-# `sdk/` — third-party extension primitives
+# `sdk/` — opt-in capability crates
+
+SDKs are organized by **tier**:
+
+- **[`client/`](./client)** — capabilities that run in the app (device, media,
+  UI primitives, navigators). Everything documented in the tables below lives
+  here (paths are `client/<name>`).
+- **[`server/`](./server)** — capabilities that run in the server / worker
+  binary, building on the `server` RPC layer (`crates/api/server`) the way
+  client SDKs build on `runtime-core`. See **[Server SDKs](#server-sdks)**.
+
+## Client SDKs (`Element::External` + capabilities)
 
 The Runtime ships a fixed list of primitives — View, Text, Button,
 ScrollView, Pressable, TextInput, … — that every Backend has to
@@ -7,21 +18,21 @@ escape hatch: a tagged primitive variant + per-Backend registry
 that lets a third party define their own primitive plus the
 Backend impls that render it.
 
-That's what the crates here are. None of them is part of
+That's what the crates under `client/` are. None of them is part of
 runtime-core. Each is a self-contained crate that an app opts
 into; the framework registers the external handler at backend init
 and routes draw / update / event calls through it.
 
 | Crate | Path | What it adds |
 | --- | --- | --- |
-| `webview` | [`webview/`](./webview) | A `WebView` primitive backed by `WKWebView` on iOS, `android.webkit.WebView` on Android, and `<iframe>` on web. The canonical single-crate `cfg`-gated pattern — one crate ships every backend. |
-| `maps` (+ nested `maps-core` / `maps-ios` / `maps-web`) | [`maps/`](./maps) — leaves under [`maps/core/`](./maps/core), [`maps/ios/`](./maps/ios), [`maps/web/`](./maps/web) | A `MapView` primitive. Demonstrates the multi-crate split: a shared core (`maps-core`) + per-backend leaves (`maps-ios` = `MKMapView`, `maps-web` = OSM iframe), nested under the umbrella so the SDK feature reads as one entry. Useful when backends have independent maintainers or wildly different transitive deps. |
-| `video` | [`video/`](./video) | A `Video` primitive — `<video>` on web, `AVPlayer` on iOS, `VideoView` on Android, placeholder elsewhere. |
-| `svg` | [`svg/`](./svg) | An `Svg` primitive — resolution-independent vector rendering: browser-native on web, `usvg`→CoreGraphics on iOS, `usvg`→`Picture` on Android. |
-| `table` | [`table/`](./table) | `Table` / `TableRow` / `TableCell` — real HTML `<table>`/`<tr>`/`<th>`/`<td>` on web, equal-width flex views on native. |
-| `form` | [`form/`](./form) | A `Form` container — real `<form>` (Enter-to-submit, autofill) on web, transparent passthrough on native. |
-| `toolbar` | [`toolbar/`](./toolbar) | A `Toolbar` window-chrome primitive — `NSToolbar` on macOS, zero-size no-op elsewhere. |
-| `codeblock` | [`codeblock/`](./codeblock) | Syntax-highlighted code rendering. Used by the docs site. |
+| `webview` | [`webview/`](./client/webview) | A `WebView` primitive backed by `WKWebView` on iOS, `android.webkit.WebView` on Android, and `<iframe>` on web. The canonical single-crate `cfg`-gated pattern — one crate ships every backend. |
+| `maps` (+ nested `maps-core` / `maps-ios` / `maps-web`) | [`maps/`](./client/maps) — leaves under [`maps/core/`](./client/maps/core), [`maps/ios/`](./client/maps/ios), [`maps/web/`](./client/maps/web) | A `MapView` primitive. Demonstrates the multi-crate split: a shared core (`maps-core`) + per-backend leaves (`maps-ios` = `MKMapView`, `maps-web` = OSM iframe), nested under the umbrella so the SDK feature reads as one entry. Useful when backends have independent maintainers or wildly different transitive deps. |
+| `video` | [`video/`](./client/video) | A `Video` primitive — `<video>` on web, `AVPlayer` on iOS, `VideoView` on Android, placeholder elsewhere. |
+| `svg` | [`svg/`](./client/svg) | An `Svg` primitive — resolution-independent vector rendering: browser-native on web, `usvg`→CoreGraphics on iOS, `usvg`→`Picture` on Android. |
+| `table` | [`table/`](./client/table) | `Table` / `TableRow` / `TableCell` — real HTML `<table>`/`<tr>`/`<th>`/`<td>` on web, equal-width flex views on native. |
+| `form` | [`form/`](./client/form) | A `Form` container — real `<form>` (Enter-to-submit, autofill) on web, transparent passthrough on native. |
+| `toolbar` | [`toolbar/`](./client/toolbar) | A `Toolbar` window-chrome primitive — `NSToolbar` on macOS, zero-size no-op elsewhere. |
+| `codeblock` | [`codeblock/`](./client/codeblock) | Syntax-highlighted code rendering. Used by the docs site. |
 
 ## Utility SDKs (not `Element::External`)
 
@@ -33,16 +44,16 @@ drop into `ui!`.
 
 | Crate | Path | What it adds |
 | --- | --- | --- |
-| `net` | [`net/`](./net) | Async HTTP client over each platform's native stack. |
-| `storage` | [`storage/`](./storage) | Plaintext key-value persistence (preferences, cache). The `AsyncStorage` half. |
-| `credentials` | [`credentials/`](./credentials) | **Secure** key-value for secrets — Keychain / Android Keystore / Windows Credential Manager / Linux Secret Service; web errors (use a server httpOnly cookie). The `SecureStore` half. |
-| `biometrics` | [`biometrics/`](./biometrics) | Biometric **auth gate** — Face/Touch ID (`LAContext`), Android `BiometricPrompt`, Windows Hello (`UserConsentVerifier`); web maps to WebAuthn (assertion verified server-side). The unopinionated "prove the owner is present" capability. |
-| `files` | [`files/`](./files) | Binary blob/file storage by path — real filesystem on native (per-app dir), IndexedDB on web. For recordings, images, downloads. |
-| `microphone` | [`microphone/`](./microphone) | Live microphone capture — a raw f32 PCM stream via cpal (desktop/iOS), `getUserMedia`+Web Audio (web), and `AudioRecord`/JNI (Android). |
-| `camera` | [`camera/`](./camera) | Live camera capture — yields a `MediaStream` (see `media-stream`). `AVCaptureSession` (iOS/macOS), `getUserMedia`+`<canvas>` (web), `Camera2`+`ImageReader` via a Kotlin shim (Android). No preview widget. |
-| `media-stream` | [`media-stream/`](./media-stream) | The platform-agnostic live-video-source abstraction — the common currency between capture SDKs (`camera`, `screen-recorder`) and display/compositing consumers. Thin + GPU-free: a CPU frame tap (`subscribe`/`latest`) plus an opaque zero-copy `native_source` handle. |
-| `screen-recorder` | [`screen-recorder/`](./screen-recorder) | Screen / window frame capture as a raw frame stream. Capability API plus a private-layer `Element::External` overlay. |
-| `menu` | [`menu/`](./menu) | OS menu-bar definitions — `NSMenu` / native app menus. A capability API (no rendered primitive); reactivity is full on macOS, one-shot elsewhere. |
+| `net` | [`net/`](./client/net) | Async HTTP client over each platform's native stack. |
+| `storage` | [`storage/`](./client/storage) | Plaintext key-value persistence (preferences, cache). The `AsyncStorage` half. |
+| `credentials` | [`credentials/`](./client/credentials) | **Secure** key-value for secrets — Keychain / Android Keystore / Windows Credential Manager / Linux Secret Service; web errors (use a server httpOnly cookie). The `SecureStore` half. |
+| `biometrics` | [`biometrics/`](./client/biometrics) | Biometric **auth gate** — Face/Touch ID (`LAContext`), Android `BiometricPrompt`, Windows Hello (`UserConsentVerifier`); web maps to WebAuthn (assertion verified server-side). The unopinionated "prove the owner is present" capability. |
+| `files` | [`files/`](./client/files) | Binary blob/file storage by path — real filesystem on native (per-app dir), IndexedDB on web. For recordings, images, downloads. |
+| `microphone` | [`microphone/`](./client/microphone) | Live microphone capture — a raw f32 PCM stream via cpal (desktop/iOS), `getUserMedia`+Web Audio (web), and `AudioRecord`/JNI (Android). |
+| `camera` | [`camera/`](./client/camera) | Live camera capture — yields a `MediaStream` (see `media-stream`). `AVCaptureSession` (iOS/macOS), `getUserMedia`+`<canvas>` (web), `Camera2`+`ImageReader` via a Kotlin shim (Android). No preview widget. |
+| `media-stream` | [`media-stream/`](./client/media-stream) | The platform-agnostic live-video-source abstraction — the common currency between capture SDKs (`camera`, `screen-recorder`) and display/compositing consumers. Thin + GPU-free: a CPU frame tap (`subscribe`/`latest`) plus an opaque zero-copy `native_source` handle. |
+| `screen-recorder` | [`screen-recorder/`](./client/screen-recorder) | Screen / window frame capture as a raw frame stream. Capability API plus a private-layer `Element::External` overlay. |
+| `menu` | [`menu/`](./client/menu) | OS menu-bar definitions — `NSMenu` / native app menus. A capability API (no rendered primitive); reactivity is full on macOS, one-shot elsewhere. |
 
 ## Device / platform-integration SDKs
 
@@ -53,15 +64,15 @@ an OS grant flow.
 
 | Crate | Path | What it adds |
 | --- | --- | --- |
-| `permissions` | [`permissions/`](./permissions) | Cross-platform runtime permission requests — `request(Permission)` / `status(Permission)` → a uniform `PermissionStatus`. The shared grant substrate every prompting capability depends on. |
-| `notifications` | [`notifications/`](./notifications) | Local + scheduled notifications and the raw device push token. Authorization via `permissions`; server-side push delivery is the app's job. |
-| `location` | [`location/`](./location) | Device geolocation — one-shot `current()` and continuous `watch()` yielding a `Position`. Permission via `permissions`. |
-| `clipboard` | [`clipboard/`](./clipboard) | System copy/paste of plain text — `set_text` / `text`. |
-| `share` | [`share/`](./share) | The system share sheet (outbound) — hand text/url/files to another app. The inverse of `file-picker`. |
-| `deep-link` | [`deep-link/`](./deep-link) | Inbound URL handling — `initial_link()` + `on_link()` deliver the parsed launch/resume URL (custom scheme / universal / app link). |
-| `connectivity` | [`connectivity/`](./connectivity) | Network reachability — `current()` snapshot + `watch()` of online/offline and coarse transport. |
-| `haptics` | [`haptics/`](./haptics) | Tactile feedback — `impact` / `notify` / `selection`. Best-effort, fire-and-forget. |
-| `audio` | [`audio/`](./audio) | Sound playback — `load(AudioSource)` → a `Sound` you `play()`. The playback peer of the capture SDKs. |
+| `permissions` | [`permissions/`](./client/permissions) | Cross-platform runtime permission requests — `request(Permission)` / `status(Permission)` → a uniform `PermissionStatus`. The shared grant substrate every prompting capability depends on. |
+| `notifications` | [`notifications/`](./client/notifications) | Local + scheduled notifications and the raw device push token. Authorization via `permissions`; server-side push delivery is the app's job. |
+| `location` | [`location/`](./client/location) | Device geolocation — one-shot `current()` and continuous `watch()` yielding a `Position`. Permission via `permissions`. |
+| `clipboard` | [`clipboard/`](./client/clipboard) | System copy/paste of plain text — `set_text` / `text`. |
+| `share` | [`share/`](./client/share) | The system share sheet (outbound) — hand text/url/files to another app. The inverse of `file-picker`. |
+| `deep-link` | [`deep-link/`](./client/deep-link) | Inbound URL handling — `initial_link()` + `on_link()` deliver the parsed launch/resume URL (custom scheme / universal / app link). |
+| `connectivity` | [`connectivity/`](./client/connectivity) | Network reachability — `current()` snapshot + `watch()` of online/offline and coarse transport. |
+| `haptics` | [`haptics/`](./client/haptics) | Tactile feedback — `impact` / `notify` / `selection`. Best-effort, fire-and-forget. |
+| `audio` | [`audio/`](./client/audio) | Sound playback — `load(AudioSource)` → a `Sound` you `play()`. The playback peer of the capture SDKs. |
 
 ## Navigator SDKs
 
@@ -73,16 +84,28 @@ screens against it.
 
 | Crate | Path | What it adds |
 | --- | --- | --- |
-| `stack-navigator` | [`navigators/stack/`](./navigators/stack) | Push/pop stack navigation with a native header bar + typed `StackHandle` (`push`/`pop`/`replace`/`reset`). |
-| `tab-navigator` | [`navigators/tab/`](./navigators/tab) | Flat tab switching across sibling screens; the tab bar itself is author chrome. |
-| `drawer-navigator` | [`navigators/drawer/`](./navigators/drawer) | Responsive hamburger drawer — modal on narrow viewports, pinned-sidebar on wide (CSS `@media` collapse on web). |
+| `stack-navigator` | [`navigators/stack/`](./client/navigators/stack) | Push/pop stack navigation with a native header bar + typed `StackHandle` (`push`/`pop`/`replace`/`reset`). |
+| `tab-navigator` | [`navigators/tab/`](./client/navigators/tab) | Flat tab switching across sibling screens; the tab bar itself is author chrome. |
+| `drawer-navigator` | [`navigators/drawer/`](./client/navigators/drawer) | Responsive hamburger drawer — modal on narrow viewports, pinned-sidebar on wide (CSS `@media` collapse on web). |
 
 The per-platform glue lives in internal helper crates under
-[`navigators/helpers/`](./navigators/helpers) —
-[`helpers/android/`](./navigators/helpers/android),
-[`helpers/ios/`](./navigators/helpers/ios),
-[`helpers/web/`](./navigators/helpers/web) — which are **not**
+[`navigators/helpers/`](./client/navigators/helpers) —
+[`helpers/android/`](./client/navigators/helpers/android),
+[`helpers/ios/`](./client/navigators/helpers/ios),
+[`helpers/web/`](./client/navigators/helpers/web) — which are **not**
 author-facing; the three navigator crates above consume them.
+
+## Server SDKs
+
+Server-tier capabilities live under [`server/`](./server). They run in the
+server / worker binary and build on the `server` RPC layer
+(`crates/api/server`) — reusing its `State<T>` / `#[ctx]` / `install_state`
+dependency injection — the way client SDKs build on `runtime-core`. They ship no
+`Element::External` primitive and never compile into the wasm client.
+
+| Crate | Path | What it adds |
+| --- | --- | --- |
+| `jobs` (+ nested `jobs-macros`) | [`server/jobs/`](./server/jobs) | Background job / queue SDK. `#[job]` defines a unit of deferred work with a typed `enqueue` surface; a worker (`jobs::worker()`, dedicated process or in-process) drains a pluggable backend (`memory` / `redis` / `postgres` / `sqs`) with retries, backoff, and dead-lettering. The CLI auto-spawns the worker in `dev` and adds `idealyst worker`. See [`server/jobs/README.md`](./server/jobs/README.md) and [`examples/jobs-demo`](../../examples/jobs-demo). |
 
 ## Testing & verification status
 

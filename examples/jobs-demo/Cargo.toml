@@ -1,0 +1,72 @@
+[package]
+name = "jobs-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Full-stack background jobs on the `jobs` SDK. A `#[server]` fn enqueues a `#[job]`; a worker drains the queue and runs it off the request path. The server bin runs an in-process worker (memory backend); the worker bin is the dedicated/dev-spawned drainer. Demonstrates the typed enqueue surface + State<T> injection into a job handler."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = []
+# The server / worker build: compiles the `#[server]` bodies, the `#[job]`
+# handlers + registration (gated on this same `server` feature), the worker
+# runtime (`jobs/worker`), and the axum host. Never compiled into the wasm
+# client.
+server = [
+    "server/server",
+    "jobs/worker",
+    "dep:tokio",
+    "dep:axum",
+    "dep:tower-http",
+]
+
+[dependencies]
+server = { workspace = true }
+jobs = { workspace = true }
+runtime-core = { workspace = true, features = ["async-driver"] }
+idea-ui = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+
+# Web client: window.location.origin for `server::configure`.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["Window", "Location"] }
+
+# Server-only host deps — gated by `server` so the wasm client never compiles
+# them.
+[dependencies.tokio]
+version = "1"
+features = ["rt-multi-thread", "macros", "net", "signal"]
+optional = true
+
+[dependencies.axum]
+version = "0.7"
+optional = true
+
+[dependencies.tower-http]
+version = "0.6"
+features = ["fs"]
+optional = true
+
+[[bin]]
+name = "server"
+path = "src/bin/server.rs"
+required-features = ["server"]
+
+[[bin]]
+name = "worker"
+path = "src/bin/worker.rs"
+required-features = ["server"]
+
+[package.metadata.idealyst.app]
+name = "Jobs Demo"
+bundle_id = "ai.truday.idealyst.jobsdemo"
+version = "0.0.1"
+targets = ["web"]
+# `idealyst dev --web` runs the server bin (serves bundle + `/_srv/*`). When
+# `dev.toml` configures a shared broker, dev also auto-spawns the worker bin;
+# otherwise the server runs the worker in-process (see src/bin/server.rs).
+server_bin = "server"
+worker_bin = "worker"
+server_port = 3000

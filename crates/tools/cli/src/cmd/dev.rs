@@ -572,7 +572,10 @@ pub fn run(args: Args) -> Result<()> {
     let worker_declared =
         manifest.app.worker_bin.is_some() || manifest.app.worker_manifest.is_some();
     if worker_declared {
-        match dev_cfg.jobs.as_ref() {
+        let jobs_cfg = crate::dev_config::DevConfig::load(&dir)
+            .map(|c| c.jobs)
+            .unwrap_or_default();
+        match jobs_cfg.as_ref() {
             Some(jobs) if jobs.is_shared() => match spawn_worker(&dir, &manifest, jobs) {
                 Ok(child) => {
                     let pid = child.id();

@@ -1096,4 +1096,33 @@ mod regression_tests {
         assert_eq!(full.app.macos.min_version, "13.0");
         assert_eq!(full.app.macos.copyright.as_deref(), Some("© 2026 Acme"));
     }
+
+    /// The `jobs` SDK's worker declaration parses into `worker_bin` /
+    /// `worker_manifest` (drives `idealyst worker` + `dev`'s auto-spawn), and
+    /// defaults to `None` when absent.
+    #[test]
+    fn worker_fields_parse_and_default() {
+        fn parse_with(extra: &str) -> Manifest {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let cargo = format!(
+                "[package]\nname = \"demo\"\nversion = \"0.0.1\"\n\
+                 [package.metadata.idealyst.app]\nbundle_id = \"ai.example.demo\"\n{extra}",
+            );
+            std::fs::write(tmp.path().join("Cargo.toml"), cargo).unwrap();
+            parse_manifest(tmp.path()).expect("parse manifest")
+        }
+
+        let bare = parse_with("");
+        assert!(bare.app.worker_bin.is_none());
+        assert!(bare.app.worker_manifest.is_none());
+
+        let with_worker = parse_with(
+            "worker_bin = \"worker\"\nworker_manifest = \"../../worker/Cargo.toml\"\n",
+        );
+        assert_eq!(with_worker.app.worker_bin.as_deref(), Some("worker"));
+        assert_eq!(
+            with_worker.app.worker_manifest.as_deref(),
+            Some("../../worker/Cargo.toml"),
+        );
+    }
 }

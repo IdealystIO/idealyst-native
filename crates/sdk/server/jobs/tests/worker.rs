@@ -1,8 +1,10 @@
 //! End-to-end: `#[job]` registration + typed enqueue + the worker runtime,
 //! against the in-memory backend. Exercises the full path the macro generates
 //! (payload encode → enqueue → reserve → decode → `State<T>` injection →
-//! handler → ack/retry/dead-letter). Requires `--features worker`.
-#![cfg(feature = "worker")]
+//! handler → ack/retry/dead-letter). Requires `--features server` (which enables
+//! both the worker runtime and, via the same feature `#[job]` gates on, the
+//! handler registration).
+#![cfg(feature = "server")]
 
 use jobs::{job, Backoff, JobError, MemoryBackend, QueueBackend};
 use server::State;

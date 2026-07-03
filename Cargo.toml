@@ -246,6 +246,7 @@ members = [
     "examples/modal-demo",
     "examples/todo-sync-demo",
     "examples/graphql-demo",
+    "examples/jobs-demo",
     "examples/dnd-demo",
     "examples/kanban-demo",
     "examples/sortable-demo",

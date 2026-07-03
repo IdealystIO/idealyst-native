@@ -40,6 +40,11 @@ memory = []
 # that feature. This only affects the (native) worker build; the client/enqueue
 # path never enables it, so the wasm client stays free of axum.
 worker = ["dep:tokio", "dep:futures-util", "server/server"]
+# `#[job]` gates its handler + registration on the invoking crate's `server`
+# feature (exactly like `#[server]`), so an app enables jobs via its existing
+# `server` feature — no separate `worker` feature to remember. This alias lets
+# the `jobs` crate compile that same handler path in its own tests.
+server = ["worker"]
 # Real broker backends. Each pulls only its own client crate. `redis` needs a
 # tokio runtime for its async connection (enqueue-only servers turn this on
 # without `worker`).
