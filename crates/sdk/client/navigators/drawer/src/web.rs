@@ -108,8 +108,13 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
             depth_changed,
             active_changed,
             control,
-            build_node,
-            build_node_scoped: _,
+            // Slot subtrees (sidebar etc.) build through the SCOPED node
+            // builder so a slot component that creates eager reactivity (e.g.
+            // idea-ui `Select`'s open-state `signal!` + chevron `effect!`) has
+            // an owner. With the unscoped `build_node` its `Effect::scoped`
+            // debug-assert trips and the whole slot (sidebar) blanks on web —
+            // desktop/macOS already build scoped.
+            build_node_scoped,
             build_node_into: _,
             build_in_screen: _,
             // Node-splice ops are for backend-neutral native handlers;
@@ -251,16 +256,20 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
         let mk_slot_cb = |
             builder: Box<dyn Fn(SlotProps) -> runtime_core::Element>,
         | -> Rc<dyn Fn() -> Node> {
-            let build_node = build_node.clone();
-            let control = control.clone();
+            let build_node_scoped = build_node_scoped.clone();
             let props = slot_props.clone();
+            // Rc so the builder can be handed into each scoped `FnOnce` build.
+            let builder: Rc<dyn Fn(SlotProps) -> runtime_core::Element> =
+                Rc::from(builder);
             Rc::new(move || {
-                let _ambient =
-                    runtime_core::primitives::navigator::AmbientNavGuard::push(
-                        control.clone(),
-                    );
-                let prim = builder(props.clone());
-                build_node(prim)
+                let props = props.clone();
+                let builder = builder.clone();
+                // Build INSIDE an owned reactive scope (see the destructure
+                // note): eager `signal!`/`effect!` in slot components need an
+                // owner or the sidebar blanks. `build_node_scoped` also pushes
+                // this navigator as ambient while it builds, so `Link`s in the
+                // slot still resolve here — no extra guard needed.
+                build_node_scoped(Box::new(move || builder(props)))
             })
         };
 
@@ -279,28 +288,31 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
             // Legacy fallback: `sidebar_with(DrawerSlotProps)`.
             let sidebar_slot = presentation.sidebar.borrow().clone();
             sidebar_slot.map(|sidebar_builder| {
-                let build_node = build_node.clone();
+                let build_node_scoped = build_node_scoped.clone();
                 let nav_state = nav_state.clone();
                 let is_open = is_open;
-                let control = control.clone();
                 let on_select_for_legacy = on_select.clone();
                 let on_close_for_legacy = close_drawer_fn.clone();
                 let cb: Rc<dyn Fn() -> Node> = Rc::new(move || {
-                    let props = DrawerSlotProps {
-                        active_route: nav_state.active_route,
-                        active_path: nav_state.active_path.clone(),
-                        depth: nav_state.depth,
-                        can_go_back: nav_state.can_go_back,
-                        is_open,
-                        on_select: on_select_for_legacy.clone(),
-                        on_close: on_close_for_legacy.clone(),
-                    };
-                    let _ambient =
-                        runtime_core::primitives::navigator::AmbientNavGuard::push(
-                            control.clone(),
-                        );
-                    let prim = sidebar_builder(props);
-                    build_node(prim)
+                    let nav_state = nav_state.clone();
+                    let on_select_for_legacy = on_select_for_legacy.clone();
+                    let on_close_for_legacy = on_close_for_legacy.clone();
+                    let sidebar_builder = sidebar_builder.clone();
+                    // Scoped build (see `mk_slot_cb`): owned reactive scope so a
+                    // slot component's eager reactivity has an owner.
+                    // `build_node_scoped` publishes the ambient navigator itself.
+                    build_node_scoped(Box::new(move || {
+                        let props = DrawerSlotProps {
+                            active_route: nav_state.active_route,
+                            active_path: nav_state.active_path.clone(),
+                            depth: nav_state.depth,
+                            can_go_back: nav_state.can_go_back,
+                            is_open,
+                            on_select: on_select_for_legacy,
+                            on_close: on_close_for_legacy,
+                        };
+                        sidebar_builder(props)
+                    }))
                 });
                 cb
             })
