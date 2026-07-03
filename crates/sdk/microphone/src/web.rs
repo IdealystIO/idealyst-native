@@ -235,11 +235,18 @@ async fn get_user_media(config: &AudioStreamConfig) -> Result<MediaStream, MicEr
         .map_err(|_| MicError::Backend("getUserMedia did not return a MediaStream".into()))
 }
 
-/// Build the `audio` member of the constraints. `true` for device
-/// defaults, or an object carrying explicit `sampleRate` / `channelCount`
-/// the browser treats as preferences.
+/// Build the `audio` member of the constraints. `true` for device defaults,
+/// or an object carrying explicit `sampleRate` / `channelCount` preferences and
+/// the browser audio-processing flags (`noiseSuppression`, `echoCancellation`,
+/// `autoGainControl`) — each emitted only when the caller set it, so an unset
+/// field leaves the browser default (all three default to `true`).
 fn audio_constraint(config: &AudioStreamConfig) -> JsValue {
-    if config.sample_rate.is_none() && config.channels.is_none() {
+    if config.sample_rate.is_none()
+        && config.channels.is_none()
+        && config.noise_suppression.is_none()
+        && config.echo_cancellation.is_none()
+        && config.auto_gain_control.is_none()
+    {
         return JsValue::TRUE;
     }
     let obj = js_sys::Object::new();
@@ -248,6 +255,15 @@ fn audio_constraint(config: &AudioStreamConfig) -> JsValue {
     }
     if let Some(ch) = config.channels {
         let _ = Reflect::set(&obj, &"channelCount".into(), &JsValue::from_f64(ch as f64));
+    }
+    if let Some(on) = config.noise_suppression {
+        let _ = Reflect::set(&obj, &"noiseSuppression".into(), &JsValue::from_bool(on));
+    }
+    if let Some(on) = config.echo_cancellation {
+        let _ = Reflect::set(&obj, &"echoCancellation".into(), &JsValue::from_bool(on));
+    }
+    if let Some(on) = config.auto_gain_control {
+        let _ = Reflect::set(&obj, &"autoGainControl".into(), &JsValue::from_bool(on));
     }
     obj.into()
 }
