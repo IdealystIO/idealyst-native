@@ -137,10 +137,18 @@ impl WebAudioBridge {
 
 impl Drop for WebAudioBridge {
     fn drop(&mut self) {
-        // Release the audio device: disconnect the node and close the context.
-        // Both return Promises we don't need to await — teardown is fire-and-forget.
+        // Release the audio device. ORDER MATTERS: detach the `onaudioprocess`
+        // handler FIRST. The node can still fire one queued render callback
+        // during teardown, and if the Rust `Closure` (dropped right after this,
+        // when `Graph` drops) were gone by then, that late call throws
+        // "closure invoked recursively or after being dropped" (harmless — the
+        // browser swallows it — but it litters the console). Clearing the
+        // handler drops JS's reference to the closure up front, so no late call
+        // can land. Then disconnect the node and close the context (both return
+        // Promises we don't await — teardown is fire-and-forget).
         let g = self.graph.borrow();
         if let Some(proc) = &g.proc {
+            proc.set_onaudioprocess(None);
             let _ = proc.disconnect();
         }
         let _ = g.ctx.close();
