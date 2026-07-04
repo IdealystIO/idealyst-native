@@ -1629,7 +1629,22 @@ fn spawn_backend(
     if let Some(d) = web_dist {
         cmd.env("WEB_DIST", d);
     }
+    apply_pubsub_env(&mut cmd, dir);
     cmd.spawn().context("spawn server (`cargo run`)")
+}
+
+/// Forward the local `[pubsub]` backend from `dev.toml` as `IDEALYST_PUBSUB_*`
+/// so a server/worker `main` calling `pubsub::configure_from_env()` connects to
+/// the same broker across instances.
+fn apply_pubsub_env(cmd: &mut std::process::Command, dir: &Path) {
+    if let Ok(Some(ps)) = crate::dev_config::DevConfig::load(dir).map(|c| c.pubsub) {
+        if let Some(b) = &ps.backend {
+            cmd.env("IDEALYST_PUBSUB_BACKEND", b);
+        }
+        if let Some(u) = &ps.url {
+            cmd.env("IDEALYST_PUBSUB_URL", u);
+        }
+    }
 }
 
 /// Spawn the jobs worker process (mirrors [`spawn_backend`]), pointing it at the
@@ -1680,6 +1695,7 @@ fn spawn_worker(
         format!("http://127.0.0.1:{}", app.server_port),
     );
     cmd.env("PORT", app.server_port.to_string());
+    apply_pubsub_env(&mut cmd, dir);
     cmd.spawn().context("spawn worker (`cargo run`)")
 }
 

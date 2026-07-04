@@ -1,0 +1,12 @@
+# Local dev config for `idealyst dev`.
+#
+# Default (commented out) = the in-memory pub/sub backend: fan-out within the
+# single dev server process.
+#
+# For CROSS-INSTANCE fan-out, point at a shared broker and run two server
+# instances on different ports — a message sent to one reaches clients
+# subscribed on the other:
+#
+# [pubsub]
+# backend = "redis"
+# url = "redis://127.0.0.1:6379"

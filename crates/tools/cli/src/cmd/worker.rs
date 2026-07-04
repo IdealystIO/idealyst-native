@@ -84,15 +84,23 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         cmd.arg("--release");
     }
 
-    // Forward the local queue backend config so the worker connects to the same
-    // broker the server enqueues to.
-    if let Ok(jobs) = crate::dev_config::DevConfig::load(&args.dir).map(|c| c.jobs) {
-        if let Some(jobs) = jobs {
+    // Forward the local queue + pubsub backends so the worker connects to the
+    // same brokers the server uses.
+    if let Ok(cfg) = crate::dev_config::DevConfig::load(&args.dir) {
+        if let Some(jobs) = &cfg.jobs {
             if let Some(b) = &jobs.backend {
                 cmd.env("IDEALYST_JOBS_BACKEND", b);
             }
             if let Some(u) = &jobs.url {
                 cmd.env("IDEALYST_JOBS_URL", u);
+            }
+        }
+        if let Some(ps) = &cfg.pubsub {
+            if let Some(b) = &ps.backend {
+                cmd.env("IDEALYST_PUBSUB_BACKEND", b);
+            }
+            if let Some(u) = &ps.url {
+                cmd.env("IDEALYST_PUBSUB_URL", u);
             }
         }
     }

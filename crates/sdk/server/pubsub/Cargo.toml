@@ -1,0 +1,61 @@
+[package]
+name = "pubsub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Server-tier publish/subscribe SDK — cross-instance broadcast / fan-out.
+#
+# The broadcast sibling of `jobs`: where `jobs` delivers each message to ONE
+# consumer (durable work queue), `pubsub` fans a message out to ALL subscribers,
+# fire-and-forget. Its headline use is decentralized WebSocket notifications —
+# a client holds a `#[subscription]` socket on one server instance, an event is
+# produced on another, and the shared backend carries it across so the right
+# instance delivers it:
+#
+#     const ROOM: pubsub::Topic<Msg> = pubsub::Topic::new("room");
+#
+#     #[subscription]                       // client connects here
+#     async fn feed() -> impl Stream<Item = Msg> { ROOM.subscribe() }
+#
+#     #[server]                             // any instance publishes
+#     async fn say(text: String) -> Result<(), ServerError> {
+#         ROOM.publish(&Msg { text }).await?; Ok(())
+#     }
+#
+# Backends (pluggable via `PubSubBackend`):
+#   - memory   in-process `tokio::broadcast` (single instance; default)
+#   - redis    Redis Pub/Sub                    (feature `redis`)
+#   - postgres LISTEN / NOTIFY                   (feature `postgres`)
+#
+# Server-tier only: publish/subscribe run in the server binary. Apps depend on
+# it as an OPTIONAL dep enabled by their `server` feature, so the wasm client
+# never compiles it.
+
+[features]
+default = ["memory"]
+# In-process `tokio::broadcast` backend (single instance).
+memory = ["dep:tokio", "dep:tokio-stream"]
+# Redis Pub/Sub (cross-instance).
+redis = ["dep:redis", "dep:tokio"]
+# Postgres LISTEN/NOTIFY (cross-instance).
+postgres = ["dep:sqlx", "dep:tokio"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+async-trait = "0.1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+# `tokio::sync::broadcast` for the memory backend; also the async runtime the
+# redis/postgres clients need. `sync` alone covers broadcast; `rt`/`net` come in
+# via those backends' own needs.
+tokio = { version = "1", features = ["sync", "rt", "net"], optional = true }
+tokio-stream = { version = "0.1", features = ["sync"], optional = true }
+
+redis = { version = "0.27", default-features = false, features = ["tokio-comp", "connection-manager"], optional = true }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "sync"] }

@@ -37,6 +37,30 @@ pub struct DevConfig {
     /// ```
     #[serde(default)]
     pub jobs: Option<JobsConfig>,
+
+    /// Local publish/subscribe backend for `idealyst dev`. Absent → the
+    /// in-process `memory` backend (single instance). Point at redis/postgres
+    /// for cross-instance fan-out (and to make multi-instance dev meaningful).
+    ///
+    /// ```toml
+    /// [pubsub]
+    /// backend = "redis"
+    /// url = "redis://127.0.0.1:6379"
+    /// ```
+    #[serde(default)]
+    pub pubsub: Option<PubsubConfig>,
+}
+
+/// The `[pubsub]` block in `dev.toml`.
+#[derive(Debug, Default, Deserialize, Clone)]
+pub struct PubsubConfig {
+    /// `memory` (default) | `redis` | `postgres`.
+    #[serde(default)]
+    pub backend: Option<String>,
+    /// Connection string for the broker (redis URL / Postgres URL). Unused for
+    /// `memory`.
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 /// The `[jobs]` block in `dev.toml`.

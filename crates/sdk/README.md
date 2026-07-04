@@ -106,6 +106,7 @@ dependency injection — the way client SDKs build on `runtime-core`. They ship 
 | Crate | Path | What it adds |
 | --- | --- | --- |
 | `jobs` (+ nested `jobs-macros`) | [`server/jobs/`](./server/jobs) | Background job / queue SDK. `#[job]` defines a unit of deferred work with a typed `enqueue` surface; a worker (`jobs::worker()`, dedicated process or in-process) drains a pluggable backend (`memory` / `redis` / `postgres` / `sqs`) with retries, backoff, and dead-lettering. The CLI auto-spawns the worker in `dev` and adds `idealyst worker`. See [`server/jobs/README.md`](./server/jobs/README.md) and [`examples/jobs-demo`](../../examples/jobs-demo). |
+| `pubsub` | [`server/pubsub/`](./server/pubsub) | Publish/subscribe (fan-out) SDK — the broadcast sibling of `jobs`. A typed `Topic<T>` publishes to every current subscriber over a pluggable backend (`memory` / `redis` / `postgres` LISTEN-NOTIFY). Its headline use is **decentralized WebSocket notifications**: a `#[subscription]` body returns `topic.subscribe()`, so a client on one instance receives events published on another. See [`server/pubsub/README.md`](./server/pubsub/README.md) and [`examples/pubsub-demo`](../../examples/pubsub-demo). |
 
 ## Testing & verification status
 

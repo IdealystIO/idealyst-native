@@ -151,9 +151,11 @@ members = [
     "crates/api/server-aws",
 
     # SDK — server-tier capabilities (run in the server / worker binary,
-    # not the client). `jobs` = background-job / queue SDK.
+    # not the client). `jobs` = background-job / queue SDK; `pubsub` =
+    # cross-instance publish/subscribe (fan-out).
     "crates/sdk/server/jobs",
     "crates/sdk/server/jobs/macros",
+    "crates/sdk/server/pubsub",
 
     # SDK — navigator-kind extensions (Primitive::NavigatorExt).
     # Grouped under navigators/: the three SDK features (stack/tab/
@@ -247,6 +249,7 @@ members = [
     "examples/todo-sync-demo",
     "examples/graphql-demo",
     "examples/jobs-demo",
+    "examples/pubsub-demo",
     "examples/dnd-demo",
     "examples/kanban-demo",
     "examples/sortable-demo",
@@ -430,6 +433,7 @@ server-macros = { path = "crates/api/server-macros" }
 server-aws = { path = "crates/api/server-aws" }
 jobs = { path = "crates/sdk/server/jobs" }
 jobs-macros = { path = "crates/sdk/server/jobs/macros" }
+pubsub = { path = "crates/sdk/server/pubsub" }
 stack-navigator = { path = "crates/sdk/client/navigators/stack" }
 tab-navigator = { path = "crates/sdk/client/navigators/tab" }
 drawer-navigator = { path = "crates/sdk/client/navigators/drawer" }
