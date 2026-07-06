@@ -87,7 +87,13 @@ pub const NAVIGATOR_LAYOUT_CSS: &str = concat!(
     // root (the runtime's job on interaction). `navigator_layout_css`'s
     // `@media` overlay turns this back into an in-flow flex column at >=
     // the pin width.
-    ".ui-nav-drawer-sidebar{position:fixed;top:0;left:0;height:100%;width:min(82vw,300px);\
+    //
+    // Width honors the per-instance `--drawer-width` custom property the
+    // drawer navigator stamps on `.ui-nav-drawer-root` (from
+    // `DrawerBuilder::drawer_width`, default 280px), capped at 82vw so the
+    // off-canvas modal never exceeds the viewport on a phone. The `300px`
+    // fallback applies only when no navigator set the property (bare CSS).
+    ".ui-nav-drawer-sidebar{position:fixed;top:0;left:0;height:100%;width:min(82vw,var(--drawer-width,300px));\
        transform:translateX(-100%);transition:transform 240ms cubic-bezier(0.2,0.0,0.0,1.0);\
        z-index:1000;box-shadow:6px 0 28px rgba(0,0,0,0.22);overflow-y:auto;}",
     ".ui-nav-drawer-root.drawer-open .ui-nav-drawer-sidebar{transform:translateX(0);}",
@@ -133,10 +139,13 @@ const NAVIGATOR_PINNED_RULES: &str = concat!(
     // reflows whenever its text's intrinsic width changes — most visibly
     // when a web font swaps in over the fallback, growing the whole
     // sidebar and shifting the body. A static width pins the track so the
-    // font swap only reflows text *inside* it; no layout jump. `16rem`
-    // (~256px) is the conventional docs-sidebar width; apps style the
-    // inner content to fill it.
-    ".ui-nav-drawer-sidebar{position:static;transform:none;flex:0 0 auto;width:16rem;\
+    // font swap only reflows text *inside* it; no layout jump. The width is
+    // the per-instance `--drawer-width` (from `DrawerBuilder::drawer_width`,
+    // default 280px), stamped on `.ui-nav-drawer-root` by the navigator.
+    // The `16rem` (~256px) fallback — the conventional docs-sidebar width —
+    // applies only when no navigator set the property; apps style the inner
+    // content to fill the track.
+    ".ui-nav-drawer-sidebar{position:static;transform:none;flex:0 0 auto;width:var(--drawer-width,16rem);\
        z-index:auto;box-shadow:none;transition:none;}",
     ".ui-nav-drawer-body{width:auto;}",
     // No modal scrim when the sidebar is pinned in-flow — there's nothing
@@ -371,6 +380,27 @@ pub fn variant_class_key(
         key.push_str(&overlay.content_key());
     }
     key
+}
+
+/// Whether a text node's style must mint a text-shadow class variant.
+/// A `shadow` renders as `text-shadow` on text (see [`rules_to_css_text`])
+/// but `box-shadow` on box elements, so a text node carrying a shadow can't
+/// safely share a box element's content-keyed class. Callers that already
+/// know the node is text gate on this so the ONLY divergence is the rare
+/// shadowed-text case — an unshadowed text node keeps sharing view classes.
+pub fn text_needs_shadow_variant(rules: &StyleRules) -> bool {
+    rules.shadow.is_some()
+}
+
+/// Disambiguate a text node's class key from the box element that shares its
+/// `StyleRules`, so the `text-shadow` variant mints a distinct class. Applied
+/// identically on web and SSR (over the full [`variant_class_key`] output)
+/// so the minted class name matches for SSR→web hydration. Only used when
+/// [`text_needs_shadow_variant`] holds.
+pub fn text_shadow_class_key(base_or_variant_key: &str) -> String {
+    // `@t` mirrors the `@`-prefixed axis markers `variant_class_key` already
+    // appends, keeping the key grammar uniform.
+    format!("{base_or_variant_key};@t")
 }
 
 /// The CSS pseudo-class suffix for an interaction-state bit, so a state
@@ -895,6 +925,20 @@ pub fn easing_css(e: runtime_core::Easing) -> String {
     }
 }
 
+/// How the `shadow` style field lowers to CSS. A box-shaped element
+/// (view/image/pressable) renders it as `box-shadow`; the text
+/// primitive renders it as `text-shadow` so the shadow follows the
+/// glyph outlines rather than the inline box. Both CSS properties take
+/// the identical `<x> <y> <blur> <color>` syntax (neither uses spread),
+/// so `Shadow { x, y, blur, color }` maps onto each with no loss.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ShadowKind {
+    /// `box-shadow` — the default for box elements.
+    Box,
+    /// `text-shadow` — for the text primitive.
+    Text,
+}
+
 /// Compile a `StyleRules` to a CSS declaration body (`;`-joined,
 /// no surrounding braces). Suitable for a class body or an inline
 /// `style="…"` attribute.
@@ -906,7 +950,22 @@ pub fn easing_css(e: runtime_core::Easing) -> String {
 /// `flex-direction: column` pinned when unset, matching the
 /// framework's mobile-first default). Nodes that use no flex property
 /// stay normal blocks — no flex-tracker cost for unstyled rows.
+///
+/// The `shadow` field lowers to `box-shadow`. For text nodes call
+/// [`rules_to_css_text`], which lowers it to `text-shadow` instead.
 pub fn rules_to_css(rules: &StyleRules) -> String {
+    rules_to_css_with_shadow(rules, ShadowKind::Box)
+}
+
+/// Like [`rules_to_css`] but lowers the `shadow` field to `text-shadow`
+/// so it hugs the glyphs — the correct rendering for the text primitive.
+pub fn rules_to_css_text(rules: &StyleRules) -> String {
+    rules_to_css_with_shadow(rules, ShadowKind::Text)
+}
+
+/// [`rules_to_css`] with an explicit [`ShadowKind`] for the `shadow`
+/// field. All other declarations are identical regardless of kind.
+pub fn rules_to_css_with_shadow(rules: &StyleRules, shadow_kind: ShadowKind) -> String {
     let mut parts: Vec<String> = Vec::new();
 
     let uses_flex = rules.flex_direction.is_some()
@@ -1046,9 +1105,17 @@ pub fn rules_to_css(rules: &StyleRules) -> String {
     if let Some(v) = rules.overflow { parts.push(format!("overflow: {}", overflow_css(v))); }
     if let Some(v) = rules.object_fit { parts.push(format!("object-fit: {}", object_fit_css(v))); }
     if let Some(sh) = &rules.shadow {
+        // `text-shadow` and `box-shadow` share the same
+        // `<x> <y> <blur> <color>` value grammar (text-shadow simply has
+        // no spread term, which our `Shadow` doesn't carry either), so
+        // only the property name differs by node kind.
+        let prop = match shadow_kind {
+            ShadowKind::Box => "box-shadow",
+            ShadowKind::Text => "text-shadow",
+        };
         parts.push(format!(
-            "box-shadow: {}px {}px {}px {}",
-            sh.x, sh.y, sh.blur, sh.color.0
+            "{}: {}px {}px {}px {}",
+            prop, sh.x, sh.y, sh.blur, sh.color.0
         ));
     }
     if let Some(xs) = &rules.transform {
@@ -1087,6 +1154,133 @@ pub fn rules_to_css(rules: &StyleRules) -> String {
     }
 
     parts.join("; ")
+}
+
+// ---------------------------------------------------------------------------
+// Token-resolved inline CSS — for backends with no CSS-variable / `<head>`
+// stylesheet surface (email).
+//
+// `rules_to_css` emits `var(--name, fallback)` for every tokenized value,
+// which relies on the page carrying a `:root { --name: … }` block AND the
+// client supporting CSS custom properties. Email has NEITHER: many clients
+// (older Outlook) drop a whole declaration that contains an unsupported
+// `var()` rather than falling back to its embedded default, and Gmail strips
+// `<style>` / `:root` blocks so the variables are never even defined. So the
+// email backend needs the token's *resolved* value baked directly into an
+// inline `style="…"`.
+//
+// `rules_to_css_resolved` produces exactly that: it resolves every
+// `Tokenized::Token` against the installed theme tokens (falling back to the
+// value embedded in the token reference) into a `Literal`, then runs the
+// SAME `rules_to_css` — so property formatting is byte-identical to the
+// literal path web/SSR already emit, only without the `var()` indirection.
+// Isolating the resolve as a pre-pass keeps `rules_to_css` (the shared
+// web/SSR hot path) untouched and byte-stable.
+// ---------------------------------------------------------------------------
+
+/// Compile a `StyleRules` to a CSS declaration body with every
+/// `Tokenized::Token` resolved to a concrete value against `tokens` (the
+/// theme installed via `Backend::install_tokens`), falling back to the token
+/// reference's embedded fallback when a name isn't present. Unlike
+/// [`rules_to_css`] this emits NO `var(--…)` — suitable for an inline
+/// `style="…"` in email, where CSS variables and `<head>` `:root` blocks are
+/// unavailable.
+pub fn rules_to_css_resolved(rules: &StyleRules, tokens: &[runtime_core::TokenEntry]) -> String {
+    rules_to_css(&resolve_style_tokens(rules, tokens))
+}
+
+/// Text-primitive counterpart of [`rules_to_css_resolved`]: bakes tokens
+/// to literals and lowers `shadow` to `text-shadow`. Used by the
+/// email/static renderers when emitting a text node's style.
+pub fn rules_to_css_resolved_text(rules: &StyleRules, tokens: &[runtime_core::TokenEntry]) -> String {
+    rules_to_css_text(&resolve_style_tokens(rules, tokens))
+}
+
+/// Clone `rules`, replacing every `Tokenized::Token` field with a
+/// `Tokenized::Literal` holding the token's resolved value. The field lists
+/// enumerate every tokenized field of `StyleRules` by value type; a new
+/// tokenized field must be added to the matching list (guarded by
+/// `resolve_style_tokens_bakes_every_token_type`). See [`rules_to_css_resolved`].
+fn resolve_style_tokens(rules: &StyleRules, tokens: &[runtime_core::TokenEntry]) -> StyleRules {
+    let mut r = rules.clone();
+    macro_rules! resolve {
+        ($resolver:ident; $($field:ident),* $(,)?) => {
+            $( r.$field = r.$field.as_ref().map(|t| $resolver(t, tokens)); )*
+        };
+    }
+    resolve!(resolve_color;
+        background, color, caret_color,
+        border_top_color, border_right_color, border_bottom_color, border_left_color);
+    resolve!(resolve_length;
+        font_size, gap, row_gap, column_gap, flex_basis,
+        width, height, min_width, min_height, max_width, max_height,
+        padding_top, padding_right, padding_bottom, padding_left,
+        margin_top, margin_right, margin_bottom, margin_left,
+        border_top_left_radius, border_top_right_radius,
+        border_bottom_left_radius, border_bottom_right_radius,
+        top, right, bottom, left);
+    resolve!(resolve_f32;
+        flex_grow, flex_shrink, opacity,
+        border_top_width, border_right_width, border_bottom_width, border_left_width,
+        line_height, letter_spacing);
+    r
+}
+
+/// Look up a token's installed value by name.
+fn token_lookup<'a>(
+    tokens: &'a [runtime_core::TokenEntry],
+    name: &str,
+) -> Option<&'a runtime_core::TokenValue> {
+    tokens.iter().find(|e| e.name == name).map(|e| &e.value)
+}
+
+fn resolve_color(
+    t: &runtime_core::Tokenized<runtime_core::Color>,
+    tokens: &[runtime_core::TokenEntry],
+) -> runtime_core::Tokenized<runtime_core::Color> {
+    use runtime_core::{TokenValue, Tokenized};
+    match t {
+        Tokenized::Literal(_) => t.clone(),
+        Tokenized::Token { name, fallback } => Tokenized::Literal(
+            match token_lookup(tokens, name) {
+                Some(TokenValue::Color(c)) => c.clone(),
+                _ => fallback.clone(),
+            },
+        ),
+    }
+}
+
+fn resolve_length(
+    t: &runtime_core::Tokenized<runtime_core::Length>,
+    tokens: &[runtime_core::TokenEntry],
+) -> runtime_core::Tokenized<runtime_core::Length> {
+    use runtime_core::{TokenValue, Tokenized};
+    match t {
+        Tokenized::Literal(_) => t.clone(),
+        Tokenized::Token { name, fallback } => Tokenized::Literal(
+            match token_lookup(tokens, name) {
+                Some(TokenValue::Length(l)) => *l,
+                _ => *fallback,
+            },
+        ),
+    }
+}
+
+fn resolve_f32(
+    t: &runtime_core::Tokenized<f32>,
+    tokens: &[runtime_core::TokenEntry],
+) -> runtime_core::Tokenized<f32> {
+    use runtime_core::{Length, TokenValue, Tokenized};
+    match t {
+        Tokenized::Literal(_) => t.clone(),
+        Tokenized::Token { name, fallback } => Tokenized::Literal(match token_lookup(tokens, name) {
+            Some(TokenValue::Number(n)) => *n,
+            // A Length token consumed where an f32 is expected (border width,
+            // line-height, letter-spacing) resolves through its px magnitude.
+            Some(TokenValue::Length(Length::Px(px))) => *px,
+            _ => *fallback,
+        }),
+    }
 }
 
 /// Walk every per-property transition field and produce CSS transition
@@ -1166,6 +1360,29 @@ mod tests {
     #[test]
     fn tokens_to_root_css_empty_is_blank() {
         assert_eq!(tokens_to_root_css(&[]), "");
+    }
+
+    // A `shadow` on a box element lowers to `box-shadow`; the SAME shadow on
+    // the text primitive lowers to `text-shadow` so it hugs the glyphs. Both
+    // share the `<x> <y> <blur> <color>` grammar, so only the property name
+    // differs — the numbers and color are byte-identical.
+    #[test]
+    fn shadow_lowers_to_box_or_text_by_node_kind() {
+        use runtime_core::{Color, Shadow, StyleRules};
+        let rules = StyleRules {
+            shadow: Some(Shadow { x: 1.0, y: 2.0, blur: 3.0, color: Color("#00000080".to_string()) }),
+            ..Default::default()
+        };
+        let boxed = rules_to_css(&rules);
+        let text = rules_to_css_text(&rules);
+        assert!(boxed.contains("box-shadow: 1px 2px 3px #00000080"), "box: {boxed}");
+        assert!(!boxed.contains("text-shadow"));
+        assert!(text.contains("text-shadow: 1px 2px 3px #00000080"), "text: {text}");
+        assert!(!text.contains("box-shadow"));
+        // No `shadow` → neither property, regardless of kind.
+        let empty = StyleRules::default();
+        assert!(!rules_to_css(&empty).contains("shadow"));
+        assert!(!rules_to_css_text(&empty).contains("shadow"));
     }
 
     // `object_fit` emits the matching CSS `object-fit` keyword. Cover is the
@@ -1393,6 +1610,27 @@ mod tests {
     }
 
     #[test]
+    fn navigator_drawer_sidebar_width_reads_custom_property() {
+        // Regression: `DrawerBuilder::drawer_width` was silently dropped on
+        // web because the sidebar width was a hardcoded CSS constant. Both
+        // the off-canvas modal (base) and the pinned (`@media`) rule must
+        // read the per-instance `--drawer-width` custom property the
+        // navigator stamps on the root — with a literal fallback for the
+        // bare-CSS (no-navigator) case.
+        let base = navigator_layout_css();
+        // Off-canvas modal base: capped at the viewport, else the property.
+        assert!(
+            base.contains("width:min(82vw,var(--drawer-width,300px))"),
+            "off-canvas sidebar width must read --drawer-width; got: {base}"
+        );
+        // Pinned (wide-viewport) rule inside the @media overlay.
+        assert!(
+            base.contains("width:var(--drawer-width,16rem)"),
+            "pinned sidebar width must read --drawer-width; got: {base}"
+        );
+    }
+
+    #[test]
     fn navigator_layout_css_has_tappable_modal_backdrop() {
         // Regression: the off-canvas modal drawer slid in over UNDIMMED,
         // un-dismissable content — no scrim. The base sheet must define a
@@ -1496,5 +1734,59 @@ mod tests {
             "@font-face{font-family:\"Inter\";font-style:normal;font-weight:700;\
              src:url(\"/fonts/Inter-Bold.ttf\") format(\"truetype\");}"
         );
+    }
+
+    // `rules_to_css` (web/SSR) emits `var(--name, fallback)` for a token,
+    // relying on a `:root` block + CSS-variable support the client may not
+    // have. `rules_to_css_resolved` must instead bake the INSTALLED token
+    // value in as a literal — no `var(…)` anywhere — for email.
+    #[test]
+    fn rules_to_css_resolved_bakes_installed_token_values() {
+        use runtime_core::Tokenized;
+        let rules = StyleRules {
+            background: Some(Tokenized::token("color-surface", Color("#ffffff".into()))),
+            padding_top: Some(Tokenized::token("spacing-md", Length::Px(8.0))),
+            ..Default::default()
+        };
+        let tokens = vec![
+            TokenEntry { name: "color-surface", value: TokenValue::Color(Color("#101828".into())) },
+            TokenEntry { name: "spacing-md", value: TokenValue::Length(Length::Px(16.0)) },
+        ];
+
+        // Baseline: the shared path emits var() (unusable in email).
+        assert!(rules_to_css(&rules).contains("var(--color-surface"));
+
+        // Resolved: the installed theme value is baked in; no var() at all.
+        let out = rules_to_css_resolved(&rules, &tokens);
+        assert!(out.contains("background: #101828"), "got: {out}");
+        assert!(out.contains("padding-top: 16px"), "got: {out}");
+        assert!(!out.contains("var("), "email CSS must carry no var(); got: {out}");
+    }
+
+    // When a token name isn't in the installed set, resolution falls back to
+    // the value embedded in the token reference — never emits var().
+    #[test]
+    fn rules_to_css_resolved_falls_back_to_embedded_default() {
+        use runtime_core::Tokenized;
+        let rules = StyleRules {
+            color: Some(Tokenized::token("color-text", Color("#333333".into()))),
+            ..Default::default()
+        };
+        let out = rules_to_css_resolved(&rules, &[]); // nothing installed
+        assert!(out.contains("color: #333333"), "got: {out}");
+        assert!(!out.contains("var("), "got: {out}");
+    }
+
+    // A literal (non-token) style is unchanged by resolution — the resolved
+    // path must equal the shared path when there are no tokens to bake.
+    #[test]
+    fn rules_to_css_resolved_matches_literal_path() {
+        use runtime_core::Tokenized;
+        let rules = StyleRules {
+            background: Some(Tokenized::Literal(Color("#abcdef".into()))),
+            width: Some(Tokenized::Literal(Length::Px(320.0))),
+            ..Default::default()
+        };
+        assert_eq!(rules_to_css_resolved(&rules, &[]), rules_to_css(&rules));
     }
 }

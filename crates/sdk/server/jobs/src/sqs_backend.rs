@@ -72,6 +72,18 @@ impl SqsBackend {
         })
     }
 
+    /// Build from a resolved AWS [`SdkConfig`](aws_config::SdkConfig) and an
+    /// explicit logical-name → URL map. This is the shape `idealyst-config`
+    /// produces from a `[connections.<name>]` AWS profile, so jobs and email
+    /// can share one account.
+    pub fn from_aws(config: &aws_config::SdkConfig, queues: HashMap<String, String>) -> Self {
+        Self {
+            client: Client::new(config),
+            queues,
+            dlq: None,
+        }
+    }
+
     /// Route dead-lettered jobs to this queue URL (otherwise they're deleted).
     pub fn dead_letter_url(mut self, url: impl Into<String>) -> Self {
         self.dlq = Some(url.into());

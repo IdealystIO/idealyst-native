@@ -57,6 +57,10 @@ pub struct HtmlNode {
     /// an `overflow` style (which the framework keeps clip-only), so this
     /// lives on the node, not in `StyleRules`.
     scroll: bool,
+    /// `true` for the text primitive (`create_text`). A `shadow` on a text
+    /// node lowers to `text-shadow` (hugging the glyphs) instead of
+    /// `box-shadow`, matching the web backend; see `apply_style`.
+    is_text: bool,
     children: Vec<NodeRef>,
 }
 
@@ -68,6 +72,7 @@ impl HtmlNode {
             style: None,
             attrs: Vec::new(),
             scroll: false,
+            is_text: false,
             children: Vec::new(),
         }
     }
@@ -111,6 +116,23 @@ fn add_class(node: &NodeRef, class: &str) {
         }
     } else {
         n.attrs.push(("class", class.to_string()));
+    }
+}
+
+/// Append an inline CSS declaration (`prop:value`) to a node's inline
+/// style, merging with any existing one. Used for the drawer navigator's
+/// per-instance `--drawer-width` custom property (see
+/// `Backend::attach_html_style`) so the SSR first paint matches the width
+/// the live web client sets on hydration.
+fn add_inline_style(node: &NodeRef, prop: &str, value: &str) {
+    let mut n = node.borrow_mut();
+    let decl = format!("{prop}:{value}");
+    match n.style.as_mut() {
+        Some(existing) if !existing.is_empty() => {
+            existing.push_str("; ");
+            existing.push_str(&decl);
+        }
+        _ => n.style = Some(decl),
     }
 }
 
@@ -475,6 +497,7 @@ impl Backend for SsrBackend {
     fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> Self::Node {
         let mut node = HtmlNode::new("span");
         node.text = Some(content.to_string());
+        node.is_text = true;
         nref(node)
     }
 
@@ -609,9 +632,21 @@ impl Backend for SsrBackend {
         // `hash_class_name` + `rules_to_css` as web, so a given style gets
         // the same class name and declarations on both. Dedupe by class so
         // N nodes sharing a style emit one rule (as web's `pregen` does).
-        let class = css::hash_class_name(&style.content_key());
+        // A text node carrying a `shadow` lowers it to `text-shadow` and
+        // mints a distinct class (keyed via `text_shadow_class_key`) so it
+        // never reuses a box element's `box-shadow` class. Web mirrors this
+        // exactly, so the class name matches on hydration.
+        let is_text_shadow = node.borrow().is_text && css::text_needs_shadow_variant(style);
+        let (class, body): (String, fn(&StyleRules) -> String) = if is_text_shadow {
+            (
+                css::hash_class_name(&css::text_shadow_class_key(&style.content_key())),
+                css::rules_to_css_text,
+            )
+        } else {
+            (css::hash_class_name(&style.content_key()), css::rules_to_css)
+        };
         if !self.style_rules.contains_key(&class) {
-            self.style_rules.insert(class.clone(), css::rules_to_css(style));
+            self.style_rules.insert(class.clone(), body(style));
         }
         add_class(node, &class);
     }
@@ -653,23 +688,36 @@ impl Backend for SsrBackend {
         // DIFFERENT classes on server vs client and hydration couldn't
         // reuse the server's styling. Sharing the builder guarantees
         // byte-identical classes.
-        let combined = css::variant_class_key(
+        let mut combined = css::variant_class_key(
             &base.content_key(),
             overlays,
             breakpoint_overlays,
             container_overlays,
         );
+        // If this is a text node and any layer (base or overlay) carries a
+        // shadow, the whole class renders shadows as `text-shadow` and mints
+        // a distinct key (matching the web backend). `emit` picks the lowering.
+        let text_shadow = node.borrow().is_text
+            && (css::text_needs_shadow_variant(base)
+                || overlays.iter().any(|(_, o)| css::text_needs_shadow_variant(o))
+                || breakpoint_overlays.iter().any(|(_, o)| css::text_needs_shadow_variant(o))
+                || container_overlays.iter().any(|(_, o)| css::text_needs_shadow_variant(o)));
+        if text_shadow {
+            combined = css::text_shadow_class_key(&combined);
+        }
+        let emit: fn(&StyleRules) -> String =
+            if text_shadow { css::rules_to_css_text } else { css::rules_to_css };
         let class = css::hash_class_name(&combined);
         self.style_rules
             .entry(class.clone())
-            .or_insert_with(|| css::rules_to_css(base));
+            .or_insert_with(|| emit(base));
         for (state, overlay) in overlays {
             if let Some(pseudo) = css::state_pseudo(*state) {
                 // Key carries the pseudo so head_css emits
                 // `.ui-<hash>:hover{ … }` (the node still wears `ui-<hash>`).
                 self.style_rules
                     .entry(format!("{class}{pseudo}"))
-                    .or_insert_with(|| css::rules_to_css(overlay));
+                    .or_insert_with(|| emit(overlay));
             }
         }
         // Breakpoint overlays → `@media (min-width: …) { .ui-<hash> { … } }`.
@@ -677,7 +725,7 @@ impl Backend for SsrBackend {
         // them ascending by rank (mobile-first cascade). `None` only for Xs,
         // which the walker never sends as an overlay.
         for (bp, overlay) in breakpoint_overlays {
-            let body = css::rules_to_css(overlay);
+            let body = emit(overlay);
             if let Some(rule) = css::breakpoint_media_rule(&class, *bp, &body) {
                 self.media_rules
                     .entry(format!("{class}@{}", bp.rank()))
@@ -690,7 +738,7 @@ impl Backend for SsrBackend {
         // `container-type` ancestor (set by `mark_container`). Stacking by
         // source order reproduces the mobile-first cascade.
         for (threshold, overlay) in container_overlays {
-            let body = css::rules_to_css(overlay);
+            let body = emit(overlay);
             let rule = css::container_query_rule(&class, *threshold, &body);
             self.media_rules
                 .entry(format!("{class}@cq{:08x}", threshold.to_bits()))
@@ -966,6 +1014,10 @@ impl Backend for SsrBackend {
 
     fn attach_html_class(&self, node: &Self::Node, class: &str) {
         add_class(node, class);
+    }
+
+    fn attach_html_style(&self, node: &Self::Node, prop: &str, value: &str) {
+        add_inline_style(node, prop, value);
     }
 
     fn register_raw_css(&mut self, css: &str) {
@@ -1407,6 +1459,45 @@ mod tests {
         assert_eq!(head.matches(&format!(".{expected_class}{{")).count(), 1, "deduped");
         // Base reset is always present.
         assert!(head.contains("box-sizing: border-box"), "base reset present, got: {head}");
+    }
+
+    /// Regression: a `shadow` on the text primitive lowers to
+    /// `text-shadow` (hugging the glyphs), while the SAME shadow on a box
+    /// element stays `box-shadow`. The two mint DISTINCT classes so they
+    /// can't collide in the content-keyed dedup cache even when their
+    /// `StyleRules` are otherwise identical.
+    #[test]
+    fn text_node_shadow_lowers_to_text_shadow_not_box_shadow() {
+        use runtime_core::Shadow;
+        let mut b = SsrBackend::new();
+        let mut rules = StyleRules::default();
+        rules.shadow = Some(Shadow { x: 1.0, y: 2.0, blur: 3.0, color: Color("#000000".into()) });
+        let rules = Rc::new(rules);
+
+        let txt = b.create_text("hi", &AccessibilityProps::default());
+        let boxed = b.create_view(&AccessibilityProps::default());
+        b.apply_style(&txt, &rules);
+        b.apply_style(&boxed, &rules);
+
+        // The two nodes carry DIFFERENT classes (text variant is keyed apart).
+        let txt_html = { let mut s = String::new(); serialize(&txt, &mut s); s };
+        let box_html = { let mut s = String::new(); serialize(&boxed, &mut s); s };
+        let txt_class = css::hash_class_name(&css::text_shadow_class_key(&rules.content_key()));
+        let box_class = css::hash_class_name(&rules.content_key());
+        assert_ne!(txt_class, box_class, "text + box must mint distinct classes");
+        assert!(txt_html.contains(&txt_class), "text node wears its variant class: {txt_html}");
+        assert!(box_html.contains(&box_class), "box node wears the box class: {box_html}");
+
+        // The head stylesheet lowers each to the right property.
+        let head = b.head_css();
+        assert!(
+            head.contains(&format!(".{txt_class}{{text-shadow: 1px 2px 3px #000000}}")),
+            "text node → text-shadow, got: {head}"
+        );
+        assert!(
+            head.contains(&format!(".{box_class}{{box-shadow: 1px 2px 3px #000000}}")),
+            "box node → box-shadow, got: {head}"
+        );
     }
 
     /// `apply_styled_states` emits the base rule plus a `:hover` pseudo

@@ -20,10 +20,11 @@ use tower_http::services::ServeDir;
 
 #[tokio::main]
 async fn main() {
-    // Configure the pub/sub backend from the environment (memory by default;
-    // IDEALYST_PUBSUB_BACKEND / _URL override — set by `idealyst dev`).
-    if let Err(e) = pubsub::configure_from_env().await {
-        eprintln!("[server] pubsub backend config failed: {e}");
+    // Configure every SDK from `idealyst.toml` in one call (memory backend by
+    // default; a `[pubsub] connection = "..."` block points at a shared broker
+    // for cross-instance fan-out). Env vars still override.
+    if let Err(e) = idealyst_config::configure_all().await {
+        eprintln!("[server] config failed: {e}");
     }
     let _ = _force_link;
 

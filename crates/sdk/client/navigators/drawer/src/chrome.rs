@@ -167,6 +167,14 @@ impl<B: Backend + 'static> NavigatorHandler<B> for DrawerChromeHandler<B> {
         let pres = presentation.downcast_ref::<DrawerPresentation>();
 
         if let Some(pres) = pres {
+            // Stamp the author-configured width as the `--drawer-width`
+            // custom property on the root; the shared navigator sheet reads
+            // `var(--drawer-width, …)` (inherited by the sidebar), so the
+            // SSR first paint honors `DrawerBuilder::drawer_width` and
+            // matches the width the live web client sets on hydration —
+            // instead of the sheet's fallback (a hydration reflow).
+            backend.attach_html_style(&root, "--drawer-width", &format!("{}px", pres.drawer_width));
+
             let bni = &host.build_node_into;
             let control = &host.control;
             let nav = &host.nav_state;

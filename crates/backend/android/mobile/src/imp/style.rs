@@ -283,6 +283,41 @@ pub(crate) fn apply_rules(
                 &[JValue::Int(gravity)],
             );
         }
+        // Drop shadow → `TextView.setShadowLayer(radius, dx, dy, color)`,
+        // Android's native GLYPH shadow. Web lowers a text node's `shadow`
+        // to `text-shadow`; this converges the output (CLAUDE.md §7). dy is
+        // +down in screen space, matching web's `text-shadow` y. A radius-0
+        // call clears it so a reactively-removed shadow actually turns off
+        // (setShadowLayer only paints when radius > 0).
+        match &rules.shadow {
+            Some(sh) => {
+                let packed = parse_color(&sh.color.0).unwrap_or(0);
+                let _ = env.call_method(
+                    &view,
+                    "setShadowLayer",
+                    "(FFFI)V",
+                    &[
+                        JValue::Float(sh.blur),
+                        JValue::Float(sh.x),
+                        JValue::Float(sh.y),
+                        JValue::Int(packed),
+                    ],
+                );
+            }
+            None => {
+                let _ = env.call_method(
+                    &view,
+                    "setShadowLayer",
+                    "(FFFI)V",
+                    &[
+                        JValue::Float(0.0),
+                        JValue::Float(0.0),
+                        JValue::Float(0.0),
+                        JValue::Int(0),
+                    ],
+                );
+            }
+        }
         // Caret color → `setTextCursorDrawable` with a GradientDrawable
         // fill. API 29+ only; on older Android we silently drop back to
         // the theme default (the JNI call resolves to a missing method

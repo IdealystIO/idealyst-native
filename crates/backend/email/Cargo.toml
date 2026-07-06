@@ -1,0 +1,31 @@
+[package]
+name = "backend-email"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Email-rendering backend — the "SSG for emails" engine.
+#
+# `EmailBackend` is a headless [`Backend`](runtime_core::Backend) like
+# `backend-ssr`, but tuned for the email surface instead of the browser:
+# it walks the SAME author `Element` tree every other backend renders and
+# emits an email-safe HTML document. The differences from SSR are all about
+# where email clients diverge from browsers:
+#
+#   * styles are baked INLINE on each node (`style="…"`), never a `<head>`
+#     class stylesheet — Gmail strips `<style>` blocks;
+#   * theme tokens are RESOLVED to literal values at render time via
+#     `css::rules_to_css_resolved`, never `var(--token)` — email clients
+#     have no CSS custom properties;
+#   * interaction-state (`:hover`/`:active`), `@media`, and `@container`
+#     overlays are dropped — email has no interaction and unreliable media
+#     support; only the resolved base style is emitted.
+#
+# The backend stays UN-OPINIONATED about layout (it maps `view`→`div`,
+# `text`→`span`, etc., faithfully). Email-safe, table-based layout is the
+# job of a component layer (`idea-ui-mail`), not this backend — mirroring
+# how the web backend stays layout-neutral and idea-ui owns the opinions.
+
+[dependencies]
+runtime-core = { workspace = true }
+css = { workspace = true }

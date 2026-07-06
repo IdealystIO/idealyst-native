@@ -29,7 +29,10 @@
 //!   variants against modifiers.
 //! - **Macros** — [`tone!`], [`variant!`], [`theme!`], [`color_token!`]
 //!   make defining custom modifiers and app themes a one-block
-//!   declaration each.
+//!   declaration each. [`theme_token!`] / [`theme_length!`] reference a
+//!   canonical theme token from a `stylesheet!` by name only (fallback
+//!   pulled from the base palette, name checked at compile time) — so a
+//!   stylesheet tracks the installed theme without restating any hex.
 //! - **Theme runtime** — [`install_theme`], [`set_theme`],
 //!   [`install_themes`], plus [`ThemeTokens`] / [`TokenEntry`] /
 //!   [`TokenValue`] for theme installation and live swap.
@@ -53,9 +56,11 @@ pub use theme_runtime::{
 // most often — keeping them flat avoids `idea_theme::theme::IdeaTheme`
 // pile-ups in user code.
 pub use theme::{
-    dark_theme, idea_color, idea_header, install_idea_theme, is_canonical_token, light_theme,
-    set_idea_theme, Colors, IdeaTheme, IdeaThemeDefaults, IdeaThemeRef, IntentColors, Intents,
-    Radius, Spacing, Typography, CANONICAL_NEUTRAL_TOKENS, DEFAULT_FONT_STACK, INTENT_NAMES,
+    canonical_color, canonical_length, dark_theme, idea_color, idea_header, install_idea_theme,
+    is_canonical_color_token, is_canonical_length_token, is_canonical_token, light_theme,
+    set_idea_theme, theme_color, theme_length, Colors, IdeaTheme, IdeaThemeDefaults, IdeaThemeRef,
+    IntentColors, Intents, Radius, Spacing, Typography, CANONICAL_INTENT_TOKENS,
+    CANONICAL_LENGTH_TOKENS, CANONICAL_NEUTRAL_TOKENS, DEFAULT_FONT_STACK, INTENT_NAMES,
     INTENT_SLOTS,
 };
 

@@ -1,0 +1,66 @@
+[package]
+name = "email"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Server-tier transactional-email SDK — send email with a pluggable provider.
+#
+# Compose a message (or render one from an idealyst template), then hand it to
+# the configured provider:
+#
+#     use email::{Email, Mailbox};
+#
+#     #[server]
+#     async fn welcome(addr: String) -> Result<(), ServerError> {
+#         email::send(
+#             Email::to(addr)
+#                 .subject("Welcome!")
+#                 .template(|| WelcomeEmail(WelcomeEmailProps { name: "Sam".into() })),
+#         )
+#         .await
+#         .map_err(ServerError::failed)?;
+#         Ok(())
+#     }
+#
+# Providers are pluggable via the `EmailProvider` trait:
+#   - memory   in-process capture (default; the dev + test substrate — records
+#              every send, never hits the network)
+#   - ses      AWS SESv2                                   (feature `ses`)
+#
+# `.template(...)` renders an idealyst component to email-safe HTML via
+# `backend-email` (styles inlined, theme tokens resolved to literals) with no
+# WASM — "SSG for emails."
+#
+# Server-tier only: sending runs in the server binary. Apps depend on it as an
+# OPTIONAL dep enabled by their `server` feature, so the wasm client never
+# compiles it.
+
+[features]
+default = ["memory"]
+# In-process capture provider (records sends; default dev/test substrate).
+memory = []
+# AWS SESv2 provider (real delivery).
+ses = ["dep:aws-config", "dep:aws-sdk-sesv2", "dep:tokio"]
+
+[dependencies]
+# Reuse `#[server]`'s State<T> / install_state surface for parity with the
+# other server-tier SDKs (jobs/pubsub). Not feature-forwarded — the send path
+# needs no request context.
+server = { workspace = true }
+# The email-rendering backend powers `Email::template(...)`.
+backend-email = { workspace = true }
+runtime-core = { workspace = true }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+async-trait = "0.1"
+
+# SES provider deps (behind `ses`).
+aws-config = { version = "1", optional = true }
+aws-sdk-sesv2 = { version = "1", optional = true }
+tokio = { version = "1", features = ["rt"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }

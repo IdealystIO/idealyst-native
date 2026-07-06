@@ -313,7 +313,49 @@ mod tests {
     use idea_theme::theme::{install_idea_theme, light_theme};
     use runtime_core::{resolve_style, FontFamily};
 
-    use crate::stylesheets::SelectMenu;
+    use crate::stylesheets::{SelectMenu, SelectTrigger};
+
+    // Regression: on macOS the Select trigger showed AppKit's native blue focus
+    // ring (the pressable host opted into `NSFocusRingTypeExterior`) instead of
+    // the indigo border a Field paints on focus. The fix suppresses the native
+    // ring, drives `StateBits::FOCUSED` from the pressable's first-responder
+    // transitions, and adds a `state focused` overlay here. This pins the
+    // author-visible half: focus resolves the theme focus-ring border. The
+    // native ring suppression + FOCUSED driving live in the macOS backend and
+    // need a main-thread NSApp, so they're covered by the robot screenshot pass.
+    #[test]
+    fn regression_select_trigger_focus_paints_focus_ring_border() {
+        install_idea_theme(light_theme());
+
+        // The focus-ring color the trigger must resolve to when focused.
+        let ring = Tokenized::token("color-focus-ring", Color("#5b6cff".into())).resolve();
+
+        let focused = resolve_style(
+            &StyleApplication::new(SelectTrigger::sheet()).with("__state_focused", "on"),
+        );
+        let focused_border = focused
+            .border_top_color
+            .clone()
+            .expect("a focused trigger must set a border color")
+            .resolve();
+        assert_eq!(
+            focused_border, ring,
+            "a focused Select trigger must paint the theme focus-ring border, not the native ring"
+        );
+
+        // Without focus the border is the resting neutral border — proving the
+        // ring comes from the `focused` state, not the base.
+        let base = resolve_style(&StyleApplication::new(SelectTrigger::sheet()));
+        let base_border = base
+            .border_top_color
+            .clone()
+            .expect("the trigger reserves a border in its base")
+            .resolve();
+        assert_ne!(
+            base_border, ring,
+            "the resting trigger border must NOT already be the focus ring"
+        );
+    }
 
     // Field report: on web the Select dropdown options rendered in the
     // browser's serif default (Times), not the app font. Root cause: the

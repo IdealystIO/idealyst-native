@@ -20,8 +20,22 @@ use crate::{DynamicPtrEntry, DynamicRule, DynamicSlot, PregenEntry, WebBackend};
 use runtime_core::{Easing, StyleRules};
 // CSS conversion lives in the shared, platform-neutral `css` crate so
 // the web backend and the SSR backend emit byte-identical declarations.
-use css::{hash_class_name, rules_to_css};
+use css::{hash_class_name, rules_to_css, rules_to_css_text};
 use wasm_bindgen::JsCast;
+
+/// Is this the text primitive's node? Detected by tag: the text
+/// primitive renders a `<span>`, and `apply_style` targets no other
+/// `<span>` — button labels and spinner internals are created inside
+/// their primitive and aren't style-attached by the walker. Consulted
+/// ONLY when a `shadow` is present (see the callers), so the common
+/// no-shadow path never pays this FFI, and the sole ambiguity — an
+/// author putting a `shadow` directly on an `ActivityIndicator` (also a
+/// styled span) — would get `text-shadow` instead of `box-shadow`, a
+/// nonsensical combination we accept over threading a per-node text flag
+/// through the perf-critical batched-text creation path.
+fn is_text_span(node: &web_sys::Node) -> bool {
+    node.node_name().eq_ignore_ascii_case("span")
+}
 
 /// Map a framework [`Easing`] to its CSS `transition-timing-function`
 /// keyword. Shared by the transition, presence, and icon-animation
@@ -578,6 +592,15 @@ impl WebBackend {
         // CSS precedence resolves in favor of inline.
         self.snapshot_gradient_for_animation(id, style.background_gradient.as_ref());
 
+        // A text node's `shadow` lowers to `text-shadow` (hugging the
+        // glyphs), not `box-shadow`. Gated on `shadow.is_some()` so the
+        // overwhelmingly common no-shadow path pays nothing — no tag
+        // check, no divergence. See `apply_text_shadow`.
+        if style.shadow.is_some() && is_text_span(node) {
+            self.apply_text_shadow(node, id, style, &[], &[], &[]);
+            return;
+        }
+
         // Path 1: pre-generated cache hit.
         if let Some(entry) = self.pregen.get(&key) {
             let class_name = entry.name.clone();
@@ -690,6 +713,20 @@ impl WebBackend {
         // backend reports `handles_states_natively = true`, which is
         // every web view.)
         self.snapshot_gradient_for_animation(id, base.background_gradient.as_ref());
+
+        // Text node with a shadow on any layer → route to the
+        // `text-shadow` mint (distinct class, glyph-hugging shadow) and
+        // skip all the box-shadow fast paths below. Gated on a shadow
+        // being present so the common case is untouched.
+        if is_text_span(node)
+            && (base.shadow.is_some()
+                || overlays.iter().any(|(_, o)| o.shadow.is_some())
+                || breakpoint_overlays.iter().any(|(_, o)| o.shadow.is_some())
+                || container_overlays.iter().any(|(_, o)| o.shadow.is_some()))
+        {
+            self.apply_text_shadow(node, id, base, overlays, breakpoint_overlays, container_overlays);
+            return;
+        }
 
         // Fast-fast path: pointer-keyed pregen hit. When the
         // framework's resolution cache returns the same
@@ -892,6 +929,16 @@ impl WebBackend {
                     let _t = PhaseTimer::start("rules_to_css");
                     rules_to_css(overlay)
                 };
+                // A component that declares its own `__state_focused` overlay
+                // owns the focus indicator, so suppress the browser's default
+                // `outline` on that `:focus` rule — otherwise the native ring
+                // double-draws with the themed one. Only emitted where a focus
+                // overlay exists; elements without one keep the default ring.
+                let body = if *bit == runtime_core::StateBits::FOCUSED {
+                    format!("outline:none;{body}")
+                } else {
+                    body
+                };
                 let idx = {
                     let _t = PhaseTimer::start("insert_rule");
                     self.insert_rule(&selector, &body)
@@ -957,6 +1004,100 @@ impl WebBackend {
                 self.dynamic_by_ptr
                     .insert(std::rc::Rc::as_ptr(base), shared.clone());
             }
+            shared
+        };
+
+        let class_for_queue = shared.class_name.clone();
+        let prev = self.dynamic.insert(id, DynamicSlot { shared });
+        if let Some(old) = prev {
+            self.release_dynamic_rule(&old.shared);
+        }
+        self.queue_class_apply(node, &class_for_queue);
+    }
+
+    /// Mint + apply a `text-shadow` class for a text node whose `shadow`
+    /// style must hug the glyphs rather than box the inline span. The
+    /// class is keyed via `css::text_shadow_class_key` so it never
+    /// collides with the `box-shadow` class a box element with the
+    /// identical `StyleRules` would mint, and every layer (base + state /
+    /// breakpoint / container overlays) is lowered with `rules_to_css_text`
+    /// so `shadow` becomes `text-shadow` throughout. Deduped by content
+    /// key across text nodes (same as the box slow path); NOT mirrored
+    /// into `dynamic_by_ptr` because the base Rc may be shared with a box
+    /// element that needs the box-shadow class for the same pointer.
+    ///
+    /// This is the rare path (only shadowed text reaches it), so it favors
+    /// clarity over the box path's pointer-cache fast lanes.
+    fn apply_text_shadow(
+        &mut self,
+        node: &web_sys::Node,
+        id: u32,
+        base: &std::rc::Rc<StyleRules>,
+        overlays: &[(runtime_core::StateBits, std::rc::Rc<StyleRules>)],
+        breakpoint_overlays: &[(runtime_core::Breakpoint, std::rc::Rc<StyleRules>)],
+        container_overlays: &[(f32, std::rc::Rc<StyleRules>)],
+    ) {
+        let combined = css::variant_class_key(
+            &base.content_key(),
+            overlays,
+            breakpoint_overlays,
+            container_overlays,
+        );
+        let key = css::text_shadow_class_key(&combined);
+
+        let shared = if let Some(entry) = self.dynamic_by_content.get(&key) {
+            entry.shared.refcount.set(entry.shared.refcount.get() + 1);
+            entry.shared.clone()
+        } else {
+            let class_name = hash_class_name(&key);
+            let base_idx = self.insert_rule(&class_name, &rules_to_css_text(base));
+            let mut overlay_indices: Vec<u32> = Vec::with_capacity(
+                overlays.len() + breakpoint_overlays.len() + container_overlays.len(),
+            );
+            for (bit, overlay) in overlays {
+                let pseudo = match *bit {
+                    runtime_core::StateBits::HOVERED => ":hover",
+                    runtime_core::StateBits::PRESSED => ":active",
+                    runtime_core::StateBits::FOCUSED => ":focus",
+                    runtime_core::StateBits::DISABLED => "[disabled]",
+                    _ => continue,
+                };
+                let selector = format!("{}{}", class_name, pseudo);
+                let body = rules_to_css_text(overlay);
+                // Component-owned focus overlay suppresses the UA ring,
+                // mirroring the box path.
+                let body = if *bit == runtime_core::StateBits::FOCUSED {
+                    format!("outline:none;{body}")
+                } else {
+                    body
+                };
+                overlay_indices.push(self.insert_rule(&selector, &body));
+            }
+            for (bp, overlay) in breakpoint_overlays {
+                let body = rules_to_css_text(overlay);
+                if let Some(rule) = css::breakpoint_media_rule(&class_name, *bp, &body) {
+                    overlay_indices.push(self.insert_rule_raw(&rule));
+                }
+            }
+            for (threshold, overlay) in container_overlays {
+                let body = rules_to_css_text(overlay);
+                let rule = css::container_query_rule(&class_name, *threshold, &body);
+                overlay_indices.push(self.insert_rule_raw(&rule));
+            }
+
+            let shared = std::rc::Rc::new(DynamicPtrEntry {
+                class_name,
+                content_key: key.clone(),
+                refcount: std::cell::Cell::new(1),
+            });
+            self.dynamic_by_content.insert(
+                key,
+                DynamicRule {
+                    shared: shared.clone(),
+                    rule_index: base_idx,
+                    state_rule_indices: overlay_indices,
+                },
+            );
             shared
         };
 

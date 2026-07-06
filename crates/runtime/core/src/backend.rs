@@ -604,6 +604,23 @@ pub trait Backend {
     /// native backends lay out chrome via their own primitives.
     #[allow(unused_variables)]
     fn attach_html_class(&self, node: &Self::Node, class: &str) {}
+
+    /// Set an inline CSS custom-property / declaration on `node` — the
+    /// per-instance escape hatch paired with [`attach_html_class`] +
+    /// [`register_raw_css`](Backend::register_raw_css) for the rare value
+    /// that can't be a shared class because it varies per navigator
+    /// instance. The drawer navigator uses it for the author-configurable
+    /// `--drawer-width` custom property: the shared sheet reads
+    /// `var(--drawer-width, <fallback>)`, and this stamps the concrete
+    /// width on the drawer root so both the live web client and the SSR
+    /// first paint honor `DrawerBuilder::drawer_width` (native backends set
+    /// the real geometry directly, so this is a no-op there).
+    ///
+    /// `prop` is a CSS property name (e.g. `"--drawer-width"`), `value` its
+    /// value (e.g. `"280px"`). Default no-op — only document-backed
+    /// backends (web, SSR) implement it.
+    #[allow(unused_variables)]
+    fn attach_html_style(&self, node: &Self::Node, prop: &str, value: &str) {}
     fn create_text(
         &mut self,
         content: &str,

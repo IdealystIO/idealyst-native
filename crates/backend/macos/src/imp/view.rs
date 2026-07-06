@@ -374,12 +374,17 @@ declare_class!(
                 }
         }
 
-        // Repaint the exterior focus ring as focus enters/leaves.
+        // First-responder transitions ARE the focus events for a keyboard-
+        // interactive host (pressable / link). Drive `StateBits::FOCUSED` so a
+        // `state focused` style variant (the indigo border) resolves — the
+        // cross-platform focus indicator that replaces AppKit's native ring
+        // (None'd in `set_activate`). Mirrors the NSTextView host's
+        // become/resignFirstResponder wiring.
         #[method(becomeFirstResponder)]
         fn become_first_responder(&self) -> bool {
             let ok: bool = unsafe { msg_send![super(self), becomeFirstResponder] };
             if ok {
-                let _: () = unsafe { msg_send![self, noteFocusRingMaskChanged] };
+                self.fire_focus_state(true);
             }
             ok
         }
@@ -387,7 +392,7 @@ declare_class!(
         fn resign_first_responder(&self) -> bool {
             let ok: bool = unsafe { msg_send![super(self), resignFirstResponder] };
             if ok {
-                let _: () = unsafe { msg_send![self, noteFocusRingMaskChanged] };
+                self.fire_focus_state(false);
             }
             ok
         }
@@ -450,15 +455,18 @@ impl FlippedView {
     }
 
     /// Mark this host as keyboard-interactive (a `pressable` / `link`): store the
-    /// closure a Tab-focus + Space/Return activation fires, and opt the view into
-    /// an exterior keyboard focus ring (the `NSButton` default). Called by
+    /// closure a Tab-focus + Space/Return activation fires. Called by
     /// `create_pressable` / `create_link` with the SAME handler the `on_touch`
     /// click uses, so keyboard and mouse activation converge.
     pub(crate) fn set_activate(&self, activate: Rc<dyn Fn()>) {
         *self.ivars().activate.borrow_mut() = Some(activate);
-        // NSFocusRingTypeExterior = 2. AppKit strokes the ring from
-        // `drawFocusRingMask` while the view is first responder.
-        let _: () = unsafe { msg_send![self, setFocusRingType: 2usize] };
+        // NSFocusRingTypeNone = 1. We suppress AppKit's exterior blue ring and
+        // instead drive `StateBits::FOCUSED` from the first-responder
+        // transitions below, so focus is shown by a styled `state focused`
+        // border (the cross-platform focus indicator web renders via `:focus`).
+        // Mirrors the text-field path, which None's its ring for the same
+        // reason (see `configure_framework_field`).
+        let _: () = unsafe { msg_send![self, setFocusRingType: 1usize] };
     }
 
     /// `true` if this view opted into keyboard activation (a `pressable` /
@@ -516,6 +524,23 @@ impl FlippedView {
         if let Some(s) = setter {
             s(bit, on);
         }
+    }
+
+    /// Drive `StateBits::FOCUSED` from a first-responder transition, DEFERRED one
+    /// run-loop tick and wrapped in a reactive `cycle`. AppKit calls
+    /// `becomeFirstResponder` from inside `makeFirstResponder`, which the app may
+    /// itself invoke from WITHIN a reactive flush (a programmatic focus, an
+    /// effect-driven autofocus). The setter re-enters `apply_style`, so firing
+    /// synchronously there would abort with "RefCell already borrowed". A real
+    /// click / Tab already lands on a clean turn, so the defer is invisible.
+    /// Mirrors [`cell_fire_focus`] for the text-field host. No-op when no
+    /// `state_setter` is installed (a pressable with no interactive style states).
+    fn fire_focus_state(&self, on: bool) {
+        let setter = self.ivars().state_setter.borrow().clone();
+        let Some(setter) = setter else { return };
+        runtime_core::after_ms_detached(0, move || {
+            runtime_core::cycle(|| setter(StateBits::FOCUSED, on));
+        });
     }
 
     /// Set (or clear, with `None`) the hover cursor and ask the window to

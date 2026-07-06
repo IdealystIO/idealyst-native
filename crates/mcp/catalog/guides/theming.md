@@ -130,3 +130,50 @@ component's sheet (e.g. add a custom tone to Button) call its installer *after*
 ```rust
 install_button_sheet(ButtonSheetBuilder::new().add_tone(Brand.into()).build());
 ```
+
+## Reference theme tokens from your own stylesheet
+
+The sections above customize the *theme*. This one is the other direction: you're
+writing your **own** `stylesheet!` for an app-specific layout (a custom sidebar,
+say) and you want it to track the installed theme's colors — no hardcoded palette.
+
+At the framework level a token reference is `Tokenized::token("color-surface",
+fallback)`, and the `fallback` is a **required literal** (see [[styling]]). Supplying
+the design's concrete hex there duplicates a value the theme already defines under
+the same name — a second source of truth that silently drifts if the theme's value
+later changes.
+
+idea-theme closes that gap with `theme_token!` (colors) and `theme_length!`
+(spacing / radius / typography sizes). They reference a canonical token **by name
+only** — the fallback is pulled from idea-theme's base palette, so you restate no
+hex, and the name is validated **at compile time**:
+
+```rust
+use idea_ui::{theme_token, theme_length};
+
+stylesheet! {
+    Sidebar<()> {
+        base(_theme) {
+            background: theme_token!("color-surface"),
+            border_color: theme_token!("color-border"),
+            color: theme_token!("intent-primary-fg"),
+            padding: theme_length!("spacing-lg"),
+            border_radius: theme_length!("radius-md"),
+        }
+    }
+}
+```
+
+A typo — `theme_token!("color-surfaze")` — fails the build instead of silently
+rendering a transparent fallback. At runtime the installed theme's value wins over
+the fallback, exactly as with a hand-written `Tokenized::token`, so a reskin (or a
+light/dark swap) re-flows the stylesheet with zero changes to it. The theme stays
+the single source of truth.
+
+Use the canonical names from the token table: the neutral colors
+(`CANONICAL_NEUTRAL_TOKENS` — `color-background`, `color-surface`, `color-text`,
+`color-border`, …), the intent slots (`intent-<intent>-<slot>`, e.g.
+`intent-primary-soft-bg`), and the length tokens (`CANONICAL_LENGTH_TOKENS` —
+`spacing-*`, `radius-*`, `typography-*-size`). For a token name computed at runtime,
+the `theme_color(name)` / `theme_length(name)` functions are the string-driven
+(runtime-checked) equivalents the macros delegate to.

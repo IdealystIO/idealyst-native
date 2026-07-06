@@ -2101,6 +2101,18 @@ impl Backend for WebBackend {
         }
     }
 
+    fn attach_html_style(&self, node: &Self::Node, prop: &str, value: &str) {
+        use wasm_bindgen::JsCast;
+        // `set_property` handles CSS custom properties (`--drawer-width`)
+        // and normal declarations alike, and merges into the element's
+        // existing inline style rather than clobbering it (the walker's
+        // `apply_style` swaps the *class* attribute, not inline style, so
+        // these coexist).
+        if let Some(el) = node.dyn_ref::<web_sys::HtmlElement>() {
+            let _ = el.style().set_property(prop, value);
+        }
+    }
+
     fn create_reactive_anchor(&mut self) -> Self::Node {
         primitives::view::create_reactive_anchor(self)
     }

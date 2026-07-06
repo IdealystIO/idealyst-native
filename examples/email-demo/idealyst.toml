@@ -1,0 +1,30 @@
+# idealyst.toml — unified SDK configuration.
+#
+# The default (this file with everything commented out) uses the in-memory
+# capture provider — no network. `configure_all()` reads this file, so a real
+# deployment flips to SES by uncommenting below.
+#
+# The point of NAMED CONNECTIONS: define an AWS account ONCE and let multiple
+# tools reference it. Here email (SES) and — if this app also used it — the
+# jobs SDK (SQS) would both say `connection = "aws-main"` to share one account;
+# a tool that needs a different account references a different connection.
+
+# [connections.aws-main]
+# kind = "aws"
+# region = "us-east-1"
+# profile = "prod"              # AWS shared-config profile (creds via the chain)
+
+# [email]
+# provider = "ses"
+# connection = "aws-main"       # share the AWS account with e.g. [jobs]
+# from = "Idealyst <no-reply@yourdomain.dev>"
+
+# Prefer a separate file per tool? `mail.toml` (or `email.toml`) is merged
+# after this base and can `extends = "idealyst.toml"` to inherit connections:
+#
+#   # mail.toml
+#   extends = "idealyst.toml"
+#   [email]
+#   provider = "ses"
+#   connection = "aws-main"
+#   from = "Idealyst <no-reply@yourdomain.dev>"

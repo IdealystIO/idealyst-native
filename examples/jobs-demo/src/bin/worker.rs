@@ -28,9 +28,11 @@ async fn main() {
 
     // Backend from the environment (set by the CLI). Defaults to memory, which
     // is per-process — a standalone worker really wants a shared broker.
-    jobs::configure_from_env()
+    // `configure_all` reads the same `idealyst.toml` the server does, so the
+    // worker drains the exact queue the server enqueues to.
+    idealyst_config::configure_all()
         .await
-        .expect("configure jobs backend (set IDEALYST_JOBS_BACKEND / _URL)");
+        .expect("configure jobs backend from idealyst.toml");
 
     // Force-link anchor so the `#[job]` registrations survive linking.
     let _anchor = jobs_demo::signup;

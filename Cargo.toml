@@ -29,6 +29,7 @@ members = [
     "crates/backend/cpu",
     "crates/backend/web",
     "crates/backend/ssr",
+    "crates/backend/email",
     "crates/backend/windows",
     "crates/backend/linux",
     "crates/backend/posix-log-capture",
@@ -74,6 +75,7 @@ members = [
     # UI — component library + extras.
     "crates/ui/idea-theme",
     "crates/ui/idea-ui",
+    "crates/ui/idea-ui-mail",
     "crates/ui/idea-ui-docs-derive",
     "crates/ui/icons-lucide",
 
@@ -156,6 +158,8 @@ members = [
     "crates/sdk/server/jobs",
     "crates/sdk/server/jobs/macros",
     "crates/sdk/server/pubsub",
+    "crates/sdk/server/email",
+    "crates/sdk/server/config",
 
     # SDK — navigator-kind extensions (Primitive::NavigatorExt).
     # Grouped under navigators/: the three SDK features (stack/tab/
@@ -250,6 +254,7 @@ members = [
     "examples/graphql-demo",
     "examples/jobs-demo",
     "examples/pubsub-demo",
+    "examples/email-demo",
     "examples/dnd-demo",
     "examples/kanban-demo",
     "examples/sortable-demo",
@@ -349,6 +354,7 @@ backend-terminal = { path = "crates/backend/terminal" }
 backend-cpu = { path = "crates/backend/cpu" }
 backend-web = { path = "crates/backend/web" }
 backend-ssr = { path = "crates/backend/ssr" }
+backend-email = { path = "crates/backend/email" }
 backend-windows = { path = "crates/backend/windows" }
 backend-linux = { path = "crates/backend/linux" }
 welcome = { path = "examples/welcome" }
@@ -371,6 +377,7 @@ runtime-server-shell-native = { path = "crates/dev/runtime-server-shell" }
 posix-log-capture = { path = "crates/backend/posix-log-capture" }
 idea-theme = { path = "crates/ui/idea-theme" }
 idea-ui = { path = "crates/ui/idea-ui" }
+idea-ui-mail = { path = "crates/ui/idea-ui-mail" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive" }
 icons-lucide = { path = "crates/ui/icons-lucide" }
 pan = { path = "crates/sdk/client/pan" }
@@ -434,6 +441,8 @@ server-aws = { path = "crates/api/server-aws" }
 jobs = { path = "crates/sdk/server/jobs" }
 jobs-macros = { path = "crates/sdk/server/jobs/macros" }
 pubsub = { path = "crates/sdk/server/pubsub" }
+email = { path = "crates/sdk/server/email" }
+idealyst-config = { path = "crates/sdk/server/config" }
 stack-navigator = { path = "crates/sdk/client/navigators/stack" }
 tab-navigator = { path = "crates/sdk/client/navigators/tab" }
 drawer-navigator = { path = "crates/sdk/client/navigators/drawer" }

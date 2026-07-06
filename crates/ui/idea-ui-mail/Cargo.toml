@@ -1,0 +1,19 @@
+[package]
+name = "idea-ui-mail"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Email-safe component set for the idealyst framework — the opinion layer for `backend-email`."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+# Self-contained: mail components build their `StyleRules` directly (no theme
+# lifecycle), so they render identically whether or not a theme is installed —
+# which matters for a headless email render.
+runtime-core = { workspace = true }
+
+[dev-dependencies]
+# The email backend, to render mail components end-to-end in tests.
+backend-email = { workspace = true }

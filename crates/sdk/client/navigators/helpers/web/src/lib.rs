@@ -1107,6 +1107,7 @@ pub fn create_drawer(
         build_top,
         build_bottom,
         build_trailing,
+        drawer_width,
         ..
     } = callbacks;
     // Rewrite default `Link` activation to `Select` — without this
@@ -1252,6 +1253,19 @@ pub fn create_drawer(
             "class",
             "ui-nav-root ui-nav-drawer-root",
         );
+    }
+    // Stamp the author-configured drawer width as a custom property on the
+    // root; the shared navigator sheet reads `var(--drawer-width, …)` for
+    // both the off-canvas modal and pinned-sidebar widths. Without this the
+    // sheet's fallback wins and `DrawerBuilder::drawer_width` is silently
+    // dropped on web (it's honored on every native backend). Custom
+    // properties inherit, so the descendant `.ui-nav-drawer-sidebar` reads
+    // it. `set_property` merges into inline style without disturbing the
+    // class attribute the walker's `apply_style` later swaps.
+    if let Some(root_html) = container.dyn_ref::<web_sys::HtmlElement>() {
+        let _ = root_html
+            .style()
+            .set_property("--drawer-width", &format!("{drawer_width}px"));
     }
     let doc = web_sys::window()
         .expect("window")

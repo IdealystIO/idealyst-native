@@ -16,6 +16,7 @@ default = []
 server = [
     "server/server",
     "dep:pubsub",
+    "dep:idealyst-config",
     "dep:tokio",
     "dep:axum",
     "dep:tower-http",
@@ -31,6 +32,9 @@ serde = { version = "1", features = ["derive"] }
 # Server-only: all backends enabled so `dev.toml`'s `[pubsub] backend` can pick
 # memory / redis / postgres without a rebuild.
 pubsub = { workspace = true, optional = true, features = ["redis", "postgres"] }
+# Unified config: `configure_all()` reads idealyst.toml and wires pubsub.
+# `redis`/`postgres` forwarded so a `[pubsub] backend` can pick either.
+idealyst-config = { workspace = true, optional = true, features = ["pubsub", "redis", "postgres"] }
 futures-util = { version = "0.3", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

@@ -1,0 +1,60 @@
+[package]
+name = "idealyst-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Unified configuration for the server-tier SDKs (jobs, pubsub, email).
+#
+# Replaces per-SDK flat `IDEALYST_<SDK>_*` env vars as the DEFAULT authoring
+# surface with a structured file model built around NAMED CONNECTION PROFILES:
+# a credential/endpoint (an AWS account, a Redis URL, a Postgres URL) is defined
+# ONCE as `[connections.<name>]`, and each tool references it by name — so two
+# tools can share one AWS account (both `connection = "aws-main"`) or not, which
+# a flat env namespace can't express.
+#
+# Files compose:
+#   - `idealyst.toml`      the base: `[connections.*]` + optional `[jobs]` /
+#                          `[pubsub]` / `[email]` sections.
+#   - `jobs.toml` / `pubsub.toml` / `email.toml`  per-tool overrides; each may
+#                          carry its own `[connections.*]` and an `extends`
+#                          pointing at a shared base to inherit connections.
+#   - `extends = "..."`    literal inheritance: merge the named parent file(s)
+#                          first, then overlay this file.
+#   - env vars             still honored, but as an OVERRIDE layer (secret
+#                          injection), not the primary surface.
+#
+# `configure_all().await` loads + merges + resolves everything and configures
+# each enabled SDK in one call. The SDKs it wires are selected by cargo
+# features, so an app pulls in only what it uses.
+
+[features]
+default = []
+# Wire each SDK (off unless the app uses it). Enabling a tool pulls its crate.
+jobs = ["dep:jobs"]
+pubsub = ["dep:pubsub"]
+email = ["dep:email"]
+# Build a resolved AWS `SdkConfig` (region/profile/endpoint) from an
+# `[connections.<name>] kind = "aws"` block. Required by the `sqs`/`ses` paths.
+aws = ["dep:aws-config"]
+# Real broker/provider backends — forward to the tool crates' own features.
+redis = ["jobs?/redis", "pubsub?/redis"]
+postgres = ["jobs?/postgres", "pubsub?/postgres"]
+sqs = ["jobs?/sqs", "aws"]
+ses = ["email?/ses", "aws"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+thiserror = "1"
+
+# Tool crates — optional, pulled in only when their feature is on.
+jobs = { workspace = true, optional = true }
+pubsub = { workspace = true, optional = true }
+email = { workspace = true, optional = true }
+
+# Builds the resolved AWS SdkConfig handed to the SES/SQS constructors.
+aws-config = { version = "1", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }

@@ -1,0 +1,24 @@
+[package]
+name = "email-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Render an idealyst email template to email-safe HTML (SSG-for-emails) and send it through the `email` SDK. Uses the in-memory capture provider by default; set IDEALYST_EMAIL_PROVIDER=ses (feature `ses`) for real AWS SES delivery."
+
+[features]
+default = []
+# Enable the AWS SESv2 provider path (`email/ses`) through the config crate.
+ses = ["email/ses", "idealyst-config/ses"]
+
+[dependencies]
+email = { workspace = true }
+# The unified config layer: `configure_all()` reads idealyst.toml + resolves
+# connection profiles. `email` feature wires the email SDK from the file.
+idealyst-config = { workspace = true, features = ["email"] }
+idea-ui-mail = { workspace = true }
+runtime-core = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[[bin]]
+name = "email-demo"
+path = "src/main.rs"

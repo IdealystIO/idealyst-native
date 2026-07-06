@@ -17,6 +17,7 @@ default = []
 server = [
     "server/server",
     "jobs/worker",
+    "dep:idealyst-config",
     "dep:tokio",
     "dep:axum",
     "dep:tower-http",
@@ -25,6 +26,10 @@ server = [
 [dependencies]
 server = { workspace = true }
 jobs = { workspace = true }
+# Unified config: `configure_all()` reads idealyst.toml and wires the jobs
+# backend (memory by default; a `[jobs] connection = "..."` shares a broker).
+# Server-only (behind `server`), so the wasm client never compiles it.
+idealyst-config = { workspace = true, optional = true, features = ["jobs"] }
 runtime-core = { workspace = true, features = ["async-driver"] }
 idea-ui = { workspace = true }
 serde = { version = "1", features = ["derive"] }

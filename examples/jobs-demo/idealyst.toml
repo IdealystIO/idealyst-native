@@ -1,0 +1,22 @@
+# idealyst.toml — unified SDK config for jobs-demo.
+#
+# `configure_all()` (in src/bin/server.rs + worker.rs) reads this. The default
+# is the in-memory queue: the server runs the worker in-process, since a
+# separate process can't see an in-memory queue.
+[jobs]
+backend = "memory"
+
+# Point at a shared broker to have `idealyst dev` auto-spawn the dedicated
+# worker process draining the same queue. Define the broker ONCE as a named
+# connection so other tools (e.g. the email SDK's SES) could share it:
+#
+# [connections.broker]
+# kind = "redis"
+# url = "redis://127.0.0.1:6379"
+#
+# [jobs]
+# backend = "redis"
+# connection = "broker"
+#
+# (For SQS: a `kind = "aws"` connection + `[jobs] backend = "sqs"`, `queue_url`,
+# and build with `idealyst-config/sqs`.)

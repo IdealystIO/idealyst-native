@@ -31,10 +31,11 @@ async fn main() {
         sent: Arc::new(AtomicU32::new(0)),
     });
 
-    // Configure the queue backend from the environment (memory by default;
-    // IDEALYST_JOBS_BACKEND / _URL override — set by `idealyst dev`/`worker`).
-    if let Err(e) = jobs::configure_from_env().await {
-        eprintln!("[server] jobs backend config failed: {e}");
+    // Configure every SDK from `idealyst.toml` in one call (memory backend by
+    // default; a `[jobs] connection = "..."` block points at a shared broker).
+    // Env vars still override. This replaces the per-SDK `configure_from_env`.
+    if let Err(e) = idealyst_config::configure_all().await {
+        eprintln!("[server] config failed: {e}");
     }
 
     // Run the worker in-process. Held for the server's lifetime.

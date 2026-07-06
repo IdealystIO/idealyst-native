@@ -17,6 +17,10 @@ anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+# Unified SDK config loader — `dev`/`worker` read the merged `idealyst.toml`
+# (connection profiles + `[jobs]`/`[pubsub]`) to decide worker orchestration.
+# Default features only: the loader + schema, none of the SDK wiring.
+idealyst-config = { workspace = true }
 # Auto-load `.env` / `.env.local` from the invocation directory so
 # credentials (App Store Connect API key, signing team) resolve without
 # manual `source`-ing. Does NOT override already-set process env vars, so

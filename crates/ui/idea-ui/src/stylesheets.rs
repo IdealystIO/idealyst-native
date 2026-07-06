@@ -285,6 +285,17 @@ stylesheet! {
         state pressed(_t) {
             opacity: 0.85,
         }
+        // Keyboard/pointer focus paints an indigo ring — the cross-platform
+        // focus indicator that replaces AppKit's native ring (now suppressed on
+        // the pressable host). `border_width: 1` also covers the borderless
+        // (solid/soft/ghost) variants, which reserve no border of their own;
+        // the outlined variants just recolor their existing 1px border. On
+        // macOS the CALayer border draws inside the bounds and never nudges the
+        // Taffy-positioned content; on web border-box keeps the outer size fixed.
+        state focused(t) {
+            border_width: 1.0,
+            border_color: Tokenized::token("color-focus-ring", Color("#5b6cff".into())),
+        }
         state disabled(_t) {
             opacity: 0.45,
         }
@@ -806,6 +817,19 @@ stylesheet! {
             // no-op. Mirrors Button/IconButton.
             cursor: Cursor::Pointer,
         }
+        // Keyboard/pointer focus rings the whole control row with the themed
+        // indigo focus ring — the cross-platform indicator that replaces the
+        // native ring (suppressed on the pressable host; browser outline killed
+        // by the web `:focus` rule). Mirrors Button: the row reserves no base
+        // border, so `border_width: 1` on focus draws it inside the bounds
+        // (border-box keeps the outer size fixed; no content nudge).
+        state focused(t) {
+            border_width: 1.0,
+            border_color: Tokenized::token("color-focus-ring", Color("#5b6cff".into())),
+        }
+        transitions {
+            border_color: 150ms EaseOut,
+        }
     }
 }
 
@@ -885,6 +909,12 @@ stylesheet! {
         }
         state hovered(t) {
             border_color: Tokenized::token("color-border-hover", Color("#b9bdcc".into())),
+        }
+        // Keyboard/pointer focus paints the same indigo ring as `open` and as
+        // Field's `state focused` — the cross-platform focus indicator that
+        // replaces the native macOS ring (suppressed in the pressable host).
+        state focused(t) {
+            border_color: Tokenized::token("color-focus-ring", Color("#5b6cff".into())),
         }
         state disabled(_t) {
             opacity: 0.55,
@@ -1285,6 +1315,17 @@ stylesheet! {
         }
         state pressed(_t) {
             opacity: 0.85,
+        }
+        // Keyboard/pointer focus paints an indigo ring — the cross-platform
+        // focus indicator that replaces AppKit's native ring (now suppressed on
+        // the pressable host). `border_width: 1` also covers the borderless
+        // (solid/soft/ghost) variants, which reserve no border of their own;
+        // the outlined variants just recolor their existing 1px border. On
+        // macOS the CALayer border draws inside the bounds and never nudges the
+        // Taffy-positioned content; on web border-box keeps the outer size fixed.
+        state focused(t) {
+            border_width: 1.0,
+            border_color: Tokenized::token("color-focus-ring", Color("#5b6cff".into())),
         }
         state disabled(_t) {
             opacity: 0.45,
@@ -1801,6 +1842,12 @@ stylesheet! {
             color: Tokenized::token("color-text", Color("#1a1a1f".into())),
             background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
         }
+        // Focus mirrors hover (a surface wash), not a box border — a rectangular
+        // ring reads wrong on an underline tab. Replaces the native macOS ring.
+        state focused(t) {
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
+        }
         state pressed(t) {
             color: Tokenized::token("color-text", Color("#1a1a1f".into())),
             background: Tokenized::token("color-border", Color("#e4e6ef".into())),
@@ -1840,6 +1887,11 @@ stylesheet! {
             }
         }
         state hovered(t) {
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
+        }
+        // Focus mirrors hover (chip wash) — replaces the native macOS ring.
+        state focused(t) {
             color: Tokenized::token("color-text", Color("#1a1a1f".into())),
             background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
         }
@@ -2129,6 +2181,10 @@ stylesheet! {
         state hovered(_t) {
             background: Tokenized::token("color-surface-alt", Color("#f4f5f9".into())),
         }
+        // Focus mirrors hover (row wash) — replaces the native macOS ring.
+        state focused(_t) {
+            background: Tokenized::token("color-surface-alt", Color("#f4f5f9".into())),
+        }
         transitions {
             background: 150ms EaseOut,
             color: 250ms EaseInOut,
@@ -2320,6 +2376,10 @@ stylesheet! {
         state hovered(t) {
             background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
         }
+        // Focus mirrors hover (row wash) — replaces the native macOS ring.
+        state focused(t) {
+            background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
+        }
         transitions { background: 120ms EaseOut }
     }
 }
@@ -2393,6 +2453,8 @@ stylesheet! {
             }
         }
         state hovered(t) { color: Tokenized::token("color-text", Color("#1a1a1f".into())) }
+        // Focus mirrors hover (text brighten) — replaces the native macOS ring.
+        state focused(t) { color: Tokenized::token("color-text", Color("#1a1a1f".into())) }
         transitions { color: 120ms EaseOut }
     }
 }
@@ -2445,6 +2507,8 @@ stylesheet! {
             }
         }
         state hovered(t) { background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())) }
+        // Focus mirrors hover (surface wash) — replaces the native macOS ring.
+        state focused(t) { background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())) }
         state disabled(_t) { opacity: 0.4 }
         transitions { background: 120ms EaseOut, color: 120ms EaseOut }
     }
@@ -2503,6 +2567,8 @@ stylesheet! {
             on(t) { background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())) }
         }
         state hovered(t) { background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())) }
+        // Focus mirrors hover (row wash) — replaces the native macOS ring.
+        state focused(t) { background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())) }
         transitions { background: 120ms EaseOut }
     }
 }
@@ -2546,6 +2612,9 @@ stylesheet! {
             font_weight: FontWeight::Medium,
         }
         state hovered(t) { color: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())) }
+        // Focus mirrors hover (color brighten) — an inline text link takes a
+        // text affordance, not a box ring. Replaces the native macOS ring.
+        state focused(t) { color: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())) }
         transitions { color: 120ms EaseOut }
     }
 }

@@ -7,7 +7,7 @@ use runtime_core::{FontFamily, FontStyle, FontWeight, StyleRules};
 use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
 use objc2_app_kit::NSView;
-use objc2_foundation::{CGFloat, NSObject, NSString};
+use objc2_foundation::{CGFloat, CGSize, NSObject, NSString};
 
 /// AppKit's NSTextAlignment enum values. The `objc2-app-kit`
 /// generated bindings define them; we mirror raw values here so
@@ -92,7 +92,46 @@ pub(crate) fn apply_text_style(
         let _: () = unsafe { msg_send![view, setAlignment: align] };
     }
 
+    apply_text_shadow(view, style);
+
     let _ = is_label;
+}
+
+/// Apply (or clear) the text primitive's drop shadow. A `shadow` on a
+/// text node is a GLYPH shadow — web lowers it to `text-shadow`, and the
+/// framework converges the *output* across backends (Rule #7). Here it's
+/// a CALayer shadow on the label's backing layer: an `NSTextField`'s
+/// layer content is the drawn glyphs over a transparent background, so
+/// the layer shadow takes the glyph silhouette rather than the box.
+/// Mirrors `backend_ios_core`'s text-shadow path.
+fn apply_text_shadow(view: &NSView, style: &StyleRules) {
+    // Label views are layer-backed (`apply_style_to_view` sets
+    // `wantsLayer` before this runs); fetch that same layer.
+    let _: () = unsafe { msg_send![view, setWantsLayer: true] };
+    let layer: Retained<NSObject> = unsafe { msg_send_id![view, layer] };
+    match &style.shadow {
+        Some(sh) => {
+            // `shadowColor` carries the alpha; `shadowOpacity` is a plain
+            // enable multiplier at 1.0 (CALayer multiplies the two, so the
+            // effective strength is exactly the author's color alpha).
+            let ns_color = crate::imp::color_to_nscolor(&sh.color);
+            let cg: crate::imp::CGColorRef = unsafe { msg_send![&*ns_color, CGColor] };
+            if !cg.0.is_null() {
+                let _: () = unsafe { msg_send![&layer, setShadowColor: cg] };
+            }
+            let _: () = unsafe { msg_send![&layer, setShadowOpacity: 1.0f32] };
+            let _: () = unsafe { msg_send![&layer, setShadowRadius: sh.blur as CGFloat] };
+            let (w, h) = text_shadow_offset(sh.x, sh.y);
+            let offset = CGSize { width: w, height: h };
+            let _: () = unsafe { msg_send![&layer, setShadowOffset: offset] };
+        }
+        None => {
+            // No shadow in THIS restyle → clear any a prior style left, so a
+            // reactively-toggled shadow actually turns off (the same
+            // set-then-never-unset hazard the background path guards).
+            let _: () = unsafe { msg_send![&layer, setShadowOpacity: 0.0f32] };
+        }
+    }
 }
 
 /// Build an `NSFont` for the given style. `family` is the optional
@@ -190,6 +229,18 @@ fn font_weight_to_nsfont(weight: FontWeight) -> CGFloat {
     }
 }
 
+/// Translate a `Shadow`'s `(x, y)` offset (web semantics: +x right, +y
+/// DOWN) into a CALayer `shadowOffset` `(width, height)`. An `NSTextField`
+/// is a plain (non-flipped) `NSView`, so its layer geometry is y-up — a
+/// positive `height` casts the shadow *upward*. Negating `y` makes the
+/// macOS shadow land in the same place as web's `text-shadow` and iOS's
+/// layer shadow (UIKit is y-down, so iOS passes `+y` directly). Pure so
+/// the sign convention — the one non-obvious bit — is unit-testable off
+/// the main thread.
+fn text_shadow_offset(x: f32, y: f32) -> (CGFloat, CGFloat) {
+    (x as CGFloat, -(y as CGFloat))
+}
+
 fn length_to_px(len: &runtime_core::Length) -> CGFloat {
     match len {
         runtime_core::Length::Px(v) => *v as CGFloat,
@@ -225,6 +276,17 @@ mod tests {
             resolved.is_none(),
             "no font_family → resolve_nsfont is None; the system-font fallback covers it"
         );
+    }
+
+    // The text-shadow offset must converge with web/iOS: web `text-shadow`
+    // and iOS's layer shadow put `y: 2` BELOW the glyphs. macOS labels are
+    // non-flipped (y-up), so the layer offset height negates to match. A
+    // regression here (dropping the negation) flips the shadow above the
+    // text on macOS only — the exact per-platform divergence Rule #7 bans.
+    #[test]
+    fn text_shadow_offset_negates_y_for_nonflipped_label() {
+        assert_eq!(text_shadow_offset(1.0, 2.0), (1.0 as CGFloat, -2.0 as CGFloat));
+        assert_eq!(text_shadow_offset(-3.0, 0.0), (-3.0 as CGFloat, 0.0 as CGFloat));
     }
 
     #[test]

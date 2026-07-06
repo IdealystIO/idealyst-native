@@ -140,7 +140,13 @@ A few things about the grammar:
   and pull theme values from tokens instead.
 - `Tokenized::token("name", fallback)` references a style token; a bare
   literal (`padding: 8.0`, `background: "#fff"`) becomes
-  `Tokenized::Literal` via `From`.
+  `Tokenized::Literal` via `From`. The `fallback` is mandatory at this
+  layer — runtime-core doesn't know any palette, so a token reference
+  must carry its own default. If you're styling on top of the **idea-ui
+  design system**, reach for its `theme_token!("color-surface")` /
+  `theme_length!("spacing-md")` macros instead: they pull the fallback
+  from idea-theme's canonical palette (so you restate no hex) and check
+  the name at compile time. See the idea-ui theming guide.
 
 It produces:
 
@@ -278,6 +284,41 @@ Author code never touches any of this. The two paths — declarative
 (CSS pseudo-classes) and event-driven (signal-flip) — both come out
 of the same author-side stylesheet declaration, and the backend
 opts into whichever it can support.
+
+---
+
+## Shadows: box vs. text
+
+`StyleRules::shadow` is a single `Shadow { x, y, blur, color }`. What it
+*renders* as depends on the node it lands on:
+
+- On a **box** element (`view`, `image`, `pressable`, …) it's a box
+  shadow — the shadow of the element's rectangle.
+- On the **text** primitive it's a *glyph* shadow — the shadow hugs the
+  letter outlines, not the inline box. There's no separate `text_shadow`
+  field; the text primitive reinterprets the one `shadow` field.
+
+Each backend converges on that output through its own mechanism
+(CLAUDE.md §7):
+
+| Backend | Box element | Text primitive |
+| --- | --- | --- |
+| Web / SSR | `box-shadow` | `text-shadow` (`css::rules_to_css_text`) |
+| iOS / macOS | CALayer shadow | CALayer shadow on the label (layer content is the glyphs) |
+| Android | *(elevation, n/a in v1)* | `TextView.setShadowLayer` |
+
+`text-shadow` and `box-shadow` share the exact `<x> <y> <blur> <color>`
+grammar (neither takes a spread), so the mapping is lossless. The `y`
+offset is positive-**down** on every backend — the coordinate flips
+(AppKit's y-up layer, UIKit's y-down) are absorbed by the backend so a
+`shadow { y: 2 }` lands below the glyphs everywhere.
+
+Because a shadowed text node and a box element with an otherwise
+identical `StyleRules` must render different CSS, the web/SSR backends
+mint the text node a distinct class (`css::text_shadow_class_key`) so the
+two never collide in the content-keyed style cache. This only diverges
+when a shadow is actually present — unshadowed text still shares classes
+with views.
 
 ---
 

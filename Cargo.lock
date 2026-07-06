@@ -1385,6 +1385,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "backend-email"
+version = "0.0.1"
+dependencies = [
+ "css",
+ "runtime-core",
+]
+
+[[package]]
 name = "backend-ios-core"
 version = "0.0.1"
 dependencies = [
@@ -3538,6 +3546,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "email"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "aws-config",
+ "aws-sdk-sesv2",
+ "backend-email",
+ "runtime-core",
+ "serde",
+ "serde_json",
+ "server",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "email-demo"
+version = "0.0.1"
+dependencies = [
+ "email",
+ "idea-ui-mail",
+ "idealyst-config",
+ "runtime-core",
+ "tokio",
+]
+
+[[package]]
 name = "embedded-io"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5643,6 +5678,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "idea-ui-mail"
+version = "0.0.1"
+dependencies = [
+ "backend-email",
+ "runtime-core",
+]
+
+[[package]]
 name = "idealyst-cli"
 version = "0.0.1"
 dependencies = [
@@ -5664,6 +5707,7 @@ dependencies = [
  "dev-tui",
  "dotenvy",
  "icon-gen",
+ "idealyst-config",
  "libc",
  "lint",
  "mcp-catalog",
@@ -5681,6 +5725,20 @@ dependencies = [
  "serde_json",
  "syn 2.0.117",
  "tempfile",
+ "tokio",
+ "toml 0.8.23",
+]
+
+[[package]]
+name = "idealyst-config"
+version = "0.0.1"
+dependencies = [
+ "aws-config",
+ "email",
+ "jobs",
+ "pubsub",
+ "serde",
+ "thiserror 1.0.69",
  "tokio",
  "toml 0.8.23",
 ]
@@ -5994,6 +6052,7 @@ version = "0.0.1"
 dependencies = [
  "axum",
  "idea-ui",
+ "idealyst-config",
  "jobs",
  "runtime-core",
  "serde",
@@ -8385,6 +8444,7 @@ dependencies = [
  "axum",
  "futures-util",
  "idea-ui",
+ "idealyst-config",
  "net",
  "pubsub",
  "runtime-core",

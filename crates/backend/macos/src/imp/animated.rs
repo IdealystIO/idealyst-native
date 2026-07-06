@@ -400,6 +400,21 @@ pub(crate) fn set_animated_color(
 /// raw CATransform3D struct directly — it's `#[repr(C)]` 16 doubles
 /// — and let `setTransform:` accept it through the standard ObjC
 /// type encoding.
+/// Translation that keeps the box center `(cx, cy)` fixed under the 2×2
+/// linear map `[[a, c], [b, d]]` (Core Animation's row-vector convention:
+/// `x' = a*x + c*y`, `y' = b*x + d*y`). Equal to `C − L(C)`, i.e. the
+/// translate part of `T(C) · M · T(−C)`. AppKit layer-backed `NSView`s
+/// default their layer `anchorPoint` to `(0, 0)` (top-left), so this is what
+/// makes scale/rotate pivot around the center like UIKit / web do.
+///
+/// Kept pure (no ObjC) so the center-invariant is unit-testable — the native
+/// `setTransform:` write is exercised by the robot screenshot pass.
+fn center_pivot_offset(cx: f64, cy: f64, a: f64, b: f64, c: f64, d: f64) -> (f64, f64) {
+    let center_tx = cx * (1.0 - a) - c * cy;
+    let center_ty = cy * (1.0 - d) - b * cx;
+    (center_tx, center_ty)
+}
+
 fn rebuild_transform(view: &NSView, state: &AnimatedState) {
     // Layer-back the view; transforms only render through the
     // CALayer. `setWantsLayer:true` is a no-op if already set.
@@ -455,10 +470,13 @@ fn rebuild_transform(view: &NSView, state: &AnimatedState) {
     // off-axis.
     //
     // Derivation: T(cx, cy) × M × T(-cx, -cy) gives the same linear
-    // part but shifts translation by (cx*(1-a) - b*cy,
-    // cy*(1-d) - c*cx).
-    let center_tx = cx * (1.0 - a) - b * cy;
-    let center_ty = cy * (1.0 - d) - c * cx;
+    // part but shifts translation by (cx*(1-a) - c*cy,
+    // cy*(1-d) - b*cx). Note the cross terms: CA's row-vector map is
+    // x' = a*x + c*y, y' = b*x + d*y, so the x-offset carries `c` and
+    // the y-offset carries `b`. For a pure scale b = c = 0, so the
+    // choice is invisible there; a rotation has b, c ≠ 0 (and opposite
+    // sign), so swapping them pivots off-center — the bug this fixes.
+    let (center_tx, center_ty) = center_pivot_offset(cx, cy, a, b, c, d);
 
     let m = CATransform3D {
         m11: a, m12: b, m13: 0.0, m14: 0.0,
@@ -556,5 +574,59 @@ unsafe impl objc2::encode::Encode for CATransform3D {
             f64::ENCODING, f64::ENCODING, f64::ENCODING, f64::ENCODING,
         ],
     );
+}
+
+#[cfg(test)]
+mod tests {
+    //! Pure center-pivot math — no AppKit. The native `setTransform:` write is
+    //! exercised by the robot screenshot pass, not here.
+    use super::center_pivot_offset;
+
+    /// Apply the CA row-vector map `x' = a*x + c*y + tx`, `y' = b*x + d*y + ty`
+    /// to a point, using the center-pivot offset as the translate.
+    fn map_center(cx: f64, cy: f64, a: f64, b: f64, c: f64, d: f64) -> (f64, f64) {
+        let (tx, ty) = center_pivot_offset(cx, cy, a, b, c, d);
+        let x = a * cx + c * cy + tx;
+        let y = b * cx + d * cy + ty;
+        (x, y)
+    }
+
+    /// The box center must be a fixed point of a pure rotation about center.
+    /// Before the b/c-swap fix this held only for scale, so a rotating chevron
+    /// pivoted off its center on macOS (unlike iOS / web).
+    #[test]
+    fn regression_rotation_pivots_around_center() {
+        let (cx, cy) = (12.0, 12.0);
+        for deg in [30.0_f64, 45.0, 90.0, 135.0, 180.0, 270.0] {
+            let r = deg.to_radians();
+            let (cos, sin) = (r.cos(), r.sin());
+            // Pure rotation, no scale: a=cos, b=sin, c=-sin, d=cos.
+            let (x, y) = map_center(cx, cy, cos, sin, -sin, cos);
+            assert!(
+                (x - cx).abs() < 1e-9 && (y - cy).abs() < 1e-9,
+                "rotation {deg}° moved center to ({x}, {y}), expected ({cx}, {cy})"
+            );
+        }
+    }
+
+    /// Rotation combined with a non-uniform scale must also pivot around center.
+    #[test]
+    fn rotation_with_scale_pivots_around_center() {
+        let (cx, cy) = (20.0, 8.0);
+        let r = 60.0_f64.to_radians();
+        let (cos, sin) = (r.cos(), r.sin());
+        let (sx, sy) = (1.5, 0.75);
+        // rotate-then-scale: a=cos*sx, b=sin*sx, c=-sin*sy, d=cos*sy.
+        let (x, y) = map_center(cx, cy, cos * sx, sin * sx, -sin * sy, cos * sy);
+        assert!((x - cx).abs() < 1e-9 && (y - cy).abs() < 1e-9, "center moved to ({x}, {y})");
+    }
+
+    /// Pure scale already worked (b = c = 0); guard it so the fix stays correct.
+    #[test]
+    fn scale_pivots_around_center() {
+        let (cx, cy) = (10.0, 10.0);
+        let (x, y) = map_center(cx, cy, 2.0, 0.0, 0.0, 2.0);
+        assert!((x - cx).abs() < 1e-9 && (y - cy).abs() < 1e-9, "center moved to ({x}, {y})");
+    }
 }
 

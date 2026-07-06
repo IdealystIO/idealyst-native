@@ -96,6 +96,18 @@ pub use idea_theme::{
     active_theme, active_theme_untracked, install_theme, install_themes, set_theme,
     theme_installed, ThemeTokens, TokenEntry, TokenValue, Tokenized,
 };
+// Canonical token references for app-authored `stylesheet!`s — reference a
+// theme color/length by name without restating a fallback hex. See the
+// theming guide. `theme_token!`/`theme_length!` are the compile-checked
+// macros (name validated against the canonical set); `theme_color`/
+// `theme_length` the string-driven fns the macros delegate to. The
+// `theme_length` name resolves to BOTH the macro and the fn (distinct
+// namespaces), so one re-export covers both call forms.
+pub use idea_theme::{
+    canonical_color, canonical_length, is_canonical_color_token, is_canonical_length_token,
+    theme_color, theme_length, theme_token, CANONICAL_INTENT_TOKENS, CANONICAL_LENGTH_TOKENS,
+    CANONICAL_NEUTRAL_TOKENS,
+};
 pub use idea_theme::{
     Danger, Info, Intent, IntoRcIntent, Neutral, Primary, Secondary, Success, Warning,
 };

@@ -409,6 +409,30 @@ where
         }
     }
     sheet = sheet.variant_default("appearance", "neutral_soft");
+    // Themed focus ring for the interactive consumer (Chip, on a pressable
+    // host). Inert for the non-interactive ones (Badge/Alert are plain views
+    // that never receive the FOCUSED state), so it costs nothing to share.
+    // Mirrors Button/ControlRow: 1px border in the focus-ring color; the web
+    // `:focus` rule kills the browser outline and macOS suppresses its native
+    // ring, so this is the sole indicator.
+    sheet = sheet.variant("__state_focused", "on", |_vs| {
+        let theme_rc = active_theme();
+        let theme_ref = theme_rc
+            .downcast_ref::<IdeaThemeRef>()
+            .expect("Sheet closure: install_idea_theme(...) first");
+        let ring = theme_ref.colors().focus_ring.clone();
+        StyleRules {
+            border_top_width: Some(Tokenized::Literal(1.0)),
+            border_right_width: Some(Tokenized::Literal(1.0)),
+            border_bottom_width: Some(Tokenized::Literal(1.0)),
+            border_left_width: Some(Tokenized::Literal(1.0)),
+            border_top_color: Some(ring.clone()),
+            border_right_color: Some(ring.clone()),
+            border_bottom_color: Some(ring.clone()),
+            border_left_color: Some(ring),
+            ..Default::default()
+        }
+    });
     Rc::new(sheet)
 }
 
@@ -1156,6 +1180,30 @@ impl SwitchSheetBuilder {
         });
         sheet = sheet.variant("checked", "on", |_vs| StyleRules::default());
 
+        // Keyboard/pointer focus rings the track with the themed focus ring —
+        // the cross-platform indicator replacing the native ring (suppressed on
+        // the pressable host; browser outline killed by the web `:focus` rule).
+        // State overlays resolve above the `checked` arms, so this 2px border
+        // wins over the OFF arm's zeroed borders.
+        sheet = sheet.variant("__state_focused", "on", |_vs| {
+            let theme_rc = active_theme();
+            let theme_ref = theme_rc
+                .downcast_ref::<IdeaThemeRef>()
+                .expect("Switch sheet: install_idea_theme(...) first");
+            let ring = theme_ref.colors().focus_ring.clone();
+            StyleRules {
+                border_top_width: Some(Tokenized::Literal(2.0)),
+                border_right_width: Some(Tokenized::Literal(2.0)),
+                border_bottom_width: Some(Tokenized::Literal(2.0)),
+                border_left_width: Some(Tokenized::Literal(2.0)),
+                border_top_color: Some(ring.clone()),
+                border_right_color: Some(ring.clone()),
+                border_bottom_color: Some(ring.clone()),
+                border_left_color: Some(ring),
+                ..Default::default()
+            }
+        });
+
         // Size — track width/height.
         for (key, w, h) in SWITCH_TRACK_DIMS {
             sheet = sheet.variant("size", key, move |_vs| StyleRules {
@@ -1796,6 +1844,17 @@ mod selection_sheet_tests {
         assert!(has(&sheet, "checked", "off"));
         assert!(has(&sheet, "checked", "on"));
         assert!(has(&sheet, "size", "md"));
+        // The switch track carries the themed focus ring (replaces the native
+        // ring; the sole focus indicator on web + desktop).
+        assert!(has(&sheet, "__state_focused", "on"));
+    }
+
+    #[test]
+    fn tag_sheet_has_focus_ring_axis() {
+        // Chips ride the Tag sheet on a pressable host, so it must carry the
+        // themed focus-ring overlay.
+        let sheet = TagSheetBuilder::new().build();
+        assert!(has(&sheet, "__state_focused", "on"));
     }
 
     #[test]

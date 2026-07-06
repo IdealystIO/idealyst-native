@@ -389,15 +389,271 @@ pub fn is_canonical_token(name: &str) -> bool {
         });
     }
     // Spacing / radius / typography length tokens.
-    matches!(
-        name,
-        "spacing-xs" | "spacing-sm" | "spacing-md" | "spacing-lg" | "spacing-xl" | "spacing-xxl"
-            | "radius-sm" | "radius-md" | "radius-lg" | "radius-pill"
-            | "typography-display-size" | "typography-h1-size" | "typography-h2-size"
-            | "typography-h3-size" | "typography-body-xl-size" | "typography-body-lg-size"
-            | "typography-body-size" | "typography-body-sm-size" | "typography-caption-size"
-            | "typography-overline-size"
-    )
+    CANONICAL_LENGTH_TOKENS.contains(&name)
+}
+
+// =============================================================================
+// Canonical token references — theme_token! / theme_length!
+// =============================================================================
+//
+// The problem these solve (field report): a `stylesheet!` that wants to
+// track a theme color could previously only write
+// `Tokenized::token("color-surface", Color("#ffffff".into()))` — the
+// `fallback` hex is mandatory, so to look right *before* a theme installs
+// the author had to restate the design palette's concrete value. That
+// value already lives in idea-theme's base palette under the same
+// canonical name, so the palette ended up with two sources of truth that
+// silently drift (idea-ui's own `stylesheets.rs` had exactly this: an
+// `intent-primary-solid-bg` fallback of `#5b6cff` while `light_theme()`
+// said `#4f46e5` — dead, drifted).
+//
+// `theme_token!("color-surface")` / `theme_length!("spacing-md")` close
+// the gap: they pull the fallback from idea-theme's base palette (the one
+// place it's defined) and validate the name at *compile time*. At runtime
+// the installed theme's registry value still wins — the fallback only ever
+// shows before a theme installs — so a reskin remains the single source of
+// truth. `theme_color` / `theme_length` are the string-driven (runtime-
+// checked) functions the macros delegate to; reach for them only when the
+// token name is computed at runtime.
+
+/// Flattened canonical intent color token names (`intent-<intent>-<slot>`),
+/// intents in [`INTENT_NAMES`] order, each expanded through [`INTENT_SLOTS`]
+/// order. The materialized companion to [`INTENT_NAMES`]/[`INTENT_SLOTS`],
+/// so [`is_canonical_color_token`] and the `theme_token!` compile check can
+/// scan a single list.
+pub const CANONICAL_INTENT_TOKENS: [&str; 42] = {
+    macro_rules! intent_tokens {
+        ($($i:literal),+ $(,)?) => {
+            [ $(
+                concat!("intent-", $i, "-solid-bg"),
+                concat!("intent-", $i, "-solid-text"),
+                concat!("intent-", $i, "-soft-bg"),
+                concat!("intent-", $i, "-soft-text"),
+                concat!("intent-", $i, "-fg"),
+                concat!("intent-", $i, "-border"),
+            )+ ]
+        };
+    }
+    intent_tokens!("primary", "secondary", "neutral", "success", "danger", "warning", "info")
+};
+
+/// Canonical length token names — spacing, radius, and typography size
+/// tokens, in [`ThemeTokens::tokens`] emission order. Backs
+/// [`is_canonical_length_token`] and the `theme_length!` compile check.
+pub const CANONICAL_LENGTH_TOKENS: [&str; 20] = [
+    "spacing-xs", "spacing-sm", "spacing-md", "spacing-lg", "spacing-xl", "spacing-xxl",
+    "radius-sm", "radius-md", "radius-lg", "radius-pill",
+    "typography-display-size", "typography-h1-size", "typography-h2-size", "typography-h3-size",
+    "typography-body-xl-size", "typography-body-lg-size", "typography-body-size",
+    "typography-body-sm-size", "typography-caption-size", "typography-overline-size",
+];
+
+/// `const`-context `&str` equality (no `PartialEq` in const fn). Compares
+/// bytes; only used by the canonical-token compile-time predicates below.
+const fn const_str_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// Compile-time predicate: is `name` a canonical **color** token — a
+/// neutral ([`CANONICAL_NEUTRAL_TOKENS`]) or an intent slot
+/// ([`CANONICAL_INTENT_TOKENS`])? Backs the [`theme_token!`] compile-time
+/// name check, so it must be `const`.
+pub const fn is_canonical_color_token(name: &str) -> bool {
+    let mut i = 0;
+    while i < CANONICAL_NEUTRAL_TOKENS.len() {
+        if const_str_eq(CANONICAL_NEUTRAL_TOKENS[i], name) {
+            return true;
+        }
+        i += 1;
+    }
+    let mut j = 0;
+    while j < CANONICAL_INTENT_TOKENS.len() {
+        if const_str_eq(CANONICAL_INTENT_TOKENS[j], name) {
+            return true;
+        }
+        j += 1;
+    }
+    false
+}
+
+/// Compile-time predicate: is `name` a canonical **length** token (spacing
+/// / radius / typography size, [`CANONICAL_LENGTH_TOKENS`])? Backs the
+/// [`theme_length!`] compile-time name check, so it must be `const`.
+pub const fn is_canonical_length_token(name: &str) -> bool {
+    let mut i = 0;
+    while i < CANONICAL_LENGTH_TOKENS.len() {
+        if const_str_eq(CANONICAL_LENGTH_TOKENS[i], name) {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// The canonical default **color** for a token `name`, as a theme-tracking
+/// [`Tokenized::Token`] whose `fallback` is idea-theme's own base (light)
+/// palette value. Resolves from the installed theme's registry at runtime;
+/// the fallback only shows before a theme installs. `None` if `name` isn't
+/// a canonical color token.
+///
+/// This is the bridge that lets a stylesheet reference a theme color *by
+/// name only* — the concrete default comes from the one place it's defined
+/// ([`light_theme`]), never restated at the call site. Built off the same
+/// [`ThemeTokens::tokens`] pipeline `install_idea_theme` uses, so the name↔
+/// value mapping can't drift from what actually installs.
+pub fn canonical_color(name: &str) -> Option<Tokenized<Color>> {
+    IdeaThemeRef::new(light_theme())
+        .tokens()
+        .into_iter()
+        .find(|e| e.name == name)
+        .and_then(|e| match e.value {
+            // `e.name` is the `&'static str` canonical key, so the
+            // returned token carries a `'static` name as `Tokenized`
+            // requires.
+            TokenValue::Color(c) => Some(Tokenized::token(e.name, c)),
+            _ => None,
+        })
+}
+
+/// The canonical default **length** for a token `name` (spacing / radius /
+/// typography size), as a theme-tracking [`Tokenized::Token`]. Length peer
+/// of [`canonical_color`]; see it for the semantics. `None` if `name` isn't
+/// a canonical length token.
+pub fn canonical_length(name: &str) -> Option<Tokenized<Length>> {
+    IdeaThemeRef::new(light_theme())
+        .tokens()
+        .into_iter()
+        .find(|e| e.name == name)
+        .and_then(|e| match e.value {
+            TokenValue::Length(l) => Some(Tokenized::token(e.name, l)),
+            _ => None,
+        })
+}
+
+/// Reference a canonical theme **color** by name, resolving its fallback
+/// from idea-theme's base palette — the string-driven peer of
+/// [`theme_token!`]. Prefer the macro (which checks the name at compile
+/// time) unless the name is computed at runtime.
+///
+/// On an unknown name it returns `Tokenized::token(name, transparent)` (and
+/// warns in debug builds): the reference still resolves from the registry
+/// if some non-canonical token by that name was installed, but carries no
+/// design-system default.
+pub fn theme_color(name: &'static str) -> Tokenized<Color> {
+    canonical_color(name).unwrap_or_else(|| {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "idea_theme::theme_color: '{name}' is not a canonical color token; using a \
+             transparent fallback. Use a CANONICAL_NEUTRAL_TOKENS entry or an \
+             intent-<intent>-<slot> name — or the theme_token! macro to catch this at \
+             compile time."
+        );
+        Tokenized::token(name, Color("transparent".into()))
+    })
+}
+
+/// Reference a canonical theme **length** (spacing / radius / typography
+/// size) by name. String-driven peer of [`theme_length!`]; prefer the
+/// macro. On an unknown name returns `Tokenized::token(name, 0px)` and
+/// warns in debug builds.
+pub fn theme_length(name: &'static str) -> Tokenized<Length> {
+    canonical_length(name).unwrap_or_else(|| {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "idea_theme::theme_length: '{name}' is not a canonical length token; using a \
+             0px fallback. Use a spacing-*, radius-*, or typography-*-size name — or the \
+             theme_length! macro to catch this at compile time."
+        );
+        Tokenized::token(name, Length::Px(0.0))
+    })
+}
+
+/// Reference a canonical theme color from a `stylesheet!` (or anywhere a
+/// `Tokenized<Color>` is expected) **by name only** — the concrete default
+/// is pulled from idea-theme's base palette, so no hex is restated and the
+/// installed theme stays the single source of truth.
+///
+/// ```ignore
+/// stylesheet! {
+///     Sidebar {
+///         base(_t) {
+///             background: theme_token!("color-surface"),
+///             border_color: theme_token!("color-border"),
+///             color: theme_token!("intent-primary-fg"),
+///         }
+///     }
+/// }
+/// ```
+///
+/// The name is validated **at compile time** against the canonical color
+/// token set — a typo (`"color-surfaze"`) fails the build instead of
+/// silently rendering a transparent fallback. Length tokens go through
+/// [`theme_length!`]; a computed (runtime) name goes through the
+/// [`theme_color`] function.
+///
+/// ```
+/// use idea_theme::theme_token;
+/// let surface = theme_token!("color-surface");
+/// assert_eq!(surface.name(), Some("color-surface"));
+/// ```
+///
+/// A non-canonical name is a compile error:
+///
+/// ```compile_fail
+/// use idea_theme::theme_token;
+/// let _ = theme_token!("color-surfaze"); // typo → does not compile
+/// ```
+#[macro_export]
+macro_rules! theme_token {
+    ($name:literal) => {{
+        const _: () = ::core::assert!(
+            $crate::is_canonical_color_token($name),
+            concat!(
+                "theme_token!: \"",
+                $name,
+                "\" is not a canonical idea-theme color token (expected a \
+                 CANONICAL_NEUTRAL_TOKENS entry or an intent-<intent>-<slot> name; \
+                 length tokens use theme_length!)",
+            ),
+        );
+        $crate::theme_color($name)
+    }};
+}
+
+/// Length peer of [`theme_token!`] — reference a canonical spacing / radius
+/// / typography-size token by name, fallback pulled from idea-theme's base
+/// scale. Name validated at compile time.
+///
+/// ```
+/// use idea_theme::theme_length;
+/// let gap = theme_length!("spacing-md");
+/// assert_eq!(gap.name(), Some("spacing-md"));
+/// ```
+#[macro_export]
+macro_rules! theme_length {
+    ($name:literal) => {{
+        const _: () = ::core::assert!(
+            $crate::is_canonical_length_token($name),
+            concat!(
+                "theme_length!: \"",
+                $name,
+                "\" is not a canonical idea-theme length token (expected a spacing-*, \
+                 radius-*, or typography-*-size name; color tokens use theme_token!)",
+            ),
+        );
+        $crate::theme_length($name)
+    }};
 }
 
 impl ThemeTokens for IdeaThemeRef {
@@ -1198,5 +1454,120 @@ mod tests {
         ] {
             assert!(!is_canonical_token(name), "'{name}' should NOT be canonical");
         }
+    }
+
+    // ---- Canonical token references (theme_token! / theme_length!) --------
+
+    /// The compile-time color/length predicates must partition exactly the
+    /// tokens the theme actually emits — a color token passes the color
+    /// predicate and fails the length one, and vice versa. This is what the
+    /// `theme_token!` / `theme_length!` compile checks rely on, and it locks
+    /// the flattened `CANONICAL_INTENT_TOKENS` / `CANONICAL_LENGTH_TOKENS`
+    /// arrays to the real emit set so they can't drift apart.
+    #[test]
+    fn canonical_color_length_predicates_partition_emitted_tokens() {
+        for entry in IdeaThemeRef::new(light_theme()).tokens() {
+            match entry.value {
+                TokenValue::Color(_) => {
+                    assert!(
+                        is_canonical_color_token(entry.name),
+                        "emitted color token '{}' must pass is_canonical_color_token",
+                        entry.name
+                    );
+                    assert!(
+                        !is_canonical_length_token(entry.name),
+                        "color token '{}' must not pass is_canonical_length_token",
+                        entry.name
+                    );
+                }
+                TokenValue::Length(_) => {
+                    assert!(
+                        is_canonical_length_token(entry.name),
+                        "emitted length token '{}' must pass is_canonical_length_token",
+                        entry.name
+                    );
+                    assert!(
+                        !is_canonical_color_token(entry.name),
+                        "length token '{}' must not pass is_canonical_color_token",
+                        entry.name
+                    );
+                }
+                _ => {}
+            }
+        }
+        // Typos rejected; cross-category names rejected by the wrong predicate.
+        assert!(!is_canonical_color_token("color-surfaze"));
+        assert!(!is_canonical_length_token("spacing-mdd"));
+        assert!(!is_canonical_color_token("spacing-md"), "length name must not pass color check");
+        assert!(!is_canonical_length_token("color-surface"), "color name must not pass length check");
+    }
+
+    /// The heart of the field report: a by-name reference carries idea-theme's
+    /// *own* canonical value as its fallback — the author restates no hex, so
+    /// there's no second copy of the palette to drift. Guards both color and
+    /// length references against the emitted base values.
+    #[test]
+    fn canonical_reference_fallback_tracks_base_palette() {
+        let base = IdeaThemeRef::new(light_theme()).tokens();
+
+        let surface = theme_color("color-surface");
+        assert_eq!(surface.name(), Some("color-surface"));
+        assert_eq!(
+            surface.value().0,
+            find_color(&base, "color-surface").0,
+            "fallback must equal the canonical base color, not a restated literal"
+        );
+
+        let gap = theme_length("spacing-md");
+        assert_eq!(gap.name(), Some("spacing-md"));
+        assert_eq!(gap.value(), find_length(&base, "spacing-md"));
+
+        // The macro forms produce the same thing (name checked at compile time).
+        let intent = theme_token!("intent-primary-soft-bg");
+        assert_eq!(intent.name(), Some("intent-primary-soft-bg"));
+        assert_eq!(intent.value().0, find_color(&base, "intent-primary-soft-bg").0);
+        let radius = theme_length!("radius-md");
+        assert_eq!(radius.value(), find_length(&base, "radius-md"));
+    }
+
+    /// The reskin guarantee: after a custom theme installs, resolving a
+    /// by-name reference yields the *installed* value — the registry wins and
+    /// the base-palette fallback is never shown. This is why "reskin the theme
+    /// only" works with zero hardcoded palette values in the stylesheet.
+    #[test]
+    fn installed_custom_theme_wins_over_reference_fallback() {
+        // Author writes this in a stylesheet — no hex, just the token name.
+        let surface_ref = theme_color("color-surface");
+        assert_ne!(
+            surface_ref.value().0, "#FBF9F4",
+            "precondition: the reskin color is not the base fallback"
+        );
+
+        // App installs a reskin overriding color-surface.
+        let mut reskin = light_theme();
+        reskin.colors.surface = Tokenized::token("color-surface", Color("#FBF9F4".into()));
+        install_idea_theme(reskin);
+
+        // The same by-name reference now resolves to the reskin value.
+        assert_eq!(
+            surface_ref.resolve().0,
+            "#FBF9F4",
+            "installed theme's registry value must win over the reference fallback"
+        );
+    }
+
+    /// An unknown name is a runtime-checked no-panic on the function path:
+    /// transparent fallback + still keyed by the name (so it resolves if some
+    /// custom token by that name was installed). The macro path rejects the
+    /// same name at compile time — see the `compile_fail` doctest on
+    /// [`theme_token!`].
+    #[test]
+    fn unknown_reference_name_falls_back_transparent() {
+        assert!(canonical_color("not-a-token").is_none());
+        assert!(canonical_length("also-not-a-token").is_none());
+
+        let t = theme_color("not-a-token");
+        assert_eq!(t.name(), Some("not-a-token"));
+        assert_eq!(t.value().0, "transparent");
     }
 }

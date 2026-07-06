@@ -120,6 +120,45 @@ fn drawer_ssr_renders_new_slot_chrome() {
     assert!(screen < footer, "footer renders after the screen content, got: {html}");
 }
 
+/// Regression: `DrawerBuilder::drawer_width` was silently dropped on the
+/// web/SSR path (the sidebar width was a hardcoded CSS constant). The
+/// configured width must be stamped as the `--drawer-width` custom
+/// property on the drawer root so the shared sheet's `var(--drawer-width,
+/// …)` rules pick it up — matching what the live web client sets on
+/// hydration, and what every native backend already honors.
+#[test]
+fn drawer_ssr_stamps_configured_width_on_root() {
+    let page = render_path_with(
+        "/",
+        |b| drawer_navigator::chrome::register(b),
+        || {
+            DrawerNavigator::new(&HOME)
+                .drawer_width(360.0)
+                .leading_with(|_slot| view(vec![text("SIDE").into()]).into())
+                .screen(HOME, |_| Screen::new(view(vec![text("home body").into()])))
+                .into()
+        },
+    );
+    let html = &page.html;
+
+    // The root carries the custom property with the configured width...
+    assert!(
+        html.contains("--drawer-width:360px"),
+        "drawer root must stamp the configured width as --drawer-width, got: {html}"
+    );
+    // ...and it sits on the drawer root, ahead of the sidebar it feeds.
+    let prop = html.find("--drawer-width:360px").expect("custom property present");
+    let sidebar = html.find("ui-nav-drawer-sidebar").expect("sidebar present");
+    assert!(prop < sidebar, "custom property must be on the root (before the sidebar), got: {html}");
+
+    // The shipped sheet reads that property (not a hardcoded width).
+    assert!(
+        page.head_css.contains("var(--drawer-width,"),
+        "the sidebar rules must read --drawer-width, got: {}",
+        page.head_css
+    );
+}
+
 /// Locks the de-opinionated structure: regardless of builder config the
 /// bottom slot is a pinned sibling of the middle row (in the root), never
 /// nested inside the scrolling body — because the navigator no longer

@@ -1,0 +1,16 @@
+# idealyst.toml — unified SDK config for pubsub-demo.
+#
+# `configure_all()` (in src/bin/server.rs) reads this. The default is the
+# in-memory backend (single instance). Point at a shared broker for
+# cross-instance fan-out — define it ONCE as a named connection so other tools
+# can share it.
+[pubsub]
+backend = "memory"
+
+# [connections.broker]
+# kind = "redis"
+# url = "redis://127.0.0.1:6379"
+#
+# [pubsub]
+# backend = "redis"
+# connection = "broker"
