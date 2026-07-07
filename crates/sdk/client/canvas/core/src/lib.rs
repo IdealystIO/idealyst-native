@@ -53,7 +53,8 @@ mod scene;
 pub use scene::*;
 
 use runtime_core::{
-    external, Bound, ExternalHandle, IdealystSchema, Length, StyleRules, StyleSheet,
+    external, Bound, ExternalHandle, IdealystSchema, Length, RegisterExternal, StyleRules,
+    StyleSheet,
 };
 use std::any::Any;
 use std::cell::Cell;
@@ -459,6 +460,24 @@ fn default_fill_style() -> Rc<StyleSheet> {
 pub fn Canvas(props: CanvasProps) -> Bound<ExternalHandle<CanvasProps>> {
     ensure_wire_serde();
     external(props).with_style(default_fill_style())
+}
+
+/// Register the **SSR / hydration host** for `Element::External<CanvasProps>`.
+///
+/// A GPU canvas can't paint its CONTENT on the server (no adapter), but its
+/// host `<canvas>` element is trivially server-renderable. This registers a
+/// renderer-agnostic handler that emits a bare `<canvas>`, so a pre-rendered
+/// (SSG) page ships the real element the web client adopts during hydration
+/// (the `graphics` primitive does `hydrate_next("canvas")`); the GPU surface
+/// then attaches after hydration via the platform renderer's `register`
+/// (e.g. `canvas_vello::register`). Without this the external falls to the
+/// backend's generic `<div>` fallback, which the `<canvas>`-expecting client
+/// can't adopt — a tag mismatch that diverges hydration at the very first node.
+///
+/// Call from an app's `register_ssr_extensions` hook (the SSR/SSG build path),
+/// mirroring the client-side `register` on the web/native path.
+pub fn register_ssr<B: RegisterExternal>(backend: &mut B) {
+    backend.register_external::<CanvasProps, _>(|_props, b| b.create_element("canvas"));
 }
 
 /// Register the wire (serialize, deserialize) pair for [`CanvasProps`]

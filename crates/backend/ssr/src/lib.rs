@@ -489,6 +489,11 @@ impl Backend for SsrBackend {
             "h4" => "h4",
             "h5" => "h5",
             "h6" => "h6",
+            // A GPU external (canvas) SSR-renders only its HOST element — the
+            // content paints client-side after hydration. Interning `canvas`
+            // lets an SSR external handler emit the real `<canvas>` the web
+            // graphics primitive adopts, instead of the `div` fallback.
+            "canvas" => "canvas",
             _ => "div",
         };
         nref(HtmlNode::new(tag))
@@ -1682,6 +1687,59 @@ mod tests {
         let node = b.create_reactive_anchor();
         let html = { let mut s = String::new(); serialize(&node, &mut s); s };
         assert_eq!(html, r#"<div style="display: contents"></div>"#);
+    }
+
+    /// REGRESSION: `create_element("canvas")` must emit a real `<canvas>`, not
+    /// the `div` fallback. This is the enabler for GPU-external SSR: an SSR
+    /// external handler emits the host `<canvas>` the web graphics primitive
+    /// adopts via `hydrate_next("canvas")`. Before the fix `"canvas"` fell to
+    /// the `_ => "div"` arm, so SSR served a `<div>` the client couldn't adopt
+    /// (tag mismatch → the first hydration divergence + cascade).
+    #[test]
+    fn create_element_canvas_emits_canvas_not_div() {
+        let mut b = SsrBackend::new();
+        let node = b.create_element("canvas");
+        let html = { let mut s = String::new(); serialize(&node, &mut s); s };
+        assert_eq!(html, "<canvas></canvas>");
+        // Contrast: an unknown tag still falls back to div (the intern is
+        // deliberate, not a blanket passthrough).
+        let div = b.create_element("marquee");
+        let dhtml = { let mut s = String::new(); serialize(&div, &mut s); s };
+        assert_eq!(dhtml, "<div></div>");
+    }
+
+    /// REGRESSION (before/after) — a GPU external (canvas) SSR-renders its HOST
+    /// element only when an SSR handler is registered. This is exactly the
+    /// mechanism `canvas_core::register_ssr` uses (registered for `CanvasProps`;
+    /// a local marker stands in here so `backend-ssr` stays SDK-free):
+    ///
+    /// * BEFORE (no handler): `create_external` falls back to `<div>` — the tag
+    ///   the `<canvas>`-expecting web `graphics` primitive can't adopt, so
+    ///   hydration diverges at the first node and cascades.
+    /// * AFTER (host handler): SSR emits the real `<canvas>` the client adopts
+    ///   via `hydrate_next("canvas")`; the GPU surface attaches post-hydration.
+    #[test]
+    fn external_gpu_host_ssr_renders_canvas_only_with_handler() {
+        use runtime_core::RegisterExternal;
+        use std::any::{Any, TypeId};
+        use std::rc::Rc;
+
+        struct GpuCanvas; // stand-in for canvas_core::CanvasProps
+
+        let mut b = SsrBackend::new();
+        let payload: Rc<dyn Any> = Rc::new(GpuCanvas);
+        let a11y = AccessibilityProps::default();
+
+        // BEFORE: no registered handler → generic <div> fallback.
+        let before = b.create_external(TypeId::of::<GpuCanvas>(), "gpu-canvas", &payload, &a11y);
+        let before_html = { let mut s = String::new(); serialize(&before, &mut s); s };
+        assert_eq!(before_html, "<div></div>", "no SSR handler → the un-adoptable div");
+
+        // AFTER: register the host handler (what canvas_core::register_ssr does).
+        b.register_external::<GpuCanvas, _>(|_p, b| b.create_element("canvas"));
+        let after = b.create_external(TypeId::of::<GpuCanvas>(), "gpu-canvas", &payload, &a11y);
+        let after_html = { let mut s = String::new(); serialize(&after, &mut s); s };
+        assert_eq!(after_html, "<canvas></canvas>", "host handler → adoptable <canvas>");
     }
 
     /// `create_link` resets the browser's anchor defaults (so links don't
