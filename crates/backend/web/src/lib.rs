@@ -2311,6 +2311,14 @@ impl Backend for WebBackend {
         primitives::hover::install(self, node, handler);
     }
 
+    fn install_file_drop_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: runtime_core::FileDropHandler,
+    ) {
+        primitives::file_drop::install(self, node, handler);
+    }
+
     // `claim_touch` keeps the default no-op. On web, claims happen
     // inline in the pointer-event listener closure (where we have
     // the live `PointerEvent` to pass to `setPointerCapture`). The

@@ -27,6 +27,15 @@
 //! # }
 //! ```
 //!
+//! # Drag-and-drop
+//!
+//! The other way OS files get into an app: the user **drags** them onto a view
+//! and drops them. [`FileDropZone`] (behind the default-on `drop` feature) makes
+//! any view a drop target and surfaces each dropped file as the same
+//! [`PickedFile`] a picker returns — so upload code is identical however the
+//! file arrived. Delivered on web + macOS; a no-op where the platform has no OS
+//! file-drag. See the [`FileDropZone`] docs.
+//!
 //! # No permission required
 //!
 //! Every backend is **user-initiated UI** — the act of picking a file is what
@@ -132,6 +141,14 @@ mod imp;
 #[path = "stub.rs"]
 mod imp;
 
+// The OS file drag-and-drop surface (`FileDropZone`). Opt-out feature (default
+// on) because it depends on `runtime-core`; each `imp` module supplies a
+// `picked_from_dropped(&DroppedFile) -> Option<PickedFile>` the zone calls.
+#[cfg(feature = "drop")]
+mod drop;
+#[cfg(feature = "drop")]
+pub use drop::FileDropZone;
+
 /// How much to read per [`FileStream::chunk`] — 1 MiB. Big enough that the
 /// per-chunk overhead (an FFI hop on Android, a promise on web) is amortized,
 /// small enough that a multi-GB file never lands in memory at once.
@@ -230,6 +247,13 @@ pub struct PickedFile {
 }
 
 impl PickedFile {
+    /// Wrap a backend-produced file handle. Used by [`FileDropZone`] to surface
+    /// a dropped OS file as the same handle a picker returns.
+    #[cfg(feature = "drop")]
+    pub(crate) fn from_inner(inner: imp::PickedFile) -> Self {
+        Self { inner }
+    }
+
     /// The file's display name (e.g. `"report.pdf"`).
     pub fn name(&self) -> &str {
         self.inner.name()

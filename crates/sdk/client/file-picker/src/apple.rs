@@ -63,6 +63,23 @@ impl PickedFile {
     }
 }
 
+/// Convert a dropped OS file into a `PickedFile`. macOS drops carry a real
+/// filesystem path (streamed via the shared `fsread` reader — no security
+/// scope needed, unlike an iOS picker URL). iOS never sources file drops, so
+/// this is dead there but must compile.
+#[cfg(feature = "drop")]
+pub(crate) fn picked_from_dropped(f: &runtime_core::DroppedFile) -> Option<PickedFile> {
+    let path = f.path.clone()?;
+    Some(PickedFile {
+        name: f.name.clone(),
+        mime: f.mime.clone(),
+        size: f.size,
+        path,
+        #[cfg(target_os = "ios")]
+        _scope: None,
+    })
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) async fn pick(request: &PickRequest) -> Result<Option<Vec<PickedFile>>, PickError> {
     macos::pick(request)

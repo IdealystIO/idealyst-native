@@ -215,6 +215,7 @@ members = [
     "examples/docs-macro",
     "examples/animation-test",
     "examples/welcome",
+    "examples/file-drop-demo",
     "examples/external-export-demo",
     "examples/external-export-suite",
     "examples/stack-demo",

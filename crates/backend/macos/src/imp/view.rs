@@ -43,9 +43,18 @@ use std::cell::RefCell as StdRefCell;
 
 use runtime_core::primitives::text_input::{BlurHandler, BlurOutcome};
 use runtime_core::{
-    set_pointer_modifiers, HoverHandler, PointerModifiers, StateBits, TouchEvent, TouchHandler,
-    TouchId, TouchPhase, TouchPoint, WheelEvent, WheelHandler, WheelKind,
+    set_pointer_modifiers, DroppedFile, FileDropEvent, FileDropHandler, FileDropPhase, HoverHandler,
+    PointerModifiers, StateBits, TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint,
+    WheelEvent, WheelHandler, WheelKind,
 };
+
+/// `NSDragOperationNone` — reject the drag (cursor shows the no-drop badge).
+const NS_DRAG_OPERATION_NONE: usize = 0;
+/// `NSDragOperationCopy` — accept the drag as a copy (the file-drop intent).
+const NS_DRAG_OPERATION_COPY: usize = 1;
+/// The modern file-URL pasteboard UTI (`NSPasteboardTypeFileURL`). We register
+/// for it and read `NSURL`s back on drop.
+const NS_PASTEBOARD_TYPE_FILE_URL: &str = "public.file-url";
 
 /// Stable id for the single mouse pointer (macOS has no multitouch here).
 const MOUSE_TOUCH_ID: u64 = 1;
@@ -97,6 +106,12 @@ pub struct FlippedViewIvars {
     /// `state_setter` OR `hover_handler` is attached (only views that need
     /// hover — for styling or for `on_hover` — track it).
     tracking_area: RefCell<Option<Retained<NSTrackingArea>>>,
+    /// Installed by `Backend::install_file_drop_handler` for views with an
+    /// `on_file_drop`. Fired across an OS file drag's lifecycle
+    /// (`draggingEntered:` → `Entered`, `draggingExited:` → `Exited`,
+    /// `performDragOperation:` → `Dropped`) — the macOS counterpart of web's
+    /// `dragenter`/`dragleave`/`drop`. `None` for views with no `on_file_drop`.
+    file_drop_handler: RefCell<Option<FileDropHandler>>,
     /// Keyboard-activation closure for an interactive host (`pressable` / `link`).
     /// `Some` marks this view as a key-view-loop participant: it accepts first
     /// responder, joins the Tab ring under Full Keyboard Access (exactly like an
@@ -275,6 +290,65 @@ declare_class!(
             }
         }
 
+        // --- OS file drag-and-drop (NSDraggingDestination) -------------------
+        // Installed lazily: a view only registers for dragged types (in
+        // `set_file_drop_handler`) once it carries an `on_file_drop`, so these
+        // fire only on drop-zone views. `draggingEntered:` / `draggingUpdated:`
+        // map to `Entered` (like web's `dragenter`/`dragover`), returning a
+        // Copy operation only when the handler accepts. `performDragOperation:`
+        // reads the file URLs and delivers `Dropped`.
+
+        #[method(draggingEntered:)]
+        fn dragging_entered(&self, sender: &AnyObject) -> usize {
+            self.dispatch_file_drag_entered(sender)
+        }
+
+        #[method(draggingUpdated:)]
+        fn dragging_updated(&self, sender: &AnyObject) -> usize {
+            // Re-fire `Entered` as the pointer moves within the zone — mirrors
+            // web firing `dragover` continuously — and keep the accept decision
+            // live. The handler is cheap (it toggles a signal).
+            self.dispatch_file_drag_entered(sender)
+        }
+
+        #[method(draggingExited:)]
+        fn dragging_exited(&self, _sender: &AnyObject) {
+            let handler = match self.ivars().file_drop_handler.borrow().as_ref() {
+                Some(h) => h.clone(),
+                None => return,
+            };
+            let ev = FileDropEvent {
+                phase: FileDropPhase::Exited,
+                position: TouchPoint::new(0.0, 0.0),
+            };
+            let _ = (handler)(&ev);
+        }
+
+        #[method(prepareForDragOperation:)]
+        fn prepare_for_drag_operation(&self, _sender: &AnyObject) -> bool {
+            // We accepted in `draggingEntered:`; proceed to `performDragOperation:`.
+            self.ivars().file_drop_handler.borrow().is_some()
+        }
+
+        #[method(performDragOperation:)]
+        fn perform_drag_operation(&self, sender: &AnyObject) -> bool {
+            // Single tail expression (no early `return`): a `#[method] -> bool`
+            // only converts the tail bool → ObjC `Bool` (see `can_become_key_view`).
+            let handler = self.ivars().file_drop_handler.borrow().clone();
+            match handler {
+                Some(h) => {
+                    let files = collect_dropped_files(sender);
+                    let ev = FileDropEvent {
+                        phase: FileDropPhase::Dropped(files),
+                        position: self.drag_local_position(sender),
+                    };
+                    let _ = (h)(&ev);
+                    true
+                }
+                None => false,
+            }
+        }
+
         // AppKit calls this when the view enters a window and on every
         // geometry change. We (re)build the hover tracking area here so it
         // always matches the current bounds. Only interactive views (those
@@ -449,6 +523,7 @@ impl FlippedView {
             state_setter: RefCell::new(None),
             hover_handler: RefCell::new(None),
             tracking_area: RefCell::new(None),
+            file_drop_handler: RefCell::new(None),
             activate: RefCell::new(None),
         });
         unsafe { msg_send_id![super(this), init] }
@@ -495,6 +570,50 @@ impl FlippedView {
     pub(crate) fn set_hover_handler(&self, handler: HoverHandler) {
         *self.ivars().hover_handler.borrow_mut() = Some(handler);
         let _: () = unsafe { msg_send![self, updateTrackingAreas] };
+    }
+
+    /// Install (or replace) the `on_file_drop` handler and register this view as
+    /// an OS drag destination for file URLs. Called by
+    /// `Backend::install_file_drop_handler`. Registering is idempotent —
+    /// AppKit keeps one registration per view.
+    pub(crate) fn set_file_drop_handler(&self, handler: FileDropHandler) {
+        *self.ivars().file_drop_handler.borrow_mut() = Some(handler);
+        // registerForDraggedTypes:@[ NSPasteboardTypeFileURL ] — the drag
+        // machinery only routes `draggingEntered:` etc. here once a type the
+        // view accepts is on the pasteboard.
+        let ty = NSString::from_str(NS_PASTEBOARD_TYPE_FILE_URL);
+        unsafe {
+            let arr: *mut AnyObject = msg_send![objc2::class!(NSArray), arrayWithObject: &*ty];
+            let _: () = msg_send![self, registerForDraggedTypes: arr];
+        }
+    }
+
+    /// Fire a [`FileDropPhase::Entered`] for a live drag and return the AppKit
+    /// drag operation (`Copy` when the handler accepts, else `None`).
+    fn dispatch_file_drag_entered(&self, sender: &AnyObject) -> usize {
+        let handler = match self.ivars().file_drop_handler.borrow().as_ref() {
+            Some(h) => h.clone(),
+            None => return NS_DRAG_OPERATION_NONE,
+        };
+        let ev = FileDropEvent {
+            phase: FileDropPhase::Entered,
+            position: self.drag_local_position(sender),
+        };
+        if (handler)(&ev).consumed {
+            NS_DRAG_OPERATION_COPY
+        } else {
+            NS_DRAG_OPERATION_NONE
+        }
+    }
+
+    /// Convert an `id<NSDraggingInfo>`'s window-space `draggingLocation` into
+    /// this view's local (flipped, top-left) coordinates — same conversion as
+    /// [`dispatch_wheel`](Self::dispatch_wheel).
+    fn drag_local_position(&self, sender: &AnyObject) -> TouchPoint {
+        let win: CGPoint = unsafe { msg_send![sender, draggingLocation] };
+        let local: CGPoint =
+            unsafe { msg_send![self, convertPoint: win, fromView: std::ptr::null::<NSView>()] };
+        TouchPoint::new(local.x as f32, local.y as f32)
     }
 
     /// `true` if an `on_touch` handler has been installed — i.e. this view is
@@ -746,6 +865,84 @@ impl FlippedView {
         // `dispatch_mouse` and `runtime_core::cycle`) — wheel pan/zoom writes to
         // several camera signals coalesce into one render per event.
         (handler)(&we).consumed
+    }
+}
+
+/// Read the dropped file URLs off an `id<NSDraggingInfo>`'s pasteboard into
+/// neutral [`DroppedFile`]s. Each carries a real filesystem `path` (macOS gives
+/// us one, unlike web), so the `file-picker` SDK streams it via `std::fs` — no
+/// opaque backend `source` handle needed. Size comes from `fs::metadata`.
+fn collect_dropped_files(sender: &AnyObject) -> Vec<DroppedFile> {
+    let mut out = Vec::new();
+    unsafe {
+        let pboard: *mut AnyObject = msg_send![sender, draggingPasteboard];
+        if pboard.is_null() {
+            return out;
+        }
+        // classes = @[ [NSURL class] ]; options = nil. Returns NSArray<NSURL*>.
+        let url_class: *const AnyObject = objc2::class!(NSURL) as *const _ as *const AnyObject;
+        let classes: *mut AnyObject = msg_send![objc2::class!(NSArray), arrayWithObject: url_class];
+        let nil_opts: *const AnyObject = std::ptr::null();
+        let urls: *mut AnyObject =
+            msg_send![pboard, readObjectsForClasses: classes, options: nil_opts];
+        if urls.is_null() {
+            return out;
+        }
+        let count: usize = msg_send![urls, count];
+        for i in 0..count {
+            let url: *mut AnyObject = msg_send![urls, objectAtIndex: i];
+            if url.is_null() {
+                continue;
+            }
+            let path_ns: *mut NSString = msg_send![url, path];
+            if path_ns.is_null() {
+                continue;
+            }
+            let path_str = (*path_ns).to_string();
+            let path = std::path::PathBuf::from(&path_str);
+            let name = path
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path_str.clone());
+            let size = std::fs::metadata(&path).ok().map(|m| m.len());
+            out.push(DroppedFile {
+                name,
+                mime: mime_for_path(&path).to_string(),
+                size,
+                path: Some(path),
+                source: None,
+            });
+        }
+    }
+    out
+}
+
+/// Best-effort MIME from a file extension for a dropped file. The framework
+/// carries no MIME database; this covers the common upload types and falls back
+/// to `application/octet-stream` — the honest default, not a per-platform hack.
+fn mime_for_path(path: &std::path::Path) -> &'static str {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("svg") => "image/svg+xml",
+        Some("heic") => "image/heic",
+        Some("pdf") => "application/pdf",
+        Some("txt") => "text/plain",
+        Some("csv") => "text/csv",
+        Some("json") => "application/json",
+        Some("html") | Some("htm") => "text/html",
+        Some("zip") => "application/zip",
+        Some("mp4") => "video/mp4",
+        Some("mov") => "video/quicktime",
+        Some("mp3") => "audio/mpeg",
+        Some("wav") => "audio/wav",
+        _ => "application/octet-stream",
     }
 }
 

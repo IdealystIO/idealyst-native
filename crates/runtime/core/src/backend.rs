@@ -734,6 +734,29 @@ pub trait Backend {
         // default: no-op
     }
 
+    /// Install an OS file drag-and-drop handler. Called once per
+    /// `Element::View { on_file_drop: Some(_), .. }`. The backend wires
+    /// `handler` to its native file-drag machinery — web `DataTransfer`
+    /// (`dragenter`/`dragover`/`dragleave`/`drop`), macOS
+    /// `NSDraggingDestination` (`registerForDraggedTypes:` +
+    /// `draggingEntered:`/`draggingExited:`/`performDragOperation:`) — and
+    /// invokes it across the drag lifecycle with the files translated into
+    /// [`crate::DroppedFile`]s.
+    ///
+    /// Default impl is a no-op — correct for iOS / Android (no OS file-drag
+    /// concept) and non-interactive backends (terminal, SSR, CPU). The
+    /// scaffold Windows / Linux backends should fill this in when they mature
+    /// (IDropTarget / GTK drag-dest); the web and macOS impls are the
+    /// template. See [`crate::file_drop`].
+    #[allow(unused_variables)]
+    fn install_file_drop_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: crate::FileDropHandler,
+    ) {
+        // default: no-op
+    }
+
     /// Placeholder node for reactive `when` / `switch` branches.
     /// The walker creates one of these as a stable parent that
     /// stays put across branch swaps, with the live branch's

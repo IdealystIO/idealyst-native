@@ -23,8 +23,20 @@ license.workspace = true
 # (FilePicker / PickRequest / PickedFile / FileStream / PickError) lives here;
 # one cfg-gated backend compiles per target.
 
+[features]
+default = ["drop"]
+# `FileDropZone` — the OS file drag-and-drop surface (drag a Finder file /
+# desktop file / browser file onto a view). It's a view handler plus a reactive
+# signal, so it pulls in `runtime-core`; the imperative `FilePicker::pick` needs
+# neither, so the drop surface is an opt-out feature (default-on).
+drop = ["dep:runtime-core"]
+
 [dependencies]
 thiserror = "1"
+# Only for the `drop` feature (`FileDropZone`): the `on_file_drop` handler type
+# and a reactive `Signal<bool>` for the drag-active state. `pick`-only users
+# who disable `drop` don't pull in the UI core.
+runtime-core = { workspace = true, optional = true }
 
 # iOS / macOS: drive NSOpenPanel (macOS) / UIDocumentPickerViewController +
 # PHPickerViewController (iOS) through the Obj-C runtime, the same posture

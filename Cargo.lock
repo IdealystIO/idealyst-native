@@ -3797,6 +3797,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "file-drop-demo"
+version = "0.0.1"
+dependencies = [
+ "dev-server",
+ "file-picker",
+ "idea-ui",
+ "runtime-core",
+]
+
+[[package]]
 name = "file-export"
 version = "0.0.1"
 dependencies = [
@@ -3828,6 +3838,7 @@ dependencies = [
  "ndk-context",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
+ "runtime-core",
  "thiserror 1.0.69",
  "wasm-bindgen",
  "wasm-bindgen-futures",

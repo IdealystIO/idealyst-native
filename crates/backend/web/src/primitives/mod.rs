@@ -22,6 +22,7 @@ pub(crate) mod slider;
 pub(crate) mod text;
 pub(crate) mod text_area;
 pub(crate) mod hover;
+pub(crate) mod file_drop;
 pub(crate) mod text_input;
 pub(crate) mod touch;
 pub(crate) mod toggle;

@@ -65,6 +65,15 @@ fn picked_from_file(file: web_sys::File) -> PickedFile {
     }
 }
 
+/// Convert a dropped OS file into a `PickedFile`. On web a dropped file has no
+/// filesystem path, so the backend stashed the raw `web_sys::File` in
+/// `DroppedFile::source`; we downcast it and reuse the picker's `File` reader.
+#[cfg(feature = "drop")]
+pub(crate) fn picked_from_dropped(f: &runtime_core::DroppedFile) -> Option<PickedFile> {
+    let file = f.source.as_ref()?.downcast_ref::<web_sys::File>()?.clone();
+    Some(picked_from_file(file))
+}
+
 /// Reads a picked `File` via its `Blob` `ReadableStream`, a chunk per `chunk()`.
 pub(crate) struct FileStream {
     reader: web_sys::ReadableStreamDefaultReader,

@@ -42,6 +42,21 @@ impl PickedFile {
     }
 }
 
+/// Convert a dropped OS file into a `PickedFile` from its real path. The
+/// scaffold GTK4 Linux backend does not yet source file drops (its
+/// `install_file_drop_handler` is the no-op default), so this is dead until a
+/// GTK drag-dest impl lands — but it's ready for it.
+#[cfg(feature = "drop")]
+pub(crate) fn picked_from_dropped(f: &runtime_core::DroppedFile) -> Option<PickedFile> {
+    let path = f.path.clone()?;
+    Some(PickedFile {
+        name: f.name.clone(),
+        mime: f.mime.clone(),
+        size: f.size,
+        path,
+    })
+}
+
 pub(crate) async fn pick(request: &PickRequest) -> Result<Option<Vec<PickedFile>>, PickError> {
     let mut req = SelectedFiles::open_file()
         .title("Open File")

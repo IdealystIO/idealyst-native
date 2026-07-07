@@ -355,6 +355,12 @@ pub struct MockBackendCore {
     /// pressable lowers to a non-form-control node `set_disabled` can't make
     /// inert).
     pub(crate) pressable_handlers: Rc<RefCell<std::collections::HashMap<NodeId, Rc<dyn Fn()>>>>,
+    /// Captured `on_file_drop` handlers keyed by node id. Lets tests assert the
+    /// walker installs the OS file-drop handler on a `view().on_file_drop(..)`
+    /// (and NOT on a plain view), and call [`MockBackend::fire_file_drop`] to
+    /// synthesize a drop the way a native backend's drag listeners would.
+    pub(crate) file_drop_handlers:
+        Rc<RefCell<std::collections::HashMap<NodeId, runtime_core::FileDropHandler>>>,
 }
 
 impl Default for MockBackendCore {
@@ -368,6 +374,7 @@ impl Default for MockBackendCore {
             virtualizers: Rc::new(RefCell::new(std::collections::HashMap::new())),
             state_setters: Rc::new(RefCell::new(std::collections::HashMap::new())),
             pressable_handlers: Rc::new(RefCell::new(std::collections::HashMap::new())),
+            file_drop_handlers: Rc::new(RefCell::new(std::collections::HashMap::new())),
         }
     }
 }
@@ -463,6 +470,28 @@ impl MockBackend {
         event: &runtime_core::primitives::key::KeyEvent,
     ) -> Option<runtime_core::primitives::key::KeyOutcome> {
         let handler = self.core.key_handlers.borrow().get(&node).cloned()?;
+        Some(handler(event))
+    }
+
+    /// How many `on_file_drop` handlers the walker installed. Used by the
+    /// regression test that proves `view().on_file_drop(..)` reaches the
+    /// backend (and a plain view installs none).
+    pub fn file_drop_handler_count(&self) -> usize {
+        self.core.file_drop_handlers.borrow().len()
+    }
+
+    /// Synthesize an OS file-drop lifecycle event on the registered
+    /// `on_file_drop` handler for `node`, returning its [`TouchResponse`].
+    /// `None` if no handler is registered. Verifies the plumbing threads from
+    /// `Bound::on_file_drop` through the walker to `install_file_drop_handler`.
+    ///
+    /// [`TouchResponse`]: runtime_core::TouchResponse
+    pub fn fire_file_drop(
+        &self,
+        node: NodeId,
+        event: &runtime_core::FileDropEvent,
+    ) -> Option<runtime_core::TouchResponse> {
+        let handler = self.core.file_drop_handlers.borrow().get(&node).cloned()?;
         Some(handler(event))
     }
 
@@ -1041,6 +1070,16 @@ impl Backend for MockBackend {
         // a test can assert the state machine was wired at all.
         self.core.record(Event::AttachStates { node: *node });
         self.core.state_setters.borrow_mut().insert(*node, setter);
+    }
+
+    fn install_file_drop_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: runtime_core::FileDropHandler,
+    ) {
+        // Capture the handler so `fire_file_drop` can synthesize a drop, and so
+        // a test can assert the walker installed it on the right node.
+        self.core.file_drop_handlers.borrow_mut().insert(*node, handler);
     }
 
     fn register_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {

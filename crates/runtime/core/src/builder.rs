@@ -366,6 +366,32 @@ impl Bound<ViewHandle> {
         }
         self
     }
+
+    /// Install an OS file drag-and-drop handler — the "drop a Finder file onto
+    /// this view" channel. The closure receives the drag lifecycle
+    /// ([`FileDropEvent`](crate::FileDropEvent): `Entered` / `Exited` /
+    /// `Dropped`) and returns a [`TouchResponse`](crate::TouchResponse) whose
+    /// `consumed` flag (on an `Entered` event) **accepts** the drag — web
+    /// `preventDefault`, macOS drag operation.
+    ///
+    /// Delivered on web (`DataTransfer`) and macOS (`NSDraggingDestination`).
+    /// A no-op on iOS / Android (no OS file-drag) and the scaffold Windows /
+    /// Linux backends. The `file-picker` SDK's `FileDropZone` wraps this into a
+    /// friendly builder that yields the same `PickedFile` handle as a picker.
+    ///
+    /// Calling twice replaces the handler.
+    pub fn on_file_drop<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::FileDropEvent) -> crate::TouchResponse + 'static,
+    {
+        if let Element::View { on_file_drop, .. } = &mut self.primitive {
+            // Born batched — see `on_touch` / `reactive::cycle`.
+            *on_file_drop = Some(std::rc::Rc::new(move |e: &crate::FileDropEvent| {
+                crate::cycle(|| handler(e))
+            }));
+        }
+        self
+    }
 }
 
 impl Bound<PressableHandle> {
@@ -545,6 +571,7 @@ pub fn view(children: Vec<Element>) -> Bound<ViewHandle> {
         on_touch: None,
         on_wheel: None,
         on_hover: None,
+        on_file_drop: None,
         is_container: false,
         accessibility: crate::accessibility::AccessibilityProps::default(),
         #[cfg(feature = "robot")]

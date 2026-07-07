@@ -124,6 +124,13 @@ pub enum Element {
         /// touch-only backends (iOS / Android) ignore it. See
         /// [`crate::hover`].
         on_hover: Option<crate::HoverHandler>,
+        /// Optional OS file drag-and-drop handler — fires when the user drags
+        /// files from the OS (Finder / desktop / another tab) over this view
+        /// and drops them. `None` by default; set via `.on_file_drop(..)`.
+        /// Delivered on web (`DataTransfer`) and macOS (`NSDraggingDestination`);
+        /// a no-op on iOS / Android (no OS file-drag concept) and the scaffold
+        /// Windows / Linux backends. See [`crate::file_drop`].
+        on_file_drop: Option<crate::FileDropHandler>,
         /// Container-query containment context opt-in (`.container()`).
         /// When `true`, descendant `container (min_width: N)` style
         /// overlays resolve against *this* view's resolved inline-size

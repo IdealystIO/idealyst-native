@@ -100,6 +100,12 @@ features = [
     "CssStyleDeclaration",
     "CssStyleRule",
     "CssStyleSheet",
+    # OS file drag-and-drop (`install_file_drop_handler`): `DragEvent` carries the
+    # `DataTransfer`, whose `.files()` yields a `FileList` of dropped `File`s.
+    "DataTransfer",
+    "DragEvent",
+    "File",
+    "FileList",
     "Document",
     "DocumentFragment",
     "DomRect",

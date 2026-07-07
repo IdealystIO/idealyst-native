@@ -2911,6 +2911,29 @@ impl Backend for MacosBackend {
         flipped.set_hover_handler(handler);
     }
 
+    fn install_file_drop_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: runtime_core::FileDropHandler,
+    ) {
+        // Same FlippedView path as `install_hover_handler`: the view's
+        // NSDraggingDestination overrides (`draggingEntered:` /
+        // `performDragOperation:` …) route to this handler once the view
+        // registers for file-URL dragged types.
+        let MacosNode::View(view) = node else {
+            return;
+        };
+        let cls = objc2::class!(IdealystFlippedView);
+        let is_flipped: bool = unsafe { msg_send![&**view, isKindOfClass: cls] };
+        if !is_flipped {
+            return;
+        }
+        // SAFETY: dynamic class confirmed `IdealystFlippedView`; layout is
+        // `NSView` + our ivars, ABI-compatible here.
+        let flipped: &FlippedView = unsafe { &*(Retained::as_ptr(view) as *const FlippedView) };
+        flipped.set_file_drop_handler(handler);
+    }
+
     fn create_pressable(
         &mut self,
         on_click: Rc<dyn Fn()>,

@@ -58,6 +58,51 @@ into RAM. In order of preference:
 On **web** there is no filesystem path, which is exactly why the streaming
 reader exists: `open()` / `read_all()` are the way in there.
 
+## Drag-and-drop (`FileDropZone`)
+
+The other way OS files get into an app: the user **drags** them from Finder /
+the desktop / another browser tab and **drops** them onto a view. A dropped file
+surfaces as the same lazy `PickedFile` a picker returns, so your upload code is
+identical however the file arrived.
+
+```rust
+use file_picker::{FileDropZone, PickedFile};
+
+let dz = FileDropZone::new().on_drop(|files: Vec<PickedFile>| {
+    for f in files {
+        // identical to a picked file — stream it to your uploader
+        let _ = f.name();
+    }
+});
+let active = dz.active(); // reactive Signal<bool>: true while a drag hovers
+
+// Make any view a drop target and highlight it while a drag is over it:
+// ui! {
+//     view(style = move || if active.get() { Highlighted() } else { Idle() }) {
+//         text("Drop files here")
+//     }
+//     .on_file_drop(dz.handler())
+// }
+```
+
+`handler()` accepts the drag (web `preventDefault`, macOS copy operation),
+tracks the `active` signal, and converts dropped files to `PickedFile`s for
+`on_drop`. Optional `on_enter` / `on_leave` fire on the hover transitions.
+
+Drag-*in* is a desktop/web affordance: it's delivered on **web** (HTML5
+`DataTransfer`) and **macOS** (`NSDraggingDestination`). On iOS / Android (no OS
+file-drag concept) and the scaffold Windows / Linux backends the `on_file_drop`
+view slot is a no-op, so the zone renders inertly — exactly like a wheel handler
+on a phone. Dropping app content *out* to Finder (a native drag **source**) is a
+separate, not-yet-built feature.
+
+`FileDropZone` lives behind the default-on `drop` cargo feature (it pulls in
+`runtime-core` for the view handler + reactive signal); disable it if you only
+want the imperative `pick()`.
+
+See [`examples/file-drop-demo`](../../../examples/file-drop-demo) for a runnable
+drop-zone demo.
+
 ## No permission required
 
 Every backend is user-initiated UI — the act of picking is what grants access

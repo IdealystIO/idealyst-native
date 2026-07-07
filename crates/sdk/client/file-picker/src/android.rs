@@ -70,6 +70,14 @@ impl PickedFile {
     }
 }
 
+/// Android has no OS file-drag concept, so the `on_file_drop` view slot never
+/// fires here — this conversion is unreachable, kept only so the cross-platform
+/// `FileDropZone` compiles.
+#[cfg(feature = "drop")]
+pub(crate) fn picked_from_dropped(_f: &runtime_core::DroppedFile) -> Option<PickedFile> {
+    None
+}
+
 /// Streams the picked file over a file descriptor detached from a
 /// `ParcelFileDescriptor` on the Kotlin side.
 pub(crate) struct FileStream {

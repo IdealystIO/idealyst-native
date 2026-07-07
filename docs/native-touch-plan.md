@@ -202,6 +202,21 @@ The two converge in the `zoom` SDK (`crates/sdk/client/zoom`), which drives one
 `AnimatedValue<f32>` scale from both a `pinch_handler()` (`on_touch`) and a
 `wheel_handler()` (`on_wheel`) — the scale peer of the `pan` SDK.
 
+- **OS file drag-and-drop** (dragging files from Finder / the desktop / another
+  browser tab onto a view) is a third such channel, built the same way:
+  `Backend::install_file_drop_handler` + an `on_file_drop` slot on View,
+  delivering `runtime_core::FileDropEvent` (`Entered | Exited | Dropped(files)`).
+  The desktop-class backends source it — **web** (HTML5 `DataTransfer`:
+  `dragenter`/`dragover`/`dragleave`/`drop`) and **macOS**
+  (`NSDraggingDestination`) — and iOS / Android keep the trait default no-op (no
+  OS file-drag concept), as do the scaffold Windows / Linux backends until they
+  wire IDropTarget / GTK drag-dest. The `file-picker` SDK wraps it in a
+  `FileDropZone` that surfaces each dropped file as the same `PickedFile` handle
+  its dialog returns. Returning `CONSUMED` from an `Entered` event accepts the
+  drag (web `preventDefault`, macOS copy operation). This is drag-*in* only;
+  dragging content *out* to the OS (a native drag **source**) remains the
+  separate, unbuilt seam documented in `crates/sdk/client/dnd/src/native.rs`.
+
 ## Out of scope (for v1)
 
 - Composing two *different* recognizers on one view (e.g. pan + pinch on the

@@ -30,6 +30,7 @@ pub mod text_defaults;
 mod touch;
 pub mod wheel;
 pub mod hover;
+pub mod file_drop;
 mod walker;
 pub mod primitives;
 
@@ -215,6 +216,7 @@ pub use touch::{
 };
 pub use wheel::{WheelEvent, WheelHandler, WheelKind};
 pub use hover::HoverHandler;
+pub use file_drop::{DroppedFile, FileDropEvent, FileDropHandler, FileDropPhase};
 pub use touch::recognizer::{
     AsyncNotifier, GestureState, Recognizer, RecognizerCtx, RecognizerKind, RecognizerUpdate,
 };

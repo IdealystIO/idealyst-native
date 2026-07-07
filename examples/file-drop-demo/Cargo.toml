@@ -1,0 +1,27 @@
+[package]
+name = "file-drop-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Drop OS files onto the app with the file-picker SDK's FileDropZone. A dashed drop zone highlights while a file drag hovers it; on drop it lists each file's name, MIME, and size and reads just the first chunk via the streaming reader — proving a dropped multi-GB file is never buffered whole. Drag-in works on web (HTML5 DataTransfer) and macOS (NSDraggingDestination)."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper.
+sidecar = ["dep:dev-server"]
+
+[dependencies]
+runtime-core = { workspace = true, features = ["async-driver"] }
+idea-ui = { workspace = true }
+file-picker = { workspace = true }
+dev-server = { workspace = true, optional = true }
+
+# OS file drag-and-drop is a desktop/web affordance; iOS/Android have no OS
+# file-drag concept, so this demo targets web + macOS (the mature drop backends).
+[package.metadata.idealyst.app]
+name      = "File Drop"
+bundle_id = "ai.truday.idealyst.filedrop"
+version   = "0.0.1"
+targets   = ["web", "macos"]
