@@ -252,8 +252,25 @@ fn splice_children<B: Backend + 'static>(
             // wrapper view. See `when_switch::build_when_spliced`. A styled
             // `When`, or a backend without splice support, falls through to
             // `other` and takes the anchored path that can host the style.
+            //
+            // NB: gated on `!is_hydrating` (same as `Switch` below). SSR
+            // renders with `supports_child_splice() == false`, so it emits
+            // the `display:contents` reactive anchor around the branch. If
+            // web hydration spliced without that anchor, the client tree
+            // would be off by one level (it would adopt the SSR anchor as
+            // the branch root, then mismatch every following sibling) —
+            // the cascade of `[hydrate] SSR/client diverge` remounts that
+            // leaves a duplicated absolutely-positioned nav on screen. So
+            // during hydration we take the anchored `build_when_closure`
+            // path, which creates+adopts the matching anchor and keeps it
+            // for the region's lifetime. A `When` first built AFTER
+            // `finish()` clears `is_hydrating` (web-CSR, or a client-only
+            // subtree with no SSR node) still splices — there's no server
+            // anchor to match there.
             Element::When { cond, then, otherwise, style }
-                if style.is_none() && backend.borrow().supports_child_splice() =>
+                if style.is_none()
+                    && backend.borrow().supports_child_splice()
+                    && !backend.borrow().is_hydrating() =>
             {
                 *inserted += super::when_switch::build_when_spliced(
                     backend, parent, *inserted, cond, then, otherwise,
@@ -270,12 +287,12 @@ fn splice_children<B: Backend + 'static>(
                     && backend.borrow().supports_child_splice()
                     && !backend.borrow().is_hydrating() =>
             {
-                // NB: gated on `!is_hydrating` (unlike `When`): the anchored
-                // `build_switch_closure` carries SSR-adoption logic that the
-                // synchronous splice omits. During web hydration the anchored
-                // `display:contents` path already lets the arm fill, so we only
-                // need the splice off the hydration path — native (never
-                // hydrates) and web-CSR.
+                // NB: gated on `!is_hydrating` (same as `When` above): the
+                // anchored `build_switch_closure` carries SSR-adoption logic
+                // that the synchronous splice omits. During web hydration the
+                // anchored `display:contents` path already lets the arm fill,
+                // so we only need the splice off the hydration path — native
+                // (never hydrates) and web-CSR.
                 *inserted += super::when_switch::build_switch_spliced(
                     backend, parent, *inserted, discriminant, arms, default,
                 );

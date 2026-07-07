@@ -123,6 +123,82 @@ fn when_without_hydration_calls_clear_children() {
     );
 }
 
+/// REGRESSION GUARD (the duplicated-nav SSG bug): an anchorless
+/// `when(...)` under a backend that BOTH supports child splicing AND is
+/// hydrating — i.e. web hydration — must take the ANCHORED path and
+/// create the `display: contents` reactive anchor, so the client tree
+/// matches the server-rendered DOM.
+///
+/// SSR renders with `supports_child_splice() == false` (the trait
+/// default; `SsrBackend` does not override it), so it wraps the branch in
+/// a reactive anchor (`<div style="display: contents">`). If web
+/// hydration instead SPLICES the branch straight into the parent (no
+/// anchor), the client tree is off by one level: it adopts the SSR anchor
+/// as the branch root, then every following sibling mismatches — the
+/// cascade of `[hydrate] SSR/client diverge — remounting just this
+/// subtree` warnings that leaves a duplicated, absolutely-positioned nav
+/// on screen.
+///
+/// `Switch` already guards this with `&& !is_hydrating()` (see
+/// `switch_splice.rs` and `walker/view.rs`); `When` must match. Before the
+/// fix this test fails: no `CreateReactiveAnchor` is emitted because the
+/// splice path runs during hydration.
+#[test]
+fn when_uses_anchor_under_hydration_even_when_splice_supported() {
+    let rt = TestRuntime::with_config(MockBackendConfig {
+        hydrating: true,
+        supports_child_splice: true,
+        ..MockBackendConfig::default()
+    });
+
+    let elem = view(vec![when(
+        || true,
+        || text("THEN-ARM").into(),
+        || text("ELSE-ARM").into(),
+    )]);
+    let _owner = rt.render(elem.into());
+
+    let events = rt.events();
+    assert!(
+        events.iter().any(|e| matches!(e, Event::CreateReactiveAnchor)),
+        "under hydration, When must take the anchored path (create the \
+         display:contents reactive anchor) to match SSR's structure — \
+         splicing without it is the duplicated-nav divergence. events: {events:#?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, Event::CreateText { content } if content == "THEN-ARM")),
+        "the active branch must still build under hydration; events: {events:#?}"
+    );
+}
+
+/// COMPLEMENT: with child splicing supported but hydration OFF (web CSR),
+/// `when(...)` still SPLICES with NO anchor — the `display: contents`
+/// layout benefit is wanted off the hydration path. Pins that the fix
+/// only diverts the hydration case (mirrors
+/// `switch_splices_active_arm_when_backend_supports_it`).
+#[test]
+fn when_splices_without_anchor_when_not_hydrating() {
+    let rt = TestRuntime::with_config(MockBackendConfig {
+        hydrating: false,
+        supports_child_splice: true,
+        ..MockBackendConfig::default()
+    });
+
+    let elem = view(vec![when(
+        || true,
+        || text("THEN").into(),
+        || text("ELSE").into(),
+    )]);
+    let _owner = rt.render(elem.into());
+
+    let events = rt.events();
+    assert!(
+        !events.iter().any(|e| matches!(e, Event::CreateReactiveAnchor)),
+        "When must splice (no anchor) on a splice-capable backend when NOT \
+         hydrating; events: {events:#?}"
+    );
+}
+
 /// Sanity: a static `view` tree (no reactive anchor) under hydration
 /// produces no `ClearChildren` either — proving the guard checks above
 /// aren't trivially true. The contrast against
