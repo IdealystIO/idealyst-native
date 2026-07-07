@@ -23,35 +23,10 @@
 //!   (`Self::default()`) is used.
 //! - A no-argument component gets a generated empty marker `FooProps {}`
 //!   so it dispatches through the same path as every other tag.
-//!
-//! ## Synthesized props (multi-param / plain-arg components)
-//!
-//! The canonical component shape is a single `props: &<Name>Props`. But a
-//! component may instead be written with an ordinary parameter list —
-//! `fn SummaryCard(count: usize, total: i64, nav: Ref<DrawerHandle>)`.
-//! Those can't name a props struct, so we **synthesize** one from the
-//! signature: a `<Name>Props { count, total, nav }` whose fields are each
-//! `Option<ParamType>`, plus a `build` that unwraps them and calls the fn
-//! positionally. `Option`-wrapping is what lets the struct `derive(Default)`
-//! regardless of whether the param types do (the `..defaults()` base is
-//! all-`None`), while the call-site `.into()` (`field: (v).into()`) still
-//! lands via `From<T> for Option<T>`. The synthesized fields mirror the
-//! exact param types — no reactive auto-wrap — so a tag call behaves
-//! identically to calling the fn (a `Signal<T>` param stays live, a plain
-//! `T` is a snapshot). A missing required prop panics in `build` with a
-//! named message.
-//!
-//! The trigger is unambiguous and back-compatible: a **single** param
-//! whose type name ends in `Props` is treated as an existing hand-written
-//! props struct (the universal convention — every shipped component uses
-//! it); anything else (multi-param, or a single non-`Props` param) is
-//! synthesized. Synthesis is skipped — falling back to a plain fn with no
-//! `ui!` tag — when the fn is generic or any param is a reference / not a
-//! simple `ident: Type` (those can't be `'static` owned props fields).
 
 use proc_macro2::{TokenStream as TokenStream2};
-use quote::{format_ident, quote};
-use syn::{FnArg, Ident, ItemFn, Pat, Type, Visibility};
+use quote::quote;
+use syn::{Ident, ItemFn, Visibility};
 
 use crate::component_attr::ComponentAttr;
 
@@ -93,35 +68,31 @@ pub(crate) fn generate_build_impl(item_fn: &ItemFn, attr: &ComponentAttr) -> Tok
         return emit_no_args_impl(vis, fn_name, &docs);
     }
 
-    // A single param whose type name ends in `Props` is an existing
-    // hand-written props struct — bridge the tag straight to it. This is
-    // the universal component shape, so keeping the old behavior gated on
-    // the `Props` suffix is fully back-compatible.
-    if let Some(props_type) = existing_props_type(&item_fn.sig) {
-        return emit_existing_props_impl(vis, fn_name, &docs, &props_type, attr);
-    }
-
-    // Otherwise synthesize a props struct from the parameter list, when
-    // every param is a simple owned `ident: Type` and the fn is not
-    // generic. If the signature doesn't fit, fall back to the historical
-    // behavior: no `BuildElement` impl (the fn is still callable directly;
-    // it just isn't a `ui!` tag).
-    emit_synthesized_props_impl(vis, fn_name, &docs, item_fn, attr).unwrap_or_default()
-}
-
-/// Emits the tag alias + `BuildElement` impl that bridges a component fn to
-/// its **existing** props struct (`fn Foo(props: &FooProps)` / `Foo(props:
-/// FooProps)`).
-fn emit_existing_props_impl(
-    vis: &Visibility,
-    fn_name: &Ident,
-    docs: &[&syn::Attribute],
-    props_type: &PropsType,
-    attr: &ComponentAttr,
-) -> TokenStream2 {
+    let Some(props_type) = props_type_from_sig(&item_fn.sig) else {
+        return TokenStream2::new();
+    };
     let path = &props_type.path;
     let amp = if props_type.by_ref { quote!(&) } else { quote!() };
-    let defaults_method = defaults_method(attr);
+
+    // Only override `defaults()` when the author declared defaults; the
+    // trait's provided impl (`Self::default()`) covers the common case.
+    let defaults_method = if attr.defaults.is_empty() {
+        quote!()
+    } else {
+        let fills = attr.defaults.iter().map(|d| {
+            let name = &d.name;
+            let expr = &d.expr;
+            quote! { #name: (#expr).into(), }
+        });
+        quote! {
+            fn defaults() -> Self {
+                Self {
+                    #(#fills)*
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+    };
 
     quote! {
         // Tag alias: `ui! { Foo(...) }` uses the tag as the type name, so
@@ -144,114 +115,6 @@ fn emit_existing_props_impl(
                 ::runtime_core::IntoElement::into_element(#fn_name(#amp self))
             }
             #defaults_method
-        }
-    }
-}
-
-/// Synthesizes a `<Name>Props` struct + tag alias + `BuildElement` impl
-/// from a component's ordinary parameter list. Returns `None` (→ plain fn,
-/// no tag) when the signature can't be turned into a `'static` owned props
-/// struct: the fn is generic, or a param is a reference / not a plain
-/// `ident: Type`.
-fn emit_synthesized_props_impl(
-    vis: &Visibility,
-    fn_name: &Ident,
-    docs: &[&syn::Attribute],
-    item_fn: &ItemFn,
-    attr: &ComponentAttr,
-) -> Option<TokenStream2> {
-    // Generic components can't have a single concrete `'static` props type.
-    if !item_fn.sig.generics.params.is_empty() || item_fn.sig.generics.where_clause.is_some() {
-        return None;
-    }
-
-    // Each param must be a plain `ident: OwnedType` (no `self`, no `&T`, no
-    // destructuring pattern). Collect (ident, type) for every one.
-    let mut fields: Vec<(&Ident, &Type)> = Vec::with_capacity(item_fn.sig.inputs.len());
-    for arg in &item_fn.sig.inputs {
-        let FnArg::Typed(pat_type) = arg else {
-            return None; // a `self` receiver — not a component
-        };
-        if matches!(&*pat_type.ty, Type::Reference(_)) {
-            return None; // a borrowed param can't be a `'static` field
-        }
-        let Pat::Ident(pat_ident) = &*pat_type.pat else {
-            return None; // destructured / non-ident param
-        };
-        if pat_ident.subpat.is_some() {
-            return None; // `ident @ subpat`
-        }
-        fields.push((&pat_ident.ident, &pat_type.ty));
-    }
-
-    let props_name = format_ident!("{}Props", fn_name);
-
-    // `pub field: Option<Ty>` per param. `Option` gives the whole struct a
-    // `Default` (all `None`) no matter the field types, so `..defaults()`
-    // works and unset props default to "missing".
-    let field_decls = fields.iter().map(|(name, ty)| {
-        quote! { pub #name: ::core::option::Option<#ty>, }
-    });
-
-    // `build` unwraps each field back to the owned value and calls the fn
-    // positionally. A prop left unset panics with a named message.
-    let call_args = fields.iter().map(|(name, _)| {
-        let msg = format!(
-            "missing required prop `{name}` on component `{fn_name}` (set it at the `ui!` call site)"
-        );
-        quote! { self.#name.expect(#msg) }
-    });
-
-    let defaults_method = defaults_method(attr);
-
-    Some(quote! {
-        // Synthesized props struct: one `Option`-wrapped field per fn
-        // parameter. `#[doc(hidden)]` — the fn's own doc is the surface;
-        // the fields hover individually at the call site.
-        #(#docs)*
-        #[doc(hidden)]
-        #[derive(::core::default::Default)]
-        #[allow(non_camel_case_types)]
-        #vis struct #props_name {
-            #(#field_decls)*
-        }
-
-        // Tag alias so `ui! { Foo(..) }` can name the struct as `Foo`; the
-        // `fn Foo` (value namespace) and this alias (type namespace) coexist.
-        #(#docs)*
-        #[allow(non_camel_case_types)]
-        #vis type #fn_name = #props_name;
-
-        #[automatically_derived]
-        impl ::runtime_core::BuildElement for #props_name {
-            fn build(self) -> ::runtime_core::Element {
-                // Coerce via `IntoElement` so a `Bound`/`Bindable` return
-                // still satisfies `-> Element` (see the props-bearing impl).
-                ::runtime_core::IntoElement::into_element(#fn_name(#(#call_args),*))
-            }
-            #defaults_method
-        }
-    })
-}
-
-/// The `defaults()` override, emitted only when the author declared
-/// `#[component(default(field = expr, …))]`; otherwise empty (the trait's
-/// provided `Self::default()` is used). Shared by both emission paths.
-fn defaults_method(attr: &ComponentAttr) -> TokenStream2 {
-    if attr.defaults.is_empty() {
-        return quote!();
-    }
-    let fills = attr.defaults.iter().map(|d| {
-        let name = &d.name;
-        let expr = &d.expr;
-        quote! { #name: (#expr).into(), }
-    });
-    quote! {
-        fn defaults() -> Self {
-            Self {
-                #(#fills)*
-                ..::core::default::Default::default()
-            }
         }
     }
 }
@@ -284,106 +147,27 @@ fn emit_no_args_impl(
     }
 }
 
-/// If the function is the canonical single-props shape — exactly one
-/// parameter typed `&T` or `T` where the type's final path segment ends in
-/// `Props` — returns its props type info. The `Props` suffix is what
-/// distinguishes an existing hand-written props struct from an ordinary
-/// data param (`fn EntryRow(s: SubmissionDto)`), which is synthesized
-/// instead. Every shipped component uses the suffix, so this is a
-/// no-op-for-existing-code gate.
-fn existing_props_type(sig: &syn::Signature) -> Option<PropsType> {
+/// If the function has exactly one parameter, returns its props type info.
+/// Accepts both `_: &T` and `_: T` (where T is a path type).
+fn props_type_from_sig(sig: &syn::Signature) -> Option<PropsType> {
     if sig.inputs.len() != 1 {
         return None;
     }
     let syn::FnArg::Typed(pt) = &sig.inputs[0] else {
         return None;
     };
-    let (path_ty, by_ref) = match &*pt.ty {
-        syn::Type::Reference(ref_ty) => match &*ref_ty.elem {
-            syn::Type::Path(path_ty) => (path_ty, true),
-            _ => return None,
-        },
-        syn::Type::Path(path_ty) => (path_ty, false),
-        _ => return None,
-    };
-    // Final segment must end in `Props` to count as an existing struct.
-    let ends_in_props = path_ty
-        .path
-        .segments
-        .last()
-        .is_some_and(|seg| seg.ident.to_string().ends_with("Props"));
-    if !ends_in_props {
-        return None;
-    }
-    let path = &path_ty.path;
-    Some(PropsType { path: quote! { #path }, by_ref })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn attr() -> ComponentAttr {
-        ComponentAttr { defaults: Vec::new(), has_children: false, external: None }
-    }
-
-    fn build_impl(src: &str) -> String {
-        let item_fn: ItemFn = syn::parse_str(src).unwrap();
-        generate_build_impl(&item_fn, &attr()).to_string()
-    }
-
-    #[test]
-    fn existing_props_bridges_not_synthesizes() {
-        let out = build_impl("fn Badge(props: &BadgeProps) -> Element { todo!() }");
-        assert!(out.contains("type Badge = BadgeProps"));
-        assert!(out.contains("impl :: runtime_core :: BuildElement for BadgeProps"));
-        // No synthesized struct.
-        assert!(!out.contains("struct BadgeProps"));
-    }
-
-    #[test]
-    fn multi_param_synthesizes_option_wrapped_struct() {
-        let out = build_impl(
-            "fn SummaryCard(count: usize, total: i64, nav: Ref<DrawerHandle>) -> Element { todo!() }",
-        );
-        assert!(out.contains("struct SummaryCardProps"));
-        assert!(out.contains("count : :: core :: option :: Option < usize >"));
-        assert!(out.contains("nav : :: core :: option :: Option < Ref < DrawerHandle > >"));
-        assert!(out.contains("type SummaryCard = SummaryCardProps"));
-        // build() unwraps and calls the fn positionally.
-        assert!(out.contains("SummaryCard (self . count . expect"));
-        assert!(out.contains("self . total . expect"));
-        assert!(out.contains("self . nav . expect"));
-    }
-
-    #[test]
-    fn single_non_props_param_is_synthesized() {
-        // A lone DTO param is data, not a props struct — synthesize.
-        let out = build_impl("fn EntryRow(s: SubmissionDto) -> Element { todo!() }");
-        assert!(out.contains("struct EntryRowProps"));
-        assert!(out.contains("s : :: core :: option :: Option < SubmissionDto >"));
-        assert!(out.contains("EntryRow (self . s . expect"));
-    }
-
-    #[test]
-    fn reference_param_falls_back_to_no_tag() {
-        // Borrowed params can't be `'static` fields → no BuildElement impl.
-        let out = build_impl("fn StatusPill(status: &str) -> Element { todo!() }");
-        assert!(out.is_empty(), "expected no tag glue, got: {out}");
-    }
-
-    #[test]
-    fn generic_component_falls_back_to_no_tag() {
-        let out = build_impl(
-            "fn Press<S: IntoStyleSource>(style: S) -> Element { todo!() }",
-        );
-        assert!(out.is_empty(), "expected no tag glue, got: {out}");
-    }
-
-    #[test]
-    fn zero_arg_emits_marker_struct() {
-        let out = build_impl("fn Header() -> Element { todo!() }");
-        assert!(out.contains("struct Header { }"));
-        assert!(out.contains("impl :: runtime_core :: BuildElement for Header"));
+    match &*pt.ty {
+        syn::Type::Reference(ref_ty) => {
+            let syn::Type::Path(path_ty) = &*ref_ty.elem else {
+                return None;
+            };
+            let path = &path_ty.path;
+            Some(PropsType { path: quote! { #path }, by_ref: true })
+        }
+        syn::Type::Path(path_ty) => {
+            let path = &path_ty.path;
+            Some(PropsType { path: quote! { #path }, by_ref: false })
+        }
+        _ => None,
     }
 }
