@@ -1554,6 +1554,127 @@ fn insert_many_removes_stale_ssr_node_on_divergence_remount() {
     );
 }
 
+/// REGRESSION TEST — `Element::External` hydration. SSR renders an external
+/// as an empty host `<div>` (the server-side fallback, since the GPU canvas
+/// has no SSR renderer). On the client the handler builds a FRESH node
+/// (mounts a `<canvas>`) rather than adopting the SSR host. Before the fix,
+/// `create_external` never consumed the SSR host at the cursor, so the cursor
+/// stalled on it, the external's next sibling mismatched (the first
+/// `[hydrate] SSR/client diverge`), and the stale host `<div>` was orphaned in
+/// the DOM. After the fix `create_external` arms a subtree remount that swaps
+/// the fresh node in for the stale host and resumes the cursor at the host's
+/// next sibling — so the sibling adopts cleanly.
+#[cfg(feature = "hydrate")]
+#[wasm_bindgen_test]
+fn create_external_consumes_stale_ssr_host_when_handler_builds_fresh() {
+    use runtime_core::Backend;
+    use std::any::{Any, TypeId};
+    use std::rc::Rc;
+
+    struct CanvasLike;
+
+    install_mount();
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let app = doc.get_element_by_id("app").unwrap();
+
+    // SSR: external host (empty div) then a sibling span.
+    app.set_inner_html(
+        r#"<div class="approot"><div class="ssr-ext"></div><span class="sib">SIB</span></div>"#,
+    );
+
+    let mut backend = WebBackend::hydrate("#app");
+    // Non-adopting handler: builds a fresh <div> (mirrors the canvas SDK
+    // mounting a GPU <canvas> rather than adopting the SSR host).
+    backend.register_external::<CanvasLike, _>(|_p, b| b.doc.create_element("div").unwrap());
+
+    // Adopt approot; cursor descends onto the stale `ssr-ext` div.
+    let mut approot = backend.create_view(&Default::default());
+
+    let payload: Rc<dyn Any> = Rc::new(CanvasLike);
+    let ext = backend.create_external(
+        TypeId::of::<CanvasLike>(),
+        "canvas-like",
+        &payload,
+        &Default::default(),
+    );
+    // The walker parents the external via insert_at → resync swaps the fresh
+    // node in for the stale host.
+    backend.insert_at(&mut approot, ext.clone(), 0);
+
+    // Stale SSR host detached — not left orphaned next to the fresh node.
+    assert_eq!(
+        doc.query_selector_all("#app .ssr-ext").unwrap().length(),
+        0,
+        "unconsumed SSR external host must be detached (the stale-canvas-div bug)",
+    );
+    // approot holds exactly [fresh-external, sibling] — the fresh node took
+    // the host's slot, the sibling is untouched.
+    let approot_el: web_sys::Element = approot.unchecked_into();
+    assert_eq!(count_element_children(&approot_el), 2, "expected [external, sibling]");
+    assert!(
+        approot_el.first_element_child().unwrap().is_same_node(Some(ext.unchecked_ref())),
+        "the external's fresh node must occupy the stale host's position",
+    );
+    // Cursor resumed at the sibling span, so it adopts cleanly instead of
+    // mismatching (the divergence cascade the bug caused).
+    let span = doc.query_selector("#app .sib").unwrap().unwrap();
+    assert!(
+        backend
+            .hydration_cursor
+            .as_ref()
+            .map(|c| c.is_same_node(Some(span.as_ref())))
+            .unwrap_or(false),
+        "cursor must resume at the external's next sibling for clean adoption",
+    );
+}
+
+/// COMPLEMENT — a hydration-AWARE external handler (one that adopts the SSR
+/// host via `hydrate_next`) must NOT be forced into a remount: it advances the
+/// cursor by adopting, so the fresh-node path no-ops and the adopted SSR node
+/// is reused in place (no duplicate). Pins that the fix only fires for
+/// fresh-building handlers.
+#[cfg(feature = "hydrate")]
+#[wasm_bindgen_test]
+fn create_external_adopting_handler_reuses_ssr_host() {
+    use runtime_core::Backend;
+    use std::any::{Any, TypeId};
+    use std::rc::Rc;
+
+    struct Adopting;
+
+    install_mount();
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let app = doc.get_element_by_id("app").unwrap();
+    app.set_inner_html(r#"<div class="approot"><div class="ssr-ext"></div></div>"#);
+
+    let mut backend = WebBackend::hydrate("#app");
+    // Adopting handler: takes the SSR host at the cursor via hydrate_next.
+    backend.register_external::<Adopting, _>(|_p, b| {
+        b.hydrate_next("div").unwrap_or_else(|| b.doc.create_element("div").unwrap())
+    });
+
+    let _approot = backend.create_view(&Default::default());
+    let payload: Rc<dyn Any> = Rc::new(Adopting);
+    let ext = backend.create_external(
+        TypeId::of::<Adopting>(),
+        "adopting",
+        &payload,
+        &Default::default(),
+    );
+
+    // The external node IS the adopted SSR host — no fresh node, no duplicate.
+    let ssr_ext = doc.query_selector("#app .ssr-ext").unwrap().unwrap();
+    assert!(
+        ext.is_same_node(Some(ssr_ext.as_ref())),
+        "an adopting external handler must reuse the SSR host, not remount it",
+    );
+    assert_eq!(
+        doc.query_selector_all("#app .ssr-ext").unwrap().length(),
+        1,
+        "exactly one host — the adopted SSR node",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Pointer-keyed dynamic cache rejects stale entries on content mismatch.
 // ---------------------------------------------------------------------------

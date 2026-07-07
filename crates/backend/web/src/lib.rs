@@ -915,6 +915,48 @@ impl WebBackend {
         self.hydration_suppress = true;
     }
 
+    /// Snapshot the SSR adoption cursor before an `Element::External`
+    /// handler runs. `None` off the hydrate path. Paired with
+    /// [`Self::hydrate_external_note_if_unadopted`].
+    #[cfg(feature = "hydrate")]
+    pub(crate) fn hydrate_cursor_snapshot(&self) -> Option<web_sys::Node> {
+        if self.hydrating {
+            self.hydration_cursor.clone()
+        } else {
+            None
+        }
+    }
+
+    /// Called right after an external handler builds its node. If the cursor
+    /// is unchanged from `before`, the handler did NOT adopt the SSR host at
+    /// the cursor (it built fresh — e.g. the GPU canvas), so arm a subtree
+    /// remount: the fresh `node` becomes the remount root that
+    /// [`Self::hydrate_resync_remount`] swaps in for the stale SSR host when
+    /// the walker parents it. This keeps the cursor aligned for the external's
+    /// siblings and detaches the orphaned host. A hydration-aware handler
+    /// (one that calls `hydrate_next`) advances the cursor, so `before !=`
+    /// cursor and this no-ops.
+    #[cfg(feature = "hydrate")]
+    pub(crate) fn hydrate_external_note_if_unadopted(
+        &mut self,
+        before: &Option<web_sys::Node>,
+        node: &web_sys::Node,
+    ) {
+        if !self.hydrating || self.hydration_suppress {
+            return;
+        }
+        let unchanged = matches!(
+            (before, &self.hydration_cursor),
+            (Some(a), Some(b)) if a.is_same_node(Some(b))
+        );
+        if unchanged {
+            // The SSR host at the cursor was never consumed → treat the fresh
+            // external node as the replacement for it.
+            self.hydration_pending_fresh = true;
+            self.hydrate_note_fresh(node);
+        }
+    }
+
     /// Resync a subtree-local hydration remount when `child` is the fresh
     /// remount root recorded by [`Self::hydrate_note_fresh`]: swap `child`
     /// in for the stale SSR node it replaces (in place, so siblings keep
@@ -1008,6 +1050,17 @@ impl WebBackend {
     }
     #[cfg(not(feature = "hydrate"))]
     pub(crate) fn hydrate_note_fresh(&mut self, _fresh: &web_sys::Node) {}
+    #[cfg(not(feature = "hydrate"))]
+    pub(crate) fn hydrate_cursor_snapshot(&self) -> Option<web_sys::Node> {
+        None
+    }
+    #[cfg(not(feature = "hydrate"))]
+    pub(crate) fn hydrate_external_note_if_unadopted(
+        &mut self,
+        _before: &Option<web_sys::Node>,
+        _node: &web_sys::Node,
+    ) {
+    }
 
     /// Next node in a pre-order DFS of the SSR tree, bounded by `mount`.
     /// Descends into children first. Matches the walker's pre-order
@@ -2877,6 +2930,9 @@ impl Backend for WebBackend {
         payload: &Rc<dyn std::any::Any>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
+        // HYDRATION: snapshot the SSR cursor before the handler runs so we
+        // can tell whether the handler adopted the SSR host or built fresh.
+        let hydrate_cursor_before = self.hydrate_cursor_snapshot();
         // Look up the handler; clone the Rc so we can drop the
         // registry borrow before calling the handler (which needs
         // `&mut self`).
@@ -2891,6 +2947,14 @@ impl Backend for WebBackend {
         // External handlers don't know their semantic role; the author
         // supplies it via props.role. No inferred role here.
         a11y::apply(&node, a11y, None);
+        // If we're hydrating and the handler built a FRESH node (didn't adopt
+        // the SSR host at the cursor — e.g. the GPU canvas), arm a subtree
+        // remount so the fresh node replaces the stale SSR host in place.
+        // Without this the cursor stalls on the unconsumed host, the next
+        // sibling mismatches (the first `[hydrate] diverge`), and the stale
+        // host div is orphaned. No-op for hydration-aware handlers (which
+        // advance the cursor by adopting) and off the hydrate path.
+        self.hydrate_external_note_if_unadopted(&hydrate_cursor_before, &node);
         node
     }
 
