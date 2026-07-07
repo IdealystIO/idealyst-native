@@ -184,6 +184,25 @@ pub fn hydrate_enter(region: &web_sys::Node) {
 #[cfg(not(feature = "hydrate"))]
 pub fn hydrate_enter(_region: &web_sys::Node) {}
 
+/// Whether an SSR-hydration pass is currently in progress. Borrow-free
+/// (reads the scheduler's hydration-buffer thread-local, not the backend),
+/// so navigator SDK code can call it while holding `&mut WebBackend`. Used
+/// to make the navigator's INITIAL screen mount authoritative-and-adopting
+/// during hydration (via the walker's `attach_initial`) while the deferred
+/// create-time auto-mount microtask skips — otherwise the initial screen is
+/// built twice (walker adopts the SSR screen, microtask builds a fresh one)
+/// and the whole screen duplicates.
+#[cfg(feature = "hydrate")]
+pub fn is_hydrating() -> bool {
+    crate::scheduler::is_hydration_active()
+}
+
+/// Off-feature stub — never hydrating without the `hydrate` feature.
+#[cfg(not(feature = "hydrate"))]
+pub fn is_hydrating() -> bool {
+    false
+}
+
 /// Install a self-handle so the batched text-update path
 /// ([`Backend::create_text_with_id`] / [`Backend::update_text_by_id`])
 /// can schedule its microtask flush. Must be called once after the

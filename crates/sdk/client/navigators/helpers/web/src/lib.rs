@@ -468,7 +468,15 @@ impl NavigatorInstance {
     /// without this guard the screen would land in the DOM twice
     /// (once from here, once from the microtask).
     fn attach_initial_with_node(&mut self, screen: Node, scope_id: u64) {
-        if !self.defer_initial_mount {
+        // Local mode normally defers the initial mount to the create-time
+        // microtask (see `create`). EXCEPT during SSR hydration: the walker
+        // built this screen adopting the server's screen DOM in place, so THIS
+        // is the authoritative, already-adopted mount — record + keep it, and
+        // the create-time microtask skips (guarded by `is_hydrating` too).
+        // Without this the initial screen mounts twice — the walker's adopted
+        // one AND a fresh one from the microtask — duplicating the whole screen
+        // (double nav/chrome, mis-bound overlays, content in the wrong copy).
+        if !self.defer_initial_mount && !backend_web::is_hydrating() {
             return;
         }
         if !self.has_layout() {
@@ -914,7 +922,12 @@ where
             // auto-mount. The caller mounts via `attach_initial` with
             // an externally-built screen node — the framework's wire
             // delivers it shortly after this microtask runs.
-            if inst.defer_initial_mount {
+            //
+            // SSR HYDRATION (local mode): also skip. The walker's
+            // `attach_initial` already mounted the initial screen adopting
+            // the server DOM in place; auto-mounting here would build a
+            // SECOND, fresh screen and duplicate the whole screen tree.
+            if inst.defer_initial_mount || backend_web::is_hydrating() {
                 return;
             }
 

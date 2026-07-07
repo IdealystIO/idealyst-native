@@ -49,6 +49,16 @@ pub(crate) fn end_hydration_buffering() {
     }
 }
 
+/// Whether the SSR-hydration window is open (between
+/// [`begin_hydration_buffering`] and [`end_hydration_buffering`], i.e. the
+/// whole `hydrate → mount → drain → finish` span). Borrow-free (reads a
+/// thread-local, not the backend), so navigator SDK code can consult it
+/// while it already holds `&mut WebBackend` — unlike `Backend::is_hydrating`.
+#[cfg(feature = "hydrate")]
+pub(crate) fn is_hydration_active() -> bool {
+    HYDRATION_BUFFER.with(|b| b.borrow().is_some())
+}
+
 #[cfg(feature = "hydrate")]
 fn drain_hydration_buffer() {
     loop {
