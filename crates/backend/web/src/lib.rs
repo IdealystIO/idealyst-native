@@ -915,6 +915,59 @@ impl WebBackend {
         self.hydration_suppress = true;
     }
 
+    /// Resync a subtree-local hydration remount when `child` is the fresh
+    /// remount root recorded by [`Self::hydrate_note_fresh`]: swap `child`
+    /// in for the stale SSR node it replaces (in place, so siblings keep
+    /// their DOM order), restore the adoption cursor to the stale node's
+    /// next sibling, and exit `suppress`. Returns `true` when it handled
+    /// `child` — the caller must then NOT insert it again.
+    ///
+    /// Shared by [`Backend::insert`], [`Backend::insert_at`], and
+    /// [`Backend::insert_many`] so a remount root gets its stale SSR
+    /// subtree detached no matter which attach path the walker parents it
+    /// through. This matters because the anchorless `when` / `switch`
+    /// splice (`build_when_spliced` / the `Each` reconciler) parents the
+    /// branch via `insert_at`, and the `Repeat` fallback via `insert_many`
+    /// — neither of which used to run the resync. A remount root parented
+    /// by `insert_at` therefore left the stale SSR node in the DOM: the
+    /// duplicated absolutely-positioned nav this method was added to fix.
+    #[cfg(feature = "hydrate")]
+    fn hydrate_resync_remount(&mut self, parent: &mut web_sys::Node, child: &web_sys::Node) -> bool {
+        if !self
+            .hydration_remount_root
+            .as_ref()
+            .map(|r| r.is_same_node(Some(child)))
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        if let Some(stale) = self.hydration_remount_stale.take() {
+            if let Some(sp) = stale.parent_node() {
+                let _ = sp.replace_child(child, &stale);
+            } else {
+                let _ = parent.append_child(child);
+            }
+        }
+        self.hydration_cursor = self.hydration_remount_resume.take();
+        self.hydration_remount_root = None;
+        self.hydration_suppress = false;
+        true
+    }
+
+    /// During hydration, whether `child` is an already-adopted SSR node
+    /// that is ALREADY parented to `parent`. Adopted nodes are live in the
+    /// SSR DOM in build order, so re-inserting (or repositioning) one is a
+    /// wasteful — and, for `insert_at`, a reordering — no-op. Callers skip
+    /// the backend insert when this holds (outside a remount `suppress`
+    /// subtree, where the child is genuinely fresh).
+    #[cfg(feature = "hydrate")]
+    fn hydrate_child_already_adopted(&self, parent: &web_sys::Node, child: &web_sys::Node) -> bool {
+        child
+            .parent_node()
+            .map(|p| p.is_same_node(Some(parent)))
+            .unwrap_or(false)
+    }
+
     // ---------------------------------------------------------------
     // No-hydrate stubs. Public surface stays callable from SDK crates +
     // generated wrappers; bodies optimize to a const `None` / no-op
@@ -2199,40 +2252,42 @@ impl Backend for WebBackend {
             // inserted → swap it in for the stale SSR node *in place*,
             // restore the cursor to the stale node's next sibling, and
             // leave the fresh subtree so siblings adopt again.
-            if self
-                .hydration_remount_root
-                .as_ref()
-                .map(|r| r.is_same_node(Some(&child)))
-                .unwrap_or(false)
-            {
-                if let Some(stale) = self.hydration_remount_stale.take() {
-                    if let Some(sp) = stale.parent_node() {
-                        let _ = sp.replace_child(&child, &stale);
-                    } else {
-                        let _ = parent.append_child(&child);
-                    }
-                }
-                self.hydration_cursor = self.hydration_remount_resume.take();
-                self.hydration_remount_root = None;
-                self.hydration_suppress = false;
+            if self.hydrate_resync_remount(parent, &child) {
                 return;
             }
             // Outside a remount subtree: adopted nodes are already
             // parent↔child in the SSR DOM, so inserting is a no-op.
-            if !self.hydration_suppress {
-                if let Some(p) = child.parent_node() {
-                    if p.is_same_node(Some(&*parent)) {
-                        return;
-                    }
-                }
-            }
             // Inside a remount subtree (suppress, not the root): a fresh
             // node → fall through to a normal append.
+            if !self.hydration_suppress && self.hydrate_child_already_adopted(parent, &child) {
+                return;
+            }
         }
         primitives::view::insert(parent, child)
     }
 
     fn insert_many(&mut self, parent: &mut Self::Node, children: Vec<Self::Node>) {
+        #[cfg(feature = "hydrate")]
+        if self.hydrating {
+            // Route each child through the same remount-resync + adopted
+            // no-op as single `insert`, then batch-insert only the
+            // genuinely fresh remainder. A remount root in the batch (the
+            // `Repeat` fallback collects rows then hands them here) is
+            // swapped in for its stale SSR node in place; adopted SSR
+            // children are already parented and must not be re-inserted.
+            let mut fresh: Vec<Self::Node> = Vec::with_capacity(children.len());
+            for child in children {
+                if self.hydrate_resync_remount(parent, &child) {
+                    continue;
+                }
+                if !self.hydration_suppress && self.hydrate_child_already_adopted(parent, &child) {
+                    continue;
+                }
+                fresh.push(child);
+            }
+            primitives::view::insert_many(self, parent, fresh);
+            return;
+        }
         primitives::view::insert_many(self, parent, children)
     }
 
@@ -2246,6 +2301,21 @@ impl Backend for WebBackend {
     }
 
     fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
+        #[cfg(feature = "hydrate")]
+        if self.hydrating {
+            // Anchorless `when` / `switch` splice + keyed `Each` reconcile
+            // parent their branch/rows through here. A remount root must
+            // still be swapped in for its stale SSR node (else the diverged
+            // subtree renders twice — the duplicated absolutely-positioned
+            // nav bug); an adopted SSR node is already correctly positioned
+            // in build order, so re-`insert_before`ing it would reorder it.
+            if self.hydrate_resync_remount(parent, &child) {
+                return;
+            }
+            if !self.hydration_suppress && self.hydrate_child_already_adopted(parent, &child) {
+                return;
+            }
+        }
         primitives::view::insert_at(parent, child, index)
     }
 
@@ -3158,6 +3228,29 @@ impl Backend for WebBackend {
             // rebuilds create fresh nodes through the normal path.
             self.hydrating = false;
             crate::scheduler::end_hydration_buffering();
+            // Safety net: a remount whose fresh root was parented by a path
+            // that somehow bypassed `hydrate_resync_remount` would leave its
+            // stale SSR node orphaned in the DOM, rendering the diverged
+            // subtree twice. Detach any such leftover now so "diverged →
+            // remounted → stale removed" holds on EVERY path. Normally the
+            // field is already `None` (the resync took it during `insert*`).
+            // EXCEPTION: when the tree `root` itself is the pending remount
+            // root, the stale belongs to the root-swap branch below (it
+            // `replace_child`s root into the stale's slot), so leave it.
+            let root_is_pending_remount = self
+                .hydration_remount_root
+                .as_ref()
+                .map(|r| r.is_same_node(Some(&root)))
+                .unwrap_or(false);
+            if !root_is_pending_remount {
+                if let Some(stale) = self.hydration_remount_stale.take() {
+                    if let Some(sp) = stale.parent_node() {
+                        let _ = sp.remove_child(&stale);
+                    }
+                    self.hydration_remount_root = None;
+                    self.hydration_suppress = false;
+                }
+            }
             // Clean / subtree-local outcome: the root was adopted (or
             // remounted in place by `insert`), so it's already `#app`'s
             // child — nothing to swap. Diverging subtrees were already

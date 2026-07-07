@@ -1434,6 +1434,127 @@ fn text_input_create_adopts_ssr_input_during_hydration() {
 }
 
 // ---------------------------------------------------------------------------
+// Divergence-remount must remove the stale SSR node on EVERY attach path.
+// ---------------------------------------------------------------------------
+
+/// REGRESSION TEST — the duplicated absolutely-positioned nav.
+///
+/// A subtree-local hydration remount (SSR/client diverge) records the
+/// stale SSR node and swaps the fresh client node in for it. The resync
+/// used to live ONLY in `Backend::insert`; the anchorless `when` / `switch`
+/// splice (`build_when_spliced`) and keyed `Each` reconcile parent their
+/// branch/rows through `Backend::insert_at`, which did NOT run the resync.
+///
+/// So a top-level `when(...)` nav (no style ⇒ anchorless splice) whose arm
+/// root diverged from SSR got its fresh copy inserted via `insert_at` while
+/// the stale SSR nav stayed in the DOM — two nav bars, the orphan pinned to
+/// `top:0`. This test arms exactly that remount and asserts `insert_at`
+/// detaches the stale node (the fix), leaving a single, correct child.
+#[cfg(feature = "hydrate")]
+#[wasm_bindgen_test]
+fn insert_at_removes_stale_ssr_node_on_divergence_remount() {
+    use runtime_core::Backend;
+
+    install_mount();
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let app = doc.get_element_by_id("app").unwrap();
+
+    // SSR markup: the app root `<div>` holds one `<span>` — the stale
+    // "nav". The client will build a `<div>` there instead (tag mismatch),
+    // so that fresh `<div>` becomes the remount root the splice parents
+    // via `insert_at`.
+    app.set_inner_html(r#"<div class="approot"><span class="ssr-nav">STALE</span></div>"#);
+
+    let mut backend = WebBackend::hydrate("#app");
+
+    // Adopt the app root `<div>`; the cursor descends onto the `<span>`.
+    let mut approot = backend.create_view(&Default::default());
+
+    // Client builds a `<div>` where SSR had a `<span>` → `create_view`'s
+    // `hydrate_next("div")` mismatches and arms the remount (this fresh
+    // `<div>` is the remount root; the `<span>` is the recorded stale).
+    let fresh_nav = backend.create_view(&Default::default());
+
+    // The anchorless-splice attach path: `build_when_spliced` calls exactly
+    // this to parent its branch node. Before the fix it left the stale in
+    // place; after the fix it swaps the stale out.
+    backend.insert_at(&mut approot, fresh_nav.clone(), 0);
+
+    // Exactly one element child under `.approot`, and it's the fresh nav
+    // `<div>` — the stale `<span>` is gone. Pre-fix this was 2 (span + div).
+    let approot_el: web_sys::Element = approot.unchecked_into();
+    assert_eq!(
+        count_element_children(&approot_el),
+        1,
+        "after an insert_at remount resync the stale SSR node must be detached; \
+         the duplicate-nav bug leaves the stale span alongside the fresh div",
+    );
+    let only = approot_el
+        .first_element_child()
+        .expect("one child expected");
+    assert!(
+        only.is_same_node(Some(fresh_nav.unchecked_ref())),
+        "the surviving child must be the fresh client node, not the stale SSR span",
+    );
+    assert_eq!(
+        doc.query_selector_all("#app .ssr-nav").unwrap().length(),
+        0,
+        "the stale SSR nav must not survive anywhere in the mount",
+    );
+}
+
+/// Count element children of `el` via the sibling chain (`.children()` /
+/// `child_element_count()` aren't in this crate's enabled web-sys feature
+/// set; `first_element_child` / `next_element_sibling` are).
+#[cfg(feature = "hydrate")]
+fn count_element_children(el: &web_sys::Element) -> u32 {
+    let mut n = 0;
+    let mut cur = el.first_element_child();
+    while let Some(c) = cur {
+        n += 1;
+        cur = c.next_element_sibling();
+    }
+    n
+}
+
+/// REGRESSION TEST — same divergence-remount invariant for the batched
+/// `insert_many` attach path (the `Repeat` fallback collects rows then
+/// hands the lot here). A remount root in the batch must be swapped in for
+/// its stale SSR node; the rest of the batch inserts normally.
+#[cfg(feature = "hydrate")]
+#[wasm_bindgen_test]
+fn insert_many_removes_stale_ssr_node_on_divergence_remount() {
+    use runtime_core::Backend;
+
+    install_mount();
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let app = doc.get_element_by_id("app").unwrap();
+
+    // SSR: app root with a stale `<span>` at the cursor.
+    app.set_inner_html(r#"<div class="approot"><span class="ssr-row">STALE</span></div>"#);
+
+    let mut backend = WebBackend::hydrate("#app");
+    let mut approot = backend.create_view(&Default::default());
+
+    // Fresh `<div>` where SSR had `<span>` → arms the remount.
+    let fresh_row = backend.create_view(&Default::default());
+
+    backend.insert_many(&mut approot, vec![fresh_row.clone()]);
+
+    let approot_el: web_sys::Element = approot.unchecked_into();
+    assert_eq!(
+        count_element_children(&approot_el),
+        1,
+        "insert_many must swap the remount root in for its stale SSR node",
+    );
+    assert_eq!(
+        doc.query_selector_all("#app .ssr-row").unwrap().length(),
+        0,
+        "the stale SSR row must not survive after an insert_many remount resync",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Pointer-keyed dynamic cache rejects stale entries on content mismatch.
 // ---------------------------------------------------------------------------
 

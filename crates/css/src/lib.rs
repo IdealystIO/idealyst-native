@@ -1571,6 +1571,82 @@ mod tests {
         );
     }
 
+    /// REGRESSION — Issue B of the "duplicated SSG nav" bug: SSR and web
+    /// must mint the BYTE-IDENTICAL `ui-<hash>` class for a text node that
+    /// carries a `shadow`, or the client's first render diverges from the
+    /// (correct) SSR DOM at that span and the hydrator remounts the subtree.
+    ///
+    /// The two backends reach the class name by DIFFERENT expressions, and
+    /// this test pins that they still agree:
+    ///
+    /// - SSR (`backend-ssr`'s `apply_style`, the no-overlay path) feeds the
+    ///   content key STRAIGHT into `text_shadow_class_key`:
+    ///     `hash_class_name(text_shadow_class_key(rules.content_key()))`
+    /// - web (`backend-web`'s `apply_text_shadow`) routes through
+    ///   `variant_class_key` first (it also handles state/breakpoint/
+    ///   container overlays):
+    ///     `hash_class_name(text_shadow_class_key(variant_class_key(k, &[], &[], &[])))`
+    ///
+    /// They match ONLY because `variant_class_key(k, &[], &[], &[]) == k`
+    /// (no overlays ⇒ no appended segments). That identity is the linchpin;
+    /// the first assertion locks it down so a future change to
+    /// `variant_class_key` (e.g. unconditionally appending a marker) can't
+    /// silently re-diverge SSR from web and reintroduce the double-nav.
+    #[test]
+    fn ssr_and_web_mint_identical_text_shadow_class() {
+        use runtime_core::{Color, Shadow, StyleRules};
+
+        // The linchpin identity both derivations rest on.
+        let base_key = "fg=T:color-text;fs=L:1234";
+        assert_eq!(
+            variant_class_key(base_key, &[], &[], &[]),
+            base_key,
+            "variant_class_key with no overlays MUST be the identity on the base key — \
+             web's text-shadow path depends on this to match SSR's content-key path",
+        );
+
+        // End-to-end over a real shadowed text `StyleRules`: compute the
+        // class both backends' ways and assert they're byte-identical.
+        let rules = StyleRules {
+            shadow: Some(Shadow {
+                x: 0.0,
+                y: 2.0,
+                blur: 4.0,
+                // `Color` is a newtype over a CSS color string.
+                color: Color("rgba(0,0,0,0.5)".to_string()),
+            }),
+            ..Default::default()
+        };
+        assert!(
+            text_needs_shadow_variant(&rules),
+            "a StyleRules carrying a shadow must route through the text-shadow variant",
+        );
+
+        let content_key = rules.content_key();
+        let ssr_class = hash_class_name(&text_shadow_class_key(&content_key));
+        let web_class = hash_class_name(&text_shadow_class_key(&variant_class_key(
+            &content_key,
+            &[],
+            &[],
+            &[],
+        )));
+        assert_eq!(
+            ssr_class, web_class,
+            "SSR and web must mint the same text-shadow class for identical StyleRules; \
+             a mismatch diverges hydration at the shadowed span (Issue B / double-nav)",
+        );
+
+        // And the text-shadow key is genuinely DISTINCT from the plain
+        // box-shadow class the same content key would mint on a view — so a
+        // shadowed text node never adopts a box element's class (the reason
+        // `text_shadow_class_key` exists at all).
+        assert_ne!(
+            hash_class_name(&text_shadow_class_key(&content_key)),
+            hash_class_name(&content_key),
+            "text-shadow class must not collide with the plain box-shadow class",
+        );
+    }
+
     #[test]
     fn navigator_layout_css_is_mobile_first_with_customizable_pin_width() {
         // Default pin width is the Large breakpoint (1024 px). This test
