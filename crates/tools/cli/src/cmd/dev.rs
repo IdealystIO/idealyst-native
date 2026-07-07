@@ -1462,17 +1462,38 @@ fn launch_ssr(
 /// browser loads from the server's origin and server-fn calls + the
 /// session cookie are same-origin.
 ///
-/// Two bundle shapes, picked by whether the server is standalone:
+/// Both server shapes serve the bundle from `<project>/dist/web` — the
+/// same dir `idealyst build --web` and `idealyst run server` stage into —
+/// so dev stages there too (see [`full_stack_web_bundle_dir`]). What
+/// differs is only *how* we refresh after a rebuild:
 ///
-/// - **In-crate** (`server_bin` only): the server serves `<project>/pkg`
-///   + a generated index, so we build the bundle the default way
-///   (`pkg/` copied into the project) and **restart the server** on each
-///   rebuild (cargo re-runs, picking up server-code changes too).
+/// - **In-crate** (`server_bin` only): the server serves
+///   `CARGO_MANIFEST_DIR/dist/web` (baked at compile time; see
+///   `examples/server-fn-demo/src/bin/server.rs`). We stage the full
+///   bundle there and **restart the server** on each rebuild (cargo
+///   re-runs, picking up server-code changes too), then refresh.
 /// - **Standalone** (`server_manifest`): the server is its own workspace
 ///   serving a fully-staged `dist/web` (`WEB_DIST`) over `ServeDir`, so
 ///   we stage the **full** bundle there each rebuild and leave the server
 ///   running — it serves the files statically, so a browser refresh
 ///   picks up the new wasm with no restart.
+///
+/// The invariant either way: dev stages where the server reads. Before
+/// this was fixed the in-crate path staged to `<project>/pkg` (the
+/// `dev_reload` default) while its server read `dist/web`, so every save
+/// rebuilt a bundle the browser never loaded — stale content across
+/// refreshes and restarts.
+///
+/// Where `idealyst dev --web` stages the full-stack web bundle — always
+/// `<project>/dist/web`, for BOTH the in-crate (`server_bin`) and
+/// standalone (`server_manifest`) shapes. This is the dir `build --web`
+/// and `run server` stage into, and the dir both servers serve (in-crate
+/// bakes `CARGO_MANIFEST_DIR/dist/web`; standalone reads `WEB_DIST`),
+/// so dev never diverges from build/run regardless of server shape.
+fn full_stack_web_bundle_dir(project_dir: &Path) -> PathBuf {
+    project_dir.join("dist").join("web")
+}
+
 fn launch_web_with_backend(
     dir: &Path,
     args: &Args,
@@ -1483,9 +1504,10 @@ fn launch_web_with_backend(
 
     let standalone = manifest.app.server_manifest.is_some();
     let port = manifest.app.server_port;
-    // Standalone servers serve this staged bundle over `ServeDir`; we
-    // pass it as `WEB_DIST` and restage it on every rebuild.
-    let dist_web = dir.join("dist").join("web");
+    // Both server shapes read the bundle from here (`build --web` /
+    // `run server` stage into the same dir). We stage into it on every
+    // rebuild and hand it to the server as `WEB_DIST`.
+    let dist_web = full_stack_web_bundle_dir(dir);
 
     // Phase 1: initial bundle build + spawn the watcher. `start_with`
     // runs the build before returning, so by the time we move on the
@@ -1504,7 +1526,11 @@ fn launch_web_with_backend(
             dev_reload::BuildOptions {
                 source: source.clone(),
                 features: Vec::new(),
-                bundle_out_dir: standalone.then(|| dist_web.clone()),
+                // Stage the full bundle into `dist/web` for BOTH shapes —
+                // it's the dir the server serves. `None` here (the old
+                // in-crate value) would sync `pkg/` into the project root
+                // instead, which no server reads → stale browser.
+                bundle_out_dir: Some(dist_web.clone()),
             },
         )
         .context("web bundle initial build + watcher start failed")?;
@@ -1521,7 +1547,7 @@ fn launch_web_with_backend(
 
     // Phase 2: spawn the server. Captured so we can kill + respawn on
     // each rebuild (in-crate path only).
-    let mut child = spawn_backend(dir, manifest, standalone.then_some(dist_web.as_path()))?;
+    let mut child = spawn_backend(dir, manifest, Some(dist_web.as_path()))?;
     crate::dlog!(
         "dev web",
         "full-stack: server running (pid {}) on port {port}",
@@ -1549,7 +1575,7 @@ fn launch_web_with_backend(
                 eprintln!("[dev web] source change → restarting server");
                 let _ = child.kill();
                 let _ = child.wait();
-                child = match spawn_backend(dir, manifest, None) {
+                child = match spawn_backend(dir, manifest, Some(dist_web.as_path())) {
                     Ok(c) => c,
                     Err(e) => {
                         eprintln!("[dev web] server respawn failed: {e:#}");
@@ -2212,6 +2238,31 @@ mod tests {
         assert!(
             start.elapsed() < Duration::from_secs(2),
             "a missing host pid must return promptly, not hang",
+        );
+    }
+
+    /// Regression guard for the "stale bundle" bug: `idealyst dev --web`
+    /// staged the in-crate (`server_bin`) bundle into `<project>/pkg`,
+    /// but that server serves `<project>/dist/web` — so every save
+    /// rebuilt a bundle the browser never loaded. dev must stage into the
+    /// dir the server serves, which is the SAME dir `build --web` and
+    /// `run server` stage into, for BOTH the in-crate and standalone
+    /// shapes. Pinning the staging-dir helper directly (the full
+    /// `launch_web_with_backend` flow needs `cargo` + the framework
+    /// toolchain, which isn't reachable in a unit test).
+    #[test]
+    fn dev_web_stages_bundle_where_the_server_serves() {
+        let project = Path::new("/tmp/some-project");
+        let served = project.join("dist").join("web");
+
+        // The dir dev stages into must equal the dir `build --web` /
+        // `run server` use — `<project>/dist/web` — not the `pkg/`
+        // default that `dev_reload` writes on `bundle_out_dir: None`.
+        assert_eq!(full_stack_web_bundle_dir(project), served);
+        assert_ne!(
+            full_stack_web_bundle_dir(project),
+            project.join("pkg"),
+            "staging into `pkg/` is the stale-bundle bug: no server reads it",
         );
     }
 }

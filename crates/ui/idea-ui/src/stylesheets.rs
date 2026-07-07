@@ -2068,6 +2068,10 @@ stylesheet! {
         }
         transitions {
             border_bottom_color: 250ms EaseInOut,
+            // Fade the whole-row hover highlight that a clickable `TableRow`
+            // (`on_row_click`) layers onto the cell background — see
+            // `components::table::make_row_cell_interactive`.
+            background: 150ms EaseInOut,
         }
     }
 }
@@ -2120,6 +2124,26 @@ stylesheet! {
             align_items: AlignItems::Center,
             justify_content: JustifyContent::FlexStart,
             gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
+        }
+    }
+}
+
+// Full-bleed transparent hit surface layered over a clickable row's
+// `<td>` on web. A `<td>` lowers to an `Element::External`, which can't
+// carry `on_touch`/`on_hover`, so this view — anchored to the cell's
+// padding box via `inset: 0` — captures the whole-cell tap + hover that
+// drive the row callback and the shared row-hover highlight. Native cells
+// are real `View`s and take the handlers directly, so this overlay is
+// web-only (see `components::table::make_row_cell_interactive`).
+stylesheet! {
+    pub TableRowClickOverlay<IdeaThemeRef> {
+        base(_t) {
+            position: Position::Absolute,
+            top: Length::Px(0.0),
+            right: Length::Px(0.0),
+            bottom: Length::Px(0.0),
+            left: Length::Px(0.0),
+            cursor: Cursor::Pointer,
         }
     }
 }

@@ -14,10 +14,23 @@ pub(crate) fn create(
     horizontal: bool,
     on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
 ) -> Node {
-    let div = b
-        .doc
-        .create_element("div")
-        .expect("create_element div failed");
+    // HYDRATION: adopt the SSR scroll `<div>` (tag match) so its children
+    // (the scrolled content) adopt in place. Without this the scroll_view
+    // built a FRESH div and never advanced the cursor, so the SSR scroll node
+    // was left for the next primitive (the content panel) to mis-adopt —
+    // diverging the whole scrolled subtree and cascading to later siblings.
+    // Mirrors `view::create`. Off hydration both arms create a fresh div.
+    let div: web_sys::Element = match b.hydrate_next("div") {
+        Some(el) => el,
+        None => {
+            let el = b
+                .doc
+                .create_element("div")
+                .expect("create_element div failed");
+            b.hydrate_note_fresh(&el.clone().unchecked_into::<Node>());
+            el
+        }
+    };
     // No `.ui-default` class — see view.rs for the rationale.
     // ScrollView's only fixed layout is the overflow we set inline
     // below; children stack via normal block flow unless the user's
