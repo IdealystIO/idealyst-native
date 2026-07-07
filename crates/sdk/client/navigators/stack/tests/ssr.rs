@@ -139,3 +139,4 @@ fn route_collector_disabled_by_default() {
     });
     assert!(take_route_collector().is_none());
 }
+

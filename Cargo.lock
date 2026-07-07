@@ -10338,6 +10338,8 @@ dependencies = [
  "ios-navigator-helpers",
  "jni 0.21.1",
  "runtime-core",
+ "wasm-bindgen",
+ "wasm-bindgen-test",
  "web-navigator-helpers",
  "web-sys",
  "wire",

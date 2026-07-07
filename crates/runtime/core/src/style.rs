@@ -2315,6 +2315,17 @@ thread_local! {
         RefCell<Option<Option<crate::primitives::key::KeyDownHandler>>> =
         const { RefCell::new(None) };
 
+    /// The installed theme's default text [`FontFamily`], if any. A text
+    /// node whose resolved style sets no `font_family` inherits this at
+    /// apply time (see `walker::style::apply_one`) so the theme's font is
+    /// the true global default on EVERY platform — not just where a sheet
+    /// opted in. Crucially this keeps web text out of the browser's serif
+    /// fallback without relying on CSS inheritance (which native lacks).
+    /// `idea-theme` sets it from `theme.font` on install + theme swap; the
+    /// author's explicit `font_family` always wins (fill only when `None`).
+    static DEFAULT_TEXT_FONT: RefCell<Option<FontFamily>> =
+        const { RefCell::new(None) };
+
     /// Typefaces already registered with the backend this session.
     /// Drives the dedup in [`ensure_typefaces_registered_with`]: the
     /// framework calls `register_asset` + `register_typeface` once
@@ -2678,6 +2689,23 @@ pub fn take_pending_token_updates() -> Vec<Vec<TokenEntry>> {
 /// value directly, re-resolve).
 pub fn set_app_background(color: Tokenized<Color>) {
     PENDING_APP_BG.with(|p| *p.borrow_mut() = Some(color));
+}
+
+/// Install the theme's default text [`FontFamily`] — the font a text node
+/// falls back to when its resolved style sets no `font_family`. `idea-theme`
+/// calls this from `install_idea_theme` (and on theme swap) with
+/// `theme.font`. Pass `None` to clear (text then uses the platform default).
+/// Applied cross-platform at style-apply time; an explicit `font_family` on
+/// the node always wins. See [`default_text_font`].
+pub fn set_default_text_font(font: Option<FontFamily>) {
+    DEFAULT_TEXT_FONT.with(|f| *f.borrow_mut() = font);
+}
+
+/// The installed theme's default text [`FontFamily`], if one is set. Read by
+/// [`apply_one`](crate::walker::style) to fill a text node's absent
+/// `font_family`. See [`set_default_text_font`].
+pub fn default_text_font() -> Option<FontFamily> {
+    DEFAULT_TEXT_FONT.with(|f| f.borrow().clone())
 }
 
 /// Theme the platform scrollbar where the backend supports it.

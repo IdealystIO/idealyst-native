@@ -648,7 +648,11 @@ pub(super) fn apply_one<B: Backend + 'static>(
         );
     }
     if handles_states_natively {
-        let base = resolve_style(app);
+        // Fill the theme's default text font when the node sets none, so
+        // every text surface honors it on all platforms (see
+        // `with_default_text_font`). The base carries typography; overlays
+        // don't touch `font_family`, so filling the base is sufficient.
+        let base = with_default_text_font(resolve_style(app));
         let state_overlays = resolve_state_overlays(app);
         let bp_overlays = resolve_breakpoint_overlays(app);
         // Web emits container overlays as `@container` CSS (the browser
@@ -682,9 +686,42 @@ pub(super) fn apply_one<B: Backend + 'static>(
         // so this width is the up-to-date signal value.
         let cq_overlays = resolve_container_overlays(app);
         let resolved = merge_active_containers(resolved, &cq_overlays, container_width);
+        // Same theme-default-font fill as the web path — native has no CSS
+        // inheritance, so each text node must carry the font explicitly.
+        let resolved = with_default_text_font(resolved);
         warn_if_orphan_system_font(&resolved);
         backend.borrow_mut().apply_style(node, &resolved);
     }
+}
+
+/// Fill an absent `font_family` with the installed theme's default text font
+/// ([`set_default_text_font`](crate::style::set_default_text_font)) so every
+/// text surface uses the theme font on ALL platforms — not just where a sheet
+/// opted in — without relying on CSS inheritance (which native lacks). No-op
+/// when the node already sets a font or no default is installed; the author's
+/// explicit `font_family` always wins. Inert on non-text nodes (a container's
+/// `font-family` just cascades on web, matching normal CSS).
+#[inline]
+fn apply_default_text_font(rules: &mut StyleRules) {
+    if rules.font_family.is_none() {
+        if let Some(f) = crate::style::default_text_font() {
+            rules.font_family = Some(f);
+        }
+    }
+}
+
+/// `Rc` variant of [`apply_default_text_font`] for the web path, which keeps
+/// resolved rules as a shared `Rc`. Clones ONLY when it actually fills, so
+/// nodes that set their own font (or when no default is installed) keep
+/// sharing the cached `Rc` with no allocation.
+#[inline]
+fn with_default_text_font(rules: std::rc::Rc<StyleRules>) -> std::rc::Rc<StyleRules> {
+    if rules.font_family.is_none() && crate::style::default_text_font().is_some() {
+        let mut owned = (*rules).clone();
+        apply_default_text_font(&mut owned);
+        return std::rc::Rc::new(owned);
+    }
+    rules
 }
 
 /// Debug-only DX guardrail: if a resolved rule's `font_family` is a

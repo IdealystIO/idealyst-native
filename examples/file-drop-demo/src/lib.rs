@@ -8,12 +8,20 @@
 //! returns, and that a multi-GB drop is never buffered whole.
 //!
 //! Drag-in is a desktop/web affordance: it works on **web** (HTML5
-//! `DataTransfer`) and **macOS** (`NSDraggingDestination`). Run it:
+//! `DataTransfer`) and **macOS** (`NSDraggingDestination`). Run it from this
+//! directory (or pass the path):
 //!
 //! ```text
-//! idealyst dev --web        # drag a file from Finder/desktop onto the zone
-//! idealyst dev --macos      # same, native AppKit drag
+//! idealyst dev --web                              # opens a browser tab
+//! idealyst dev --macos --local                    # native AppKit window
+//! # or, from the repo root:
+//! idealyst dev --web examples/file-drop-demo
+//! idealyst dev --macos --local examples/file-drop-demo
 //! ```
+//!
+//! Then drag a file from Finder / the desktop / another tab onto the dashed
+//! zone: it turns blue while the drag hovers, and on release the file's name,
+//! MIME, and size appear below.
 
 use file_picker::{FileDropZone, PickedFile};
 use idea_ui::{install_idea_theme, light_theme, Stack, StackGap, StackPadding, Typography};

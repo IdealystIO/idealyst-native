@@ -1008,13 +1008,26 @@ pub fn dark_theme() -> IdeaThemeDefaults {
 // Installation API
 // =============================================================================
 
+/// Publish the idea theme's default font to runtime-core so EVERY text node
+/// whose style sets no `font_family` inherits it at apply time (see
+/// [`runtime_core::set_default_text_font`]). This is what makes `theme.font` a
+/// true global default — not just a value the `Typography`/component sheets opt
+/// into. Called on every install + swap so a theme change re-publishes it.
+fn sync_default_text_font(theme: &IdeaThemeRef) {
+    runtime_core::set_default_text_font(Some(theme.font_family()));
+}
+
 pub fn install_idea_theme<T: IdeaTheme>(theme: T) {
-    install_theme(IdeaThemeRef::new(theme));
+    let theme = IdeaThemeRef::new(theme);
+    sync_default_text_font(&theme);
+    install_theme(theme);
     install_default_idea_sheets();
 }
 
 pub fn set_idea_theme<T: IdeaTheme>(theme: T) {
-    set_theme(IdeaThemeRef::new(theme));
+    let theme = IdeaThemeRef::new(theme);
+    sync_default_text_font(&theme);
+    set_theme(theme);
 }
 
 /// Install an idea theme whose choice is **reactive**: `select` re-runs whenever
@@ -1044,6 +1057,7 @@ where
     let mut primed = false;
     let sub = watch(move || {
         let theme = IdeaThemeRef::new(select());
+        sync_default_text_font(&theme);
         if primed {
             set_theme(theme);
         } else {

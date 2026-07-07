@@ -52,10 +52,26 @@ backend-ssr = { workspace = true }
 name = "robot_screen_tree"
 required-features = ["robot"]
 
+# Also robot-gated (uses `runtime_core::robot::{Query, Robot, TreeNode}`),
+# so it only builds with the `robot` feature on — matching the sibling above.
+[[test]]
+name = "robot_nav_screen_tree"
+required-features = ["robot"]
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
 web-navigator-helpers = { workspace = true }
 web-sys = "0.3"
+
+# Web hydration regression test (tests/hydration_web.rs) — renders SSR via
+# `backend-ssr`, injects it, then drives a real `WebBackend::hydrate` +
+# `runtime_core::mount` in a headless browser.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+backend-web = { workspace = true, features = ["hydrate"] }
+backend-ssr = { workspace = true }
+wasm-bindgen-test = "0.3"
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["History"] }
 
 [target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
 backend-android-mobile = { workspace = true }

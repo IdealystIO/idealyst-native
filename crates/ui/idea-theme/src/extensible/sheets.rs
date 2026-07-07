@@ -23,8 +23,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use runtime_core::{
-    Cursor, Easing, FontFamily, FontWeight, StyleRules, StyleSheet, TextAlign, Tokenized,
-    Transition, UserSelect, VariantSet,
+    Cursor, Easing, FontWeight, StyleRules, StyleSheet, TextAlign, Tokenized, Transition,
+    UserSelect, VariantSet,
 };
 
 use crate::theme::{IdeaTheme, IdeaThemeRef};
@@ -34,25 +34,6 @@ use super::variant::{variant_state_overlay, InteractState};
 use super::{
     ButtonSizeRef, RefBuiltins, ResolutionCtx, ShapeRef, ToneRef, TypographyKindRef, VariantRef,
 };
-
-/// The active theme's default font family, for a component sheet **base**.
-///
-/// Every text-bearing component (Button, Badge, Tag, Alert, …) defaults to this
-/// so the theme's font is honored on ALL platforms — not just web — and, on web
-/// specifically, its text stays out of the browser's serif fallback. This is the
-/// same font `TypographySheetBuilder` bakes into its own base; factoring it here
-/// makes `theme.font` a true global default rather than a Typography-only one.
-///
-/// Reads `active_theme()` at resolve time so a theme swap (which wipes the
-/// resolution cache) re-applies the new font. `None` only when no idea theme is
-/// installed, in which case the sheet leaves `font_family` unset (the backend's
-/// own default applies) exactly as before.
-fn theme_default_font() -> Option<FontFamily> {
-    let theme_rc = active_theme();
-    theme_rc
-        .downcast_ref::<IdeaThemeRef>()
-        .map(|t| t.font_family())
-}
 
 /// Register the per-`(tone, variant)` hover + press feedback overlays for a
 /// clickable control (Button, IconButton). Each is a `compound` keyed on the
@@ -222,11 +203,6 @@ impl ButtonSheetBuilder {
         // Base — uniform Button properties + transitions (the visual
         // animation on hover/press/theme-swap).
         let base = StyleSheet::new(|_vs: &VariantSet| StyleRules {
-            // The theme's default font on the base so the label inherits it
-            // (the label copies the resolved container's typography). Without
-            // this the button label falls to the platform default — the
-            // browser's serif on web.
-            font_family: theme_default_font(),
             font_weight: Some(FontWeight::SemiBold),
             letter_spacing: Some(Tokenized::Literal(0.2)),
             text_align: Some(TextAlign::Center),
@@ -512,7 +488,6 @@ impl BadgeSheetBuilder {
                 "typography-caption-size",
                 runtime_core::Length::Px(11.0),
             )),
-            font_family: theme_default_font(),
             font_weight: Some(FontWeight::SemiBold),
             letter_spacing: Some(Tokenized::Literal(0.4)),
             text_transform: Some(runtime_core::TextTransform::Uppercase),
@@ -585,7 +560,6 @@ impl TagSheetBuilder {
                 "typography-caption-size",
                 runtime_core::Length::Px(11.0),
             )),
-            font_family: theme_default_font(),
             font_weight: Some(FontWeight::SemiBold),
             letter_spacing: Some(Tokenized::Literal(0.4)),
             text_align: Some(TextAlign::Center),
@@ -648,7 +622,6 @@ impl AlertSheetBuilder {
                 "radius-md",
                 runtime_core::Length::Px(8.0),
             )),
-            font_family: theme_default_font(),
             flex_direction: Some(runtime_core::FlexDirection::Row),
             justify_content: Some(runtime_core::JustifyContent::SpaceBetween),
             gap: Some(Tokenized::token("spacing-md", runtime_core::Length::Px(12.0))),
