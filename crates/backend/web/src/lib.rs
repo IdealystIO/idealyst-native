@@ -833,6 +833,26 @@ impl WebBackend {
         self.hydration_pending_fresh = false;
     }
 
+    /// During hydration, descend the cursor into the first element child of
+    /// `region`. METHOD form of the free [`hydrate_enter`] fn — for callers
+    /// holding `&mut WebBackend` synchronously (e.g. inside `create_navigator`'s
+    /// `borrow_mut`, where the global-handle free fn's `try_borrow` would fail
+    /// and silently no-op). A no-layout stack/tab navigator uses this right
+    /// after adopting its container so the SYNCHRONOUS walker `attach_initial`
+    /// screen build adopts the screen's root node — not the container itself.
+    #[cfg(feature = "hydrate")]
+    pub fn hydrate_enter_region(&mut self, region: &web_sys::Node) {
+        if !self.hydrating {
+            return;
+        }
+        let first = region
+            .dyn_ref::<web_sys::Element>()
+            .and_then(|el| el.first_element_child());
+        self.hydration_cursor = first.map(|e| e.unchecked_into::<web_sys::Node>());
+        self.hydration_suppress = false;
+        self.hydration_pending_fresh = false;
+    }
+
     /// During hydration, return the next SSR node to adopt if its tag
     /// matches `tag` (advancing the cursor into its children); otherwise
     /// `None` (the caller creates a fresh element).
@@ -1056,6 +1076,8 @@ impl WebBackend {
     }
     #[cfg(not(feature = "hydrate"))]
     pub fn hydrate_suspend_cursor(&mut self) {}
+    #[cfg(not(feature = "hydrate"))]
+    pub fn hydrate_enter_region(&mut self, _region: &web_sys::Node) {}
     #[cfg(not(feature = "hydrate"))]
     pub(crate) fn hydrate_next(&mut self, _tag: &str) -> Option<web_sys::Element> {
         None

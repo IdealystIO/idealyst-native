@@ -820,7 +820,23 @@ where
     // keeps the server DOM instead of clear+append. Frame + content adopt
     // below via the match/enter helpers.
     let container: web_sys::Element = match b.hydrate_adopt_container("ui-nav-root") {
-        Some(adopted) => adopted.unchecked_into(),
+        Some(adopted) => {
+            // HYDRATION (no-layout stack/tab): the initial screen mounts
+            // DIRECTLY into this container via the SYNCHRONOUS walker
+            // `attach_initial` build. Descend the cursor into the container so
+            // that build adopts the screen's own root node. Without this the
+            // cursor stays parked ON the container, and the screen's
+            // `create_view` re-adopts the container itself (its tag is also
+            // `div`) — an off-by-one that diverges the whole screen subtree and
+            // drops its first reactive-text nodes. Layout navigators (drawer /
+            // tabs-with-layout) mount screens into a microtask-built outlet and
+            // suspend the cursor separately, so only enter here when there's no
+            // layout.
+            if callbacks.build_layout.is_none() {
+                b.hydrate_enter_region(&adopted);
+            }
+            adopted.unchecked_into()
+        }
         None => {
             let c = doc
                 .create_element("div")
@@ -895,6 +911,31 @@ where
                 instance_for_layout.borrow_mut().outlet = Some(outlet);
             }
         });
+    }
+
+    // SSR HYDRATION deep-link: seed the walker's initial-path override so the
+    // SYNCHRONOUS initial mount resolves the screen the SERVER rendered (the
+    // deep-link target) instead of the navigator's hardcoded `initial` (home).
+    //
+    // On web the walker's `peek_initial_path()` is normally `None` — the
+    // platform URL is read here in the SDK handler layer (the deferred
+    // microtask below), not by the walker. That's fine for a LIVE load: the
+    // walker's throwaway `initial` build is discarded and the microtask mounts
+    // the right screen. But under hydration the walker's build is
+    // AUTHORITATIVE (it adopts the server DOM in place, per `attach_initial`)
+    // and the microtask is skipped — so if the walker builds `home` while the
+    // server rendered the TARGET, it adopts the target's DOM as home,
+    // diverges, and drops the target's first reactive-text nodes.
+    //
+    // SSR renders ONLY the target screen for a deep link (no home-underneath —
+    // see stack-navigator `tests/ssr.rs`), so seeding the full platform path
+    // makes the walker resolve + adopt exactly that one screen. Root navigator
+    // only (`base` empty); nested navigators strip their own base from this
+    // same full path via `resolve_entry`, mirroring native deep-link. The
+    // walker clears the slot (`set_initial_path(None)`) once its whole subtree
+    // has mounted, so this doesn't leak into later rebuilds.
+    if callbacks.base.is_empty() && backend_web::is_hydrating() {
+        runtime_core::primitives::navigator::set_initial_path(Some(current_pathname()));
     }
 
     // Mount the initial / deep-linked stack.

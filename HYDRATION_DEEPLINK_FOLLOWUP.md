@@ -1,9 +1,79 @@
-# Follow-up: deep-link two-screen SSG hydration (reactive-text drop on sub-routes)
+# Follow-up: deep-link SSG hydration (reactive-text drop on sub-routes)
 
-Status: **open**. This is the last known bug in the SSG-hydration work that
-fixed the nicho-me portfolio site. Home (single-screen) hydrates cleanly;
-sub-routes (deep links) render ~90% but drop the first few reactive-text nodes
-at the top of the content. Root-caused, not yet fixed (it's a real refactor).
+Status: **RESOLVED** (2026-07-07). Fixed with a regression test; all hydration
+tests green. The root cause turned out to be simpler than the hypothesis in the
+"remaining bug" section below (which wrongly assumed SSR emitted a
+home-underneath second screen). See **Resolution** immediately below; the older
+analysis is kept for history.
+
+---
+
+## Resolution (what actually fixed it)
+
+**Actual root cause — three coordinated gaps, not a back-stack refactor:**
+
+SSR renders **only the target screen** for a deep link — no home-underneath
+(proved by `stack/tests/ssr.rs::render_path_mounts_matched_navigator_screen`,
+which asserts `!html.contains("HOME")` at `/about`). So the bug was never about
+reconstructing a two-screen stack. It was three separate SSR/client mismatches:
+
+1. **Client resolved the wrong screen.** On web the walker's
+   `peek_initial_path()` is `None` (the platform URL is read in the SDK handler
+   layer), so it fell back to `initial` (home) and — under hydration — built
+   HOME while adopting the server's TARGET DOM. Total divergence.
+   **Fix:** `web-navigator-helpers::create_inner` now seeds
+   `set_initial_path(current_pathname())` when `is_hydrating()` on the root
+   navigator (`base` empty), so the synchronous walker resolves + adopts the
+   TARGET — exactly what the server rendered.
+
+2. **SSR container wasn't adoptable.** `StackChromeHandler` built the nav
+   container as a bare `create_view` with **no `ui-nav-root` class**, so the
+   client's `hydrate_adopt_container("ui-nav-root")` never matched → it rebuilt
+   the container fresh and orphaned the whole SSR screen subtree. (The
+   `nav_class` doc always said the SSR chrome handler stamps these classes — it
+   just never did.)
+   **Fix:** `chrome.rs` now stamps `ui-nav-root` on the container and
+   `ui-nav-screen` on the screen via `Backend::attach_html_class` (no-op on
+   native backends, real on SSR). First paint now matches the client exactly.
+
+3. **Cursor didn't descend into the container.** After adopting the container
+   the cursor stayed parked ON it; the screen's `create_view` then re-adopted
+   the container itself (both are `<div>`) — an off-by-one that diverged the
+   screen and blanked its first reactive-text node.
+   **Fix:** new `WebBackend::hydrate_enter_region` (borrow-safe method form of
+   the free `hydrate_enter`); `create_inner` calls it right after adopting the
+   container in the no-layout case so the screen build adopts the screen node.
+
+**Test:** `stack/tests/hydration_deeplink.rs` — SSR-renders at `/contact` (a
+reactive-text screen), hydrates at that path, asserts the target's reactive text
+survives exactly once and home does NOT render. Red before the fix (built HOME,
+dropped the contact node), green after, zero divergence warnings.
+
+**Files changed:**
+- `crates/sdk/client/navigators/helpers/web/src/lib.rs` — seed initial path
+  under hydration; `hydrate_enter_region` on container adopt (no-layout).
+- `crates/backend/web/src/lib.rs` — `hydrate_enter_region` method (+ non-hydrate stub).
+- `crates/sdk/client/navigators/stack/src/chrome.rs` — stamp `ui-nav-root` / `ui-nav-screen`.
+- `crates/sdk/client/navigators/stack/tests/hydration_deeplink.rs` — new regression test.
+
+**Scope notes / not covered (fine for the portfolio):**
+- Screen **titles**: the chrome handler still emits an SSR `<header>` when a
+  screen sets a title, which the live web navigator doesn't build → would
+  off-by-one. The nicho-me site sets no titles (`header_shown(false)`, no
+  `.title(...)`), so this is untriggered. If titles are ever used on web,
+  the client needs to adopt+skip (or match) that header node.
+- **Back-to-home after a cold deep link**: the create-time microtask (which
+  seeds `url_history` for browser-Back) is skipped under hydration, so a
+  hydrated deep link has no synthetic home history entry. Rendering is correct;
+  browser-Back behavior on a hydrated deep link is a separate, minor follow-up.
+  (The site uses `NavKind::Replace` — no back-stack in use.)
+
+---
+
+## Original analysis (superseded — kept for history)
+
+The sections below hypothesized a two-screen `[home, target]` reconstruction
+was needed. That was wrong: SSR emits only the target. The real fix is above.
 
 ---
 

@@ -48,6 +48,16 @@ impl<B: Backend + 'static> NavigatorHandler<B> for StackChromeHandler<B> {
         // The framework walker mounts the path-matched screen and hands
         // it to `attach_initial`; we only need the container here.
         let root = backend.create_view(&AccessibilityProps::default());
+        // Stamp the same `ui-nav-root` class the live web navigator stamps
+        // (`web-navigator-helpers::create_inner`) so the server's first paint
+        // matches the client AND the client can ADOPT this container during
+        // hydration (`WebBackend::hydrate_adopt_container("ui-nav-root")`).
+        // Without it the SSR container is a bare `<div>`, hydration can't find
+        // the nav root, rebuilds it fresh, and orphans the whole SSR screen
+        // subtree — dropping the screen's reactive text. No-op on native
+        // backends (default `attach_html_class`); the SSR backend adds the
+        // class. Matches `css::nav_class::ROOT`.
+        backend.attach_html_class(&root, "ui-nav-root");
         self.root = Some(root.clone());
         root
     }
@@ -73,6 +83,12 @@ impl<B: Backend + 'static> NavigatorHandler<B> for StackChromeHandler<B> {
             backend.insert(&mut root, header);
         }
 
+        // Stamp `ui-nav-screen` on the screen node — the same class the live
+        // web navigator applies in no-layout mode (`stamp_screen_class`). It
+        // carries the full-bleed `position:absolute; inset:0` rule, so the
+        // server's first paint positions the screen exactly as the hydrated
+        // client will. No-op on native backends. Matches `css::nav_class::SCREEN`.
+        backend.attach_html_class(&screen, "ui-nav-screen");
         backend.insert(&mut root, screen);
     }
 }
