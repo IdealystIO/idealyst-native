@@ -53,6 +53,7 @@ mod activity_indicator;
 mod button;
 mod cleanup;
 mod debug;
+mod dynamic;
 mod each;
 mod external;
 mod graphics;
@@ -515,6 +516,7 @@ pub(super) fn build_inner<B: Backend + 'static>(
         Element::When { .. } => dispatch_when::<B>,
         Element::Switch { .. } => dispatch_switch::<B>,
         Element::Each { .. } => dispatch_each::<B>,
+        Element::Dynamic { .. } => dispatch_dynamic::<B>,
         Element::Link { .. } => dispatch_link::<B>,
         Element::External { .. } => dispatch_external::<B>,
         Element::Navigator { .. } => dispatch_navigator::<B>,
@@ -747,6 +749,12 @@ fn dispatch_switch<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element
 fn dispatch_each<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
     let Element::Each { snapshot, style } = node else { unreachable!() };
     each::build(backend, snapshot, style)
+}
+
+#[inline(never)]
+fn dispatch_dynamic<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::Dynamic { build } = node else { unreachable!() };
+    dynamic::build_dynamic(backend, build)
 }
 
 #[inline(never)]

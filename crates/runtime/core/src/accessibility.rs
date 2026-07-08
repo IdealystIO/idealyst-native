@@ -470,6 +470,7 @@ pub fn primitive_kind(p: &crate::Element) -> Option<PrimitiveKind> {
         Element::When { .. }
         | Element::Switch { .. }
         | Element::Each { .. }
+        | Element::Dynamic { .. }
         | Element::Repeat { .. }
         | Element::Fragment { .. } => None,
         // Robot wrapper — transparent; unwrapped before this is consulted.

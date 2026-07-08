@@ -558,6 +558,23 @@ impl ChildList for Vec<Element> {
     }
 }
 
+/// A **closure** child is a reactive child: `ui! { view { move || … } }`
+/// splices a [`dynamic`] subtree that rebuilds when the closure's eager
+/// reads change. This is the child-position peer of the `IntoElement` blanket
+/// impl — it's what makes the type-driven reactive boundary work through the
+/// macro's plain expression passthrough, with no special-casing in `ui!`.
+/// Concrete `Element`/`Vec`/`Option`/`Bound` children aren't `Fn`, so this
+/// doesn't overlap them.
+impl<F, E> ChildList for F
+where
+    F: Fn() -> E + 'static,
+    E: IntoElement,
+{
+    fn append_to(self, out: &mut Vec<Element>) {
+        out.push(crate::dynamic(move || self().into_element()));
+    }
+}
+
 // =============================================================================
 // Element constructors: view, text, button, when, switch
 // =============================================================================
@@ -676,6 +693,32 @@ where
 /// lowering. See [`Element::Fragment`].
 pub fn fragment(children: Vec<Element>) -> Element {
     Element::Fragment { children }
+}
+
+/// A **reactive single-child** subtree built from a closure: `build` is
+/// re-run inside a fresh scope whenever any signal it reads *eagerly*
+/// changes, replacing the previous subtree (dispose-on-hide — the old
+/// scope's signals/effects free atomically). This is the generic reactive
+/// child: the whole-element dual of a reactive `text(move || …)` leaf.
+///
+/// It's the type-driven reactive boundary. A **value** child is static
+/// (built once); wrapping it in a **closure** makes it reactive, and the
+/// closure is *visible* at the call site — no `.get()` token-scanning, no
+/// false negatives. `ui!` lowers a closure child (`{ move || … }`) and the
+/// reactive `if`/`match` sugar to this; author code can call it directly
+/// for a reactive region:
+///
+/// ```ignore
+/// // rebuilds whenever `flag` (read eagerly in the closure) changes
+/// dynamic(move || if flag.get() { ui! { A() } } else { ui! { B() } })
+/// ```
+///
+/// Reads *deferred* to inner effects (a nested `text(move || …)`, a
+/// `when`) subscribe to their own deps and do NOT trigger a Dynamic
+/// rebuild — only what the closure reads while constructing the tree does.
+/// See [`Element::Dynamic`].
+pub fn dynamic(build: impl Fn() -> Element + 'static) -> Element {
+    Element::Dynamic { build: Box::new(build) }
 }
 
 /// Reactive multi-way conditional. `scrutinee` reads one or more
@@ -1125,6 +1168,25 @@ impl<H> IntoElement for Bound<H> {
 
 impl<H> IntoElement for Bindable<H> {
     fn into_element(self) -> Element { self.primitive }
+}
+
+/// A **closure** returning something element-like is itself element-like —
+/// as a *reactive* child. This is the type-driven reactive boundary (0.1.0):
+/// a value child is static, a `move || …` child is live, and dispatch — not
+/// a `.get()` token scan — decides which. Lowers to [`dynamic`], so the
+/// subtree rebuilds whenever a signal the closure reads eagerly changes.
+///
+/// Coherence: `Element`/`Bound`/`Bindable`/… are concrete non-`Fn` types, so
+/// this blanket impl doesn't overlap them (a local struct/enum can't also be
+/// a closure).
+impl<F, E> IntoElement for F
+where
+    F: Fn() -> E + 'static,
+    E: IntoElement,
+{
+    fn into_element(self) -> Element {
+        dynamic(move || self().into_element())
+    }
 }
 
 // =============================================================================

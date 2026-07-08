@@ -603,6 +603,29 @@ pub enum Element {
         snapshot: EachSnapshot,
         style: Option<StyleSource>,
     },
+    /// Reactive single subtree built from a closure — the generic
+    /// reactive child, the whole-element dual of a reactive
+    /// `text(move || …)` leaf. `build` is re-run inside a fresh nested
+    /// `Scope` whenever ANY signal it reads *eagerly* changes, replacing
+    /// the previous subtree (dispose-on-hide: the old scope's signals and
+    /// effects free atomically, same model as [`When`](Element::When)).
+    ///
+    /// Unlike `When`/`Switch` there is no condition or scrutinee to dedup
+    /// against — the walker's effect tracks the build closure directly, so
+    /// a Dynamic rebuilds on every eager dependency change. Reactive
+    /// constructs *inside* the subtree (a nested `text(move || …)`, a
+    /// `when`) defer their reads to their own effects and do NOT pin the
+    /// Dynamic to a rebuild — only what the closure reads while
+    /// *constructing* the tree counts.
+    ///
+    /// Lowered from a closure child in `ui!` (`{ move || … }`) and from
+    /// the type-driven `if`/`match` reactivity. Opaque (closure-only), so
+    /// it is a **runtime-backend** primitive: generator backends that need
+    /// structured metadata can't serialize it, matching the closure-driven
+    /// [`switch()`](crate::switch) stance.
+    Dynamic {
+        build: Box<dyn Fn() -> Element>,
+    },
     /// Bulk children: build `count` rows from `row_builder(i)` and
     /// insert them in one batch. The build walker uses this to
     /// collapse `for i in 0..n { ... }` lowerings — instead of
@@ -946,6 +969,11 @@ impl Element {
                 // animations on its child; styling belongs on the
                 // child View, not on the Presence node. No-op.
             }
+            Element::Dynamic { .. } => {
+                // Dynamic is a reactive control-flow wrapper with no node of
+                // its own — style belongs on the subtree the closure builds,
+                // not on the anchor. No-op, same rationale as `Fragment`.
+            }
             // Handled by the early `if let` return above; arm exists only for
             // match exhaustiveness.
             #[cfg(feature = "robot")]
@@ -992,6 +1020,7 @@ impl Element {
             Element::When { .. }
             | Element::Switch { .. }
             | Element::Each { .. }
+            | Element::Dynamic { .. }
             | Element::Repeat { .. }
             | Element::Fragment { .. } => None,
             // Robot wrapper is transparent; reach its child via
