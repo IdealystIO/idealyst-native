@@ -784,6 +784,32 @@ pub fn align_self_css(v: runtime_core::AlignSelf) -> &'static str {
     }
 }
 
+/// Lower a `grid-template-columns` track list to its CSS value
+/// (space-separated tracks, e.g. `1fr 1fr 1fr`).
+pub fn track_list_css(tracks: &[runtime_core::TrackSize]) -> String {
+    tracks
+        .iter()
+        .map(track_size_css)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Lower a single [`runtime_core::TrackSize`] to a CSS track sizing
+/// function. `Fr(1.0)` → `1fr`, `Minmax(a, b)` → `minmax(a, b)`.
+pub fn track_size_css(t: &runtime_core::TrackSize) -> String {
+    use runtime_core::TrackSize;
+    match t {
+        TrackSize::Auto => "auto".to_string(),
+        TrackSize::MinContent => "min-content".to_string(),
+        TrackSize::MaxContent => "max-content".to_string(),
+        TrackSize::Fr(v) => format!("{}fr", v),
+        TrackSize::Px(v) => format!("{}px", v),
+        TrackSize::Minmax(lo, hi) => {
+            format!("minmax({}, {})", track_size_css(lo), track_size_css(hi))
+        }
+    }
+}
+
 pub fn position_css(v: runtime_core::Position) -> &'static str {
     use runtime_core::Position;
     match v {
@@ -943,12 +969,15 @@ pub enum ShadowKind {
 /// no surrounding braces). Suitable for a class body or an inline
 /// `style="…"` attribute.
 ///
-/// **Flex semantics** are auto-promoted: if the rules use any
-/// flex-container property (`gap`, `flex_direction`, `align_items`,
-/// `justify_content`, `align_content`, `flex_wrap`, `row_gap`,
-/// `column_gap`), `display: flex` is prepended (and
-/// `flex-direction: column` pinned when unset, matching the
-/// framework's mobile-first default). Nodes that use no flex property
+/// **Display** — an explicit `display` always wins. `Some(Grid)` emits
+/// `display: grid` and lowers `grid_template_columns` to
+/// `grid-template-columns`; `Some(Flex)` emits `display: flex`. Only
+/// when `display` is `None` does the **flex auto-promotion** kick in: if
+/// the rules use any flex-container property (`gap`, `flex_direction`,
+/// `align_items`, `justify_content`, `align_content`, `flex_wrap`,
+/// `row_gap`, `column_gap`), `display: flex` is emitted. Either way
+/// `flex-direction: column` is pinned when unset (the framework's
+/// mobile-first default). Nodes with no `display` and no flex property
 /// stay normal blocks — no flex-tracker cost for unstyled rows.
 ///
 /// The `shadow` field lowers to `box-shadow`. For text nodes call
@@ -976,11 +1005,31 @@ pub fn rules_to_css_with_shadow(rules: &StyleRules, shadow_kind: ShadowKind) -> 
         || rules.gap.is_some()
         || rules.row_gap.is_some()
         || rules.column_gap.is_some();
-    if uses_flex {
-        parts.push("display: flex".to_string());
-        if rules.flex_direction.is_none() {
-            parts.push("flex-direction: column".to_string());
+    // Display. An explicit `display` always wins; only when it's unset does a
+    // node that uses a flex-container property (gap, justify, …) get
+    // auto-promoted to `display: flex`. Without this precedence, a `display:
+    // grid` container that also sets `gap` (every `Grid`) would be forced to
+    // `flex` and collapse to one column — the exact bug this guards against.
+    match rules.display {
+        Some(runtime_core::DisplayKind::Grid) => {
+            parts.push("display: grid".to_string());
         }
+        Some(runtime_core::DisplayKind::Flex) => {
+            parts.push("display: flex".to_string());
+            if rules.flex_direction.is_none() {
+                parts.push("flex-direction: column".to_string());
+            }
+        }
+        None if uses_flex => {
+            parts.push("display: flex".to_string());
+            if rules.flex_direction.is_none() {
+                parts.push("flex-direction: column".to_string());
+            }
+        }
+        None => {}
+    }
+    if let Some(cols) = &rules.grid_template_columns {
+        parts.push(format!("grid-template-columns: {}", track_list_css(cols)));
     }
 
     // Color + text.
@@ -1397,6 +1446,58 @@ mod tests {
         assert!(rules_to_css(&fill).contains("object-fit: fill"));
         // Unset → nothing emitted (the base `:where(img)` reset supplies contain).
         assert!(!rules_to_css(&StyleRules::default()).contains("object-fit"));
+    }
+
+    // A `display: grid` container with `grid_template_columns` emits a real CSS
+    // grid — `display: grid` + `grid-template-columns: 1fr 1fr 1fr` — and is NOT
+    // auto-promoted to `display: flex` even though it also sets `gap`. Regression
+    // for `Grid` collapsing to a single vertical column on web because the
+    // emitter never read `display`/`grid_template_columns` and the flex heuristic
+    // forced `display: flex; flex-direction: column`.
+    #[test]
+    fn rules_to_css_emits_grid_display_and_tracks_not_flex() {
+        use runtime_core::{DisplayKind, Length, TrackSize, Tokenized};
+        let css = rules_to_css(&StyleRules {
+            display: Some(DisplayKind::Grid),
+            grid_template_columns: Some(vec![TrackSize::Fr(1.0); 3]),
+            gap: Some(Tokenized::Literal(Length::Px(24.0))),
+            ..Default::default()
+        });
+        assert!(css.contains("display: grid"), "grid display: {css}");
+        assert!(
+            css.contains("grid-template-columns: 1fr 1fr 1fr"),
+            "three 1fr tracks: {css}"
+        );
+        assert!(css.contains("gap: 24px"), "gap still emitted on grid: {css}");
+        // The gap-driven flex heuristic must NOT fire — an explicit display wins.
+        assert!(!css.contains("display: flex"), "no flex promotion: {css}");
+        assert!(!css.contains("flex-direction"), "no flex-direction: {css}");
+    }
+
+    // An explicit `display: flex` still emits flex + the mobile-first
+    // `flex-direction: column` default; and grid track lowering covers the
+    // non-`Fr` sizing functions.
+    #[test]
+    fn rules_to_css_display_flex_and_track_forms() {
+        use runtime_core::{DisplayKind, TrackSize};
+        let flex = rules_to_css(&StyleRules {
+            display: Some(DisplayKind::Flex),
+            ..Default::default()
+        });
+        assert!(flex.contains("display: flex"), "{flex}");
+        assert!(flex.contains("flex-direction: column"), "{flex}");
+
+        assert_eq!(track_size_css(&TrackSize::Auto), "auto");
+        assert_eq!(track_size_css(&TrackSize::MinContent), "min-content");
+        assert_eq!(track_size_css(&TrackSize::MaxContent), "max-content");
+        assert_eq!(track_size_css(&TrackSize::Px(120.0)), "120px");
+        assert_eq!(
+            track_size_css(&TrackSize::Minmax(
+                Box::new(TrackSize::MinContent),
+                Box::new(TrackSize::Fr(1.0)),
+            )),
+            "minmax(min-content, 1fr)"
+        );
     }
 
     // The base reset pins `<img>` to `object-fit: contain` at specificity 0
