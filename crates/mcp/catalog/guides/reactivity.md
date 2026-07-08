@@ -22,14 +22,17 @@ Inside `ui!`, signals participate in reactivity automatically:
 
 ```rust
 ui! {
-    View {
-        Text(text_fmt!("Count: {}", bind!(count)))
-        Button(label = "+1", on_click = move || count.update(|v| *v += 1))
+    view {
+        text(text_fmt!("Count: {}", bind!(count)))
+        button("+1", move || count.update(|v| *v += 1))
     }
 }
 ```
 
-The `bind!(count)` form tells `text_fmt!` to track changes; the `Button`'s `on_click` is a regular closure that captures the signal.
+The `bind!(count)` form tells `text_fmt!` to track changes; the `button`'s
+on-click is a regular closure that captures the signal. (Reactive text can also
+be written as a closure — `text(move || format!("Count: {}", count.get()))` —
+which is the general form; `text_fmt!` is the opt-in web-optimized binding.)
 
 ## Effects
 

@@ -27,8 +27,8 @@ use runtime_core::*;
 
 pub fn app() -> Element {
     ui! {
-        View(style = view_style()) {
-            Text("Hello, Idealyst!")
+        view(style = view_style()) {
+            text("Hello, Idealyst!")
         }
     }
 }

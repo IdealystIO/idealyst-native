@@ -21,10 +21,15 @@ To extend the framework with new "primitive-like" things, register an [[External
 Mark a function with `#[component]` and you get a reusable unit you can drop into `ui!`/`jsx!`:
 
 ```rust
+#[derive(Default, IdealystSchema)]
+pub struct GreetingProps {
+    pub name: String,
+}
+
 #[component]
-pub fn Greeting(name: &str) -> Element {
+pub fn Greeting(props: &GreetingProps) -> Element {
     ui! {
-        Text(text_fmt!("Hello, {}!", name))
+        text(text_fmt!("Hello, {}!", props.name))
     }
 }
 
