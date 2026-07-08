@@ -84,7 +84,36 @@ For a computed child that reads signals through helpers, indexing, or a
 `Ref::with` — anything the old scan would have missed — the rule is uniform:
 **wrap it in `move ||` to be live, leave it bare to be static.**
 
-Status: planned.
+**Decided lowering (for the macro rewrite):**
+
+- `if cond { … }` → **always** `when(move || cond, …)`. A static condition
+  (reads no signals) yields an inert effect that runs once and never re-fires —
+  so "always reactive" costs ~nothing for static conditions, while reactive ones
+  rebuild only on a real flip (`when` dedups on the bool = Leptos `<Show>`). The
+  `.get()`-scan gate is deleted; the type-driven `if <Signal<bool>>` bare-path
+  dispatch (`__idealyst_if`) stays.
+- `match scrut { … }` → **reactive-when-possible**: `switch(move || scrut, …)`
+  whenever the scrutinee is re-evaluatable (a `Copy` value, a signal read, a
+  call); otherwise it fails to compile and is migrated. `switch` dedups on the
+  key.
+
+**Breaking edges to migrate (all compile-time-loud, never silent freezes):**
+
+- **Clone/`'static` tightening.** A previously-static `if`/`match` branch that
+  moved or borrowed a non-`Clone` value now sits in a `move ||` closure and needs
+  `.clone()` / `'static` captures. (The documented "B5" nested-`else if` move
+  constraint becomes uniform; the flat-`match` workaround still applies.)
+- **`match` scrutinee requirements.** Reactive `switch` needs `S: PartialEq`, and
+  a non-`Copy`-non-`Clone` owned scrutinee (`move || x` = `FnOnce`) won't
+  compile. Migrate: derive `PartialEq`/`Copy`, or clone the scrutinee.
+- **Multi-node child branches gain a wrapper.** In child position, a static
+  `if cond { A B C }` used to flat-splat A/B/C as siblings; the reactive `when`
+  wraps a multi-node branch in one node (via `emit_block_as_primitive`), matching
+  how reactive branches already behave. Split into separate `if`s or accept the
+  wrapper.
+
+Status: **planned** (macro rewrite — the closure boundary in §3 it builds on has
+landed).
 
 ---
 
@@ -117,17 +146,21 @@ Status: planned.
 
 ---
 
-## 3. `IntoElement for Fn() -> E` — any closure is a reactive child
+## 3. `Element::Dynamic` + closures as reactive children — **LANDED**
 
-**What changed.** A blanket `impl IntoElement for F where F: Fn() -> E` makes
-*any* closure returning an element a first-class reactive child. This is the
-mechanism the sections above lean on, and it's additive: every existing static
-child keeps working unchanged.
+**What changed.** A new `Element::Dynamic` primitive is the generic reactive
+single-subtree (the whole-element dual of a reactive `text(move || …)` leaf); a
+`dynamic(build)` constructor and blanket `impl IntoElement`/`ChildList for F:
+Fn() -> E` make *any* closure returning an element a first-class reactive child.
+Additive — every existing static child keeps working unchanged.
 
 **Why.** It closes the "support any Rust expression as a child" goal for the
 reactive case too — `for`, `if`, `match`, helper calls, iterator chains all
-compose as children, static when bare and live when wrapped in `move ||`. It's
-the same first-class-value story as SolidJS/Leptos, in plain Rust.
+compose as children, static when bare and live when wrapped in `move ||`. Same
+first-class-value story as SolidJS/Leptos, in plain Rust. The walker tracks the
+build closure's *eager* reads and rebuilds on change (dispose-on-hide); inner
+reactive constructs defer to their own effects (tracked-build/untracked-construct
+split, proven in `tests/dynamic_reactive.rs`).
 
 **Migrate.** Nothing to do — additive. Reach for it when you want a reactive
 child without the `if`/`match` sugar:
@@ -136,12 +169,12 @@ child without the `if`/`match` sugar:
 ui! {
     view {
         // reactive: rebuilds when `filter` changes
-        { move || rows.get().iter().filter(|r| r.matches(filter.get())).map(row).collect::<Vec<_>>() }
+        move || rows.get().iter().filter(|r| r.matches(filter.get())).map(row).collect::<Vec<_>>()
     }
 }
 ```
 
-Status: planned.
+Status: **landed** (branch `feat/0.1.0-reactivity`).
 
 ---
 
