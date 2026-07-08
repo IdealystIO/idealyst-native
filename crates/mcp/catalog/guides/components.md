@@ -10,13 +10,23 @@ tags = ["components", "core"]
 
 ## A minimal component
 
+A component takes **exactly one** parameter — a props struct (`&Props` for a
+leaf, owned `Props` for a container). See [[idiomatic-components]] for the full
+authoring shape; here's the smallest form:
+
 ```rust
-use runtime_core::*;
+use runtime_core::{component, ui, Element, IdealystSchema, text_fmt};
+
+#[derive(Default, IdealystSchema)]
+pub struct GreetingProps {
+    /// Who to greet.
+    pub name: String,
+}
 
 #[component]
-pub fn Greeting(name: &str) -> Element {
+pub fn Greeting(props: &GreetingProps) -> Element {
     ui! {
-        Text(text_fmt!("Hello, {}!", name))
+        text(text_fmt!("Hello, {}!", props.name))
     }
 }
 ```
@@ -25,7 +35,7 @@ Inside `ui!` elsewhere:
 
 ```rust
 ui! {
-    View {
+    view {
         Greeting(name = "World")
     }
 }
