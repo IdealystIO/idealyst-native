@@ -896,8 +896,59 @@ fn emit_text(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
                         )
                     };
                 }
+                // Path (2): a CLOSURE child is reactive — the 0.1.0 type-driven
+                // boundary. `text { move || … }` re-evaluates on each fire; the
+                // walker installs an Effect via `IntoTextSource for Fn() -> String`.
+                // We unwrap the author's closure body and re-wrap it with
+                // `ToString::to_string` so the content may be any `Display` type
+                // (`move || count.get()` where `count: Signal<i32>`), not just
+                // `String`.
+                if let Expr::Closure(closure) = expr {
+                    let body = &closure.body;
+                    return quote! {
+                        ::runtime_core::text(move || ::std::string::ToString::to_string(&{ #body }))
+                    };
+                }
             }
         }
+    }
+
+    // Path (2) via the `content` prop: `text(content = move || …)`.
+    if children.is_none() {
+        if let Some(p) = props.iter().find(|p| p.name == "content") {
+            if let Expr::Closure(closure) = &p.value {
+                let body = &closure.body;
+                return quote! {
+                    ::runtime_core::text(move || ::std::string::ToString::to_string(&{ #body }))
+                };
+            }
+        }
+    }
+
+    // Path (3) footgun guard (permanent): a bare, non-closure, non-macro text
+    // content that reads a signal (`text { count.get() }`,
+    // `text { format!("{}", x.get()) }`) was AUTO-WRAPPED reactive in 0.0.1 via a
+    // `.get()` token scan. That heuristic is gone: reactivity is decided by TYPE
+    // (a closure is live; a value is static). A bare `.get()` in text is now
+    // *static* — which would be a **silent freeze** (renders once, never updates).
+    // Rather than let that footgun exist, reject it LOUDLY and point at the
+    // closure form. This guard reads no reactivity into anything — it turns one
+    // specific silent mistake into a compile error; the reactive/static decision
+    // is still the content's TYPE (closure vs value). Exempt: a closure child
+    // (handled above; reactive) and a MACRO child/prop (`rx!(…)`, `text_fmt!(…)`)
+    // whose VALUE type already carries reactivity (`Reactive<String>` /
+    // `TextSource::JsBinding`). The rare false positive — a no-arg `.get()` that
+    // is NOT a signal (`Cell`/`OnceCell::get()`) in bare text — is resolved by
+    // binding to a `let` first: `let v = cell.get(); text { v }`.
+    if text_content_reads_signal_bare(children, props) {
+        return quote! {
+            ::std::compile_error!(
+                "0.1.0: reactive text must be a closure. Write \
+                 `text { move || … }` (e.g. `text { move || format!(\"{}\", sig.get()) }`) \
+                 instead of `text { …sig.get()… }` — a bare `.get()` in text is now static. \
+                 `rx!(…)` / `text_fmt!(…)` values stay reactive by type."
+            )
+        };
     }
 
     let content: TokenStream2 = if let Some(kids) = children {
@@ -921,14 +972,31 @@ fn emit_text(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
         quote! { "" }
     };
 
-    if expression_reads_signal(&content) {
-        // Path (2): closure wrap so IntoTextSource routes through
-        // an opaque Derived<String>.
-        quote! { ::runtime_core::text(move || ::std::string::ToString::to_string(&{ #content })) }
-    } else {
-        // Path (3): static.
-        quote! { ::runtime_core::text(#content) }
+    // Path (3): static — a literal, a build-time `format!()`, a bare value, or a
+    // reactive-BY-TYPE value (`rx!`, `text_fmt!`, a `Reactive<String>` /
+    // `Signal<String>` handle) that `IntoTextSource` routes on its own.
+    quote! { ::runtime_core::text(#content) }
+}
+
+/// Migration guard helper — true iff the text content is a **bare** expression
+/// (not a closure, not a macro invocation) that reads a signal (`.get()`). Such
+/// content was auto-wrapped reactive in 0.0.1 and is now silently static; the
+/// caller rejects it with a `compile_error!` pointing at the closure form.
+fn text_content_reads_signal_bare(children: Option<&[UiNode]>, props: &[Prop]) -> bool {
+    fn expr_is_bare_signal_read(e: &Expr) -> bool {
+        !matches!(e, Expr::Closure(_) | Expr::Macro(_))
+            && expression_reads_signal(&e.to_token_stream())
     }
+    if let Some(kids) = children {
+        return kids.iter().any(|n| match n {
+            UiNode::Expr(e) => expr_is_bare_signal_read(e),
+            _ => false,
+        });
+    }
+    if let Some(p) = props.iter().find(|p| p.name == "content") {
+        return expr_is_bare_signal_read(&p.value);
+    }
+    false
 }
 
 /// Try to lower a call expression like `method(sig_a, sig_b)` into

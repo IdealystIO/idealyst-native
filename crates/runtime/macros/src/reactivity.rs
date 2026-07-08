@@ -1,15 +1,20 @@
 //! Reactivity rewriter for the `#[component]` macro.
 //!
-//! Walks the function body and rewrites `text(expr)` and
-//! `button(label, on_click)` calls so that any signals or parameter-rooted
-//! paths they read get cloned into freshly-named locals at the closure
-//! boundary. This is what lets components take props by reference
-//! (`fn counter(props: &CounterProps)`) and still use them inside
+//! Walks the function body and adapts direct `text(expr)` /
+//! `button(label, on_click)` calls (those written OUTSIDE `ui!` — `ui!`'s own
+//! `emit_text` handles text inside the macro) so a component can take props by
+//! reference (`fn counter(props: &CounterProps)`) and still use them inside
 //! `'static` reactive closures.
 //!
-//! Heuristic: a `text(...)` argument is "reactive" iff it contains a
-//! `.get()` method call somewhere (the convention for signal reads).
-//! A `button(...)` callback is always rewritten (it's already a closure).
+//! 0.1.0 is **type-driven**, not `.get()`-scanned: a **closure** arg is the
+//! reactive form (`text(move || …)`), a value arg is static. For a closure arg
+//! we clone every parameter-rooted path it reads at the closure boundary so the
+//! closure can be `'static` — but we add no wrapper; the author's closure IS the
+//! boundary. A `button(...)` callback always gets its param paths cloned. A bare
+//! non-closure arg that reads a signal (`text(count.get())`) is static now and
+//! would be a silent freeze, so it's replaced with a `compile_error!` pointing at
+//! the closure form — a permanent footgun guard that turns the one silent mistake
+//! into a loud error (it decides no reactivity; the closure-vs-value TYPE does).
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
@@ -125,99 +130,114 @@ impl VisitMut for TextRewriter {
         // outer call sees them.
         visit_mut::visit_expr_mut(self, expr);
 
-        if let Expr::Call(call) = expr {
+        // A rewrite may replace the WHOLE expr (the migration `compile_error!`),
+        // so compute the replacement without holding the `&mut ExprCall` borrow
+        // across the reassignment.
+        let replacement: Option<Expr> = if let Expr::Call(call) = expr {
             if is_button_call(call) && call.args.len() == 2 {
-                rewrite_button_args(call, &self.param_idents);
-                return;
+                rewrite_button_args(call, &self.param_idents)
+            } else if is_text_call(call) && call.args.len() == 1 {
+                rewrite_text_arg(call, &self.param_idents)
+            } else {
+                None
             }
-            if is_text_call(call) && call.args.len() == 1 {
-                rewrite_text_arg(call, &self.param_idents);
-            }
+        } else {
+            None
+        };
+        if let Some(r) = replacement {
+            *expr = r;
         }
     }
 }
 
-/// If `text(expr)`'s argument reads a signal (contains `.get()`), wrap
-/// it in a reactive closure with all parameter-rooted paths cloned at the
-/// closure boundary.
-fn rewrite_text_arg(call: &mut ExprCall, param_idents: &[String]) {
+/// Rewrite a direct `text(expr)` call (outside `ui!`; `ui!`'s own `emit_text`
+/// handles text inside the macro). 0.1.0 is **type-driven**: a closure arg is
+/// reactive, a value arg is static.
+///
+/// - **Closure arg** (`text(move || …)`): the reactive form. Clone every
+///   parameter-rooted path it reads at the closure boundary so the closure is
+///   `'static` (a component takes props by reference; `props.value` must be
+///   cloned in, not borrowed) — but do NOT add a wrapper closure; the author's
+///   closure IS the boundary. `IntoTextSource for Fn() -> String` routes it.
+/// - **Macro arg** (`text(rx!(…))`, `text(text_fmt!(…))`): reactive by TYPE —
+///   left untouched.
+/// - **Bare value that reads a signal** (`text(count.get())`): auto-wrapped in
+///   0.0.1, silently static now — replaced with a `compile_error!` pointing at
+///   the closure form (migration guard).
+/// - **Anything else**: static, untouched.
+///
+/// Returns `Some(replacement)` to swap the whole expr (the guard), else `None`.
+fn rewrite_text_arg(call: &mut ExprCall, param_idents: &[String]) -> Option<Expr> {
     let arg = call.args.first().expect("text() takes one arg");
-    let signal_paths = collect_signal_reads(arg);
-    if signal_paths.is_empty() {
-        return;
-    }
-    // Once we know we're building a reactive closure, also clone every
-    // path rooted in a function parameter — otherwise non-reactive fields
-    // like `props.label` would be captured by reference and the closure
-    // couldn't be `'static`.
-    let mut paths = signal_paths;
-    for extra in collect_param_paths(arg, param_idents) {
-        if !paths.contains(&extra) {
-            paths.push(extra);
+    match arg {
+        Expr::Closure(_) => {
+            let paths = collect_param_paths(arg, param_idents);
+            if paths.is_empty() {
+                return None; // closure over locals / Copy signals — already 'static
+            }
+            let bindings = emit_clone_bindings(&paths);
+            let mut rewritten = arg.clone();
+            substitute_in_expr(&mut rewritten, &paths);
+            let func = call.func.clone();
+            let new_expr: Expr = syn::parse2(quote! {
+                #func({ #(#bindings)* #rewritten })
+            })
+            .expect("text closure param-clone produced invalid expr");
+            *call = match new_expr {
+                Expr::Call(c) => c,
+                _ => unreachable!("we just emitted a Call"),
+            };
+            None
         }
+        Expr::Macro(_) => None,
+        _ if !collect_signal_reads(arg).is_empty() => Some(syn::parse_quote! {
+            ::std::compile_error!(
+                "0.1.0: reactive text must be a closure — write `text(move || …)` \
+                 instead of `text(…sig.get()…)`. A bare `.get()` in text is now static; \
+                 `rx!(…)` / `text_fmt!(…)` values stay reactive by type."
+            )
+        }),
+        _ => None,
     }
-
-    let bindings = emit_clone_bindings(&paths);
-    let mut rewritten_arg = arg.clone();
-    substitute_in_expr(&mut rewritten_arg, &paths);
-    let func = call.func.clone();
-
-    let new_expr: Expr = syn::parse2(quote! {
-        #func({
-            #(#bindings)*
-            move || #rewritten_arg
-        })
-    })
-    .expect("text rewrite produced invalid expr");
-    *call = match new_expr {
-        Expr::Call(c) => c,
-        _ => unreachable!("we just emitted a Call"),
-    };
 }
 
-/// Rewrites `button(label, on_click)` for reactivity:
+/// Rewrite a direct `button(label, on_click)` call. Same type-driven rule for the
+/// label as [`rewrite_text_arg`] (closure = reactive, macro = reactive-by-type,
+/// bare signal read = migration `compile_error!`), plus the callback always gets
+/// its parameter-rooted paths cloned so it doesn't borrow.
 ///
-/// - `label`: if it reads a signal (contains `.get()`), wrap it in a
-///   `move || <expr>` closure so the framework's walker installs an
-///   Effect that re-evaluates the label on every signal change.
-///   Parameter-rooted paths the closure reads are cloned at the
-///   closure boundary so the closure is `'static`.
-/// - `on_click`: clone any parameter-rooted paths into fresh locals
-///   before the closure body so it doesn't borrow.
-///
-/// Both rewrites are independent; either, both, or neither may
-/// fire. The static-label case keeps the original label expression
-/// verbatim so `IntoTextSource for &str / String` covers it.
-fn rewrite_button_args(call: &mut ExprCall, param_idents: &[String]) {
+/// Returns `Some(replacement)` to swap the whole expr (the label guard), else
+/// `None` (rewrote in place / left static).
+fn rewrite_button_args(call: &mut ExprCall, param_idents: &[String]) -> Option<Expr> {
     let label_orig = call.args[0].clone();
     let callback = call.args[1].clone();
 
-    // --- Label: wrap in reactive closure iff it reads a signal.
-    let label_signal_paths = collect_signal_reads(&label_orig);
-    let label_expr: Expr = if label_signal_paths.is_empty() {
-        label_orig
-    } else {
-        // Same machinery as rewrite_text_arg: clone every signal +
-        // param path at the closure boundary; substitute the
-        // rewritten paths in the body; wrap in a `move ||` closure.
-        let mut paths = label_signal_paths;
-        for extra in collect_param_paths(&label_orig, param_idents) {
-            if !paths.contains(&extra) {
-                paths.push(extra);
-            }
+    // --- Label.
+    let label_expr: Expr = match &label_orig {
+        Expr::Closure(closure) => {
+            // Reactive label. Coerce the closure body to `String` (a
+            // `move || sig.get()` may yield any `Display` type) and clone any
+            // param-rooted paths so it's `'static`.
+            let body = &closure.body;
+            let paths = collect_param_paths(&label_orig, param_idents);
+            let bindings = emit_clone_bindings(&paths);
+            let mut coerced: Expr = syn::parse_quote! {
+                move || ::std::string::ToString::to_string(&{ #body })
+            };
+            substitute_in_expr(&mut coerced, &paths);
+            syn::parse2(quote! {{ #(#bindings)* #coerced }})
+                .expect("button label closure rewrite produced invalid expr")
         }
-        let bindings = emit_clone_bindings(&paths);
-        let mut rewritten = label_orig;
-        substitute_in_expr(&mut rewritten, &paths);
-        // Coerce to `String` inside the closure so `IntoTextSource`'s
-        // closure impl picks it up. Without this, expressions
-        // returning `&str` would fail the `Fn() -> String` bound the
-        // framework requires for reactive sources.
-        syn::parse2(quote! {{
-            #(#bindings)*
-            move || ::std::string::String::from(#rewritten)
-        }})
-        .expect("button label reactive rewrite produced invalid expr")
+        Expr::Macro(_) => label_orig,
+        _ if !collect_signal_reads(&label_orig).is_empty() => {
+            return Some(syn::parse_quote! {
+                ::std::compile_error!(
+                    "0.1.0: a reactive button label must be a closure — write \
+                     `button(move || …, on_click)` instead of `button(…sig.get()…, on_click)`."
+                )
+            });
+        }
+        _ => label_orig,
     };
 
     // --- Callback: clone parameter-rooted paths it reads.
@@ -244,6 +264,7 @@ fn rewrite_button_args(call: &mut ExprCall, param_idents: &[String]) {
         Expr::Call(c) => c,
         _ => unreachable!("we just emitted a Call"),
     };
+    None
 }
 
 /// Produces `let __rc_X = X.clone();` lines for each path.

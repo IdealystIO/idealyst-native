@@ -140,32 +140,67 @@ in 0.0.1 and is unchanged.
 
 ---
 
-## 2. `bind!` retires in favor of `rx!` / closures
+## 2. Reactive text is a closure — the `.get()` text scan is gone
 
-**What changed.** `bind!` — the `text_fmt!`-only sentinel that depended on the
-same `.get()` scan — is removed. Its two jobs are subsumed by the type-driven
-model: a bare `Signal` prop is already live, and a computed live value is a
-closure or `rx!`.
+**What changed.** In 0.0.1 `ui!` decided whether a `text { … }` content was
+reactive by scanning it for `.get()` and auto-wrapping the match in a closure.
+That scan is removed. Reactive text is now decided by TYPE, exactly like a
+reactive child (§3):
 
-**Why.** With reactivity decided by type, a sentinel that marks "track this
-substring" no longer has a job. One fewer special form, one fewer thing to learn.
+- `text { move || … }` — a **closure** content is reactive; re-evaluates and
+  patches the text in place when a signal it reads changes.
+- `text { "literal" }`, `text { some_value }`, `text { format!("…") }` (no live
+  read) — a **value** content is static, built once.
+- `text { rx!(…) }`, `text { text_fmt!(…) }`, `text { my_reactive_string }` —
+  reactive **by type**: the value's type (`Reactive<String>` / a `Signal<String>`
+  handle / a `text_fmt!` `TextSource::JsBinding`) carries the liveness; `ui!`
+  passes it straight through to `IntoTextSource`.
+
+A **bare signal read** in text (`text { count.get() }`, `text { format!("{}",
+x.get()) }`) is no longer auto-wrapped — it would be a *silent freeze* (rendered
+once, never updated). `ui!` rejects it with a **compile error** pointing at the
+closure form, so the footgun can't happen quietly. (The rare false positive — a
+no-arg `.get()` that isn't a signal, like `Cell`/`OnceCell::get()`, in bare text —
+is resolved by binding to a `let` first.)
+
+**Why.** Same reason as §1: a syntactic `.get()` proxy has false negatives (a
+reactive read via a helper with no `.get()` froze). Deciding by type makes the
+reactive boundary visible and correct however the read is spelled.
 
 **Migrate.**
 
 ```rust
-// 0.0.1
-Typography(content = rx!(format!("clicked {}×", count.get())))   // rx! unchanged
-Text(text_fmt!("Count: {}", bind!(count)))                       // bind! sentinel
+// 0.0.1 — auto-wrapped by the scan
+ui! { text { count.get() } }
+ui! { text { format!("Count: {}", count.get()) } }
 
-// 0.1.0
-Typography(content = rx!(format!("clicked {}×", count.get())))   // still the way
-text(move || format!("Count: {}", count.get()))                  // closure is the live form
+// 0.1.0 — the closure is the visible reactive boundary
+ui! { text { move || count.get() } }
+ui! { text { move || format!("Count: {}", count.get()) } }
 ```
 
-`rx!` stays — it's the ergonomic inline form for a live prop value. Only `bind!`
-goes away.
+If a `ui!` text closure reads a **borrowed prop** (`props.x`) and hits a
+`'static` error, hoist a local first: `let x = props.x.clone(); … text { move || x.get() }`.
+A **direct** `text(…)`/`button(…)` call inside a `#[component]` (outside `ui!`)
+still has its parameter-rooted paths auto-cloned into the closure — write
+`text(move || props.x.get())` and the macro makes the closure `'static`.
 
-Status: planned.
+**`text_fmt!` / `bind!` are RETAINED** — *not* removed. They are not vestigial
+sugar: `text_fmt!` compiles a `TextSource::JsBinding` (template parts + signal ids
++ per-signal stringifiers) that the **web backend updates on the JS side without a
+wasm round-trip** — a real hot-text performance path the benchmarks use — and
+`bind!` is its load-bearing signal marker (distinguishing a subscribed `Signal`
+from a baked-in captured value, which a `.get()` scan alone can't do). This
+coexists cleanly with the type-driven model: a `text_fmt!(…)` value is reactive
+**by type**, so `text { text_fmt!(…) }` is passed straight through. Use the closure
+form for general reactive text; reach for `text_fmt!` when you want the JS-binding
+fast path for frequently-updated text on web. `rx!` likewise stays as the inline
+reactive-prop form (`Typography(content = rx!(format!("…", count.get())))`).
+
+Status: **landed** (branch `feat/0.1.0-reactivity`) — `emit_text` +
+`reactivity.rs` closure-driven, footgun guard, `jsx!` already type-driven,
+regression tests (`tests/text_reactive_lowering.rs`). Sweep confirmed the tree was
+already almost entirely in the `text(move || …)` form.
 
 ---
 
@@ -204,16 +239,19 @@ Status: **landed** (branch `feat/0.1.0-reactivity`).
 ## Migration checklist
 
 - [ ] Bump the git `tag` (or `rev`) to `0.1.0` across `Cargo.toml`.
-- [ ] Build. `.get()`-based `if`/`match`/`text`/`button` sites compile
-      unchanged — no action.
-- [ ] Fix any **frozen** UI: a reactive read not spelled `.get()`
-      (`use_focus()`, `use_can_go_back()`, helper-wrapped reads) → wrap the
-      child in `move ||`.
-- [ ] Replace `bind!(sig)` inside `text_fmt!` with a `move ||` closure (or a
-      bare live prop). `rx!` is unchanged.
-- [ ] Watch for **compile errors** where a previously-static child captured a
-      non-`Clone`/borrowed value and now needs `Clone`/`'static` — loud, points
-      at the site.
+- [ ] Build. `.get()`-based `if`/`match` conditions and `text { move || … }`
+      closures compile unchanged — no action.
+- [ ] Fix any **frozen** `if`: a reactive read via a call the `.get()` scan
+      couldn't see (`use_focus()`, `use_can_go_back()`) now reacts automatically —
+      no action, it just works. A reactive read buried in a structural comparison
+      → author with a closure child `{ move || if … }`.
+- [ ] Convert any **bare reactive text** the compiler flags (`text { count.get() }`
+      → `text { move || count.get() }`). The footgun guard makes every such site a
+      loud compile error — no silent freezes to hunt. `text_fmt!`/`bind!`/`rx!`
+      are unchanged (reactive by type).
+- [ ] Watch for **compile errors** where a now-reactive `if`/`text` closure
+      captures a non-`Clone`/borrowed value and needs `Clone`/`'static` — loud,
+      points at the site.
 - [ ] Run `cargo test` and `idealyst lint`; re-run robot/parity checks on
       reactive screens.
 

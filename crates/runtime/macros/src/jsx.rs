@@ -651,7 +651,13 @@ fn emit_if(cond: &Expr, then_body: &[JsxNode], else_body: Option<&[JsxNode]>) ->
         None => quote! { ::runtime_core::view(::std::vec::Vec::new()) },
     };
 
-    if condition_is_reactive(cond) {
+    // Reactive when the condition can carry a signal read — a `.get()` anywhere,
+    // OR a top-level call (`if use_focus()()`, `if state.is_active()`) whose read
+    // isn't spelled `.get()` at the call site (the 0.0.1 freeze). Structural
+    // conditions (comparisons, `&&`/`||`/`!`, literals) stay a plain static `if`
+    // with borrowed captures — no `'static`/clone ceremony for no benefit. Mirrors
+    // `ui!`'s `emit_if`; see that for the full rationale.
+    if condition_is_reactive(cond) || matches!(cond, Expr::Call(_) | Expr::MethodCall(_)) {
         quote! {
             ::runtime_core::when(
                 move || #cond,

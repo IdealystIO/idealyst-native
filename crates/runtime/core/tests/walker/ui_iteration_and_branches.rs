@@ -642,20 +642,23 @@ fn reactive_if_visible_get_on_memo_reevaluates() {
     );
 }
 
-/// The deliberate counterpart: an `if` whose condition is an OPAQUE bare
-/// closure CALL returning `bool` (`if del_visible()`) is STATIC under the
-/// type-carried model — its type is `bool`, so it dispatches to `StaticCond`
-/// and is built exactly once, allocating zero reactive machinery. Changing
-/// the underlying signal produces NO teardown and NO rebuild. This is the
-/// intended trade: reactivity must be expressed by a reactive TYPE
-/// (`memo`/`Signal<bool>`) or a visible `.get()`, not inferred from an opaque
-/// call — so a genuinely static `if helper()` never pays for an unused
-/// reactive region.
+/// The `use_focus()` freeze fix (0.1.0): an `if` whose condition is a top-level
+/// CALL returning `bool` (`if del_visible()`) is now REACTIVE, even though the
+/// signal read is inside the call and NOT spelled `.get()` at the `if` site. A
+/// call may read a signal that the `.get()` scan can't see — a reactive hook
+/// returning `impl Fn() -> bool` (`use_focus()`, `use_can_go_back()`), or a
+/// predicate closure like the one here. In 0.0.1 this was treated as static and
+/// **silently frozen**; now `emit_if` lowers any top-level `Call`/`MethodCall`
+/// condition to a reactive `when(move || cond, …)` whose Effect tracks whatever
+/// the call reads. (A call that reads no signal yields an inert effect — correct
+/// and ~free.) Pure structural conditions still stay static; see
+/// `structural_condition_stays_static_with_borrowed_capture` in
+/// `tests/if_reactive_lowering.rs`.
 #[test]
-fn static_if_opaque_bool_call_does_not_react() {
+fn reactive_if_opaque_bool_call_reevaluates() {
     let rt = TestRuntime::new();
     let ids: Signal<Vec<i32>> = signal!(vec![1, 2]);
-    let del_visible = move || ids.get().len() > 1; // plain `impl Fn() -> bool`
+    let del_visible = move || ids.get().len() > 1; // `impl Fn() -> bool`, reads `ids`
     let tree: Element = ui! {
         view {
             if del_visible() {
@@ -664,15 +667,15 @@ fn static_if_opaque_bool_call_does_not_react() {
         }
     };
     let _owner = rt.render(tree);
-    assert_eq!(count_text(&rt.events(), "del"), 1, "static branch built once at len 2");
+    assert_eq!(count_text(&rt.events(), "del"), 1, "marker present while >1 item");
 
-    // Mutating the signal does nothing — the condition was a build-time call,
-    // not a reactive region: no anchor, no Effect, no teardown, no rebuild.
+    // Mutating the signal the call reads must tear down + rebuild — in 0.0.1 this
+    // stayed mounted forever (the frozen footgun).
     rt.backend_mut().clear_events();
     ids.set(vec![1]);
     assert!(
-        rt.events().is_empty(),
-        "opaque-call condition is static; signal mutation must produce no events: {:?}",
+        rt.events().iter().any(|e| matches!(e, Event::ClearChildren { .. })),
+        "top-level-call condition must react on the signal it reads: {:?}",
         rt.events()
     );
 }

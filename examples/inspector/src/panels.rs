@@ -390,8 +390,8 @@ pub fn ElementsPanel(props: ElementsPanelProps) -> Element {
         out
     });
 
-    // Detail body (expr reads `.get()` → macro reactive-wraps it).
-    let detail = text(match selected.get() {
+    // Detail body — a reactive closure (rebuilds when `selected`/`snapshot` change).
+    let detail = text(move || match selected.get() {
         Some(id) => element_detail(&snapshot.get(), real_element_id(id)),
         None => "Select an element on the left to inspect it.".to_string(),
     })
@@ -481,8 +481,8 @@ pub fn LogsPanel(props: LogsPanelProps) -> Element {
     let clear_btn = ui! { Button(label = "Clear".to_string(), on_click = clear) };
 
     // Reactive (exprs read `.get()` → the macro reactive-wraps them).
-    let count = text(log_count_line(&snapshot.get(), &filter.get().to_lowercase())).into_element();
-    let body = text(log_body(&snapshot.get(), &filter.get().to_lowercase())).into_element();
+    let count = text(move || log_count_line(&snapshot.get(), &filter.get().to_lowercase())).into_element();
+    let body = text(move || log_body(&snapshot.get(), &filter.get().to_lowercase())).into_element();
 
     ui! {
         Stack(gap = StackGap::Sm) {
@@ -535,10 +535,10 @@ fn navigators_text(snap: &Snapshot) -> String {
 pub fn StatsPanel(props: StatsPanelProps) -> Element {
     let StatsPanelProps { snapshot } = props;
     // `text(<expr with .get()>)` → reactive-wrapped, refreshes each poll.
-    let navigators = text(navigators_text(&snapshot.get())).into_element();
-    let perf = text(format::perf(&snapshot.get())).into_element();
-    let signals = text(format::signals(&snapshot.get())).into_element();
-    let raw = text(format::raw_elements(&snapshot.get())).into_element();
+    let navigators = text(move || navigators_text(&snapshot.get())).into_element();
+    let perf = text(move || format::perf(&snapshot.get())).into_element();
+    let signals = text(move || format::signals(&snapshot.get())).into_element();
+    let raw = text(move || format::raw_elements(&snapshot.get())).into_element();
     ui! {
         Stack(gap = StackGap::Md, padding = StackPadding::Sm) {
             Typography(content = "NAVIGATORS", kind = typography_kind::Overline)

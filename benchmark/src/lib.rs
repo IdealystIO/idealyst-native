@@ -1440,27 +1440,25 @@ fn frame_header() -> Element {
     let elapsed_sig = st.elapsed_seconds.clone();
     let progress_sig = st.run_in_progress.clone();
     let suite_sig = st.current_suite.clone();
-    // Reactivity comes from the `ui!` macro wrapping each Text body
-    // in a closure that the framework re-runs on signal changes —
-    // we drop the `move ||` here since `.get()` calls *inside* the
-    // body are the reactive subscriptions.
+    // Reactivity is by TYPE (0.1.0): a `text` body that reads a
+    // signal must be a `move ||` closure so the framework re-runs it
+    // on signal changes. The `.get()` calls *inside* the closure are
+    // the reactive subscriptions.
     ui! {
         view(style = FrameHeader()) {
             view {
                 text(style = FrameHeaderStrong()) {
-                    {
-                        match cv_for_label.get() {
-                            Some(id) => VARIANTS.iter().find(|v| v.id == id).map(|v| v.label.to_string()).unwrap_or_else(|| id.to_string()),
-                            None => "Idle".to_string(),
-                        }
+                    move || match cv_for_label.get() {
+                        Some(id) => VARIANTS.iter().find(|v| v.id == id).map(|v| v.label.to_string()).unwrap_or_else(|| id.to_string()),
+                        None => "Idle".to_string(),
                     }
                 }
-                text { format!(" · {}", suite_by_name(suite_sig.get()).title) }
+                text { move || format!(" · {}", suite_by_name(suite_sig.get()).title) }
             }
             view {
-                text { status_sig.get() }
+                text { move || status_sig.get() }
                 text(style = FrameHeaderElapsed()) {
-                    {
+                    move || {
                         if progress_sig.get() || elapsed_sig.get() > 0.0 {
                             format!(" {:.1}s", elapsed_sig.get())
                         } else { String::new() }
