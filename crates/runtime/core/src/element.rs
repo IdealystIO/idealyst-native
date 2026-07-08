@@ -736,6 +736,22 @@ pub enum Element {
         children: Vec<Element>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
+        /// Optional raw-touch handler, identical in contract to
+        /// [`Element::View::on_touch`]. An external renders a real backend
+        /// node (a web `<td>`/`<tr>`, a native view), so it can be the hit
+        /// target for the responder chain: a descendant whose handler
+        /// returns `consumed` stops the event before it reaches this one.
+        /// This is what lets a clickable table row carry its tap on the
+        /// `<td>` itself while a `Button` inside a cell still eats its own
+        /// click (bubbling + `consumed` → `stop_propagation`), instead of a
+        /// full-bleed overlay that would shadow the button. `None` by
+        /// default; set via `.on_touch(..)`.
+        on_touch: Option<crate::TouchHandler>,
+        /// Optional hover (pointer-over) handler, identical in contract to
+        /// [`Element::View::on_hover`]. Fires `true` on pointer enter,
+        /// `false` on leave; web + macOS deliver it, touch-only backends
+        /// ignore it. `None` by default; set via `.on_hover(..)`.
+        on_hover: Option<crate::HoverHandler>,
         accessibility: AccessibilityProps,
     },
     /// Navigator extension — the unified entry point for any

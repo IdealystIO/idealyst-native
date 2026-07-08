@@ -262,6 +262,8 @@ pub fn external<T: 'static>(props: T) -> Bound<ExternalHandle<T>> {
         children: Vec::new(),
         style: None,
         ref_fill: None,
+        on_touch: None,
+        on_hover: None,
         accessibility: crate::accessibility::AccessibilityProps::default(),
     })
 }

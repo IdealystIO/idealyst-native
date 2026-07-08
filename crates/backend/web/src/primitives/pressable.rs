@@ -77,6 +77,12 @@ pub(crate) fn create(b: &mut WebBackend, on_click: Rc<dyn Fn()>) -> Node {
     // erased the same way through wasm-bindgen's handle table.
     b._pressable_key_closures.push(key_closure);
 
+    // Consume the press from ancestor `on_touch` recognizers so a pressable
+    // inside a clickable row / tappable card doesn't ALSO trigger the
+    // ancestor — matching native's single-view touch delivery. See
+    // `touch::swallow_ancestor_touch`.
+    super::touch::swallow_ancestor_touch(b, el.as_ref());
+
     el.unchecked_into::<Node>()
 }
 

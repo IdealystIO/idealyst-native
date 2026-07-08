@@ -780,9 +780,9 @@ fn dispatch_link<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) 
 
 #[inline(never)]
 fn dispatch_external<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
-    let Element::External { type_id, type_name, payload, children, style, ref_fill, accessibility } = node
+    let Element::External { type_id, type_name, payload, children, style, ref_fill, on_touch, on_hover, accessibility } = node
     else { unreachable!() };
-    external::build(backend, type_id, type_name, payload, children, style, ref_fill, accessibility)
+    external::build(backend, type_id, type_name, payload, children, style, ref_fill, on_touch, on_hover, accessibility)
 }
 
 #[inline(never)]

@@ -153,6 +153,39 @@ mod tests {
         );
     }
 
+    /// REGRESSION: an `Element::External` that carries `on_touch` /
+    /// `on_hover` has those handlers installed on its OWN backend node by
+    /// the walker — the same path a `View` takes. This is what lets a
+    /// clickable table cell (`<td>`, which lowers to an External) be the
+    /// row-click hit target: the handler sits on the cell, an ancestor of
+    /// its content, so an inner `Button`'s consumed tap stops the event
+    /// before the row fires. Before the fix External had no such slots and
+    /// the walker never called `install_*_handler` for it — forcing the
+    /// full-bleed overlay that shadowed inner buttons.
+    #[test]
+    fn external_installs_touch_and_hover_handlers_on_its_node() {
+        use crate::common::NodeId;
+        use runtime_core::{Bound, TouchResponse, ViewHandle};
+
+        let rt = TestRuntime::new();
+        // `Bound::<ViewHandle>` is a type-check-only marker; the setters
+        // route into whichever element variant is underneath (here, an
+        // External). The external is the root → its node is `NodeId(0)`.
+        let el: runtime_core::Element =
+            Bound::<ViewHandle>::new(external(MapViewProps { lat: 0.0, lon: 0.0 }).into())
+                .on_touch(|_| TouchResponse::CONSUMED)
+                .on_hover(|_| {})
+                .into();
+        let _owner = rt.render(el);
+
+        rt.backend().assert_any(
+            |e| matches!(e, Event::InstallTouchHandler { node } if *node == NodeId(0)),
+        );
+        rt.backend().assert_any(
+            |e| matches!(e, Event::InstallHoverHandler { node } if *node == NodeId(0)),
+        );
+    }
+
     /// Children passed to an `Element::External` are parented INTO the
     /// node the external handler returns — same lifecycle as `Portal`.
     /// Before this was wired, External was a leaf: it produced zero
@@ -246,6 +279,8 @@ mod tests {
             children: Vec::new(),
             style: None,
             ref_fill: None,
+            on_touch: None,
+            on_hover: None,
             accessibility: Default::default(),
         };
 

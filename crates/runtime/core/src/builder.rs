@@ -307,14 +307,19 @@ impl Bound<ViewHandle> {
     where
         F: Fn(&crate::TouchEvent) -> crate::TouchResponse + 'static,
     {
-        if let Element::View { on_touch, .. } = &mut self.primitive {
-            // Born batched: every backend invocation of this handler runs
-            // as one reactive cycle, so signal writes inside it coalesce.
-            // See `reactive::cycle`. (A backend that also wraps the call in
-            // `cycle`/`batch` just nests harmlessly.)
-            *on_touch = Some(std::rc::Rc::new(move |e: &crate::TouchEvent| {
-                crate::cycle(|| handler(e))
-            }));
+        // Born batched: every backend invocation of this handler runs
+        // as one reactive cycle, so signal writes inside it coalesce.
+        // See `reactive::cycle`. (A backend that also wraps the call in
+        // `cycle`/`batch` just nests harmlessly.)
+        let wrapped: crate::TouchHandler =
+            std::rc::Rc::new(move |e: &crate::TouchEvent| crate::cycle(|| handler(e)));
+        // Views and externals both render real hit-testable nodes, so both
+        // carry a touch slot — a `<td>` (External) can take the row-click.
+        match &mut self.primitive {
+            Element::View { on_touch, .. } | Element::External { on_touch, .. } => {
+                *on_touch = Some(wrapped);
+            }
+            _ => {}
         }
         self
     }
@@ -358,11 +363,16 @@ impl Bound<ViewHandle> {
     where
         F: Fn(bool) + 'static,
     {
-        if let Element::View { on_hover, .. } = &mut self.primitive {
-            // Born batched — see `on_touch` / `reactive::cycle`.
-            *on_hover = Some(std::rc::Rc::new(move |entering: bool| {
-                crate::cycle(|| handler(entering))
-            }));
+        // Born batched — see `on_touch` / `reactive::cycle`.
+        let wrapped: crate::HoverHandler =
+            std::rc::Rc::new(move |entering: bool| crate::cycle(|| handler(entering)));
+        // Views and externals both render real hoverable nodes — a `<tr>`/
+        // `<td>` (External) tints on whole-row hover.
+        match &mut self.primitive {
+            Element::View { on_hover, .. } | Element::External { on_hover, .. } => {
+                *on_hover = Some(wrapped);
+            }
+            _ => {}
         }
         self
     }
@@ -1265,6 +1275,58 @@ mod hover_builder_tests {
     fn view_without_on_hover_is_none() {
         let el: Element = view(Vec::new()).into();
         assert!(matches!(el, Element::View { on_hover: None, .. }));
+    }
+
+    /// REGRESSION: `.on_touch()` / `.on_hover()` on a `Bound` wrapping an
+    /// `Element::External` must write into the External's OWN slots. Before
+    /// the fix the setters matched only `Element::View`, so a handler
+    /// attached to an external (a table `<td>`, which lowers to an External)
+    /// was silently dropped — which is exactly why the clickable-row code
+    /// resorted to a full-bleed overlay that then swallowed inner buttons.
+    /// `Bound::<ViewHandle>` is a type-check-only marker; the setter routes
+    /// by the underlying element variant.
+    #[test]
+    fn on_touch_and_hover_populate_external_slots() {
+        use crate::{TouchEvent, TouchId, TouchPhase, TouchPoint, TouchResponse};
+
+        // Any payload type — external dispatch is by TypeId, irrelevant here.
+        let ext: Element = crate::external::<u32>(7).into();
+
+        let touches = Rc::new(RefCell::new(0u32));
+        let hovers = Rc::new(RefCell::new(Vec::<bool>::new()));
+        let t = touches.clone();
+        let h = hovers.clone();
+
+        let el: Element = Bound::<ViewHandle>::new(ext)
+            .on_touch(move |_ev| {
+                *t.borrow_mut() += 1;
+                TouchResponse::CONSUMED
+            })
+            .on_hover(move |entering| h.borrow_mut().push(entering))
+            .into();
+
+        let (th, hh) = match el {
+            Element::External { on_touch, on_hover, .. } => (
+                on_touch.expect("on_touch must land on the External's slot"),
+                on_hover.expect("on_hover must land on the External's slot"),
+            ),
+            _ => panic!("external() must build Element::External"),
+        };
+
+        // Stored handlers forward through the `cycle` wrapper.
+        let ev = TouchEvent {
+            id: TouchId(0),
+            phase: TouchPhase::Began,
+            position: TouchPoint::new(0.0, 0.0),
+            window_position: TouchPoint::new(0.0, 0.0),
+            timestamp_ns: 0,
+            force: None,
+        };
+        assert!(th(&ev).consumed, "handler runs and returns its response");
+        hh(true);
+        hh(false);
+        assert_eq!(*touches.borrow(), 1);
+        assert_eq!(*hovers.borrow(), vec![true, false]);
     }
 }
 

@@ -166,6 +166,8 @@ pub fn form(mut props: FormProps) -> Bound<FormHandle> {
         children,
         style: None,
         ref_fill: None,
+        on_touch: None,
+        on_hover: None,
         accessibility: runtime_core::accessibility::AccessibilityProps::default(),
     })
 }

@@ -56,6 +56,13 @@ pub(crate) fn create(b: &mut WebBackend, config: LinkConfig) -> Node {
     let node: Node = anchor.clone().unchecked_into();
     b.hydrate_note_fresh(&node);
 
+    // Consume the press from ancestor `on_touch` recognizers so a link inside
+    // a clickable row / tappable card activates the link only, not the
+    // ancestor — matching native's single-view touch delivery. Applies to
+    // external links too (a native navigation still shouldn't also fire the
+    // row). See `touch::swallow_ancestor_touch`.
+    super::touch::swallow_ancestor_touch(b, anchor.as_ref());
+
     // External links navigate natively — no JS click interception.
     if config.external {
         return anchor.unchecked_into::<Node>();

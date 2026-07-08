@@ -305,6 +305,35 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
     }
 }
 
+/// Make `el` "swallow" a press from any ancestor `on_touch` gesture
+/// recognizer — the web equivalent of native's single-view touch delivery.
+///
+/// On native, tapping a `Button` / `Pressable` / `Link` delivers the touch
+/// to that control only (AppKit sends `mouseDown` to the hit `NSButton` /
+/// tappable `FlippedView`; the responder chain stops there), so a parent
+/// view's `on_touch` tap never also fires. On web those controls activate
+/// through a native `click` listener, which lives in a DIFFERENT event
+/// channel from the framework's pointer-based `on_touch` responder chain —
+/// so without this, pressing a button INSIDE an `on_touch` view (a clickable
+/// table row, a tappable card) fires BOTH the button and the ancestor.
+///
+/// One bubble-phase `pointerdown` listener that `stop_propagation`s closes
+/// the gap: the button is deeper than the ancestor, so its listener runs
+/// first and halts the `pointerdown` before the ancestor's `on_touch`
+/// listener sees it. That ancestor therefore never records this pointer in
+/// its `active` set, so its `pointerup`/`pointermove`/`pointercancel`
+/// listeners all early-return (see `install`) and no ancestor tap is
+/// recognized. The control's OWN `click` is untouched — `stop_propagation`
+/// halts bubbling, not the browser's click synthesis.
+pub(crate) fn swallow_ancestor_touch(b: &mut WebBackend, el: &web_sys::Element) {
+    let closure = Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
+        ev.stop_propagation();
+    });
+    let _ = el.add_event_listener_with_callback("pointerdown", closure.as_ref().unchecked_ref());
+    b._touch_closures
+        .push(closure.into_js_value().unchecked_into());
+}
+
 /// Implementation of [`runtime_core::Backend::claim_touch`] —
 /// external claim invoked when a handler returned `claim: true` via
 /// any route other than the local `pointerdown` / `pointermove`

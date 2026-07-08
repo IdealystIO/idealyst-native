@@ -27,6 +27,8 @@ pub(super) fn build<B: Backend + 'static>(
     children: Vec<Element>,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
+    on_touch: Option<crate::TouchHandler>,
+    on_hover: Option<crate::HoverHandler>,
     a11y: AccessibilityProps,
 ) -> B::Node {
     // Adopt-sentinel interception (runtime-server wire client): when a
@@ -61,6 +63,18 @@ pub(super) fn build<B: Backend + 'static>(
 
     if let Some(s) = style {
         attach_style(backend, &n, s);
+    }
+
+    // Install the interaction handlers on the external's own backend node —
+    // the same node children were parented into — so the responder chain
+    // treats it exactly like a `View`: a descendant that consumes an event
+    // stops it before it reaches this handler. Ordered after `insert_children`
+    // so the node is fully populated first (mirrors the `View` build path).
+    if let Some(h) = on_touch {
+        backend.borrow_mut().install_touch_handler(&n, h);
+    }
+    if let Some(h) = on_hover {
+        backend.borrow_mut().install_hover_handler(&n, h);
     }
 
     // External ref-fill hands the closure an `Rc<dyn Any>`

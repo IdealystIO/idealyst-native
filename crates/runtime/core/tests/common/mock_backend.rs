@@ -147,6 +147,16 @@ pub enum Event {
     /// disabled state propagated to the backend (the native-inert hook).
     SetDisabled { node: NodeId, disabled: bool },
 
+    // --- Interaction handlers ---
+    /// `install_touch_handler(node, _)` — the framework wired a raw-touch
+    /// handler onto this node. Recorded so a test can assert the walker
+    /// installs `on_touch` for the primitives that carry it (views AND
+    /// externals — a clickable `<td>`).
+    InstallTouchHandler { node: NodeId },
+    /// `install_hover_handler(node, _)` — companion to the above for the
+    /// hover channel.
+    InstallHoverHandler { node: NodeId },
+
     // --- Style ---
     ApplyStyle { node: NodeId },
     ApplyStyledStates { node: NodeId, overlays: usize },
@@ -676,6 +686,14 @@ impl Backend for MockBackend {
 
     fn apply_style(&mut self, node: &Self::Node, _style: &Rc<StyleRules>) {
         self.core.record(Event::ApplyStyle { node: *node });
+    }
+
+    fn install_touch_handler(&mut self, node: &Self::Node, _handler: runtime_core::TouchHandler) {
+        self.core.record(Event::InstallTouchHandler { node: *node });
+    }
+
+    fn install_hover_handler(&mut self, node: &Self::Node, _handler: runtime_core::HoverHandler) {
+        self.core.record(Event::InstallHoverHandler { node: *node });
     }
 
     // --- Optional but explicitly recorded ---

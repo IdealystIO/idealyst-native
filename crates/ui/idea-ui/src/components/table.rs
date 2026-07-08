@@ -42,7 +42,7 @@ use std::rc::Rc;
 
 use runtime_core::{
     component, signal, text as text_node, ui, ChildList, Color, Cursor, Element, IdealystSchema,
-    IntoElement, Position, Reactive, Signal, StyleApplication, StyleRules, StyleSource, Tokenized,
+    IntoElement, Reactive, Signal, StyleApplication, StyleRules, StyleSource, Tokenized,
 };
 use table::{table as sdk_table, table_cell as sdk_cell, table_row as sdk_row};
 use table::{TableCellProps as SdkTableCellProps, TableProps as SdkTableProps, TableRowProps as SdkTableRowProps};
@@ -116,10 +116,13 @@ pub struct TableRowProps {
     /// touch backends where there is no hover), and a tap anywhere in the
     /// row invokes this callback.
     ///
-    /// The click surface spans the full row; a cell that itself contains
-    /// an interactive control (a `Button`, `Link`) will have that control
-    /// shadowed by the row's click target — reserve row-click for rows
-    /// whose cells are plain content.
+    /// The click surface spans the full row, but it sits on each cell's
+    /// own node rather than a layer above the content, so an interactive
+    /// child (a `Button`, `Link`) inside a cell still receives its own
+    /// tap first: its recognizer consumes the event, which stops it from
+    /// reaching the row handler (the standard "buttons in a clickable row"
+    /// pattern). Taps on plain content or empty cell space fall through to
+    /// the row callback.
     pub on_row_click: Option<Rc<dyn Fn()>>,
 }
 
@@ -158,12 +161,10 @@ pub fn TableRow(props: TableRowProps) -> Element {
 /// top — the override layer resolves last, so a `Some` background wins
 /// only while hovered and otherwise leaves the base untouched.
 ///
-/// `with_position` seeds `position: relative` so a web cell can anchor
-/// its absolutely-positioned hit overlay; native cells don't need it.
 /// If the cell carries no static style (not the idea-ui path), the cell
 /// is returned unchanged — the caller still attaches the tap handler, so
 /// the row stays clickable, just without the highlight.
-fn apply_row_hover_style(cell: Element, hovered: Signal<bool>, with_position: bool) -> Element {
+fn apply_row_hover_style(cell: Element, hovered: Signal<bool>) -> Element {
     let base: Option<StyleApplication> = match cell_style(&cell) {
         Some(StyleSource::Static(app)) => Some(app.clone()),
         _ => None,
@@ -176,9 +177,6 @@ fn apply_row_hover_style(cell: Element, hovered: Signal<bool>, with_position: bo
             cursor: Some(Cursor::Pointer),
             ..Default::default()
         };
-        if with_position {
-            overlay.position = Some(Position::Relative);
-        }
         if on {
             overlay.background =
                 Some(Tokenized::token("color-surface-alt", Color("#eef0f7".into())));
@@ -197,14 +195,28 @@ fn cell_style(cell: &Element) -> Option<&StyleSource> {
     }
 }
 
-/// Native (non-web): the cell is a real `Element::View` grid item, so the
-/// tap + hover handlers ride directly on it, and the reactive row-hover
-/// background lands on the cell itself.
-#[cfg(not(target_arch = "wasm32"))]
+/// Attach whole-row click + hover to a single cell. The tap recognizer and
+/// the shared hover flag ride on the cell's OWN backend node — a real
+/// `Element::View` grid item on native, a `<td>`/`<th>` `Element::External`
+/// on web (both carry `on_touch`/`on_hover`). The reactive row-hover
+/// background lands on that same node.
+///
+/// Putting the handler on the cell itself — an *ancestor* of whatever the
+/// cell contains — is what makes buttons-in-a-clickable-row work: an
+/// interactive child (a `Button`, `Link`) recognizes its own tap first and
+/// returns `consumed`, which stops the event before it reaches this row
+/// handler (bubbling + `stop_propagation` on web, the responder chain on
+/// native). Taps on plain content or empty space fall through to the row.
+/// This replaces the earlier web-only full-bleed overlay, which physically
+/// covered the cell's content and so swallowed a button's click.
+///
+/// `Bound::<ViewHandle>` here is a type-check-only marker (see `Bound`'s
+/// rustdoc) — `on_touch`/`on_hover` write into a `View` OR an `External`,
+/// so the same call works for both cell shapes.
 fn make_row_cell_interactive(cell: Element, hovered: Signal<bool>, cb: Rc<dyn Fn()>) -> Element {
     use runtime_core::{tap, Bound, TapRecognizer, ViewHandle};
 
-    let styled = apply_row_hover_style(cell, hovered, false);
+    let styled = apply_row_hover_style(cell, hovered);
     // `tap(..)` yields an `Rc<dyn Fn(&TouchEvent) -> TouchResponse>`; wrap
     // it so it satisfies `on_touch`'s `Fn` bound (an `Rc` isn't itself
     // `Fn`).
@@ -213,32 +225,6 @@ fn make_row_cell_interactive(cell: Element, hovered: Signal<bool>, cb: Rc<dyn Fn
         .on_hover(move |entering| hovered.set(entering))
         .on_touch(move |ev| recognizer(ev))
         .into_element()
-}
-
-/// Web: a cell lowers to an `Element::External` (`<td>`/`<th>`), which
-/// can't carry `on_touch`/`on_hover`. The reactive row-hover background +
-/// `position: relative` land on the `<td>` (externals DO carry a style
-/// slot), and a full-bleed transparent overlay view — a real `View` that
-/// anchors to the cell via `inset: 0` — captures the whole-cell tap +
-/// hover that drive the shared highlight and the row callback.
-#[cfg(target_arch = "wasm32")]
-fn make_row_cell_interactive(cell: Element, hovered: Signal<bool>, cb: Rc<dyn Fn()>) -> Element {
-    use runtime_core::{tap, view, TapRecognizer};
-
-    let mut cell = apply_row_hover_style(cell, hovered, true);
-    // `tap(..)` yields an `Rc<dyn Fn(&TouchEvent) -> TouchResponse>`; wrap
-    // it so it satisfies `on_touch`'s `Fn` bound (an `Rc` isn't itself
-    // `Fn`).
-    let recognizer = tap(TapRecognizer::new(), move || (cb)());
-    let overlay = view(vec![])
-        .on_hover(move |entering| hovered.set(entering))
-        .on_touch(move |ev| recognizer(ev))
-        .with_style(crate::stylesheets::TableRowClickOverlay::sheet())
-        .into_element();
-    if let Element::External { children, .. } = &mut cell {
-        children.push(overlay);
-    }
-    cell
 }
 
 // =============================================================================

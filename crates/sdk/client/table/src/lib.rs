@@ -287,6 +287,8 @@ fn external<H>(
         children,
         style: None,
         ref_fill: None,
+        on_touch: None,
+        on_hover: None,
         accessibility: runtime_core::accessibility::AccessibilityProps::default(),
     })
 }

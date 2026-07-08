@@ -2101,6 +2101,57 @@ fn web_touch_ignored_child_still_bubbles_to_ancestor() {
     );
 }
 
+/// REGRESSION TEST.
+///
+/// A `Pressable` (idea-ui `Button` / `IconButton`) inside a view that carries
+/// `on_touch` — the "clickable table row with buttons in it" pattern — must
+/// swallow the press so the ancestor's `on_touch` tap does NOT also fire.
+/// A pressable activates through a native `click`, a different event channel
+/// from the pointer-based `on_touch` responder chain, so before the fix the
+/// button's `pointerdown` bubbled straight to the row and BOTH fired. The
+/// pressable now installs a `pointerdown`-swallowing listener
+/// (`touch::swallow_ancestor_touch`) to match native's single-view delivery.
+///
+/// Contrast with `web_touch_ignored_child_still_bubbles_to_ancestor` above: a
+/// plain child bubbles; an interactive-leaf child does not.
+#[wasm_bindgen_test]
+fn regression_web_pressable_swallows_ancestor_on_touch() {
+    use runtime_core::{Backend, TouchResponse};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+
+    // The ancestor stands in for a clickable table row's `<td>`: it carries an
+    // `on_touch` that would fire the row callback.
+    let row = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&row).unwrap();
+    let row_fired = Rc::new(Cell::new(false));
+    let rf = row_fired.clone();
+    backend.install_touch_handler(
+        &row.clone().unchecked_into(),
+        Rc::new(move |_| {
+            rf.set(true);
+            TouchResponse::CONSUMED
+        }),
+    );
+
+    // A real Pressable, parented into the row.
+    let pressable: web_sys::Node =
+        backend.create_pressable(Rc::new(|| {}), &Default::default());
+    row.append_child(&pressable).unwrap();
+    let pressable_el: web_sys::Element = pressable.unchecked_into();
+
+    dispatch_bubbling_pointerdown(&pressable_el);
+
+    assert!(
+        !row_fired.get(),
+        "a press on a Pressable must NOT reach the ancestor row's on_touch",
+    );
+}
+
 /// Dispatch a non-bubbling pointer enter/leave event directly at `target`,
 /// optionally tagging the pointer type (`""` = unspecified/mouse-like).
 fn dispatch_pointer_typed(target: &web_sys::Element, kind: &str, pointer_type: &str) {

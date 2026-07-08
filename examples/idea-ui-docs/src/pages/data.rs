@@ -2,10 +2,11 @@
 
 use std::rc::Rc;
 
-use runtime_core::{ui, Element};
+use runtime_core::{rx, signal, ui, Element, Signal};
+use icons_lucide::{PENCIL, TRASH_2};
 use idea_ui::{
-    tone, typography_kind, variant, Button, Card, Stack, StackAxis, StackGap, Table, TableCell,
-    TableRow, Tag, Typography,
+    tone, typography_kind, variant, Button, Card, IconButton, Stack, StackAxis, StackGap, Table,
+    TableCell, TableRow, Tag, Typography,
 };
 
 use crate::shell::{Callout, CodePanel, DemoSurface, Prop, PropsTable, Section, P};
@@ -121,6 +122,25 @@ fn stat_card() -> Element {
 pub fn table() -> Element {
     crate::pages::body(vec![
         ui! {
+            Section(title = "Clickable rows with buttons".to_string()) {
+                P(content = "Set `on_row_click` on a `TableRow` to make the whole row a tap \
+                    target, and still put `Button`s / `IconButton`s in its cells. Clicking a \
+                    control fires ONLY that control — the row click does not also fire. Clicking \
+                    anywhere else in the row fires the row. Try it: the counters below update \
+                    independently.".to_string())
+                clickable_row_table()
+                CodePanel(src = r##"TableRow(on_row_click = Some(select_row)) {
+    TableCell(text = Some("Build".to_string()))
+    TableCell { Tag(label = "Passing".into(), tone = tone::Success, variant = variant::Soft) }
+    TableCell {
+        // These eat their own click — the row's on_row_click does NOT fire.
+        IconButton(icon = Some(PENCIL), on_click = edit_row, ..)
+        Button(label = "Delete".into(), on_click = delete_row, ..)
+    }
+}"##.to_string())
+            }
+        },
+        ui! {
             Section(title = "Status table".to_string()) {
                 P(content = "On web, Table lowers to a real HTML `<table>` via the `table` SDK, so \
                     the browser's table-layout algorithm sizes columns to widest content for free. \
@@ -226,6 +246,87 @@ fn status_table() -> Element {
                         tone = tone::Danger,
                         variant = variant::Soft,
                     )
+                }
+            }
+        }
+    }
+}
+
+/// Interactive demo: rows with `on_row_click` whose cells ALSO hold buttons.
+/// Two reactive readouts make the fix observable — `on_row_click` sets
+/// "Selected row", the cell buttons set "Last button action". Clicking a
+/// button changes ONLY the button line; the selected row is untouched. If the
+/// row swallowed the button (the old bug), a button press would ALSO change
+/// the selected row. The status text is wrapped in `rx!` so it re-renders when
+/// either signal changes (a bare `.get()` would read once and never update).
+fn clickable_row_table() -> Element {
+    let selected: Signal<String> = signal!("(none — click a row's text/background)".to_string());
+    let last_action: Signal<String> = signal!("(none — click a button or the edit icon)".to_string());
+
+    // Closure factories: each returns an `Rc<dyn Fn()>`. Signals are `Copy`
+    // handles, so the factories capture them by value and can be called once
+    // per row.
+    let on_row = move |name: &'static str| -> Rc<dyn Fn()> {
+        Rc::new(move || selected.set(name.to_string()))
+    };
+    let on_edit = move |name: &'static str| -> Rc<dyn Fn()> {
+        Rc::new(move || last_action.set(format!("edit icon → {name}")))
+    };
+    let on_delete = move |name: &'static str| -> Rc<dyn Fn()> {
+        Rc::new(move || last_action.set(format!("delete button → {name}")))
+    };
+
+    ui! {
+        Stack(axis = StackAxis::Column, gap = StackGap::Sm) {
+            Typography(
+                kind = typography_kind::Body,
+                content = rx!(format!("Selected row: {}", selected.get())),
+            )
+            Typography(
+                kind = typography_kind::Body,
+                content = rx!(format!("Last button action: {}", last_action.get())),
+            )
+            Table {
+                TableRow {
+                    TableCell(header = true, text = Some("Job".to_string()))
+                    TableCell(header = true, text = Some("Status".to_string()))
+                    TableCell(header = true, text = Some("Actions".to_string()))
+                }
+                TableRow(on_row_click = Some(on_row("Build"))) {
+                    TableCell(text = Some("Build".to_string()))
+                    TableCell {
+                        Tag(label = "Passing".to_string(), tone = tone::Success, variant = variant::Soft)
+                    }
+                    TableCell {
+                        Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+                            IconButton(icon = Some(PENCIL), on_click = on_edit("Build"), tone = tone::Neutral, variant = variant::Soft)
+                            Button(label = "Delete".to_string(), on_click = on_delete("Build"), tone = tone::Danger, variant = variant::Soft)
+                        }
+                    }
+                }
+                TableRow(on_row_click = Some(on_row("Unit tests"))) {
+                    TableCell(text = Some("Unit tests".to_string()))
+                    TableCell {
+                        Tag(label = "Passing".to_string(), tone = tone::Success, variant = variant::Soft)
+                    }
+                    TableCell {
+                        Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+                            IconButton(icon = Some(PENCIL), on_click = on_edit("Unit tests"), tone = tone::Neutral, variant = variant::Soft)
+                            Button(label = "Delete".to_string(), on_click = on_delete("Unit tests"), tone = tone::Danger, variant = variant::Soft)
+                        }
+                    }
+                }
+                TableRow(on_row_click = Some(on_row("Deploy"))) {
+                    TableCell(text = Some("Deploy".to_string()))
+                    TableCell {
+                        Tag(label = "Blocked".to_string(), tone = tone::Danger, variant = variant::Soft)
+                    }
+                    TableCell {
+                        Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+                            IconButton(icon = Some(TRASH_2), on_click = on_edit("Deploy"), tone = tone::Neutral, variant = variant::Soft)
+                            Button(label = "Delete".to_string(), on_click = on_delete("Deploy"), tone = tone::Danger, variant = variant::Soft)
+                        }
+                    }
                 }
             }
         }
