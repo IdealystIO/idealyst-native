@@ -134,6 +134,7 @@ features = [
     "HtmlStyleElement",
     "HtmlTextAreaElement",
     "KeyboardEvent",
+    "KeyboardEventInit",
     "Location",
     "MediaQueryList",
     "MessageEvent",

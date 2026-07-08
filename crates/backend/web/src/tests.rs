@@ -2152,6 +2152,85 @@ fn regression_web_pressable_swallows_ancestor_on_touch() {
     );
 }
 
+/// Build a `keydown` for `key` that bubbles and is cancelable, dispatch it on
+/// `target`, and return whether its default action ended up prevented.
+fn dispatch_bubbling_keydown(target: &web_sys::Element, key: &str) -> bool {
+    let init = web_sys::KeyboardEventInit::new();
+    init.set_key(key);
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    let ev = web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init)
+        .expect("construct bubbling keydown");
+    target.dispatch_event(&ev).expect("dispatch keydown");
+    ev.default_prevented()
+}
+
+/// REGRESSION TEST.
+///
+/// A `Space`/`Enter` keydown that originates on a focused DESCENDANT of a
+/// pressable (the "text_input inside a Modal" case — the modal's card layer is
+/// a no-op pressable) must NOT be treated as an activation. The pressable's
+/// bubble-phase `keydown` listener would otherwise call `prevent_default()`,
+/// swallowing the space character (or suppressing Enter submit) in the input.
+///
+/// Only a keydown whose target IS the pressable itself activates it.
+#[wasm_bindgen_test]
+fn regression_web_pressable_ignores_descendant_key() {
+    use runtime_core::Backend;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+
+    // A pressable card layer with a text input nested inside it — the Modal
+    // shape: `pressable > ... > <input>`.
+    let pressed = Rc::new(Cell::new(false));
+    let p = pressed.clone();
+    let pressable: web_sys::Node =
+        backend.create_pressable(Rc::new(move || p.set(true)), &Default::default());
+    let pressable_el: web_sys::Element = pressable.clone().unchecked_into();
+    doc.body().unwrap().append_child(&pressable_el).unwrap();
+
+    let input = doc.create_element("input").unwrap();
+    pressable_el.append_child(&input).unwrap();
+
+    // Space typed into the descendant input must survive — not prevented,
+    // and it must not fire the card-layer press.
+    let space_prevented = dispatch_bubbling_keydown(&input, " ");
+    assert!(
+        !space_prevented,
+        "Space in a descendant input must NOT be prevent_default()'d by the ancestor pressable",
+    );
+    assert!(
+        !pressed.get(),
+        "Space in a descendant input must NOT activate the ancestor pressable",
+    );
+
+    // Enter likewise.
+    let enter_prevented = dispatch_bubbling_keydown(&input, "Enter");
+    assert!(
+        !enter_prevented,
+        "Enter in a descendant input must NOT be prevent_default()'d by the ancestor pressable",
+    );
+    assert!(
+        !pressed.get(),
+        "Enter in a descendant input must NOT activate the ancestor pressable",
+    );
+
+    // But Space ON the pressable itself still activates it (keyboard a11y).
+    let self_prevented = dispatch_bubbling_keydown(&pressable_el, " ");
+    assert!(
+        self_prevented,
+        "Space on the pressable itself must still be prevent_default()'d (button a11y)",
+    );
+    assert!(
+        pressed.get(),
+        "Space on the pressable itself must still activate it",
+    );
+}
+
 /// Dispatch a non-bubbling pointer enter/leave event directly at `target`,
 /// optionally tagging the pointer type (`""` = unspecified/mouse-like).
 fn dispatch_pointer_typed(target: &web_sys::Element, kind: &str, pointer_type: &str) {

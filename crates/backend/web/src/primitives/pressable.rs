@@ -58,9 +58,27 @@ pub(crate) fn create(b: &mut WebBackend, on_click: Rc<dyn Fn()>) -> Node {
     // when the element has focus — matching what a real `<button>`
     // does so users on assistive tech / keyboard nav get the same
     // affordance.
+    //
+    // The listener is bubble-phase, so a keydown originating on a focused
+    // DESCENDANT (e.g. a `text_input` inside a Modal, whose card layer is a
+    // no-op pressable) bubbles up here too. We must only activate when the
+    // pressable ITSELF is the key target — otherwise `prevent_default()` on
+    // Space/Enter would cancel the descendant input's character insertion /
+    // submit. See `regression_web_pressable_ignores_descendant_key`.
     let on_click_for_key = on_click.clone();
+    let el_for_key: Node = el.clone().unchecked_into();
     let key_closure: Closure<dyn FnMut(web_sys::KeyboardEvent)> =
         Closure::wrap(Box::new(move |ev: web_sys::KeyboardEvent| {
+            let is_self = ev
+                .target()
+                .map(|t| {
+                    let node: Node = t.unchecked_into();
+                    node.is_same_node(Some(&el_for_key))
+                })
+                .unwrap_or(false);
+            if !is_self {
+                return;
+            }
             let k = ev.key();
             if k == "Enter" || k == " " {
                 ev.prevent_default();
