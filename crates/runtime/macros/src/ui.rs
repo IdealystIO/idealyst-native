@@ -1939,15 +1939,47 @@ fn emit_if(
             ::runtime_core::when(#structured_cond, move || #then_expr, move || #else_expr)
         };
     }
-    if condition_is_reactive(cond) {
+
+    // 3. Reactive condition → `when(move || cond, …)`. Two shapes qualify, both
+    //    lowered identically:
+    //      (a) a `.get()` read anywhere in the condition (`if sig.get() > 0`,
+    //          `if !flag.get()`). A `.get()` buried in a comparison/negation has
+    //          a plain `bool` *type*, so the type-driven dispatch (path 4) would
+    //          miss it — this keeps it live, exactly as 0.0.1 did.
+    //      (b) a top-level CALL condition — `if use_focus()()`,
+    //          `if state.is_active()`, `if is_active(state)`. A call may read a
+    //          signal that isn't spelled `.get()` (a reactive hook returning
+    //          `impl Fn() -> bool`, a predicate that reads a signal internally).
+    //          In 0.0.1 those were treated as static and **silently frozen** —
+    //          the documented `use_focus()` footgun. 0.1.0 makes any top-level
+    //          `Call`/`MethodCall` reactive: the framework's Effect tracks
+    //          whatever signals the call reads while evaluating, so it's live. A
+    //          static call (reads no signal) yields an inert effect that runs
+    //          once and never re-fires — correct and ~free.
+    //
+    //    We do NOT force EVERY condition reactive. A pure structural comparison
+    //    (`if kind == Kind::Scope`, `if !name.is_empty()`, `if a && b`) reads no
+    //    signal by construction, so wrapping it in a `move ||` closure would only
+    //    impose `'static`/`Clone` capture ceremony (cloning an `Rc` per branch,
+    //    threading owned strings, …) for zero reactive benefit. Those fall
+    //    through to the plain static `if` (path 5, borrowed captures, flat-splat).
+    //    The one residual gap — a non-`.get()` reactive read hidden inside such a
+    //    comparison — is authored with the visible closure boundary
+    //    `{ move || if cond { … } else { … } }` (an `Element::Dynamic`), the same
+    //    escape hatch every reactive child uses. The trade-off of (a)/(b) is the
+    //    `'static` move-capture the closure imposes: a branch that renders a
+    //    borrowed/non-`Clone` value now needs a `.clone()` or `'static` capture —
+    //    a loud, diagnosable compile error, never a silent freeze.
+    if condition_is_reactive(cond) || matches!(cond, Expr::Call(_) | Expr::MethodCall(_)) {
         let then_expr = emit_block_as_primitive(then_body);
-        let else_expr = else_body.map(emit_block_as_primitive).unwrap_or_else(empty_view_primitive);
+        let else_expr =
+            else_body.map(emit_block_as_primitive).unwrap_or_else(empty_view_primitive);
         return quote! {
             ::runtime_core::when(move || #cond, move || #then_expr, move || #else_expr)
         };
     }
 
-    // 3. Type-driven dispatch — ONLY for a condition whose TYPE could be a
+    // 4. Type-driven dispatch — ONLY for a condition whose TYPE could be a
     //    reactive bool: a bare path (`if del_visible`) or field access
     //    (`if state.open`). Those are the only shapes that might be a
     //    `Signal<bool>`/`Derived<bool>` rather than a plain `bool`. We emit
@@ -1961,15 +1993,10 @@ fn emit_if(
     //    (preserving no-wrapper flat-splat) and `ChildList`/`one_or_view`
     //    normalize per ctx.
     //
-    //    EVERY OTHER condition shape — a literal, `&&`/`||`/`!`, a method or
-    //    function call, a comparison — is *guaranteed* `bool` by Rust's `if`,
+    // 5. EVERY OTHER condition shape — a literal, `&&`/`||`/`!`, a comparison —
+    //    is a pure static `bool` (path 3 already claimed the reactive shapes),
     //    so it falls through to `emit_plain_if` (a plain Rust `if`, captures
-    //    BORROWED). That keeps the common static `if helper() { … }` /
-    //    `if a && b { … }` free of the `'static` move-capture the dispatch's
-    //    thunks would otherwise impose. (A bare-path bool condition DOES route
-    //    through the dispatch, so its branch captures are moved — clone a value
-    //    if it's reused after such an `if`. This is the narrow, diagnosable
-    //    cost of supporting `if <reactive Signal<bool>>` by the same syntax.)
+    //    BORROWED, flat-splat in child slot).
     if !matches!(cond, Expr::Path(_) | Expr::Field(_)) {
         return emit_plain_if(cond, then_body, else_body, ctx);
     }

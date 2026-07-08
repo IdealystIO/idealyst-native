@@ -69,6 +69,9 @@ pub(super) fn debug_kind_of(node: &Element) -> debug::PrimitiveKind {
         // standalone fragment builds a transparent anchor. Tag as View to
         // keep the debug timing breakdown defined, same as Repeat.
         Element::Fragment { .. } => PrimitiveKind::View,
+        // Dynamic hosts its reactive subtree under a transparent anchor (like
+        // When/Fragment). Tag as View to keep the timing breakdown defined.
+        Element::Dynamic { .. } => PrimitiveKind::View,
         // Robot wrapper — unwrapped before the walker times anything; tag as
         // View for completeness (never actually timed).
         #[cfg(feature = "robot")]
