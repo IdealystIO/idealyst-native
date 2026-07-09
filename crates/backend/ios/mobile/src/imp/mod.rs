@@ -2131,6 +2131,22 @@ impl Backend for IosBackend {
         }
     }
 
+    fn install_image_load_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: runtime_core::ImageLoadHandler,
+    ) {
+        image::install_load_handler(node, handler);
+    }
+
+    fn install_image_error_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: runtime_core::ImageErrorHandler,
+    ) {
+        image::install_error_handler(node, handler);
+    }
+
     fn create_virtualizer(
         &mut self,
         callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,

@@ -2312,3 +2312,61 @@ fn web_on_hover_ignores_touch_pointers() {
     dispatch_pointer_typed(&el, "pointerenter", "mouse");
     assert_eq!(fired.get(), 1, "mouse pointers must still fire on_hover");
 }
+
+/// `on_load` fires when the `<img>` dispatches its `load` event, carrying
+/// the (natural) dimensions read off the element. A synthetic `load`
+/// event on a src-less `<img>` reports `0×0` (no real bitmap), which is
+/// enough to prove the wiring fires and reads the element — the real
+/// dimensions flow the same way once a bitmap decodes.
+#[wasm_bindgen_test]
+fn web_on_load_fires_on_img_load_event() {
+    use runtime_core::{Backend, ImageLoadEvent};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let img = doc.create_element("img").unwrap();
+    doc.body().unwrap().append_child(&img).unwrap();
+
+    let seen: Rc<RefCell<Vec<(f32, f32)>>> = Rc::new(RefCell::new(Vec::new()));
+    let s = seen.clone();
+    backend.install_image_load_handler(
+        &img.clone().unchecked_into(),
+        Rc::new(move |ev: &ImageLoadEvent| s.borrow_mut().push((ev.width, ev.height))),
+    );
+
+    // No src → not `complete` with a bitmap, so nothing fires yet.
+    assert!(seen.borrow().is_empty(), "on_load must not fire before load");
+
+    let ev = web_sys::Event::new("load").unwrap();
+    img.dispatch_event(&ev).unwrap();
+    assert_eq!(seen.borrow().len(), 1, "on_load fires once on the load event");
+}
+
+/// `on_error` fires when the `<img>` dispatches its `error` event.
+#[wasm_bindgen_test]
+fn web_on_error_fires_on_img_error_event() {
+    use runtime_core::Backend;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let img = doc.create_element("img").unwrap();
+    doc.body().unwrap().append_child(&img).unwrap();
+
+    let fired = Rc::new(Cell::new(0u32));
+    let f = fired.clone();
+    backend.install_image_error_handler(
+        &img.clone().unchecked_into(),
+        Rc::new(move || f.set(f.get() + 1)),
+    );
+    assert_eq!(fired.get(), 0, "on_error must not fire before error");
+
+    let ev = web_sys::Event::new("error").unwrap();
+    img.dispatch_event(&ev).unwrap();
+    assert_eq!(fired.get(), 1, "on_error fires once on the error event");
+}

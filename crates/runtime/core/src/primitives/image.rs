@@ -46,6 +46,42 @@ pub trait ImageOps {
     // Reserved for future image-specific operations (reload, measure).
 }
 
+/// Payload delivered to an [`on_load`](Bound::on_load) handler once an
+/// image's bitmap has decoded. `width`/`height` are the image's
+/// **natural** (intrinsic) pixel dimensions — `naturalWidth`/
+/// `naturalHeight` on web, the `NSImage`/`UIImage` `size` on Apple.
+/// These are otherwise awkward to obtain (they require a live ref +
+/// a measure op), so the load event surfaces them directly — e.g. to
+/// compute an aspect ratio for a placeholder box before the image
+/// paints.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImageLoadEvent {
+    pub width: f32,
+    pub height: f32,
+}
+
+/// Installed via [`Bound::<ImageHandle>::on_load`]. Fires once, when the
+/// image's bitmap has finished decoding, with its natural
+/// [dimensions](ImageLoadEvent). Reactive `src` swaps re-fire it when the
+/// new bitmap loads. Born batched — one reactive cycle per call, like the
+/// touch / hover handlers.
+///
+/// Delivered on web (`<img>` `load`) and Apple (async URL completion +
+/// synchronous asset assignment). A **no-op on Android** (its `ImageView`
+/// has no URL loader — nothing decodes to observe) and on headless / CPU
+/// backends (no real decode). See [`crate::Backend::install_image_load_handler`].
+pub type ImageLoadHandler = Rc<dyn Fn(&ImageLoadEvent)>;
+
+/// Installed via [`Bound::<ImageHandle>::on_error`]. Fires when the image
+/// fails to load or decode — a network error, a 404, or bytes no decoder
+/// accepts. Carries no payload (there's nothing to report but the
+/// failure). Born batched like [`ImageLoadHandler`].
+///
+/// Same backend coverage as [`ImageLoadHandler`]: web (`<img>` `error`)
+/// and Apple (async completion failure); no-op elsewhere. See
+/// [`crate::Backend::install_image_error_handler`].
+pub type ImageErrorHandler = Rc<dyn Fn()>;
+
 /// Trait the macro emits for `src = ...`. Accepts a bare string, a
 /// `String`, or a closure returning `String` — closures enable
 /// reactive sources without explicit `move ||` from the caller.
@@ -83,6 +119,8 @@ pub fn image<S: IntoImageSource>(src: S) -> Bound<ImageHandle> {
         src: src.into_image_source(),
         alt: None,
         alt_fn: None,
+        on_load: None,
+        on_error: None,
         style: None,
         ref_fill: None,
         asset: None,
@@ -115,6 +153,8 @@ pub fn image_asset(asset: Asset<kinds::Image>) -> Bound<ImageHandle> {
         src: Box::new(move || format!("asset://{}", id.0)),
         alt: None,
         alt_fn: None,
+        on_load: None,
+        on_error: None,
         style: None,
         ref_fill: None,
         asset: Some(asset),
@@ -217,6 +257,39 @@ impl Bound<ImageHandle> {
         }
         self
     }
+
+    /// Fire `handler` once the image's bitmap has decoded, with its
+    /// natural [dimensions](ImageLoadEvent). A reactive `src` swap re-fires
+    /// it when the new bitmap loads. Delivered on web and Apple; a no-op on
+    /// Android (no URL loader) and headless backends. Calling twice replaces
+    /// the handler. See [`ImageLoadHandler`].
+    pub fn on_load<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&ImageLoadEvent) + 'static,
+    {
+        // Born batched — mirrors `Bound::on_hover` / `reactive::cycle`.
+        let wrapped: ImageLoadHandler =
+            Rc::new(move |ev: &ImageLoadEvent| crate::cycle(|| handler(ev)));
+        if let Element::Image { on_load, .. } = &mut self.primitive {
+            *on_load = Some(wrapped);
+        }
+        self
+    }
+
+    /// Fire `handler` when the image fails to load or decode (network
+    /// error, 404, undecodable bytes). No payload — just the failure.
+    /// Same backend coverage as [`on_load`](Self::on_load). Calling twice
+    /// replaces the handler. See [`ImageErrorHandler`].
+    pub fn on_error<F>(mut self, handler: F) -> Self
+    where
+        F: Fn() + 'static,
+    {
+        let wrapped: ImageErrorHandler = Rc::new(move || crate::cycle(|| handler()));
+        if let Element::Image { on_error, .. } = &mut self.primitive {
+            *on_error = Some(wrapped);
+        }
+        self
+    }
 }
 
 #[cfg(test)]
@@ -283,6 +356,47 @@ mod tests {
             }
             _ => panic!("expected Image"),
         }
+    }
+
+    #[test]
+    fn on_load_and_on_error_builders_thread_through() {
+        // Both handler slots start empty and are populated by their builders.
+        let b = image("https://example.com/x.png");
+        match &b.primitive {
+            Element::Image { on_load, on_error, .. } => {
+                assert!(on_load.is_none(), "on_load starts unset");
+                assert!(on_error.is_none(), "on_error starts unset");
+            }
+            _ => panic!("expected Image"),
+        }
+        let b = image("https://example.com/x.png")
+            .on_load(|_ev| {})
+            .on_error(|| {});
+        match &b.primitive {
+            Element::Image { on_load, on_error, .. } => {
+                assert!(on_load.is_some(), "on_load installed");
+                assert!(on_error.is_some(), "on_error installed");
+            }
+            _ => panic!("expected Image"),
+        }
+    }
+
+    #[test]
+    fn on_load_receives_natural_dimensions() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        // The handler is the framework-side closure the backend invokes with
+        // an `ImageLoadEvent`; assert it observes the reported dimensions.
+        let seen = Rc::new(Cell::new((0.0f32, 0.0f32)));
+        let b = {
+            let seen = seen.clone();
+            image("x").on_load(move |ev| seen.set((ev.width, ev.height)))
+        };
+        let Element::Image { on_load: Some(h), .. } = &b.primitive else {
+            panic!("expected Image with on_load");
+        };
+        h(&ImageLoadEvent { width: 640.0, height: 480.0 });
+        assert_eq!(seen.get(), (640.0, 480.0));
     }
 
     #[test]

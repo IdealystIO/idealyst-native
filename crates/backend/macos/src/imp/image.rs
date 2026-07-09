@@ -43,10 +43,12 @@
 //! macOS 12+) HEIF and WebP. SVG is not supported; rasterize before
 //! embedding.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use runtime_core::{AssetId, AssetSource, AssetTag, ObjectFit};
+use runtime_core::{
+    AssetId, AssetSource, AssetTag, ImageErrorHandler, ImageLoadEvent, ImageLoadHandler, ObjectFit,
+};
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -86,6 +88,22 @@ pub struct ImageViewIvars {
     /// so an image awaiting an async URL fetch measures as 0×0 rather
     /// than a bogus size — same as the old empty `NSImageView`.
     natural_size: Cell<CGSize>,
+    /// Framework `on_load` observer, fired from `set_layer_image` once a
+    /// bitmap is assigned (with its natural size). `None` = no observer.
+    on_load: RefCell<Option<ImageLoadHandler>>,
+    /// Framework `on_error` observer, fired from the async URL loader's
+    /// failure branch (via the `imageLoadFailed` main-thread hop).
+    on_error: RefCell<Option<ImageErrorHandler>>,
+    /// Set once an async load has failed, so an `on_error` handler
+    /// installed *after* the failure still fires (mirrors the web
+    /// already-errored check).
+    errored: Cell<bool>,
+    /// The `src` currently displayed (or in-flight). Guards
+    /// `update_image_src` against re-applying an unchanged URL — the
+    /// walker's reactive-`src` Effect runs once at mount with the same
+    /// URL `create_image` already loaded, which would otherwise kick off a
+    /// duplicate `NSURLSession` fetch (and a duplicate `on_load`).
+    current_src: RefCell<String>,
 }
 
 declare_class!(
@@ -123,6 +141,18 @@ declare_class!(
             let view: &NSView = self;
             set_layer_image(view, image);
         }
+
+        // Main-thread hop target for the async URL loader's *failure*
+        // branch (null data / undecodable bytes). Fires the `on_error`
+        // observer on main; records the failure so a late-installed
+        // handler still sees it.
+        #[method(imageLoadFailed)]
+        fn image_load_failed(&self) {
+            self.ivars().errored.set(true);
+            if let Some(h) = self.ivars().on_error.borrow().clone() {
+                h();
+            }
+        }
     }
 );
 
@@ -131,6 +161,10 @@ impl ImageView {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(ImageViewIvars {
             natural_size: Cell::new(CGSize::new(-1.0, -1.0)),
+            on_load: RefCell::new(None),
+            on_error: RefCell::new(None),
+            errored: Cell::new(false),
+            current_src: RefCell::new(String::new()),
         });
         let this: Retained<Self> = unsafe { msg_send_id![super(this), init] };
         // Layer-backed so `contents`/`contentsGravity` render; clip so a
@@ -241,15 +275,64 @@ fn set_layer_image(view: &NSView, image: &NSObject) {
     let layer: Retained<NSObject> = unsafe { msg_send_id![view, layer] };
     let _: () = unsafe { msg_send![&layer, setContents: cg] };
 
-    // Record the natural (point) size so `intrinsicContentSize` reports it.
+    // Record the natural (point) size so `intrinsicContentSize` reports it,
+    // and fire the framework `on_load` observer (if any) with it — the
+    // bitmap has now decoded and is on screen. Fires per distinct bitmap:
+    // `update_image_src`'s src-guard means `set_layer_image` runs once per
+    // URL, so `on_load` isn't double-called for the mount's redundant
+    // reactive re-apply.
     let size: CGSize = unsafe { msg_send![image, size] };
     if is_image_view(view) {
         let iv: &ImageView = unsafe { &*(view as *const NSView as *const ImageView) };
         iv.ivars().natural_size.set(size);
+        iv.ivars().errored.set(false);
+        if let Some(h) = iv.ivars().on_load.borrow().clone() {
+            h(&ImageLoadEvent {
+                width: size.width as f32,
+                height: size.height as f32,
+            });
+        }
     }
     // A new natural size can change layout — invalidate so the next pass
     // re-reads `intrinsicContentSize`.
     let _: () = unsafe { msg_send![view, invalidateIntrinsicContentSize] };
+}
+
+/// Install the framework `on_load` observer on an image view, firing it
+/// immediately if a bitmap has **already** decoded (an embedded asset is
+/// assigned synchronously in `create_image`, before the walker installs
+/// the handler — this closes that race, mirroring web's `<img>.complete`
+/// check). No-op on a non-image view.
+pub(crate) fn install_load_handler(node: &MacosNode, handler: ImageLoadHandler) {
+    let MacosNode::View(view) = node else { return };
+    if !is_image_view(view) {
+        return;
+    }
+    let iv: &ImageView = unsafe { &*(Retained::as_ptr(view) as *const ImageView) };
+    let size = iv.ivars().natural_size.get();
+    *iv.ivars().on_load.borrow_mut() = Some(handler.clone());
+    // Already loaded before install (natural size recorded) → fire now.
+    if size.width > 0.0 && size.height > 0.0 {
+        handler(&ImageLoadEvent {
+            width: size.width as f32,
+            height: size.height as f32,
+        });
+    }
+}
+
+/// Install the framework `on_error` observer, firing immediately if the
+/// image already failed to load before the handler was installed.
+pub(crate) fn install_error_handler(node: &MacosNode, handler: ImageErrorHandler) {
+    let MacosNode::View(view) = node else { return };
+    if !is_image_view(view) {
+        return;
+    }
+    let iv: &ImageView = unsafe { &*(Retained::as_ptr(view) as *const ImageView) };
+    let already = iv.ivars().errored.get();
+    *iv.ivars().on_error.borrow_mut() = Some(handler.clone());
+    if already {
+        handler();
+    }
 }
 
 /// Create an image view. If `src` resolves to a cached `NSImage`, its
@@ -262,6 +345,9 @@ pub(crate) fn create_image(
     _alt: Option<&str>,
 ) -> MacosNode {
     let view = ImageView::new(mtm);
+    // Record the mount src so the walker's reactive-`src` Effect (which
+    // fires once with this same URL) is a no-op instead of a duplicate load.
+    *view.ivars().current_src.borrow_mut() = src.to_string();
     let ns_view: Retained<NSView> = Retained::into_super(view);
     if let Some(image) = resolve_nsimage(cache, src) {
         set_layer_image(&ns_view, &image);
@@ -279,6 +365,17 @@ pub(crate) fn update_image_src(node: &MacosNode, cache: &ImageCache, src: &str) 
     let MacosNode::View(view) = node else {
         return;
     };
+    // Skip a redundant re-apply of the URL already displayed / in-flight.
+    // The walker installs a reactive-`src` Effect that runs once at mount
+    // with the same URL `create_image` just loaded; without this guard that
+    // triggers a second `NSURLSession` fetch and a second `on_load`.
+    if is_image_view(view) {
+        let iv: &ImageView = unsafe { &*(Retained::as_ptr(view) as *const ImageView) };
+        if *iv.ivars().current_src.borrow() == src {
+            return;
+        }
+        *iv.ivars().current_src.borrow_mut() = src.to_string();
+    }
     if let Some(image) = resolve_nsimage(cache, src) {
         set_layer_image(view, &image);
     } else if is_remote_url(src) {
@@ -341,10 +438,20 @@ fn load_url_image_async(view: &Retained<NSView>, url_str: &str) {
             // through libdispatch's `extern "C"` boundary, so an unwind past it
             // would abort with no message (project policy: log + abort).
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if data.is_null() {
-                    return;
-                }
-                let Some(image) = nsimage_from_data_ptr(data) else {
+                // A network error / 404 yields null data; undecodable bytes
+                // yield no `NSImage`. Either way, hop the `on_error` observer
+                // to main via `imageLoadFailed` (CALayer/NSView + the handler
+                // touch main-thread-only state).
+                let image = if data.is_null() { None } else { nsimage_from_data_ptr(data) };
+                let Some(image) = image else {
+                    let _: () = unsafe {
+                        msg_send![
+                            &view,
+                            performSelectorOnMainThread: objc2::sel!(imageLoadFailed),
+                            withObject: std::ptr::null_mut::<AnyObject>(),
+                            waitUntilDone: false
+                        ]
+                    };
                     return;
                 };
                 // CALayer/NSView are main-thread-only — hop the assignment to
@@ -420,6 +527,69 @@ mod tests {
 
         apply_object_fit(&view, ObjectFit::Contain);
         assert_eq!(layer_gravity(&view), "resizeAspect", "Contain → aspect-fit");
+    }
+
+    // Minimal 1×1 PNG (transparent). Decodes via `NSImage(data:)` to a
+    // bitmap whose natural size is 1×1 — enough to drive `on_load`.
+    const PNG_1X1: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x62, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+
+    // REGRESSION: assigning a decoded bitmap fires the `on_load` observer
+    // with the image's natural dimensions — both when the handler is
+    // installed *before* the bitmap arrives (async-URL order) and when it
+    // is installed *after* an already-decoded bitmap is set (embedded-asset
+    // order, which is exactly the `create_image` → walker-install sequence).
+    #[test]
+    fn on_load_fires_with_natural_size_both_orders() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        extern "C" {
+            fn pthread_main_np() -> std::os::raw::c_int;
+        }
+        if unsafe { pthread_main_np() } == 0 {
+            eprintln!("skipping on_load_fires_with_natural_size_both_orders: not on main thread");
+            return;
+        }
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let image = decode_image_from_bytes(PNG_1X1).expect("1×1 PNG must decode");
+
+        // Order A — handler installed BEFORE the bitmap is assigned.
+        let node_a = MacosNode::View(Retained::into_super(ImageView::new(mtm)));
+        let seen_a: Rc<RefCell<Vec<(f32, f32)>>> = Rc::new(RefCell::new(Vec::new()));
+        {
+            let s = seen_a.clone();
+            install_load_handler(
+                &node_a,
+                Rc::new(move |ev| s.borrow_mut().push((ev.width, ev.height))),
+            );
+        }
+        assert!(seen_a.borrow().is_empty(), "no bitmap yet → no on_load");
+        let MacosNode::View(v_a) = &node_a else { unreachable!() };
+        set_layer_image(v_a, &image);
+        assert_eq!(*seen_a.borrow(), vec![(1.0, 1.0)], "on_load fires on assignment");
+
+        // Order B — bitmap assigned first, handler installed after (fires now).
+        let node_b = MacosNode::View(Retained::into_super(ImageView::new(mtm)));
+        let MacosNode::View(v_b) = &node_b else { unreachable!() };
+        set_layer_image(v_b, &image);
+        let seen_b: Rc<RefCell<Vec<(f32, f32)>>> = Rc::new(RefCell::new(Vec::new()));
+        {
+            let s = seen_b.clone();
+            install_load_handler(
+                &node_b,
+                Rc::new(move |ev| s.borrow_mut().push((ev.width, ev.height))),
+            );
+        }
+        assert_eq!(
+            *seen_b.borrow(),
+            vec![(1.0, 1.0)],
+            "installing after decode fires immediately with natural size"
+        );
     }
 
     // A plain NSView is NOT an image view, so `apply_object_fit` leaves it

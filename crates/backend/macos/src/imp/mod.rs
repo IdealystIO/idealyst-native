@@ -3205,6 +3205,22 @@ impl Backend for MacosBackend {
         }
     }
 
+    fn install_image_load_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: runtime_core::ImageLoadHandler,
+    ) {
+        image::install_load_handler(node, handler);
+    }
+
+    fn install_image_error_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: runtime_core::ImageErrorHandler,
+    ) {
+        image::install_error_handler(node, handler);
+    }
+
     fn create_text_input(
         &mut self,
         initial_value: &str,

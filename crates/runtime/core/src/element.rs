@@ -241,6 +241,13 @@ pub enum Element {
         /// (no node rebuild). The closure's initial value seeds the
         /// static `alt` snapshot. Mirrors `Image::src` (closure-source).
         alt_fn: Option<Box<dyn Fn() -> Option<String>>>,
+        /// Fires once the bitmap decodes, with its natural pixel size.
+        /// Installed via `Backend::install_image_load_handler`. `None` =
+        /// no observer (the common case). See [`crate::ImageLoadHandler`].
+        on_load: Option<crate::primitives::image::ImageLoadHandler>,
+        /// Fires when the image fails to load/decode. Installed via
+        /// `Backend::install_image_error_handler`. See [`crate::ImageErrorHandler`].
+        on_error: Option<crate::primitives::image::ImageErrorHandler>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
         /// `Some` when the source is an [`Asset`](crate::assets::Asset)

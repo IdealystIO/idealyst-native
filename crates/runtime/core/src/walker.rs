@@ -660,9 +660,9 @@ fn dispatch_button<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element
 
 #[inline(never)]
 fn dispatch_image<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
-    let Element::Image { src, alt, alt_fn, style, ref_fill, asset, accessibility, .. } = node
+    let Element::Image { src, alt, alt_fn, on_load, on_error, style, ref_fill, asset, accessibility, .. } = node
     else { unreachable!() };
-    image::build(backend, src, alt, alt_fn, style, ref_fill, asset, accessibility)
+    image::build(backend, src, alt, alt_fn, on_load, on_error, style, ref_fill, asset, accessibility)
 }
 
 #[inline(never)]

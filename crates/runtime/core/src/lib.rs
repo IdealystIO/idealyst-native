@@ -235,7 +235,8 @@ pub use primitives::navigator::{
 };
 pub use primitives::icon::{icon, FillRule, IconData, IconHandle, IconOps, StrokeAnimation};
 pub use primitives::image::{
-    image, image_asset, image_from, ImageHandle, ImageOps, ImageSource,
+    image, image_asset, image_from, ImageErrorHandler, ImageHandle, ImageLoadEvent,
+    ImageLoadHandler, ImageOps, ImageSource,
 };
 pub use primitives::key::{KeyEvent, KeyOutcome};
 pub use primitives::text_input::{text_input, TextInputHandle, TextInputOps};

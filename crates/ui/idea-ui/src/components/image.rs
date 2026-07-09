@@ -12,9 +12,11 @@
 //! natural / flex-given size. `rounded` clips to a circle (pair with
 //! equal width/height for a round avatar).
 
+use std::rc::Rc;
+
 use runtime_core::{
-    component, IdealystSchema, IntoElement, Length, Element, Reactive, StyleApplication, StyleRules,
-    Tokenized,
+    component, IdealystSchema, ImageLoadEvent, IntoElement, Length, Element, Reactive,
+    StyleApplication, StyleRules, Tokenized,
 };
 
 use crate::stylesheets::ImageBox;
@@ -41,6 +43,13 @@ pub struct ImageProps {
     pub height: Option<f32>,
     /// Clip to a circle (pill radius).
     pub rounded: bool,
+    /// Fires once the bitmap has decoded, with its natural pixel
+    /// [dimensions](runtime_core::ImageLoadEvent). Delivered on web + Apple;
+    /// a no-op on Android / headless. `None` = no observer.
+    pub on_load: Option<Rc<dyn Fn(ImageLoadEvent)>>,
+    /// Fires when the image fails to load / decode. Same backend coverage
+    /// as [`on_load`](Self::on_load).
+    pub on_error: Option<Rc<dyn Fn()>>,
 }
 
 impl Default for ImageProps {
@@ -51,6 +60,8 @@ impl Default for ImageProps {
             width: Reactive::Static(None),
             height: Reactive::Static(None),
             rounded: Reactive::Static(false),
+            on_load: None,
+            on_error: None,
         }
     }
 }
@@ -122,6 +133,17 @@ pub fn Image(props: &ImageProps) -> Element {
     } else {
         let alt = props.alt.clone();
         img = img.alt_reactive(move || alt.get());
+    }
+
+    // Optional load / error observers — bind only when present so the
+    // primitive installs no handler otherwise (§9.6). The primitive's
+    // handler borrows `&ImageLoadEvent`; the component's prop takes it by
+    // value (`ImageLoadEvent` is `Copy`).
+    if let Some(cb) = props.on_load.clone() {
+        img = img.on_load(move |ev| cb(*ev));
+    }
+    if let Some(cb) = props.on_error.clone() {
+        img = img.on_error(move || cb());
     }
     img.into_element()
 }

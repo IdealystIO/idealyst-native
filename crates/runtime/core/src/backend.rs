@@ -1227,6 +1227,49 @@ pub trait Backend {
         // default: no-op
     }
 
+    /// Install an image **load** handler. Called once per
+    /// `Element::Image { on_load: Some(_), .. }`. The backend fires
+    /// `handler` when the image's bitmap has decoded, passing its natural
+    /// pixel [dimensions](crate::ImageLoadEvent) — web wires the `<img>`
+    /// `load` event (reading `naturalWidth`/`naturalHeight`), Apple fires
+    /// from its async URL completion / synchronous asset assignment.
+    ///
+    /// The image may finish loading *before* this is called (a cached
+    /// `<img>`, an already-decoded asset), so an implementation MUST fire
+    /// immediately if the bitmap is already available — otherwise the load
+    /// event is silently dropped. See web `<img>.complete` and the Apple
+    /// recorded-natural-size check.
+    ///
+    /// Default impl is a no-op — correct for Android (its `ImageView` has
+    /// no URL loader, so nothing decodes to observe) and headless / CPU
+    /// backends (no real decode). See [`crate::ImageLoadHandler`].
+    #[allow(unused_variables)]
+    fn install_image_load_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: crate::ImageLoadHandler,
+    ) {
+        // default: no-op
+    }
+
+    /// Install an image **error** handler. Called once per
+    /// `Element::Image { on_error: Some(_), .. }`. The backend fires
+    /// `handler` (no payload) when the image fails to load or decode — web
+    /// wires the `<img>` `error` event, Apple fires from an async
+    /// completion that yields no decodable image.
+    ///
+    /// Default impl is a no-op, same backend coverage as
+    /// [`install_image_load_handler`](Self::install_image_load_handler).
+    /// See [`crate::ImageErrorHandler`].
+    #[allow(unused_variables)]
+    fn install_image_error_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: crate::ImageErrorHandler,
+    ) {
+        // default: no-op
+    }
+
     /// Create an icon node from static vector path data. The initial
     /// color (if any) is provided; reactive color updates flow through
     /// `update_icon_color`.

@@ -78,6 +78,9 @@ objc2-ui-kit = { version = "0.2", features = [
     # canvas touches fall through to the app window beneath.
     "UIWindow",
     "UILabel",
+    # UIImageView: the `Element::Image` primitive subclasses it
+    # (`IdealystImageView`, imp/image.rs) to carry on_load/on_error observers.
+    "UIImageView",
     "UIButton",
     "UIControl",
     "UITextField",

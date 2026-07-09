@@ -18,16 +18,18 @@
 //! `UIImage(data:)` — for SVG assets, raster (e.g. PNG) before
 //! `embed_asset!` or implement an SVG renderer in a follow-up.
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use runtime_core::{AssetId, AssetSource, AssetTag};
+use runtime_core::{
+    AssetId, AssetSource, AssetTag, ImageErrorHandler, ImageLoadEvent, ImageLoadHandler,
+};
 use block2::RcBlock;
-use objc2::msg_send;
-use objc2::msg_send_id;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
+use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
 use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker, NSObject, NSString};
-use objc2_ui_kit::UIView;
+use objc2_ui_kit::{UIImageView, UIView};
 
 use super::IosNode;
 
@@ -41,6 +43,146 @@ use super::IosNode;
 pub(crate) type ImageCache = HashMap<AssetId, Retained<NSObject>>;
 
 const ASSET_URL_PREFIX: &str = "asset://";
+
+/// `on_load` / `on_error` observer state for an image view. Held in the
+/// [`ImageView`] subclass's ivars so the async URL loader — which retains
+/// the view — can fire the framework handlers when the bitmap arrives (or
+/// fails), and so an installed handler can fire immediately if the bitmap
+/// already decoded. Mirrors the macOS `ImageViewIvars`.
+pub struct ImageViewIvars {
+    on_load: RefCell<Option<ImageLoadHandler>>,
+    on_error: RefCell<Option<ImageErrorHandler>>,
+    /// Set once an async load has failed, so an `on_error` installed after
+    /// the failure still fires.
+    errored: Cell<bool>,
+    /// The `src` currently displayed / in-flight. Guards `update_image_src`
+    /// against re-loading an unchanged URL — the walker's reactive-`src`
+    /// Effect fires once at mount with the URL `create_image` already
+    /// loaded, which would otherwise start a duplicate `NSURLSession` fetch
+    /// (and a duplicate `on_load`).
+    current_src: RefCell<String>,
+}
+
+declare_class!(
+    /// `UIImageView` subclass carrying `on_load` / `on_error` observers.
+    /// Behaves exactly like `UIImageView` (so `apply_object_fit`'s
+    /// `isKindOfClass: UIImageView` check still matches); the subclass only
+    /// adds the load-notification plumbing.
+    pub struct ImageView;
+
+    unsafe impl ClassType for ImageView {
+        type Super = UIImageView;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystImageView";
+    }
+
+    impl DeclaredClass for ImageView {
+        type Ivars = ImageViewIvars;
+    }
+
+    unsafe impl ImageView {
+        // Main-thread hop target for the async URL loader's success branch.
+        // Sets the image AND fires `on_load` — distinct from a plain
+        // `setImage:` so ad-hoc UIKit `setImage:` calls don't spuriously
+        // notify. Mirrors macOS `setImageFromNSImage:`.
+        #[method(setImageFromUIImage:)]
+        fn set_image_from_ui_image(&self, image: &NSObject) {
+            let view: &UIView = self;
+            set_image_and_notify(view, image);
+        }
+
+        // Main-thread hop target for the async loader's failure branch
+        // (null data / undecodable bytes). Fires `on_error`; records the
+        // failure so a late-installed handler still sees it.
+        #[method(imageLoadFailed)]
+        fn image_load_failed(&self) {
+            self.ivars().errored.set(true);
+            if let Some(h) = self.ivars().on_error.borrow().clone() {
+                h();
+            }
+        }
+    }
+);
+
+impl ImageView {
+    pub(crate) fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(ImageViewIvars {
+            on_load: RefCell::new(None),
+            on_error: RefCell::new(None),
+            errored: Cell::new(false),
+            current_src: RefCell::new(String::new()),
+        });
+        // `initWithFrame:CGRectZero` — Taffy assigns the real frame in the
+        // layout pass (matches the old raw-`UIImageView` create path).
+        unsafe {
+            msg_send_id![
+                super(this),
+                initWithFrame: CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(0.0, 0.0))
+            ]
+        }
+    }
+}
+
+/// `true` when `view` is one of *our* image views (responds to the private
+/// `imageLoadFailed` selector — no stock `UIImageView` does). Guards the
+/// ivar casts. Mirrors macOS's `respondsToSelector:` identity check.
+fn is_our_image_view(view: &UIView) -> bool {
+    unsafe { msg_send![view, respondsToSelector: objc2::sel!(imageLoadFailed)] }
+}
+
+/// Assign `image` to `view` and fire its `on_load` observer (if any) with
+/// the bitmap's natural size. Used by both the synchronous asset path and
+/// the async URL loader's `setImageFromUIImage:` hop.
+fn set_image_and_notify(view: &UIView, image: &NSObject) {
+    let _: () = unsafe { msg_send![view, setImage: image] };
+    let size: CGSize = unsafe { msg_send![image, size] };
+    if is_our_image_view(view) {
+        let iv: &ImageView = unsafe { &*(view as *const UIView as *const ImageView) };
+        iv.ivars().errored.set(false);
+        if let Some(h) = iv.ivars().on_load.borrow().clone() {
+            h(&ImageLoadEvent {
+                width: size.width as f32,
+                height: size.height as f32,
+            });
+        }
+    }
+}
+
+/// Install the framework `on_load` observer, firing immediately if the
+/// view already holds a decoded bitmap (the embedded-asset order, where
+/// `create_image` assigns before the walker installs the handler).
+pub(crate) fn install_load_handler(node: &IosNode, handler: ImageLoadHandler) {
+    let IosNode::View(view) = node else { return };
+    if !is_our_image_view(view) {
+        return;
+    }
+    let iv: &ImageView = unsafe { &*(Retained::as_ptr(view) as *const ImageView) };
+    *iv.ivars().on_load.borrow_mut() = Some(handler.clone());
+    let image: *mut AnyObject = unsafe { msg_send![view, image] };
+    if !image.is_null() {
+        let size: CGSize = unsafe { msg_send![image, size] };
+        handler(&ImageLoadEvent {
+            width: size.width as f32,
+            height: size.height as f32,
+        });
+    }
+}
+
+/// Install the framework `on_error` observer, firing immediately if the
+/// image already failed to load before the handler was installed.
+pub(crate) fn install_error_handler(node: &IosNode, handler: ImageErrorHandler) {
+    let IosNode::View(view) = node else { return };
+    if !is_our_image_view(view) {
+        return;
+    }
+    let iv: &ImageView = unsafe { &*(Retained::as_ptr(view) as *const ImageView) };
+    let already = iv.ivars().errored.get();
+    *iv.ivars().on_error.borrow_mut() = Some(handler.clone());
+    if already {
+        handler();
+    }
+}
 
 /// Decode `source`'s bytes into a `UIImage` and stash by id. Bundled
 /// / Remote sources are recorded with `None`; future work can add
@@ -114,20 +256,16 @@ pub(crate) fn create_image(
     src: &str,
     _alt: Option<&str>,
 ) -> IosNode {
-    let _ = mtm;
-    let cls = objc2::class!(UIImageView);
-    let view: Retained<UIView> = unsafe {
-        // `initWithFrame:CGRectZero` — Taffy assigns the real frame
-        // in the layout pass. Inline alloc+init matches the icon
-        // module's pattern (objc2's msg_send_id wants alloc piped
-        // directly into init, not via a bound variable).
-        msg_send_id![
-            msg_send_id![cls, alloc],
-            initWithFrame: CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(0.0, 0.0))
-        ]
-    };
+    // Our `UIImageView` subclass carries the `on_load` / `on_error` ivars.
+    let view_typed = ImageView::new(mtm);
+    // Record the mount src so the walker's reactive-`src` Effect (which
+    // fires once with this same URL) is a no-op instead of a duplicate load.
+    *view_typed.ivars().current_src.borrow_mut() = src.to_string();
+    // `into_super` steps one class up (ImageView → UIImageView → UIView),
+    // so apply it twice to land on the `Retained<UIView>` `IosNode` holds.
+    let view: Retained<UIView> = Retained::into_super(Retained::into_super(view_typed));
     if let Some(image) = resolve_uiimage(cache, src) {
-        let _: () = unsafe { msg_send![&view, setImage: &*image] };
+        set_image_and_notify(&view, &image);
     } else if is_remote_url(src) {
         // No embedded asset — fetch the remote URL (web's `<img src>` analog).
         load_url_image_async(&view, src);
@@ -182,8 +320,17 @@ pub(crate) fn update_image_src(node: &IosNode, cache: &ImageCache, src: &str) {
     let IosNode::View(view) = node else {
         return;
     };
+    // Skip a redundant re-apply of the URL already displayed / in-flight
+    // (see the ivar doc + the mount-time reactive-Effect duplication).
+    if is_our_image_view(view) {
+        let iv: &ImageView = unsafe { &*(Retained::as_ptr(view) as *const ImageView) };
+        if *iv.ivars().current_src.borrow() == src {
+            return;
+        }
+        *iv.ivars().current_src.borrow_mut() = src.to_string();
+    }
     if let Some(image) = resolve_uiimage(cache, src) {
-        let _: () = unsafe { msg_send![view, setImage: &*image] };
+        set_image_and_notify(view, &image);
     } else if is_remote_url(src) {
         load_url_image_async(view, src);
     }
@@ -244,18 +391,28 @@ fn load_url_image_async(view: &Retained<UIView>, url_str: &str) {
             // through libdispatch's `extern "C"` boundary, so an unwind past it
             // would abort with no message (project policy: log + abort).
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if data.is_null() {
-                    return;
-                }
-                let Some(image) = uiimage_from_data_ptr(data) else {
+                // A network error / 404 yields null data; undecodable bytes
+                // yield no `UIImage`. Either way, hop `imageLoadFailed` to
+                // main so `on_error` fires on the UI thread.
+                let image = if data.is_null() { None } else { uiimage_from_data_ptr(data) };
+                let Some(image) = image else {
+                    let _: () = unsafe {
+                        msg_send![
+                            &view,
+                            performSelectorOnMainThread: objc2::sel!(imageLoadFailed),
+                            withObject: std::ptr::null_mut::<AnyObject>(),
+                            waitUntilDone: false
+                        ]
+                    };
                     return;
                 };
-                // UIView is main-thread-only — hop the assignment to main.
+                // UIView is main-thread-only — hop the assignment to main via
+                // `setImageFromUIImage:` (sets the image AND fires `on_load`).
                 // `performSelectorOnMainThread:` retains `image` until it runs.
                 let _: () = unsafe {
                     msg_send![
                         &view,
-                        performSelectorOnMainThread: objc2::sel!(setImage:),
+                        performSelectorOnMainThread: objc2::sel!(setImageFromUIImage:),
                         withObject: &*image,
                         waitUntilDone: false
                     ]

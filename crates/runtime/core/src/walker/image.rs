@@ -10,6 +10,7 @@ use crate::accessibility::AccessibilityProps;
 use crate::assets::{kinds, Asset};
 use crate::backend::Backend;
 use crate::handles::RefFill;
+use crate::primitives::image::{ImageErrorHandler, ImageLoadHandler};
 use crate::reactive::Effect;
 use crate::sources::StyleSource;
 use std::cell::RefCell;
@@ -21,6 +22,8 @@ pub(super) fn build<B: Backend + 'static>(
     src: Box<dyn Fn() -> String>,
     alt: Option<String>,
     alt_fn: Option<Box<dyn Fn() -> Option<String>>>,
+    on_load: Option<ImageLoadHandler>,
+    on_error: Option<ImageErrorHandler>,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
     asset: Option<Asset<kinds::Image>>,
@@ -42,6 +45,18 @@ pub(super) fn build<B: Backend + 'static>(
     });
     if let Some(s) = style {
         attach_style(backend, &n, s);
+    }
+    // Load / error observers. Installed *before* the reactive `src`
+    // Effect runs, so the handler is already in place when the initial
+    // update fires. Each backend's install method fires immediately if
+    // the bitmap has already decoded (web `<img>.complete`, Apple's
+    // recorded natural size) — the image can finish loading before the
+    // handler is installed, and this closes that race.
+    if let Some(h) = on_load {
+        backend.borrow_mut().install_image_load_handler(&n, h);
+    }
+    if let Some(h) = on_error {
+        backend.borrow_mut().install_image_error_handler(&n, h);
     }
     // Reactive src: if `src()` re-reads on subsequent fires,
     // the Effect subscribes and `update_image_src` re-runs.

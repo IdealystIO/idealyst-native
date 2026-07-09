@@ -2595,6 +2595,22 @@ impl Backend for WebBackend {
         primitives::image::update_alt(node, alt)
     }
 
+    fn install_image_load_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: runtime_core::ImageLoadHandler,
+    ) {
+        primitives::image::install_load(self, node, handler);
+    }
+
+    fn install_image_error_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: runtime_core::ImageErrorHandler,
+    ) {
+        primitives::image::install_error(self, node, handler);
+    }
+
     fn create_icon(
         &mut self,
         data: &runtime_core::primitives::icon::IconData,
