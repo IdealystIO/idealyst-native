@@ -125,6 +125,9 @@ pub mod image;
 pub mod link;
 pub mod list;
 pub mod menu;
+/// Shared scrolling panel for the anchored-menu family (Select/Menu/SubMenu/
+/// Autocomplete). Internal — not a component; see `menu_panel::scrolling_menu_panel`.
+pub(crate) mod menu_panel;
 pub mod pagination;
 pub mod progress;
 pub mod radio;

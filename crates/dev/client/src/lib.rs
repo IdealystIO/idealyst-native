@@ -1971,6 +1971,21 @@ where
                     backend.borrow_mut().clear_children(&parent);
                 })
             },
+            // Author-layout + outlet capture is a single-process (`--local`)
+            // path; the wire client drives screen swaps via staged
+            // `pending_mount` nodes and `WireSidebarAdopt`, not the structural
+            // outlet (see the note above). Build the layout root for real but
+            // report no captured outlet — the outlet-over-wire path is scoped
+            // to the wire phase, not the web/macOS-local swap navigator.
+            build_layout_with_outlet: {
+                let backend = self.backend.clone();
+                let scopes = chrome_scopes.clone();
+                Rc::new(move |element| {
+                    let (node, scope) = runtime_core::build_detached(&backend, element, None);
+                    scopes.borrow_mut().push(scope);
+                    (node, None)
+                })
+            },
         };
 
         let nav_node = self.backend.borrow_mut().create_navigator(

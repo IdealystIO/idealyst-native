@@ -802,6 +802,22 @@ pub enum Element {
         ref_fill: Option<RefFill>,
         accessibility: AccessibilityProps,
     },
+    /// NavigatorOutlet — the single hole a navigator's author layout
+    /// leaves for the active screen. Built as an empty container node;
+    /// the navigator's SDK handler swaps the active screen in as its
+    /// child on every navigation (`insert_node` / `clear_children`).
+    ///
+    /// This is the value handed to an author's `.layout(|nav| …)`
+    /// closure as `nav.outlet` — the analog of react-router's
+    /// `<Outlet/>`. The walker captures the built node so the handler
+    /// can address it (see `walker::navigator` + `OUTLET_CAPTURE`).
+    /// Author layout owns the tree AROUND it (bars, drawers, headers);
+    /// the navigator owns only what goes INSIDE it.
+    NavigatorOutlet {
+        style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
+        accessibility: AccessibilityProps,
+    },
     /// Portal — render `children` at `target` (viewport root, an
     /// anchored element, or a named container) escaping the parent's
     /// layout and clipping context. The lowest-level render-elsewhere
@@ -970,7 +986,8 @@ impl Element {
             | Element::Portal { style, .. }
             | Element::External { style, .. }
             | Element::Lazy { style, .. }
-            | Element::Navigator { style, .. } => {
+            | Element::Navigator { style, .. }
+            | Element::NavigatorOutlet { style, .. } => {
                 *style = Some(src);
             }
             Element::Repeat { .. } => {
@@ -1036,6 +1053,7 @@ impl Element {
             | Element::Link { accessibility, .. }
             | Element::External { accessibility, .. }
             | Element::Navigator { accessibility, .. }
+            | Element::NavigatorOutlet { accessibility, .. }
             | Element::Portal { accessibility, .. }
             | Element::Presence { accessibility, .. }
             | Element::Lazy { accessibility, .. } => Some(accessibility),

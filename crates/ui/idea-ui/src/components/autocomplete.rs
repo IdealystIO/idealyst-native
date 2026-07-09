@@ -57,7 +57,7 @@ use idea_theme::theme::IdeaThemeRef;
 
 use crate::components::select::{SelectOption, SelectSize};
 use crate::stylesheets::{
-    AutocompleteBox, AutocompleteChevron, AutocompleteEmpty, AutocompleteInput, SelectMenu,
+    AutocompleteBox, AutocompleteChevron, AutocompleteEmpty, AutocompleteInput,
     SelectOption as SelectOptionStyle,
 };
 
@@ -350,7 +350,9 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
                     })
                     .collect()
             });
-            let menu = ui! { view(style = SelectMenu()) { rows } };
+            // Cap + scroll the filtered list so a long set of matches scrolls
+            // within a bounded panel instead of running off the viewport.
+            let menu = crate::components::menu_panel::scrolling_menu_panel(vec![rows]);
             let dismiss_revert = menu_revert.clone();
             runtime_core::anchored_overlay(AnchorTarget::from(wrapper_ref), vec![menu])
                 .side(ElementSide::Below)

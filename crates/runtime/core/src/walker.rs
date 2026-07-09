@@ -520,6 +520,7 @@ pub(super) fn build_inner<B: Backend + 'static>(
         Element::Link { .. } => dispatch_link::<B>,
         Element::External { .. } => dispatch_external::<B>,
         Element::Navigator { .. } => dispatch_navigator::<B>,
+        Element::NavigatorOutlet { .. } => dispatch_navigator_outlet::<B>,
         Element::Portal { .. } => dispatch_portal::<B>,
         Element::Presence { .. } => dispatch_presence::<B>,
         Element::Lazy { .. } => dispatch_lazy::<B>,
@@ -642,6 +643,82 @@ fn dispatch_view<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) 
         backend, children, style, ref_fill, safe_area_sides, on_touch, on_wheel, on_hover, on_file_drop,
         is_container, accessibility,
     )
+}
+
+thread_local! {
+    /// Stack of active outlet-capture cells. `build_layout_with_outlet`
+    /// (walker::navigator) pushes a `Rc<RefCell<Option<B::Node>>>`
+    /// (type-erased as `Box<dyn Any>`) before building a navigator's
+    /// author layout and pops it after; `dispatch_navigator_outlet`
+    /// writes the built outlet node into the TOP cell. A stack (not a
+    /// single slot) so a nested navigator building its own layout inside
+    /// a parent's layout captures into its own cell, never the parent's.
+    static OUTLET_CAPTURE: RefCell<Vec<Box<dyn std::any::Any>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// RAII guard that pushes an outlet-capture cell for the duration of an
+/// author-layout build. On drop it pops the cell and yields the captured
+/// node (if the layout contained a `NavigatorOutlet`). Used by
+/// `walker::navigator`'s `build_layout_with_outlet`.
+pub(crate) struct OutletCaptureGuard<N: Clone + 'static> {
+    cell: Rc<RefCell<Option<N>>>,
+}
+
+impl<N: Clone + 'static> OutletCaptureGuard<N> {
+    pub(crate) fn push() -> Self {
+        let cell: Rc<RefCell<Option<N>>> = Rc::new(RefCell::new(None));
+        OUTLET_CAPTURE.with(|s| s.borrow_mut().push(Box::new(cell.clone())));
+        OutletCaptureGuard { cell }
+    }
+
+    /// The captured outlet node, or `None` if the built layout contained
+    /// no `NavigatorOutlet` (author forgot to splat `{nav.outlet}`).
+    pub(crate) fn take(self) -> Option<N> {
+        // `self` drops after this returns, popping the stack.
+        self.cell.borrow_mut().take()
+    }
+}
+
+impl<N: Clone + 'static> Drop for OutletCaptureGuard<N> {
+    fn drop(&mut self) {
+        OUTLET_CAPTURE.with(|s| {
+            s.borrow_mut().pop();
+        });
+    }
+}
+
+#[inline(never)]
+fn dispatch_navigator_outlet<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    node: Element,
+) -> B::Node {
+    let Element::NavigatorOutlet { style, ref_fill, accessibility } = node else { unreachable!() };
+    // The outlet is an empty container view; the SDK handler swaps the
+    // active screen in as its only child. `is_container = true` so it
+    // participates in layout like a plain View.
+    let n = view::build(
+        backend,
+        Vec::new(),
+        style,
+        ref_fill,
+        crate::SafeAreaSides::NONE,
+        None,
+        None,
+        None,
+        None,
+        true,
+        accessibility,
+    );
+    // Record into the innermost active capture cell so the enclosing
+    // navigator's handler can address this node for screen swaps.
+    OUTLET_CAPTURE.with(|s| {
+        if let Some(top) = s.borrow().last() {
+            if let Some(cell) = top.downcast_ref::<Rc<RefCell<Option<B::Node>>>>() {
+                *cell.borrow_mut() = Some(n.clone());
+            }
+        }
+    });
+    n
 }
 
 #[inline(never)]
@@ -816,4 +893,102 @@ fn dispatch_lazy<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) 
     let Element::Lazy { loader, on_state, placeholder, style, ref_fill, accessibility } = node
     else { unreachable!() };
     lazy::build(backend, loader, on_state, placeholder, style, ref_fill, accessibility)
+}
+
+#[cfg(test)]
+mod outlet_capture_tests {
+    //! Unit coverage for the outlet-capture mechanism the new author-layout
+    //! navigation model (`SwapContext`/`build_layout_with_outlet`) relies on:
+    //! building an `Element::NavigatorOutlet` under an active
+    //! [`OutletCaptureGuard`] records its node into the guard's cell, and the
+    //! capture is scoped to the *innermost* guard so a nested navigator never
+    //! writes into a parent's cell. The end-to-end Select-swap / Link→Select
+    //! behavior is covered by the swap-navigator wire test.
+    use super::*;
+    use crate::primitives::navigator::navigator_outlet;
+
+    /// Minimal `Backend` (Node = u32) that stays on the web-like
+    /// (`handles_states_natively = true`) path so an empty container outlet
+    /// builds without the native inline-size layout machinery.
+    struct CaptureStub {
+        next: RefCell<u32>,
+    }
+    impl CaptureStub {
+        fn new() -> Rc<RefCell<Self>> {
+            Rc::new(RefCell::new(Self { next: RefCell::new(0) }))
+        }
+        fn mint(&self) -> u32 {
+            let id = *self.next.borrow();
+            *self.next.borrow_mut() = id + 1;
+            id
+        }
+    }
+    impl Backend for CaptureStub {
+        type Node = u32;
+        fn handles_states_natively(&self) -> bool {
+            true
+        }
+        fn create_view(&mut self, _a11y: &crate::accessibility::AccessibilityProps) -> u32 {
+            self.mint()
+        }
+        fn create_text(
+            &mut self,
+            _content: &str,
+            _a11y: &crate::accessibility::AccessibilityProps,
+        ) -> u32 {
+            self.mint()
+        }
+        fn create_button(
+            &mut self,
+            _label: &str,
+            _on_click: &crate::Action,
+            _leading: Option<&crate::primitives::icon::IconData>,
+            _trailing: Option<&crate::primitives::icon::IconData>,
+            _a11y: &crate::accessibility::AccessibilityProps,
+        ) -> u32 {
+            self.mint()
+        }
+        fn insert(&mut self, _parent: &mut u32, _child: u32) {}
+        fn update_text(&mut self, _node: &u32, _content: &str) {}
+        fn clear_children(&mut self, _node: &u32) {}
+        fn apply_style(&mut self, _node: &u32, _style: &Rc<crate::style::StyleRules>) {}
+        fn execute_batch(&mut self, batch: crate::BackendBatch) -> Vec<u32> {
+            (0..batch.node_count).map(|_| self.mint()).collect()
+        }
+        fn insert_many(&mut self, _parent: &mut u32, _children: Vec<u32>) {}
+        fn finish(&mut self, _root: u32) {}
+    }
+
+    #[test]
+    fn navigator_outlet_is_captured_during_layout_build() {
+        let backend = CaptureStub::new();
+        let guard = OutletCaptureGuard::<u32>::push();
+        let (root, _scope) = build_detached(&backend, navigator_outlet(), None);
+        let outlet = guard.take();
+        // A lone outlet is its own root, so the captured node IS the root.
+        assert_eq!(outlet, Some(root), "the built outlet node must be captured");
+    }
+
+    #[test]
+    fn capture_is_scoped_to_innermost_guard() {
+        let backend = CaptureStub::new();
+        let outer = OutletCaptureGuard::<u32>::push();
+        {
+            let inner = OutletCaptureGuard::<u32>::push();
+            let _ = build_detached(&backend, navigator_outlet(), None);
+            assert!(inner.take().is_some(), "inner guard captures the outlet");
+        }
+        // The outlet was written to the inner cell only; the outer guard —
+        // which never enclosed an outlet build of its own — stays empty. This
+        // is what keeps a nested navigator from stealing its parent's outlet.
+        assert!(outer.take().is_none(), "outer guard must not see the inner outlet");
+    }
+
+    #[test]
+    fn no_capture_without_a_guard_is_safe() {
+        // Building an outlet with no active guard must not panic (the arm's
+        // `if let Some(top)` is a no-op when the capture stack is empty).
+        let backend = CaptureStub::new();
+        let (_root, _scope) = build_detached(&backend, navigator_outlet(), None);
+    }
 }

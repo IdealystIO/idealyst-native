@@ -52,6 +52,7 @@ pub(super) fn debug_kind_of(node: &Element) -> debug::PrimitiveKind {
         Element::Virtualizer { .. } => PrimitiveKind::Virtualizer,
         Element::Graphics { .. } => PrimitiveKind::Graphics,
         Element::Navigator { .. } => PrimitiveKind::Navigator,
+        Element::NavigatorOutlet { .. } => PrimitiveKind::View,
         Element::When { .. } => PrimitiveKind::When,
         Element::Switch { .. } => PrimitiveKind::Switch,
         Element::Each { .. } => PrimitiveKind::Each,

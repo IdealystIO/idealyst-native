@@ -34,7 +34,7 @@ use runtime_core::{
 
 use idea_theme::theme::IdeaThemeRef;
 
-use crate::stylesheets::{SelectMenu, SelectOption as SelectOptionStyle, SelectTrigger};
+use crate::stylesheets::{SelectOption as SelectOptionStyle, SelectTrigger};
 
 /// Full-bleed, fully-transparent backdrop for the open menu: it catches the
 /// outside click (and a re-press of the trigger) that dismisses the dropdown,
@@ -269,8 +269,6 @@ fn menu_build(
         rows.push(row);
     }
 
-    let menu_style = SelectMenu();
-
     // Click-away + re-press-to-close: a FULLSCREEN, transparent dismiss
     // backdrop. An anchored overlay's own backdrop only fills its small
     // anchored box (the portal is positioned at the trigger, and there's no
@@ -292,9 +290,13 @@ fn menu_build(
     // The anchored menu sits ABOVE the catcher (same layer, rendered after).
     // Its own backdrop is None — the catcher owns dismissal; Escape still
     // closes via this `on_dismiss`.
+    // Cap + scroll the option list so a long list (e.g. every category in a
+    // filter) scrolls within a bounded panel instead of running off-screen.
+    let panel = crate::components::menu_panel::scrolling_menu_panel(rows);
+
     let anchored = runtime_core::anchored_overlay(
         AnchorTarget::from(trigger_ref),
-        vec![ui! { view(style = menu_style) { rows } }],
+        vec![panel],
     )
     .side(ElementSide::Below)
     .align(ElementAlign::Start)

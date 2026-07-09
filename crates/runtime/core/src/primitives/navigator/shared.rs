@@ -1526,6 +1526,46 @@ pub struct NavState {
     pub can_go_back: crate::Signal<bool>,
 }
 
+/// The value a navigator hands to an author's `.layout(|nav| …)`
+/// closure. The closure owns the whole chrome tree and splats
+/// [`outlet`](Self::outlet) (`{nav.outlet}`) wherever the active screen
+/// should render — the analog of react-router's `useOutletContext()` +
+/// `<Outlet/>`. "Tab bar" = wrap the outlet in a bar; "drawer" = wrap it
+/// in an idea-ui `Drawer`. The navigator owns only what goes INSIDE the
+/// outlet; everything around it is ordinary author layout.
+///
+/// Shared by the `swap` and `stack` SDKs. `on_select` mirrors
+/// `DrawerSlotProps::on_select` — dispatch a `Select` by route name (the
+/// common no-param case; typed-param navigation goes through the handle).
+///
+/// Not `Clone` — the `outlet` [`Element`](crate::element::Element) is a
+/// one-shot value the layout closure splats exactly once.
+pub struct SwapContext {
+    /// Splat this into the layout tree (`{nav.outlet}`) where the active
+    /// screen mounts. One per layout — the walker captures its node so
+    /// the handler can swap screens into it.
+    pub outlet: crate::element::Element,
+    /// Currently active route key — read it to highlight the live tab /
+    /// nav item.
+    pub active_route: crate::Signal<&'static str>,
+    /// Full resolved path of the active screen.
+    pub active_path: crate::Signal<String>,
+    /// Switch to a sibling screen by route name (`Select`).
+    pub on_select: Rc<dyn Fn(&'static str)>,
+}
+
+/// Mint an [`crate::element::Element::NavigatorOutlet`] — the placeholder
+/// an author layout splats to mark where the active screen renders.
+/// Normally reached via [`SwapContext::outlet`]; exposed for hand-built
+/// layouts.
+pub fn navigator_outlet() -> crate::element::Element {
+    crate::element::Element::NavigatorOutlet {
+        style: None,
+        ref_fill: None,
+        accessibility: crate::accessibility::AccessibilityProps::default(),
+    }
+}
+
 /// Per-screen navigation context, `provide`d into each screen's scope by
 /// `mount_screen` and `inject`ed by the portal build path (`walker::portal`).
 ///

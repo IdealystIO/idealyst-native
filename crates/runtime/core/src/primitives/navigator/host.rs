@@ -181,6 +181,21 @@ pub struct NavigatorHost<N: Clone + 'static> {
     /// the incoming one. Same backend-erased, must-run-outside-the-outer-
     /// borrow contract.
     pub clear_children: Rc<dyn Fn(N /* parent */)>,
+
+    /// Build an author `.layout(|nav| …)` tree and return
+    /// `(root, Option<outlet>)`: the root chrome node to use as the
+    /// navigator's native view, plus the node of the
+    /// [`Element::NavigatorOutlet`](crate::element::Element::NavigatorOutlet)
+    /// the author splatted (`{nav.outlet}`), which the handler swaps
+    /// screens into. `None` outlet means the layout omitted the outlet —
+    /// an author error the handler should surface loudly.
+    ///
+    /// Built inside a retained nav-chrome scope (effects live the
+    /// navigator's lifetime) with THIS navigator published as ambient, so
+    /// `link(route = …)` inside the layout dispatches through it. Same
+    /// must-run-outside-the-outer-borrow rule as `build_node`.
+    pub build_layout_with_outlet:
+        Rc<dyn Fn(crate::element::Element) -> (N /* root */, Option<N> /* outlet */)>,
 }
 
 /// Implementation contract for a registered navigator kind. SDK

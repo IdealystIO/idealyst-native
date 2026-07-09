@@ -465,6 +465,7 @@ pub fn primitive_kind(p: &crate::Element) -> Option<PrimitiveKind> {
         Element::Presence { .. } => Some(PrimitiveKind::Presence),
         Element::External { .. } => Some(PrimitiveKind::External),
         Element::Navigator { .. } => Some(PrimitiveKind::Navigator),
+        Element::NavigatorOutlet { .. } => Some(PrimitiveKind::View),
         Element::Lazy { .. } => Some(PrimitiveKind::Lazy),
         // Control flow + fragment — layout-transparent, no node of their own.
         Element::When { .. }

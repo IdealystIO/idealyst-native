@@ -167,6 +167,7 @@ members = [
     # all three depend on.
     "crates/sdk/client/navigators/stack",
     "crates/sdk/client/navigators/tab",
+    "crates/sdk/client/navigators/swap",
     "crates/sdk/client/navigators/drawer",
     "crates/sdk/client/navigators/helpers/web",
     "crates/sdk/client/navigators/helpers/ios",
@@ -446,6 +447,7 @@ email = { path = "crates/sdk/server/email" }
 idealyst-config = { path = "crates/sdk/server/config" }
 stack-navigator = { path = "crates/sdk/client/navigators/stack" }
 tab-navigator = { path = "crates/sdk/client/navigators/tab" }
+swap-navigator = { path = "crates/sdk/client/navigators/swap" }
 drawer-navigator = { path = "crates/sdk/client/navigators/drawer" }
 web-navigator-helpers = { path = "crates/sdk/client/navigators/helpers/web" }
 android-navigator-helpers = { path = "crates/sdk/client/navigators/helpers/android" }

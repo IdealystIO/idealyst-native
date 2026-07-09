@@ -377,6 +377,34 @@ pub(super) fn build<B: Backend + 'static>(
         })
     };
 
+    // Build an author `.layout(|nav| …)` tree, capturing the node of the
+    // `NavigatorOutlet` the author splatted so the SDK handler can address
+    // it for screen swaps. Mirrors `build_node_scoped` (retained chrome
+    // scope + ambient-nav publish) but wraps the build in an
+    // `OutletCaptureGuard` — the outlet's dispatch arm writes its node into
+    // the guard's cell.
+    let build_layout_with_outlet: Rc<dyn Fn(Element) -> (B::Node, Option<B::Node>)> = {
+        let backend = backend.clone();
+        let scopes_slot = nav_chrome_scopes.clone();
+        let chrome_identity = crate::Identity::node(nav_identity, 2, None, None);
+        let control_for_chrome = control.clone();
+        Rc::new(move |layout_elem| {
+            let mut scope = Box::new(reactive::Scope::new());
+            let guard = super::OutletCaptureGuard::<B::Node>::push();
+            let root = reactive::with_scope(&mut scope, || {
+                crate::with_current_identity(chrome_identity, || {
+                    let _nav_guard = primitives::navigator::AmbientNavGuard::push(
+                        control_for_chrome.clone(),
+                    );
+                    super::build(&backend, 0, layout_elem)
+                })
+            });
+            let outlet = guard.take();
+            scopes_slot.borrow_mut().push(scope);
+            (root, outlet)
+        })
+    };
+
     let host = NavigatorHost {
         initial_route: initial,
         initial_path,
@@ -396,6 +424,7 @@ pub(super) fn build<B: Backend + 'static>(
         build_in_screen,
         insert_node,
         clear_children,
+        build_layout_with_outlet,
     };
 
     let node = time_backend_create(pkind!(Navigator), || {

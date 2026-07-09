@@ -1,0 +1,45 @@
+[package]
+name = "swap-navigator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# First-party **Swap** navigator SDK — a flat set of co-equal screens the
+# user switches between (`Select`), with author-supplied chrome. Replaces
+# the tab + drawer navigators: "tab bar" and "drawer" are now just author
+# layout wrapped around the navigator's single outlet (`{nav.outlet}`),
+# the analog of react-router's `<Outlet/>`.
+#
+# The handler is BACKEND-NEUTRAL: it drives everything through the
+# framework's `NavigatorHost` callbacks (`build_layout_with_outlet`,
+# `mount_screen`, `insert_node`, `clear_children`) + `schedule_microtask`,
+# so ONE handler serves every backend. Per-backend modules only submit the
+# self-registration inventory entry.
+#
+# App bootstrap: `swap_navigator::register(&mut backend)` (or automatic via
+# the inventory registrar on web/macOS).
+
+[features]
+# Recording handler for the runtime-server sidecar's recorder backend.
+# Host-side only; off by default. Mirrors tab/drawer.
+runtime-server = ["dep:dev-server", "dep:wire"]
+
+[dependencies]
+runtime-core = { workspace = true }
+# Self-registration of the per-backend navigator handler at construction.
+inventory = "0.3"
+
+# Recording handler deps (feature `runtime-server`, host-side only).
+dev-server = { workspace = true, optional = true }
+wire = { workspace = true, optional = true }
+
+# The generic chrome/registration test registers the handler on a concrete
+# SsrBackend; the handler itself is backend-neutral (no backend dep, no cfg).
+[dev-dependencies]
+backend-ssr = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+
+[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+backend-macos = { workspace = true }

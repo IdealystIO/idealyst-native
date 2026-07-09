@@ -1,0 +1,180 @@
+//! Shared scrolling surface for the anchored-menu family — `Select`, `Menu`,
+//! `SubMenu`, and `Autocomplete` all drop the same themed [`SelectMenu`] panel,
+//! so they all shared the same bug: the option rows were placed directly in the
+//! panel with no height cap and no scroll container, so a long list (e.g. a
+//! category filter listing every category) grew past the bottom of the viewport
+//! and the overflow was simply unreachable.
+//!
+//! [`scrolling_menu_panel`] is the one place that fix lives: it wraps the rows
+//! in a height-capped `scroll_view` inside the `SelectMenu` panel — the panel
+//! hugs its content until it hits the cap, then the row list scrolls. Mirrors
+//! the modal scroller's "content-sized up to a cap, then scroll" shape (see
+//! [`crate::components::modal::modal_scroll_sheet`]).
+
+use std::rc::Rc;
+
+use runtime_core::{
+    ui, viewport_size, Element, FlexDirection, IntoElement, Length, StyleApplication, StyleRules,
+    StyleSheet, Tokenized, VariantSet,
+};
+
+use crate::stylesheets::SelectMenu;
+
+/// Default ceiling for the open menu's scrollable row area, in DIPs — roughly
+/// eight or nine rows. Enough to browse comfortably without the menu dominating
+/// the screen; a longer list scrolls. Capped further by the viewport height on
+/// a short screen (see [`menu_max_height`]).
+const MENU_MAX_HEIGHT: f32 = 288.0;
+/// Breathing room kept above and below the menu so a viewport-tall list can't
+/// butt right against the screen edges.
+const MENU_VIEWPORT_MARGIN: f32 = 16.0;
+/// Never cap the scroll area below this even on a very short viewport — a tiny
+/// sliver would be unusable. A menu this tall still scrolls its rows internally.
+const MENU_MIN_HEIGHT: f32 = 120.0;
+
+/// The scrollable row area's height cap: the smaller of the fixed default
+/// ([`MENU_MAX_HEIGHT`]) and the viewport height minus a margin top and bottom,
+/// floored at [`MENU_MIN_HEIGHT`] so even a very short viewport leaves a usable,
+/// scrollable menu. This is a `max-height`, not a fixed height — a menu with
+/// fewer rows than the cap stays content-sized; only a taller one is clamped
+/// here and then scrolls. Pure so the cap is unit-testable without a backend.
+pub(crate) fn menu_max_height(viewport_height: f32) -> f32 {
+    (viewport_height - MENU_VIEWPORT_MARGIN * 2.0)
+        .min(MENU_MAX_HEIGHT)
+        .max(MENU_MIN_HEIGHT)
+}
+
+/// The inner body view that holds the rows in a column. Carries the inter-row
+/// `gap` the `SelectMenu` panel used to supply directly (the panel now has a
+/// single child — the scroller — so its own gap no longer spaces the rows), and
+/// `flex_shrink: 0` so the body keeps its full content height inside the capped
+/// scroller instead of shrinking to fit it — without this there'd be nothing to
+/// scroll (same reason as `modal.rs::modal_body_sheet`).
+fn menu_body_sheet() -> Rc<StyleSheet> {
+    Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+        flex_direction: Some(FlexDirection::Column),
+        flex_shrink: Some(Tokenized::Literal(0.0)),
+        // Matches `SelectMenu`'s base `gap` (2px) so row spacing is unchanged.
+        gap: Some(Tokenized::Literal(Length::Px(2.0))),
+        ..Default::default()
+    }))
+}
+
+/// The `scroll_view` sheet: content-sized until it hits `max_height` (applied
+/// reactively at the call site), then scrolls. Mirrors
+/// `modal.rs::modal_scroll_sheet` — `scroll_view` seeds the node with
+/// `flex_grow:1 / flex_basis:0` (the "fill a bounded parent" shape), which is
+/// WRONG for a content-sized anchored panel: a fill-parent scroller contributes
+/// 0 to the panel's intrinsic height, collapsing the whole menu to nothing.
+/// Override to the "content-sized up to a cap" shape:
+///
+/// - `flex_grow:0` + `flex_basis:auto` — the scroller sizes to its body, so the
+///   panel sizes to it (a short menu hugs its rows).
+/// - `min_height:0` — paired with the scroll node's `overflow:scroll`, lets the
+///   reactive `max_height` clamp the scroller BELOW its content height so a long
+///   list scrolls internally instead of overflowing the viewport.
+fn menu_scroll_sheet() -> Rc<StyleSheet> {
+    Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+        flex_grow: Some(Tokenized::Literal(0.0)),
+        flex_basis: Some(Tokenized::Literal(Length::Auto)),
+        min_height: Some(Tokenized::Literal(Length::Px(0.0))),
+        flex_direction: Some(FlexDirection::Column),
+        ..Default::default()
+    }))
+}
+
+/// Wraps `rows` in a viewport-capped, scrolling [`SelectMenu`] panel. This is
+/// the canonical anchored-menu surface — every menu-family component (`Select`,
+/// `Menu`, `SubMenu`, `Autocomplete`) builds its dropdown through here so a long
+/// option list scrolls within a bounded panel instead of running off-screen.
+///
+/// Structure: `panel(SelectMenu) → scroll_view(height cap) → body(rows)`. The
+/// height cap is applied reactively from `viewport_size()` so it tracks
+/// orientation / split-view / window resizes and never exceeds the visible area.
+pub(crate) fn scrolling_menu_panel(rows: Vec<Element>) -> Element {
+    let body = runtime_core::view(rows)
+        .with_style(|| StyleApplication::new(menu_body_sheet()))
+        .into_element();
+
+    // Reactive height cap: re-resolves the `max_height` when the viewport
+    // changes. `with_computed`'s cache key folds identical caps across menu
+    // instances onto one backend class (mirrors `modal.rs`'s scroller).
+    let viewport = viewport_size();
+    let scroller = runtime_core::primitives::scroll_view::scroll_view(vec![body])
+        .with_style(move || {
+            let max_h = menu_max_height(viewport.get().height);
+            StyleApplication::new(menu_scroll_sheet()).with_computed(
+                format!("menu-scroll-maxh-{}", max_h.round() as i32),
+                move || StyleRules {
+                    max_height: Some(Tokenized::Literal(Length::Px(max_h))),
+                    ..Default::default()
+                },
+            )
+        })
+        .into_element();
+
+    ui! { view(style = SelectMenu()) { scroller } }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn max_height_caps_to_fixed_default_on_a_roomy_viewport() {
+        // A tall desktop viewport: the menu is bounded by the fixed default,
+        // not the (much larger) viewport, so it never dominates the screen.
+        assert_eq!(menu_max_height(1080.0), MENU_MAX_HEIGHT);
+    }
+
+    #[test]
+    fn regression_max_height_caps_to_viewport_on_a_short_screen() {
+        // The bug: the menu had NO height cap, so a 40-option list grew past the
+        // viewport bottom and the overflow was unreachable. On a short viewport
+        // the cap must come from the viewport (minus a margin) — smaller than
+        // the fixed default — so the menu can never exceed the visible area.
+        let short = 260.0;
+        let h = menu_max_height(short);
+        assert_eq!(h, short - MENU_VIEWPORT_MARGIN * 2.0);
+        assert!(h < MENU_MAX_HEIGHT, "a short viewport caps below the fixed default");
+        assert!(h < short, "the menu fits within the visible viewport");
+    }
+
+    #[test]
+    fn max_height_never_shrinks_below_min_on_a_tiny_viewport() {
+        // A pathologically short viewport still leaves a usable, scrollable menu
+        // rather than collapsing to an unusable sliver.
+        assert_eq!(menu_max_height(80.0), MENU_MIN_HEIGHT);
+    }
+
+    /// Regression: the anchored menu panel must wrap its rows in a `scroll_view`
+    /// so a long option list scrolls instead of overflowing the viewport. The
+    /// panel is `view(SelectMenu) → scroll_view → body(rows)`; if a refactor
+    /// drops the scroller and puts rows straight in the panel again, the
+    /// off-screen-overflow bug returns and this fails.
+    #[test]
+    fn menu_panel_wraps_rows_in_a_scroll_view() {
+        use runtime_core::Element;
+
+        let panel = scrolling_menu_panel(vec![
+            runtime_core::text("A".to_string()).into_element(),
+            runtime_core::text("B".to_string()).into_element(),
+        ]);
+
+        let panel_children = match &panel {
+            Element::View { children, .. } => children,
+            _ => panic!("the menu panel must be a View (the SelectMenu surface)"),
+        };
+        assert_eq!(panel_children.len(), 1, "the panel holds a single scroller child");
+        let body = match &panel_children[0] {
+            Element::ScrollView { children, .. } => children,
+            _ => panic!("the panel's child must be a ScrollView wrapping the rows"),
+        };
+        assert_eq!(body.len(), 1, "the scroller holds a single body view");
+        let rows = match &body[0] {
+            Element::View { children, .. } => children,
+            _ => panic!("the scroller's child must be the body View holding the rows"),
+        };
+        assert_eq!(rows.len(), 2, "both rows live inside the scrolling body");
+    }
+}

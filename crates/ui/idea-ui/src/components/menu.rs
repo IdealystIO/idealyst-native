@@ -43,7 +43,7 @@ use runtime_core::{
 /// intent" delay.
 const SUBMENU_HOVER_GRACE_MS: i32 = 120;
 
-use crate::stylesheets::{MenuChevron, MenuItemRow, MenuLabel as MenuLabelStyle, MenuSeparator as MenuSeparatorStyle, SelectMenu, Spacer};
+use crate::stylesheets::{MenuChevron, MenuItemRow, MenuLabel as MenuLabelStyle, MenuSeparator as MenuSeparatorStyle, Spacer};
 
 /// Right-pointing chevron shown on SubMenu rows.
 const CHEVRON: &str = "\u{203A}";
@@ -54,8 +54,12 @@ fn grow() -> Element {
         .into_element()
 }
 
+/// The anchored panel surface shared by `Menu` and each `SubMenu` flyout.
+/// Delegates to the family-wide scrolling panel so a long item list (or a
+/// SubMenu with many entries) scrolls within a height-capped panel instead of
+/// running off the bottom of the viewport.
 fn panel(children: Vec<Element>) -> Element {
-    ui! { view(style = SelectMenu()) { children } }
+    crate::components::menu_panel::scrolling_menu_panel(children)
 }
 
 // =============================================================================

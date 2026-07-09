@@ -10531,6 +10531,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "swap-navigator"
+version = "0.0.1"
+dependencies = [
+ "backend-macos",
+ "backend-ssr",
+ "backend-web",
+ "dev-server",
+ "inventory",
+ "runtime-core",
+ "wire",
+]
+
+[[package]]
 name = "swash"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
