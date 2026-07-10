@@ -437,6 +437,20 @@ impl Navigator {
     }
 
     fn into_element(self) -> Element {
+        // Force-link the platform registration module so its `inventory::submit!`
+        // survives DEV-profile codegen-unit DCE (high codegen-units, no LTO drop
+        // the unreferenced module's object; release's codegen-units=1 keeps it).
+        // Without this, `idealyst dev --web` panics "StackPresentation is not
+        // registered". Zero runtime cost — see the same note in swap-navigator.
+        #[cfg(target_arch = "wasm32")]
+        let _ = core::hint::black_box(web::register as *const ());
+        #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+        let _ = core::hint::black_box(macos::register as *const ());
+        #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
+        let _ = core::hint::black_box(ios::register as *const ());
+        #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+        let _ = core::hint::black_box(android::register as *const ());
+
         let Navigator { config, presentation, slot_styles, style, ref_fill } = self;
         // The navigator is the app shell — it must fill its parent box on every
         // backend. The iOS/Android handlers materialize the navigator

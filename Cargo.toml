@@ -76,6 +76,7 @@ members = [
     "crates/ui/idea-theme",
     "crates/ui/idea-ui",
     "crates/ui/idea-ui-mail",
+    "crates/ui/idea-ui-nav",
     "crates/ui/idea-ui-docs-derive",
     "crates/ui/icons-lucide",
 
@@ -168,6 +169,7 @@ members = [
     "crates/sdk/client/navigators/stack",
     "crates/sdk/client/navigators/tab",
     "crates/sdk/client/navigators/swap",
+    "crates/sdk/client/navigators/stack-v2",
     "crates/sdk/client/navigators/drawer",
     "crates/sdk/client/navigators/helpers/web",
     "crates/sdk/client/navigators/helpers/ios",
@@ -220,6 +222,9 @@ members = [
     "examples/external-export-demo",
     "examples/external-export-suite",
     "examples/stack-demo",
+    "examples/stack-demo-v2",
+    "examples/swap-demo",
+    "examples/nav-showcase",
     "examples/screenshot-demo",
     "examples/robot-e2e-demo",
     "examples/conformance",
@@ -380,6 +385,7 @@ posix-log-capture = { path = "crates/backend/posix-log-capture" }
 idea-theme = { path = "crates/ui/idea-theme" }
 idea-ui = { path = "crates/ui/idea-ui" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail" }
+idea-ui-nav = { path = "crates/ui/idea-ui-nav" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive" }
 icons-lucide = { path = "crates/ui/icons-lucide" }
 pan = { path = "crates/sdk/client/pan" }
@@ -448,6 +454,7 @@ idealyst-config = { path = "crates/sdk/server/config" }
 stack-navigator = { path = "crates/sdk/client/navigators/stack" }
 tab-navigator = { path = "crates/sdk/client/navigators/tab" }
 swap-navigator = { path = "crates/sdk/client/navigators/swap" }
+stack-navigator-v2 = { path = "crates/sdk/client/navigators/stack-v2" }
 drawer-navigator = { path = "crates/sdk/client/navigators/drawer" }
 web-navigator-helpers = { path = "crates/sdk/client/navigators/helpers/web" }
 android-navigator-helpers = { path = "crates/sdk/client/navigators/helpers/android" }

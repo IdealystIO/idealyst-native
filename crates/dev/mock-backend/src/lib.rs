@@ -130,6 +130,12 @@ impl MockNode {
 }
 
 /// A headless [`Backend`] that records the structural + content calls a
+/// Inert `NavigatorOps` for the `make_navigator_handle` fallback when a node
+/// isn't a registered navigator.
+struct NoopMockNavOps;
+impl runtime_core::primitives::navigator::NavigatorOps for NoopMockNavOps {}
+static NOOP_MOCK_NAV_OPS: NoopMockNavOps = NoopMockNavOps;
+
 /// real platform backend would receive and exposes them as a queryable
 /// tree. `Node = u64` (ids minted internally; the receiver maps wire
 /// `NodeId`s onto them).
@@ -768,6 +774,24 @@ impl Backend for MockBackend {
             handler
                 .borrow_mut()
                 .attach_initial(self, screen, scope_id, options);
+        }
+    }
+
+    /// Route to the registered handler's `make_handle` (like the real
+    /// backends) so a locally-mounted navigator's `.bind(...)` handle is
+    /// wired to the live control plane — otherwise dispatch through the
+    /// handle silently no-ops. Falls back to the trait default when the node
+    /// isn't a known navigator.
+    fn make_navigator_handle(
+        &self,
+        node: &u64,
+    ) -> runtime_core::primitives::navigator::NavigatorHandle {
+        match self.nav_instances.get(node) {
+            Some(handler) => handler.borrow().make_handle(),
+            None => runtime_core::primitives::navigator::NavigatorHandle::new(
+                Rc::new(()),
+                &NOOP_MOCK_NAV_OPS,
+            ),
         }
     }
 

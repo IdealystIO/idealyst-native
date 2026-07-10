@@ -918,6 +918,20 @@ impl DrawerNavigator {
     }
 
     fn into_element(self) -> Element {
+        // Force-link the platform registration module so its `inventory::submit!`
+        // survives DEV-profile codegen-unit DCE (see the same note in
+        // swap-navigator / stack-navigator). Fixes `dev --web` panicking
+        // "DrawerPresentation is not registered". macOS module is gated
+        // `not(feature = "terminal")`, so match that.
+        #[cfg(target_arch = "wasm32")]
+        let _ = core::hint::black_box(web::register as *const ());
+        #[cfg(all(target_os = "macos", not(target_arch = "wasm32"), not(feature = "terminal")))]
+        let _ = core::hint::black_box(macos::register as *const ());
+        #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
+        let _ = core::hint::black_box(ios::register as *const ());
+        #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+        let _ = core::hint::black_box(android::register as *const ());
+
         let DrawerNavigator { config, presentation, slot_styles, style, ref_fill } = self;
         // The navigator is the app shell — it must fill its parent box on
         // every backend. macOS sizes its own container and web fills via

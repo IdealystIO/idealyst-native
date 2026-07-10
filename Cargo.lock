@@ -5697,6 +5697,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "idea-ui-nav"
+version = "0.0.1"
+dependencies = [
+ "idea-theme",
+ "idea-ui",
+ "mock-backend",
+ "runtime-core",
+ "swap-navigator",
+]
+
+[[package]]
 name = "idealyst-cli"
 version = "0.0.1"
 dependencies = [
@@ -6931,6 +6942,7 @@ dependencies = [
  "runtime-server-shell-native",
  "serde_json",
  "stack-navigator",
+ "swap-navigator",
  "tab-navigator",
  "wire",
 ]
@@ -7003,6 +7015,23 @@ version = "0.0.1"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "nav-showcase"
+version = "0.0.1"
+dependencies = [
+ "backend-android-mobile",
+ "backend-ios-mobile",
+ "backend-macos",
+ "backend-terminal",
+ "backend-web",
+ "dev-server",
+ "idea-ui",
+ "idea-ui-nav",
+ "runtime-core",
+ "stack-navigator-v2",
+ "swap-navigator",
 ]
 
 [[package]]
@@ -10323,6 +10352,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "stack-demo-v2"
+version = "0.0.1"
+dependencies = [
+ "backend-android-mobile",
+ "backend-ios-mobile",
+ "backend-macos",
+ "backend-terminal",
+ "backend-web",
+ "dev-server",
+ "idea-ui",
+ "idea-ui-nav",
+ "runtime-core",
+ "stack-navigator-v2",
+]
+
+[[package]]
 name = "stack-navigator"
 version = "0.0.1"
 dependencies = [
@@ -10342,6 +10387,21 @@ dependencies = [
  "wasm-bindgen-test",
  "web-navigator-helpers",
  "web-sys",
+ "wire",
+]
+
+[[package]]
+name = "stack-navigator-v2"
+version = "0.0.1"
+dependencies = [
+ "backend-android-mobile",
+ "backend-ios-mobile",
+ "backend-macos",
+ "backend-web",
+ "dev-server",
+ "inventory",
+ "mock-backend",
+ "runtime-core",
  "wire",
 ]
 
@@ -10531,9 +10591,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "swap-demo"
+version = "0.0.1"
+dependencies = [
+ "backend-android-mobile",
+ "backend-ios-mobile",
+ "backend-macos",
+ "backend-terminal",
+ "backend-web",
+ "dev-server",
+ "idea-ui",
+ "idea-ui-nav",
+ "runtime-core",
+ "swap-navigator",
+]
+
+[[package]]
 name = "swap-navigator"
 version = "0.0.1"
 dependencies = [
+ "backend-android-mobile",
+ "backend-ios-mobile",
  "backend-macos",
  "backend-ssr",
  "backend-web",

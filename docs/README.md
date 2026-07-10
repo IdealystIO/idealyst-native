@@ -58,6 +58,13 @@ If you're new to the codebase, read the docs in this order:
    internals: per-platform mapping tables, the Backend-trait surface,
    and the GPU-backend semantics tree.
 
+## Migrating
+
+- [`migration-0.1-to-0.2.md`](./migration-0.1-to-0.2.md). Moving navigation
+  to the 0.2 model — the `swap` / `stack` primitives, the outlet + author
+  layout, and the `idea-ui-nav` chrome (`TabBar` / `Drawer` / `StackHeader`).
+  `tab` / `drawer` / `stack` → `swap-navigator` / `stack-navigator-v2`.
+
 ## Crate map
 
 The repo is grouped by concern (`crates/framework/`, `crates/backend/`,

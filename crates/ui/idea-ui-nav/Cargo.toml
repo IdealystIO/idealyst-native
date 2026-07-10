@@ -1,0 +1,29 @@
+[package]
+name = "idea-ui-nav"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Themed navigation chrome (TabBar / Drawer / StackHeader) for the idealyst swap & stack navigators — the author-layout that wraps a navigator's outlet."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# Mirror idea-ui: reflective doc-control panels for idea-ui-docs.
+docs = ["idea-ui/docs"]
+# Forward a `test_id` to the root interactive primitive for robot/E2E.
+robot = ["runtime-core/robot", "idea-ui/robot"]
+
+[dependencies]
+runtime-core = { workspace = true }
+# Same theme as idea-ui, and piggybacks on its components (Tabs strip, Icon,
+# Button) rather than reimplementing chrome from primitives.
+idea-theme = { workspace = true }
+idea-ui = { workspace = true }
+
+[dev-dependencies]
+# Theme install + resolve for component tests, and a live swap navigator to
+# exercise TabBar against a real SwapContext.
+idea-theme = { workspace = true }
+swap-navigator = { workspace = true }
+mock-backend = { workspace = true }

@@ -1,0 +1,39 @@
+[package]
+name = "stack-navigator-v2"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Stack navigator on the OUTLET model — the push/pop sibling of swap-navigator.
+# Depth-changing (Push/Pop/Replace/Reset); the visible screen is the top of a
+# back-stack, lower screens stay mounted so pop-back restores their state.
+# Chrome (a header) is AUTHOR LAYOUT via `.layout(|nav| …)` wrapping the single
+# outlet — the same StackHeader idea-ui-nav ships, rendered identically on
+# every backend (native push-surface + bar-hidden is a later per-backend step).
+#
+# Built alongside the legacy `stack-navigator` (which keeps its native
+# UINavigationController chrome); this is the outlet-model replacement.
+
+[features]
+runtime-server = ["dep:dev-server", "dep:wire"]
+
+[dependencies]
+runtime-core = { workspace = true }
+inventory = "0.3"
+dev-server = { workspace = true, optional = true }
+wire = { workspace = true, optional = true }
+
+[dev-dependencies]
+mock-backend = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+
+[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+backend-macos = { workspace = true }
+
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+backend-android-mobile = { workspace = true }

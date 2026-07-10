@@ -34,9 +34,10 @@ pub use shared::{
     navigator_outlet, peek_initial_path, record_routes, set_initial_path, take_initial_path,
     take_route_collector, use_can_go_back, use_focus, AmbientNavContext, AmbientNavContextGuard,
     AmbientNavGuard,
-    MountResult, NavBaseGuard, NavCommand, NavId, NavState, NavigatorConfig, NavigatorControl,
-    NavigatorHandle, NavigatorOps, ParamsFromSegments, Route, RouteEntry, RouteParams, Screen,
-    ScreenBuilder, ScreenNav, ScreenRouteGuard, ScreenStateGuard, SwapContext,
+    HeaderButton, MountResult, NavBaseGuard, NavCommand, NavId, NavState, NavigatorConfig,
+    NavigatorControl, NavigatorHandle, NavigatorOps, ParamsFromSegments, Route, RouteEntry,
+    RouteParams, Screen, ScreenBuilder, ScreenNav, ScreenRouteGuard, ScreenStateGuard,
+    StackHeaderState, SwapContext,
 };
 
 /// Robot-only navigator introspection surface (global registry + snapshots).

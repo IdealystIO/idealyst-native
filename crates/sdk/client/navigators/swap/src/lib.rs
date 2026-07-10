@@ -186,6 +186,23 @@ impl SwapNavigator {
     }
 
     fn into_element(self) -> Element {
+        // Force-link the platform's registration module so its
+        // `inventory::submit!` survives DEV-profile codegen-unit DCE. In dev
+        // builds (high codegen-units, no LTO) an unreferenced module's `#[used]`
+        // submit is dropped with its object; release (codegen-units=1 + LTO)
+        // keeps it. A `black_box`'d reference to `register` — in a code path the
+        // app runs when it builds the navigator — pulls the module's object into
+        // the link, so registration works in BOTH profiles on every backend
+        // (fixes `dev` panicking "SwapPresentation is not registered"). Zero cost.
+        #[cfg(target_arch = "wasm32")]
+        let _ = core::hint::black_box(web::register as *const ());
+        #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+        let _ = core::hint::black_box(macos::register as *const ());
+        #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
+        let _ = core::hint::black_box(ios::register as *const ());
+        #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+        let _ = core::hint::black_box(android::register as *const ());
+
         let SwapNavigator { config, presentation, style, ref_fill } = self;
         Element::Navigator {
             type_id: TypeId::of::<SwapPresentation>(),
@@ -347,8 +364,11 @@ impl<B: Backend> SwapShared<B> {
             }
         }
 
-        let node = if let Some((n, _)) = self.mounted.borrow().get(name) {
-            n.clone()
+        // Snapshot the lookup so the `borrow()` releases before the miss path
+        // takes a `borrow_mut()` (else: "RefCell already borrowed").
+        let cached = self.mounted.borrow().get(name).map(|(n, _)| n.clone());
+        let node = if let Some(n) = cached {
+            n
         } else {
             let r = (self.mount_screen)(name, params, state);
             self.mounted.borrow_mut().insert(name, (r.node.clone(), r.scope_id));
@@ -587,7 +607,47 @@ mod macos {
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
 pub use macos::register;
 
-#[cfg(not(any(target_arch = "wasm32", target_os = "macos")))]
+// iOS / Android: the SAME backend-neutral handler. The mobile backends key
+// their handler map by the node itself (not a stamped attribute like web), so
+// dispatch + the bound handle wire up without any extra work — a swap navigator
+// there is an outlet swap on `Select`, chrome is author layout, exactly as
+// elsewhere. (A native tab-controller surface is intentionally NOT used —
+// swap needs no native surface; see the crate docs.)
+#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
+mod ios {
+    use super::{SwapHandler, SwapPresentation};
+    use backend_ios::IosBackend;
+    /// Register the swap handler on the iOS backend.
+    pub fn register(backend: &mut IosBackend) {
+        backend
+            .register_navigator::<SwapPresentation, _>(|| Box::new(SwapHandler::<IosBackend>::new()));
+    }
+    inventory::submit! { backend_ios::IosNavigatorRegistrar(register) }
+}
+#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
+pub use ios::register;
+
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+mod android {
+    use super::{SwapHandler, SwapPresentation};
+    use backend_android::AndroidBackend;
+    /// Register the swap handler on the Android backend.
+    pub fn register(backend: &mut AndroidBackend) {
+        backend.register_navigator::<SwapPresentation, _>(|| {
+            Box::new(SwapHandler::<AndroidBackend>::new())
+        });
+    }
+    inventory::submit! { backend_android::AndroidNavigatorRegistrar(register) }
+}
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+pub use android::register;
+
+#[cfg(not(any(
+    target_arch = "wasm32",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android"
+)))]
 mod fallback {
     use runtime_core::Backend;
     /// No-op swap registration for backends without a dedicated registrar,
@@ -596,7 +656,12 @@ mod fallback {
     /// directly via their own `register_navigator`.
     pub fn register<B: Backend>(_backend: &mut B) {}
 }
-#[cfg(not(any(target_arch = "wasm32", target_os = "macos")))]
+#[cfg(not(any(
+    target_arch = "wasm32",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android"
+)))]
 pub use fallback::register;
 
 // =============================================================================

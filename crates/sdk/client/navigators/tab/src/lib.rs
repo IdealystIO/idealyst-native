@@ -268,6 +268,19 @@ impl TabNavigator {
     }
 
     fn into_element(self) -> Element {
+        // Force-link the platform registration module so its `inventory::submit!`
+        // survives DEV-profile codegen-unit DCE (see the same note in
+        // swap-navigator / stack-navigator). Fixes `dev --web` panicking
+        // "TabPresentation is not registered".
+        #[cfg(target_arch = "wasm32")]
+        let _ = core::hint::black_box(web::register as *const ());
+        #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+        let _ = core::hint::black_box(macos::register as *const ());
+        #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
+        let _ = core::hint::black_box(ios::register as *const ());
+        #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+        let _ = core::hint::black_box(android::register as *const ());
+
         let TabNavigator { config, presentation, slot_styles, style, ref_fill } = self;
         Element::Navigator {
             type_id: TypeId::of::<TabPresentation>(),

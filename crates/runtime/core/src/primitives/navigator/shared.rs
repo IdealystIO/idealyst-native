@@ -1566,6 +1566,58 @@ pub fn navigator_outlet() -> crate::element::Element {
     }
 }
 
+/// A header-bar button: an icon or a text label plus a tap handler. Used by the
+/// stack navigator's per-screen `header_left` / `header_right` slots. Maps to a
+/// native `UIBarButtonItem` / Android menu item on mobile, and renders in the
+/// web/desktop `StackHeader`. Lives in the framework (not the stack SDK) so the
+/// UI chrome crate can render it without depending on the SDK.
+#[derive(Clone, Default)]
+pub struct HeaderButton {
+    /// Icon name (resolved against the framework icon registry). Takes
+    /// precedence over `label` when both are set.
+    pub icon: Option<String>,
+    /// Text label (used when no `icon`).
+    pub label: Option<String>,
+    /// Tap handler.
+    pub on_press: Option<Rc<dyn Fn()>>,
+}
+
+impl HeaderButton {
+    /// An icon button.
+    pub fn icon(name: impl Into<String>) -> Self {
+        Self { icon: Some(name.into()), label: None, on_press: None }
+    }
+    /// A text button.
+    pub fn text(label: impl Into<String>) -> Self {
+        Self { icon: None, label: Some(label.into()), on_press: None }
+    }
+    /// Attach the tap handler.
+    pub fn on_press<F: Fn() + 'static>(mut self, f: F) -> Self {
+        self.on_press = Some(Rc::new(f));
+        self
+    }
+}
+
+/// The ACTIVE screen's header slots — the payload the stack navigator stores in
+/// [`NavigatorHost::screen_chrome`](super::host::NavigatorHost::screen_chrome)
+/// on every navigation. The native bar (mobile) or an author `StackHeader`
+/// (web/desktop) renders from it.
+#[derive(Clone, Default)]
+pub struct StackHeaderState {
+    /// The screen title.
+    pub title: String,
+    /// Leading slot.
+    pub left: Option<HeaderButton>,
+    /// Trailing slot.
+    pub right: Option<HeaderButton>,
+    /// When `true`, no header for this screen (native bar hidden / author
+    /// header renders nothing).
+    pub hidden: bool,
+    /// `true` when a NATIVE bar is rendering this header (mobile). An author
+    /// `StackHeader` reads it and renders nothing, avoiding a double header.
+    pub native: bool,
+}
+
 /// Per-screen navigation context, `provide`d into each screen's scope by
 /// `mount_screen` and `inject`ed by the portal build path (`walker::portal`).
 ///

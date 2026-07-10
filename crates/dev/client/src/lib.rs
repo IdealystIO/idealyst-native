@@ -1946,6 +1946,9 @@ where
             resolve_entry: Rc::new(|_| None),
             base: String::new(),
             nav_state: nav_state.clone(),
+            // Wire proxy: a plain signal is fine (the recorder replays chrome
+            // state host-side; this client doesn't render author headers).
+            screen_chrome: runtime_core::Signal::new(None),
             depth_changed: Rc::new(|_| {}),
             active_changed: Rc::new(|_, _| {}),
             control: control.clone(),

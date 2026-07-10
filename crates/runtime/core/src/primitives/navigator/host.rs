@@ -96,6 +96,17 @@ pub struct NavigatorHost<N: Clone + 'static> {
     /// changes asynchronously (native back gesture, popstate).
     pub nav_state: NavState,
 
+    /// A scoped reactive slot for the ACTIVE screen's chrome payload — an
+    /// opaque `Rc<dyn Any>` the handler sets on every navigation and author
+    /// chrome reads (downcast to the SDK's type). E.g. the stack navigator
+    /// stores its per-screen header slots (title / left / right / hidden)
+    /// here, so an author `StackHeader` (web/desktop) or the native bar
+    /// (mobile) renders the *current* screen's header reactively. Created by
+    /// the walker in the navigator's dedicated nav-state scope, so it lives
+    /// exactly as long as the navigator (safe to `set` from async native
+    /// gestures — same lifetime guarantee as `nav_state`).
+    pub screen_chrome: crate::Signal<Option<Rc<dyn Any>>>,
+
     /// Notify the framework that stack depth changed (push / pop /
     /// reset). Updates the cached depth on `NavigatorControl` and the
     /// `can_go_back` signal. Tabs/drawers typically don't call this.

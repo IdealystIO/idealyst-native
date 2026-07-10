@@ -88,11 +88,19 @@ pub(super) fn build<B: Backend + 'static>(
     // the scope on the control frees them on navigator teardown instead —
     // leak-free, and never before the control itself drops.
     let mut nav_scope = Box::new(reactive::Scope::new());
-    let nav_state = reactive::with_scope(&mut nav_scope, || NavState {
-        active_route: Signal::new(initial),
-        active_path: Signal::new(join_path(&my_base, initial_path)),
-        depth: Signal::new(1),
-        can_go_back: Signal::new(false),
+    // `screen_chrome` is created in the SAME dedicated scope as `nav_state`
+    // (retained on `control`) so it survives a transient build scope — a
+    // handler `set`s it from async native gestures, same as `active_route`.
+    let (nav_state, screen_chrome) = reactive::with_scope(&mut nav_scope, || {
+        (
+            NavState {
+                active_route: Signal::new(initial),
+                active_path: Signal::new(join_path(&my_base, initial_path)),
+                depth: Signal::new(1),
+                can_go_back: Signal::new(false),
+            },
+            Signal::new(None::<Rc<dyn Any>>),
+        )
     });
     control.retain_scope(nav_scope);
     control.attach_nav_state(nav_state.clone());
@@ -415,6 +423,7 @@ pub(super) fn build<B: Backend + 'static>(
         resolve_entry,
         base: my_base.clone(),
         nav_state: nav_state.clone(),
+        screen_chrome,
         depth_changed,
         active_changed,
         control: control.clone(),

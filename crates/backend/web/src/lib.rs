@@ -290,6 +290,21 @@ struct NoopNavOps;
 impl runtime_core::primitives::navigator::NavigatorOps for NoopNavOps {}
 static NOOP_NAV_OPS: NoopNavOps = NoopNavOps;
 
+thread_local! {
+    /// Counter for backend-assigned navigator ids (backend-neutral handlers
+    /// that don't stamp their own `data-navigator-id`). Based high so it can't
+    /// collide with the low, per-instance ids the `web-navigator-helpers` crate
+    /// stamps for the legacy handlers.
+    static BACKEND_NAV_ID: std::cell::Cell<u32> = const { std::cell::Cell::new(1_000_000) };
+}
+fn next_backend_nav_id() -> u32 {
+    BACKEND_NAV_ID.with(|c| {
+        let id = c.get();
+        c.set(id + 1);
+        id
+    })
+}
+
 pub struct WebBackend {
     pub(crate) doc: Document,
     pub(crate) mount: web_sys::Element,
@@ -2883,16 +2898,23 @@ impl Backend for WebBackend {
         // the macOS/wgpu backends — otherwise navigator a11y silently
         // vanishes on web.
         a11y::apply(&node, a11y, None);
-        // Stash the handler under the nav id stamped on the container
-        // so subsequent dispatch (attach_initial / release / make_handle
-        // / apply_slot_style) can find it. The id is set by the SDK
-        // (web-navigator-helpers stamps `data-navigator-id`); if the
-        // SDK doesn't set one, the handler is simply dropped here —
-        // post-create dispatch won't reach it.
-        if let Some(id) = nav_id_from_node(&node) {
-            self.nav_handler_instances
-                .insert(id, std::rc::Rc::new(std::cell::RefCell::new(handler)));
-        }
+        // Stash the handler under the nav id on the container so subsequent
+        // dispatch (attach_initial / release / make_handle / apply_slot_style)
+        // can find it. Legacy SDKs stamp `data-navigator-id` themselves
+        // (web-navigator-helpers); a BACKEND-NEUTRAL handler (swap / stack
+        // outlet model) returns a bare view with no id, so we assign one here.
+        // Without this the handler is dropped and the bound `.bind(handle)`
+        // never wires to the control plane — push/select through the handle
+        // silently no-op.
+        let id = nav_id_from_node(&node).unwrap_or_else(|| {
+            let id = next_backend_nav_id();
+            if let Ok(elem) = node.clone().dyn_into::<web_sys::Element>() {
+                let _ = elem.set_attribute("data-navigator-id", &id.to_string());
+            }
+            id
+        });
+        self.nav_handler_instances
+            .insert(id, std::rc::Rc::new(std::cell::RefCell::new(handler)));
         node
     }
 

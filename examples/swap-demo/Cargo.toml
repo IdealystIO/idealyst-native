@@ -1,0 +1,41 @@
+[package]
+name = "swap-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Minimal swap-navigator demo — three co-equal tab screens switched via a bottom TabBar. The bar is author layout (idea-ui-nav) wrapping the navigator's single outlet; no push/pop depth. The canonical 'TabBar wired to a router' case."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# `sidecar`: CLI-generated native sidecar wrapper only (recorder backend).
+sidecar = ["dep:dev-server", "swap-navigator/runtime-server"]
+
+[dependencies]
+runtime-core = { workspace = true }
+swap-navigator = { workspace = true }
+idea-ui = { workspace = true }
+idea-ui-nav = { workspace = true }
+dev-server = { workspace = true, optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+backend-android-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+backend-macos = { workspace = true }
+
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))'.dependencies]
+backend-terminal = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Swap Demo"
+bundle_id = "ai.truday.idealyst.swapdemo"
+version   = "0.0.1"
+targets   = ["web", "ios", "android"]
