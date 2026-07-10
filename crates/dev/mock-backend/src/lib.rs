@@ -98,6 +98,9 @@ pub struct MockNode {
     /// How many times `apply_style` / `apply_styled_states` landed on
     /// this node — a cheap proxy for "did styling reach the client."
     pub styles_applied: u32,
+    /// The most recent rules `apply_style` landed on this node, so tests
+    /// can assert WHAT was styled, not just that something was.
+    pub last_style: Option<Rc<StyleRules>>,
     /// Per-frame animated writes (`set_animated_*`), as
     /// `("{prop:?}", value)`. Lets animation-over-wire tests assert that
     /// tween deltas arrive.
@@ -122,6 +125,7 @@ impl MockNode {
             image_src: None,
             children: Vec::new(),
             styles_applied: 0,
+            last_style: None,
             animated: Vec::new(),
             safe_area_sides: None,
             safe_area_apply_count: 0,
@@ -129,13 +133,13 @@ impl MockNode {
     }
 }
 
-/// A headless [`Backend`] that records the structural + content calls a
 /// Inert `NavigatorOps` for the `make_navigator_handle` fallback when a node
 /// isn't a registered navigator.
 struct NoopMockNavOps;
 impl runtime_core::primitives::navigator::NavigatorOps for NoopMockNavOps {}
 static NOOP_MOCK_NAV_OPS: NoopMockNavOps = NoopMockNavOps;
 
+/// A headless [`Backend`] that records the structural + content calls a
 /// real platform backend would receive and exposes them as a queryable
 /// tree. `Node = u64` (ids minted internally; the receiver maps wire
 /// `NodeId`s onto them).
@@ -282,6 +286,15 @@ impl MockBackend {
     /// Whether any reachable node carries exactly this text.
     pub fn contains_text(&self, needle: &str) -> bool {
         self.texts().iter().any(|t| t == needle)
+    }
+
+    /// Whether any node's most recent `apply_style` rules satisfy `pred` —
+    /// lets tests assert WHAT was styled (e.g. a navigator root's default
+    /// fill sizing) without reaching into the node map.
+    pub fn any_node_styled(&self, pred: impl Fn(&StyleRules) -> bool) -> bool {
+        self.nodes
+            .values()
+            .any(|n| n.last_style.as_deref().map(&pred).unwrap_or(false))
     }
 
     /// First reachable node whose text equals `needle`.
@@ -666,20 +679,22 @@ impl Backend for MockBackend {
 
     // ----- style + animation ----------------------------------------------
 
-    fn apply_style(&mut self, node: &u64, _style: &Rc<StyleRules>) {
+    fn apply_style(&mut self, node: &u64, style: &Rc<StyleRules>) {
         if let Some(n) = self.node_mut(*node) {
             n.styles_applied += 1;
+            n.last_style = Some(style.clone());
         }
     }
 
     fn apply_styled_states(
         &mut self,
         node: &u64,
-        _base: &Rc<StyleRules>,
+        base: &Rc<StyleRules>,
         _overlays: &[(StateBits, Rc<StyleRules>)],
     ) {
         if let Some(n) = self.node_mut(*node) {
             n.styles_applied += 1;
+            n.last_style = Some(base.clone());
         }
     }
 

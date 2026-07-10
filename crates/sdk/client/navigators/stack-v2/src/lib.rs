@@ -29,14 +29,21 @@
 //!     })
 //!     .bind(nav);
 //! ```
+//!
+//! # Sizing
+//!
+//! The navigator's root **fills its container by default** (width/height
+//! 100% + `flex-grow: 1` — see `navigator_fill_rules` in `runtime-core`).
+//! Override by styling the navigator element itself:
+//! `StackNavigator::new(&home)…​.with_style(my_style)`.
 
 #![deny(missing_docs)]
 
 use runtime_core::accessibility::AccessibilityProps;
 use runtime_core::primitives::navigator::{
-    navigator_outlet, HeaderButton, MountResult, NavCommand, NavigatorConfig, NavigatorControl,
-    NavigatorHandle, NavigatorHandler, NavigatorHost, NavigatorOps, Route, RouteEntry, RouteParams,
-    Screen, ScreenBuilder, StackHeaderState,
+    navigator_fill_rules, navigator_outlet, HeaderButton, MountResult, NavCommand,
+    NavigatorConfig, NavigatorControl, NavigatorHandle, NavigatorHandler, NavigatorHost,
+    NavigatorOps, Route, RouteEntry, RouteParams, Screen, ScreenBuilder, StackHeaderState,
 };
 use runtime_core::{Backend, Bound, Element, Ref, RefFill, Signal, StyleSource};
 use std::any::{Any, TypeId};
@@ -380,12 +387,30 @@ struct StackEntry<N> {
     options: StackScreenOptions,
 }
 
+/// The framework-attached initial screen, held until the outlet exists.
+/// `route`/`path` are the walker-RESOLVED values read at attach time — a
+/// cold-start deep link may resolve a route other than the configured
+/// initial (see [`SharedStack::seat_initial`]).
+struct PendingInitial<N> {
+    route: &'static str,
+    path: String,
+    node: N,
+    scope_id: u64,
+    options: StackScreenOptions,
+}
+
 struct SharedStack<B: Backend> {
     outlet: RefCell<Option<B::Node>>,
     stack: RefCell<Vec<StackEntry<B::Node>>>,
-    pending_initial: RefCell<Option<(B::Node, u64, StackScreenOptions)>>,
+    pending_initial: RefCell<Option<PendingInitial<B::Node>>>,
     initial_route: &'static str,
     initial_path: String,
+    /// The walker's reactive route/path mirrors, read UNTRACKED at attach
+    /// time: on the non-deferred cold-start path the walker resolves a deep
+    /// link and writes the resolved route/path into them BEFORE mounting the
+    /// initial screen (see `walker::navigator`).
+    active_route: Signal<&'static str>,
+    active_path: Signal<String>,
     mount_screen:
         Rc<dyn Fn(&'static str, Box<dyn Any>, Option<Rc<dyn Any>>) -> MountResult<B::Node>>,
     release_screen: Rc<dyn Fn(u64)>,
@@ -431,6 +456,44 @@ impl<B: Backend> SharedStack<B> {
             .set(state.map(|s| Rc::new(s) as Rc<dyn Any>));
     }
 
+    /// Seat the framework-attached initial screen. When a cold-start deep
+    /// link resolved a route DIFFERENT from the configured initial, the
+    /// walker delegates back-stack reconstruction to the stack SDK (see the
+    /// non-deferred mount in `walker::navigator`): mount the configured
+    /// initial and seat it BELOW the resolved screen, so Back returns to the
+    /// index instead of being impossible.
+    fn seat_initial(
+        &self,
+        route: &'static str,
+        path: String,
+        node: B::Node,
+        scope_id: u64,
+        options: StackScreenOptions,
+    ) {
+        if route != self.initial_route {
+            let r = (self.mount_screen)(self.initial_route, Box::new(()), None);
+            let base_options = options_of(&r);
+            self.stack.borrow_mut().push(StackEntry {
+                route: self.initial_route,
+                path: self.initial_path.clone(),
+                node: r.node,
+                scope_id: r.scope_id,
+                options: base_options,
+            });
+        }
+        self.stack.borrow_mut().push(StackEntry {
+            route,
+            path,
+            node,
+            scope_id,
+            options,
+        });
+        self.show_top();
+        let len = self.stack.borrow().len();
+        (self.depth_changed)(len);
+        self.sync_chrome();
+    }
+
     fn push(&self, name: &'static str, params: Box<dyn Any>, state: Option<Rc<dyn Any>>, url: String) {
         let r = (self.mount_screen)(name, params, state);
         let options = options_of(&r);
@@ -442,7 +505,11 @@ impl<B: Backend> SharedStack<B> {
             options,
         });
         self.show_top();
-        (self.depth_changed)(self.stack.borrow().len());
+        // Copy the length out so no `stack` borrow is held across the
+        // callback — it sets signals whose subscribers may re-enter this
+        // navigator (same hardening as `pop`).
+        let len = self.stack.borrow().len();
+        (self.depth_changed)(len);
         self.sync_chrome();
     }
 
@@ -459,9 +526,15 @@ impl<B: Backend> SharedStack<B> {
         let len = self.stack.borrow().len();
         (self.depth_changed)(len);
         // Pop carries no new route name through the substrate — update the
-        // active mirror to the revealed screen ourselves.
-        if let Some(top) = self.stack.borrow().last() {
-            (self.active_changed)(top.route, top.path.clone());
+        // active mirror to the revealed screen ourselves. Copy the pair out
+        // so no `stack` borrow is held across the callback.
+        let revealed = self
+            .stack
+            .borrow()
+            .last()
+            .map(|top| (top.route, top.path.clone()));
+        if let Some((route, path)) = revealed {
+            (self.active_changed)(route, path);
         }
         self.sync_chrome();
     }
@@ -481,7 +554,9 @@ impl<B: Backend> SharedStack<B> {
             options,
         });
         self.show_top();
-        (self.depth_changed)(self.stack.borrow().len());
+        // Borrow-free callback, same hardening as `push`/`pop`.
+        let len = self.stack.borrow().len();
+        (self.depth_changed)(len);
         self.sync_chrome();
     }
 
@@ -534,6 +609,11 @@ impl<B: Backend + 'static> NavigatorHandler<B> for StackHandler<B> {
     ) -> B::Node {
         let a11y = AccessibilityProps::default();
         let root = backend.create_view(&a11y);
+        // Fill-the-container default (see `navigator_fill_rules`) — a bare
+        // root hugs content, collapsing a viewport-height app. The author's
+        // `.with_style(...)` on the navigator element is applied by the
+        // walker AFTER init, so it overrides this.
+        backend.apply_style(&root, &navigator_fill_rules());
 
         let NavigatorHost {
             initial_route,
@@ -562,6 +642,8 @@ impl<B: Backend + 'static> NavigatorHandler<B> for StackHandler<B> {
             pending_initial: RefCell::new(None),
             initial_route,
             initial_path: runtime_core::primitives::navigator::join_path(&base, initial_path),
+            active_route: nav_state.active_route,
+            active_path: nav_state.active_path,
             mount_screen,
             release_screen,
             insert_node,
@@ -627,27 +709,27 @@ impl<B: Backend + 'static> NavigatorHandler<B> for StackHandler<B> {
                 (shared.insert_node)(root, layout_root);
                 *shared.outlet.borrow_mut() = outlet;
 
-                // Seat the initial screen as the base of the stack (depth 1).
-                let pending: Option<(B::Node, u64, StackScreenOptions)> =
+                // Seat the framework-attached initial screen (deep-link
+                // aware: a resolved-elsewhere route gets the configured
+                // initial reconstructed beneath it — see `seat_initial`).
+                let pending: Option<PendingInitial<B::Node>> =
                     shared.pending_initial.borrow_mut().take();
-                let (node, sid, options) = match pending {
-                    Some(triple) => triple,
+                match pending {
+                    Some(p) => shared.seat_initial(p.route, p.path, p.node, p.scope_id, p.options),
                     None => {
+                        // Defensive: nothing attached (deferred-mount host) —
+                        // mount the configured initial ourselves.
                         let r = (shared.mount_screen)(shared.initial_route, Box::new(()), None);
                         let options = options_of(&r);
-                        (r.node, r.scope_id, options)
+                        shared.seat_initial(
+                            shared.initial_route,
+                            shared.initial_path.clone(),
+                            r.node,
+                            r.scope_id,
+                            options,
+                        );
                     }
-                };
-                shared.stack.borrow_mut().push(StackEntry {
-                    route: shared.initial_route,
-                    path: shared.initial_path.clone(),
-                    node,
-                    scope_id: sid,
-                    options,
-                });
-                shared.show_top();
-                (shared.depth_changed)(1);
-                shared.sync_chrome();
+                }
             });
         }
 
@@ -668,7 +750,34 @@ impl<B: Backend + 'static> NavigatorHandler<B> for StackHandler<B> {
                 .downcast_ref::<StackScreenOptions>()
                 .cloned()
                 .unwrap_or_default();
-            *shared.pending_initial.borrow_mut() = Some((screen, scope_id, opts));
+            // The walker resolved a cold-start deep link BEFORE mounting this
+            // screen and wrote the resolved route/path into the nav-state
+            // mirrors — capture them NOW so the entry is labeled with what it
+            // actually shows (not the configured initial).
+            let route = runtime_core::untrack(|| shared.active_route.get());
+            let path = runtime_core::untrack(|| shared.active_path.get());
+            let outlet_built = shared.outlet.borrow().is_some();
+            if outlet_built {
+                // Rare: outlet already built (microtask ran first) and the
+                // microtask's defensive branch self-seated the configured
+                // initial — replace it with the framework-mounted screen
+                // rather than stashing a copy that would never be seated
+                // (mirrors swap's outlet-already-built branch).
+                let old: Vec<StackEntry<B::Node>> =
+                    shared.stack.borrow_mut().drain(..).collect();
+                for entry in old {
+                    (shared.release_screen)(entry.scope_id);
+                }
+                shared.seat_initial(route, path, screen, scope_id, opts);
+            } else {
+                *shared.pending_initial.borrow_mut() = Some(PendingInitial {
+                    route,
+                    path,
+                    node: screen,
+                    scope_id,
+                    options: opts,
+                });
+            }
         }
     }
 

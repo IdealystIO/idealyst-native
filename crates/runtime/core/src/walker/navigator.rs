@@ -172,7 +172,14 @@ pub(super) fn build<B: Backend + 'static>(
     let release_screen: Rc<dyn Fn(u64)> = {
         let scopes = scopes.clone();
         Rc::new(move |id| {
-            scopes.borrow_mut().remove(&id);
+            // Bind the removed scope so it drops AFTER the map borrow ends
+            // (within one statement the returned temporary drops before the
+            // `RefMut`). `Scope::drop` runs author `on_cleanup` callbacks
+            // synchronously, and a cleanup that navigates re-enters
+            // `mount_screen`/`release_screen` on this same map — dropping it
+            // under the borrow aborts with "RefCell already borrowed".
+            let scope = scopes.borrow_mut().remove(&id);
+            drop(scope);
         })
     };
 

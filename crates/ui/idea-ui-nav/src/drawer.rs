@@ -19,7 +19,6 @@ use runtime_core::{
     PointerEvents, Position, Reactive, Signal, StyleApplication, StyleRules, StyleSheet, Tokenized,
     Transform, Transition,
 };
-use std::cell::RefCell;
 use std::rc::Rc;
 
 /// Which edge the drawer panel anchors to.
@@ -34,19 +33,16 @@ pub enum DrawerSide {
 
 const SLIDE_MS: u32 = 240;
 
-thread_local! {
-    // One shared empty base sheet; the reactive per-state rules ride a
-    // `with_computed` layer keyed by open/closed so the resolution cache stays
-    // stable across renders (same pattern as idea-ui's Tabs label color).
-    static DRAWER_BASE_SHEET: RefCell<Option<Rc<StyleSheet>>> = const { RefCell::new(None) };
-}
-
+// One shared empty base sheet; the reactive per-state rules ride a
+// `with_computed` layer keyed by open/closed so the resolution cache stays
+// stable across renders. Cached via `cached_stylesheet` (NOT a per-file
+// `thread_local!`) — on Android every `thread_local!` burns one of bionic's
+// ~128 pthread TLS keys, and per-sheet thread_locals exhausted the table
+// (SIGABRT at mount); the shared registry keeps the key count flat.
 fn base_sheet() -> Rc<StyleSheet> {
-    DRAWER_BASE_SHEET.with(|s| {
-        if s.borrow().is_none() {
-            *s.borrow_mut() = Some(Rc::new(StyleSheet::r#static(StyleRules::default())));
-        }
-        s.borrow().as_ref().cloned().unwrap()
+    static KEY: u8 = 0;
+    runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
+        Rc::new(StyleSheet::r#static(StyleRules::default()))
     })
 }
 

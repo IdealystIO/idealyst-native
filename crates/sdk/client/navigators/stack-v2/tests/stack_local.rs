@@ -111,6 +111,62 @@ fn push_shows_top_then_pop_reveals_below() {
     }
 }
 
+/// Cold-start deep link: the walker resolves the launch path, mounts THAT
+/// screen, and delegates back-stack reconstruction to the stack SDK (see the
+/// non-deferred mount in `walker::navigator`). The handler used to seat the
+/// attached screen as `route: initial_route / path: initial_path` at depth 1 —
+/// the entry was mislabeled, `can_go_back` stayed false, and Back could never
+/// return to the index.
+#[test]
+fn regression_cold_deep_link_reconstructs_back_stack() {
+    scheduler();
+
+    let mut mock = MockBackend::new();
+    mock.register_navigator::<StackPresentation, _>(|| Box::new(StackHandler::<MockBackend>::new()));
+    let backend = Rc::new(RefCell::new(mock));
+
+    runtime_core::primitives::navigator::set_initial_path(Some("/detail".to_string()));
+    let nav: Ref<StackHandle> = Ref::new();
+    let nav_for_app = nav.clone();
+    let _owner: Box<dyn Any> = Box::new(runtime_core::mount(backend.clone(), move || {
+        let nav = nav_for_app.clone();
+        StackNavigator::new(&HOME)
+            .screen(HOME, |_| Screen::new(view(vec![text("HOME SCREEN").into()])))
+            .screen(DETAIL, |_| Screen::new(view(vec![text("DETAIL SCREEN").into()])))
+            .layout(|nav| ui! { view { { nav.outlet } } })
+            .bind(nav)
+            .into()
+    }));
+    runtime_core::drain_buffered_microtasks();
+
+    let handle = nav.get().expect("handle filled");
+    let control = handle.inner().control().expect("control plane");
+    {
+        let b = backend.borrow();
+        assert!(b.contains_text("DETAIL SCREEN"), "deep link shows the resolved screen:\n{}", b.dump());
+        assert!(!b.contains_text("HOME SCREEN"), "index seated BELOW, not visible:\n{}", b.dump());
+    }
+    let (route, path, depth, can_go_back) = control.nav_state_snapshot().expect("nav state");
+    assert_eq!(route, "detail");
+    assert_eq!(path, "/detail");
+    assert_eq!(depth, 2, "configured initial reconstructed beneath the resolved screen");
+    assert!(can_go_back, "back is possible after a cold deep link");
+
+    // Back returns to the index — the whole point of the reconstruction.
+    nav.get().unwrap().pop();
+    runtime_core::drain_buffered_microtasks();
+    {
+        let b = backend.borrow();
+        assert!(b.contains_text("HOME SCREEN"), "pop reveals the index:\n{}", b.dump());
+        assert!(!b.contains_text("DETAIL SCREEN"), "deep-linked screen released:\n{}", b.dump());
+    }
+    let (route, path, depth, can_go_back) = control.nav_state_snapshot().expect("nav state");
+    assert_eq!(route, "home", "active mirror updated to the revealed index");
+    assert_eq!(path, "/");
+    assert_eq!(depth, 1);
+    assert!(!can_go_back);
+}
+
 #[test]
 fn pop_at_root_is_a_noop() {
     scheduler();

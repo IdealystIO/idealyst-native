@@ -23,18 +23,15 @@ use runtime_core::{
     component, dynamic, fragment, pressable, text, ui, ChildList, Element, IdealystSchema, Length,
     Reactive, StyleApplication, StyleRules, StyleSheet,
 };
-use std::cell::RefCell;
 use std::rc::Rc;
 
-thread_local! {
-    static HEADER_BASE_SHEET: RefCell<Option<Rc<StyleSheet>>> = const { RefCell::new(None) };
-}
+// Shared empty base sheet via `cached_stylesheet` — a per-file `thread_local!`
+// would burn one of Android/bionic's ~128 pthread TLS keys per sheet (the
+// exact per-sheet-thread_local pattern that SIGABRT'd idea-ui-docs at mount).
 fn base_sheet() -> Rc<StyleSheet> {
-    HEADER_BASE_SHEET.with(|s| {
-        if s.borrow().is_none() {
-            *s.borrow_mut() = Some(Rc::new(StyleSheet::r#static(StyleRules::default())));
-        }
-        s.borrow().as_ref().cloned().unwrap()
+    static KEY: u8 = 0;
+    runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
+        Rc::new(StyleSheet::r#static(StyleRules::default()))
     })
 }
 

@@ -14,7 +14,6 @@ use runtime_core::{
     component, rx, ui, Element, Ref, Route, Screen, StyleApplication, StyleRules, StyleSheet,
 };
 use runtime_core::{AlignItems, FlexDirection, Length};
-use std::cell::RefCell;
 use std::rc::Rc;
 use stack_navigator_v2::{
     header_state, StackBuilder, StackContext, StackHandle, StackNavigator, StackScreenExt,
@@ -120,15 +119,12 @@ fn page(title: &str, body: &str) -> Element {
 // Inline styles (demo-local).
 // ---------------------------------------------------------------------------
 
-thread_local! {
-    static BASE: RefCell<Option<Rc<StyleSheet>>> = const { RefCell::new(None) };
-}
+// Shared empty base sheet via `cached_stylesheet` — a per-file `thread_local!`
+// burns an Android/bionic pthread TLS key per sheet (capped ~128).
 fn base() -> Rc<StyleSheet> {
-    BASE.with(|s| {
-        if s.borrow().is_none() {
-            *s.borrow_mut() = Some(Rc::new(StyleSheet::r#static(StyleRules::default())));
-        }
-        s.borrow().as_ref().cloned().unwrap()
+    static KEY: u8 = 0;
+    runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
+        Rc::new(StyleSheet::r#static(StyleRules::default()))
     })
 }
 fn column_style() -> StyleApplication {

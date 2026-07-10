@@ -1554,6 +1554,31 @@ pub struct SwapContext {
     pub on_select: Rc<dyn Fn(&'static str)>,
 }
 
+/// The default sizing an outlet-model navigator handler applies to its root
+/// view at `init`: fill the container. Without it the bare root view hugs
+/// content, so an app whose root is a navigator renders collapsed instead of
+/// filling the viewport (web `#app` and native window roots size CHILDREN
+/// that ask for space; they don't force it). This is the outlet-model
+/// counterpart of the legacy web navigators' `.ui-nav-root { width/height:
+/// 100% }` rule, expressed as backend-neutral `StyleRules` so every backend
+/// gets the same behavior. `flex-grow: 1` + `min-height: 0` additionally let
+/// a navigator share a flex column with author chrome (header above, bar
+/// below) by absorbing the remaining space.
+///
+/// Authors override by styling the navigator element itself
+/// (`.with_style(...)` on the SDK builder) — the walker applies that style
+/// AFTER `init`, onto the same root node, so it wins.
+pub fn navigator_fill_rules() -> Rc<crate::style::StyleRules> {
+    use crate::style::Length;
+    Rc::new(crate::style::StyleRules {
+        width: Some(Length::Percent(100.0).into()),
+        height: Some(Length::Percent(100.0).into()),
+        flex_grow: Some(1.0.into()),
+        min_height: Some(Length::Px(0.0).into()),
+        ..Default::default()
+    })
+}
+
 /// Mint an [`crate::element::Element::NavigatorOutlet`] — the placeholder
 /// an author layout splats to mark where the active screen renders.
 /// Normally reached via [`SwapContext::outlet`]; exposed for hand-built
