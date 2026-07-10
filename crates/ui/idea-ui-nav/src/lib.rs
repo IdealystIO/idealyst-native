@@ -2,10 +2,11 @@
 //!
 //! Under the outlet model, a navigator owns only its single outlet
 //! (`{nav.outlet}`); everything wrapping it is ordinary author layout. This
-//! crate is that layout, themed and ready-made: drop a [`TabBar`] (or, later,
-//! `Drawer` / `StackHeader`) around a swap navigator's outlet and wire it to
-//! the [`SwapContext`](runtime_core::primitives::navigator::SwapContext) the
-//! `.layout(|nav| …)` closure hands you.
+//! crate is that layout, themed and ready-made: an [`AppShell`] (responsive
+//! pinned-sidebar ⇄ drawer), a [`TabBar`], a [`Drawer`], and a
+//! [`StackHeader`], wired to the
+//! [`SwapContext`](runtime_core::primitives::navigator::SwapContext) /
+//! `StackContext` the `.layout(|nav| …)` closure hands you.
 //!
 //! ```ignore
 //! use swap_navigator::{SwapNavigator, SwapBuilder};
@@ -31,10 +32,12 @@
 
 #![deny(missing_docs)]
 
+mod app_shell;
 mod drawer;
 mod stack_header;
 mod tab_bar;
 
+pub use app_shell::{sidebar_pinned, AppShell, AppShellProps};
 pub use drawer::{Drawer, DrawerProps, DrawerSide};
 pub use stack_header::{StackHeader, StackHeaderProps};
 pub use tab_bar::{TabBar, TabBarProps, TabItem};

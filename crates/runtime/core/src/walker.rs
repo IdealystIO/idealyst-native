@@ -696,6 +696,13 @@ fn dispatch_navigator_outlet<B: Backend + 'static>(
     // The outlet is an empty container view; the SDK handler swaps the
     // active screen in as its only child. `is_container = true` so it
     // participates in layout like a plain View.
+    //
+    // Style-less outlets get the fill default (`outlet_fill_rules`): screens
+    // assume a bounded, fillable region, and a bare hug-content outlet broke
+    // the zero-config path on every backend. An author style on the outlet
+    // (`ctx.outlet.with_style(...)`) replaces the default entirely.
+    let style = style
+        .or_else(|| Some(crate::primitives::navigator::shared::default_outlet_style()));
     let n = view::build(
         backend,
         Vec::new(),

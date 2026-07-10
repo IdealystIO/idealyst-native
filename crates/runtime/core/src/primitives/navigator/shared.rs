@@ -1539,7 +1539,16 @@ pub struct NavState {
 /// common no-param case; typed-param navigation goes through the handle).
 ///
 /// Not `Clone` — the `outlet` [`Element`](crate::element::Element) is a
-/// one-shot value the layout closure splats exactly once.
+/// **one-shot value the layout closure splats exactly once, in one stable
+/// spot**. It cannot be duplicated into the branches of a reactive
+/// `if`/`when`: the walker captures ONE outlet node at layout-build time and
+/// the handler swaps screens into exactly that node, so an outlet inside a
+/// rebuilt branch would strand the mounted screen. Responsive layouts keep
+/// the outlet pinned and reactively toggle the CHROME around it — restyle
+/// always-mounted sidebars/bars instead of moving the outlet between
+/// branches. `idea_ui_nav::AppShell` packages that pattern (pinned sidebar ⇄
+/// off-canvas drawer, one sidebar build, outlet never moves); reach for it
+/// before re-deriving the shape by hand.
 pub struct SwapContext {
     /// Splat this into the layout tree (`{nav.outlet}`) where the active
     /// screen mounts. One per layout — the walker captures its node so
@@ -1577,6 +1586,46 @@ pub fn navigator_fill_rules() -> Rc<crate::style::StyleRules> {
         min_height: Some(Length::Px(0.0).into()),
         ..Default::default()
     })
+}
+
+/// The default sizing of an author-splatted `{nav.outlet}` that carries no
+/// explicit style: a **bounded, fillable flex region**. Screens assume they
+/// can fill their container (`flex: 1`, `min-height: 100%`, scroll views
+/// needing a bounded height), so a bare outlet that hugs content breaks the
+/// zero-config path — every author had to hand-plumb `flex: 1 1 0` +
+/// `min-height: 0` onto it before anything scrolled or filled correctly.
+///
+/// `flex: 1 1 0` absorbs the remaining space of the author's layout column
+/// (after bars/headers); `min-height/min-width: 0` keeps a tall screen from
+/// blowing the column open instead of scrolling; the explicit column
+/// direction makes the contract visible rather than inherited.
+///
+/// Opt out by styling the outlet itself: `ctx.outlet.with_style(...)` (the
+/// walker uses the author style INSTEAD of this default when one is set).
+pub fn outlet_fill_rules() -> crate::style::StyleRules {
+    use crate::style::Length;
+    crate::style::StyleRules {
+        flex_direction: Some(crate::style::FlexDirection::Column),
+        flex_grow: Some(1.0.into()),
+        flex_shrink: Some(1.0.into()),
+        flex_basis: Some(Length::Px(0.0).into()),
+        min_height: Some(Length::Px(0.0).into()),
+        min_width: Some(Length::Px(0.0).into()),
+        ..Default::default()
+    }
+}
+
+/// [`outlet_fill_rules`] packaged as the `StyleSource` the walker attaches
+/// to a style-less `NavigatorOutlet`.
+pub(crate) fn default_outlet_style() -> crate::sources::StyleSource {
+    static KEY: u8 = 0;
+    let sheet = crate::style::cached_stylesheet(&KEY as *const u8 as usize, || {
+        Rc::new(crate::style::StyleSheet::r#static(crate::style::StyleRules::default()))
+    });
+    crate::sources::StyleSource::Static(
+        crate::style::StyleApplication::new(sheet)
+            .with_computed("__navigator_outlet_fill", outlet_fill_rules),
+    )
 }
 
 /// Mint an [`crate::element::Element::NavigatorOutlet`] — the placeholder

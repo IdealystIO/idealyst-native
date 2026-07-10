@@ -50,10 +50,20 @@
 //! The navigator's root **fills its container by default** (width/height
 //! 100% + `flex-grow: 1` — see `navigator_fill_rules` in `runtime-core`), so
 //! an app whose root is a navigator fills the viewport on every backend.
-//! Override by styling the navigator element itself:
-//! `SwapNavigator::new(&home)….with_style(my_style)`. The author layout
-//! INSIDE the navigator sizes itself as usual (e.g. a fill-height column
-//! whose outlet wrapper has `flex-grow: 1`).
+//! The **outlet fills too**: a style-less `{nav.outlet}` defaults to a
+//! bounded, fillable flex region (`flex: 1 1 0` + `min-height: 0` — see
+//! `outlet_fill_rules`), so screens that assume they can fill — and scroll
+//! views that need a bounded height — work with zero configuration.
+//! Override either by styling it directly: `.with_style(...)` on the
+//! navigator builder, `ctx.outlet.with_style(...)` on the outlet.
+//!
+//! # The outlet is one-shot — keep it in one stable spot
+//!
+//! `ctx.outlet` is a non-`Clone` value splatted exactly once; it cannot be
+//! branched into a reactive `if`/`when` (see [`SwapContext`]). Responsive
+//! layouts keep the outlet pinned and reactively restyle the chrome around
+//! it — or use `idea_ui_nav::AppShell`, which packages the pinned-sidebar ⇄
+//! drawer shape with a single sidebar build.
 
 #![deny(missing_docs)]
 

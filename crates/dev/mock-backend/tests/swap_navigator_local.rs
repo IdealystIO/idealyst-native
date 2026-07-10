@@ -411,6 +411,86 @@ fn is_fill_rules(r: &StyleRules) -> bool {
         && r.flex_grow == Some(1.0.into())
 }
 
+fn is_outlet_fill_rules(r: &StyleRules) -> bool {
+    r.flex_grow == Some(1.0.into())
+        && r.flex_basis == Some(Length::Px(0.0).into())
+        && r.min_height == Some(Length::Px(0.0).into())
+}
+
+/// A style-less `{nav.outlet}` used to build as a bare hug-content view, but
+/// screens assume a bounded, fillable region (`flex: 1`, scroll views need a
+/// bounded height) — the zero-config path was broken until authors manually
+/// plumbed `flex: 1 1 0` + `min-height: 0` onto the outlet. The walker now
+/// applies `outlet_fill_rules` when the outlet carries no author style.
+#[test]
+fn regression_outlet_fills_by_default() {
+    install_buffering_scheduler();
+
+    let mut mock = MockBackend::new();
+    mock.register_navigator::<SwapPresentation, _>(|| Box::new(SwapHandler::<MockBackend>::new()));
+    let backend = Rc::new(RefCell::new(mock));
+
+    let nav: Ref<SwapHandle> = Ref::new();
+    let _owner = mount_swap(&backend, nav.clone());
+    runtime_core::drain_buffered_microtasks();
+
+    assert!(
+        backend.borrow().any_node_styled(is_outlet_fill_rules),
+        "a style-less outlet defaults to a bounded, fillable flex region:\n{}",
+        backend.borrow().dump()
+    );
+}
+
+/// `ctx.outlet.with_style(...)` replaces the outlet's fill default entirely —
+/// opting out is a real author control, not a merge.
+#[test]
+fn outlet_author_style_replaces_default_fill() {
+    install_buffering_scheduler();
+
+    let mut mock = MockBackend::new();
+    mock.register_navigator::<SwapPresentation, _>(|| Box::new(SwapHandler::<MockBackend>::new()));
+    let backend = Rc::new(RefCell::new(mock));
+
+    fn outlet_style() -> StyleApplication {
+        static KEY: u8 = 0;
+        let sheet = runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
+            Rc::new(StyleSheet::r#static(StyleRules::default()))
+        });
+        StyleApplication::new(sheet).with_computed("test_outlet_fixed", || StyleRules {
+            height: Some(Length::Px(222.0).into()),
+            ..Default::default()
+        })
+    }
+
+    let nav: Ref<SwapHandle> = Ref::new();
+    let nav_for_app = nav.clone();
+    let _owner: Box<dyn Any> = Box::new(runtime_core::mount(backend.clone(), move || {
+        use swap_navigator::SwapNavigator;
+        let nav = nav_for_app.clone();
+        SwapNavigator::new(&HOME)
+            .screen(HOME, |_| Screen::new(view(vec![text("HOME CONTENT").into()])))
+            .layout(|ctx| {
+                view(vec![ctx.outlet.with_style(outlet_style()), text("BAR").into_element()])
+                    .into_element()
+            })
+            .bind(nav)
+            .into()
+    }));
+    runtime_core::drain_buffered_microtasks();
+
+    let b = backend.borrow();
+    assert!(
+        b.any_node_styled(|r| r.height == Some(Length::Px(222.0).into())),
+        "author outlet style landed:\n{}",
+        b.dump()
+    );
+    assert!(
+        !b.any_node_styled(is_outlet_fill_rules),
+        "author outlet style replaced the fill default:\n{}",
+        b.dump()
+    );
+}
+
 /// The navigator's bare root view carried NO sizing, so an app whose root is
 /// a navigator collapsed to content height instead of filling the viewport
 /// (web `#app` / desktop window roots size children that ask for space; they
