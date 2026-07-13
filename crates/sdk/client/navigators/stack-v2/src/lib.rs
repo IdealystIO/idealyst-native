@@ -36,6 +36,16 @@
 //! 100% + `flex-grow: 1` — see `navigator_fill_rules` in `runtime-core`).
 //! Override by styling the navigator element itself:
 //! `StackNavigator::new(&home)…​.with_style(my_style)`.
+//!
+//! # Screen retention — what happens below the top
+//!
+//! Covered screens follow [`StackRetention`], resolved per platform by
+//! default: on **web**, a push **disposes** the covered screen and pop
+//! re-mounts it from its URL (browser semantics — nothing below the visible
+//! page stays resident, and a cold deep link never mounts the parent it
+//! synthesizes for Back until you actually pop to it); everywhere else,
+//! covered screens stay alive (native-stack semantics — pop reveals them
+//! with state intact). Force either with `.retention(...)`.
 
 #![deny(missing_docs)]
 
@@ -45,7 +55,7 @@ use runtime_core::primitives::navigator::{
     NavigatorConfig, NavigatorControl, NavigatorHandle, NavigatorHandler, NavigatorHost,
     NavigatorOps, Route, RouteEntry, RouteParams, Screen, ScreenBuilder, StackHeaderState,
 };
-use runtime_core::{Backend, Bound, Element, Ref, RefFill, Signal, StyleSource};
+use runtime_core::{Backend, Bound, Element, IdealystSchema, Ref, RefFill, Signal, StyleSource};
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -168,16 +178,43 @@ impl StackScreenExt for Screen {
 
 type LayoutBuilder = Rc<dyn Fn(StackContext) -> Element>;
 
+/// What happens to a screen when a `push` covers it.
+///
+/// A native stack keeps covered screens alive so Back reveals them with
+/// state intact; a browser treats every navigation as URL-driven — Back
+/// re-renders the revealed page from its URL, and nothing below the visible
+/// page stays resident. Both are right *for their platform*, so the default
+/// resolves per platform at mount and either can be forced via
+/// [`StackBuilder::retention`].
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, IdealystSchema)]
+pub enum StackRetention {
+    /// Resolve at mount: [`Rebuild`](Self::Rebuild) on `Platform::Web`,
+    /// [`Retain`](Self::Retain) everywhere else.
+    #[default]
+    PlatformDefault,
+    /// Covered screens stay alive (scope + detached node); pop reveals them
+    /// with all state intact. Native-stack semantics.
+    Retain,
+    /// Covered screens are **disposed** on push; pop re-mounts the revealed
+    /// screen from its URL (route pattern → typed params), exactly like a
+    /// fresh navigation after a refresh. Browser semantics. Also applies to
+    /// cold-start deep links: the synthesized parent entry is URL-only and
+    /// never mounts until you actually pop to it.
+    Rebuild,
+}
+
 /// The SDK payload riding on `Element::Navigator`; its `TypeId` keys the
 /// per-backend [`StackHandler`] registration.
 pub struct StackPresentation {
     /// The author layout closure (`None` ⇒ a bare outlet, no chrome).
     pub layout: Option<LayoutBuilder>,
+    /// Covered-screen lifecycle — see [`StackRetention`].
+    pub retention: StackRetention,
 }
 
 impl Default for StackPresentation {
     fn default() -> Self {
-        Self { layout: None }
+        Self { layout: None, retention: StackRetention::default() }
     }
 }
 
@@ -319,6 +356,9 @@ pub trait StackBuilder: Sized {
     fn layout<F>(self, f: F) -> Self
     where
         F: Fn(StackContext) -> Element + 'static;
+    /// Set the covered-screen lifecycle — see [`StackRetention`]. Default
+    /// resolves per platform (browser semantics on web, native elsewhere).
+    fn retention(self, r: StackRetention) -> Self;
     /// Bind a `Ref<StackHandle>` for imperative push/pop.
     fn bind(self, r: Ref<StackHandle>) -> Self;
 }
@@ -362,6 +402,11 @@ impl StackBuilder for Bound<StackHandle> {
         self
     }
 
+    fn retention(mut self, r: StackRetention) -> Self {
+        with_presentation_mut(&mut self, |p| p.retention = r);
+        self
+    }
+
     fn bind(mut self, r: Ref<StackHandle>) -> Self {
         with_navigator_prim(&mut self, |p| {
             if let Element::Navigator { ref_fill, .. } = p {
@@ -378,13 +423,24 @@ impl StackBuilder for Bound<StackHandle> {
 // The backend-neutral handler
 // =============================================================================
 
-/// One mounted screen: its route, node, and scope id.
-struct StackEntry<N> {
-    route: &'static str,
-    path: String,
+/// A screen's mounted surface: node + scope + header options.
+struct LiveScreen<N> {
     node: N,
     scope_id: u64,
     options: StackScreenOptions,
+}
+
+/// One back-stack entry. `live: None` is a **cold** entry — a screen the
+/// stack knows by URL only (covered under [`StackRetention::Rebuild`], or a
+/// deep-link parent never actually visited) that [`SharedStack::materialize_top`]
+/// re-mounts from its URL when a pop reveals it.
+struct StackEntry<N> {
+    route: &'static str,
+    path: String,
+    /// Opaque `NavCommand` state payload, kept (`Rc` — cheaply clonable) so
+    /// a cold re-mount sees the same screen-state a live mount did.
+    state: Option<Rc<dyn Any>>,
+    live: Option<LiveScreen<N>>,
 }
 
 /// The framework-attached initial screen, held until the outlet exists.
@@ -405,6 +461,12 @@ struct SharedStack<B: Backend> {
     pending_initial: RefCell<Option<PendingInitial<B::Node>>>,
     initial_route: &'static str,
     initial_path: String,
+    /// Covered-screen lifecycle, resolved from the presentation's
+    /// [`StackRetention`] at init (`PlatformDefault` → platform lookup).
+    retention: StackRetention,
+    /// URL → `(route, typed_params)` resolver (the walker's `match_path`),
+    /// used to re-mount cold entries exactly like a fresh navigation.
+    match_path: Rc<dyn Fn(&str) -> Option<(&'static str, Box<dyn Any>)>>,
     /// The walker's reactive route/path mirrors, read UNTRACKED at attach
     /// time: on the non-deferred cold-start path the walker resolves a deep
     /// link and writes the resolved route/path into them BEFORE mounting the
@@ -435,9 +497,14 @@ fn options_of<N>(r: &MountResult<N>) -> StackScreenOptions {
 }
 
 impl<B: Backend> SharedStack<B> {
-    /// Show the top entry's node in the outlet.
+    /// Show the top entry's node in the outlet. Invariant: the top entry is
+    /// live whenever this runs ([`Self::materialize_top`] before reveal).
     fn show_top(&self) {
-        let top = self.stack.borrow().last().map(|e| e.node.clone());
+        let top = self
+            .stack
+            .borrow()
+            .last()
+            .and_then(|e| e.live.as_ref().map(|l| l.node.clone()));
         if let (Some(outlet), Some(node)) = (self.outlet.borrow().clone(), top) {
             (self.clear_children)(outlet.clone());
             (self.insert_node)(outlet, node);
@@ -451,9 +518,52 @@ impl<B: Backend> SharedStack<B> {
             .stack
             .borrow()
             .last()
-            .map(|e| e.options.to_state(false));
+            .and_then(|e| e.live.as_ref())
+            .map(|l| l.options.to_state(false));
         self.screen_chrome
             .set(state.map(|s| Rc::new(s) as Rc<dyn Any>));
+    }
+
+    /// Ensure the top entry has a live surface, re-mounting a cold entry
+    /// from its URL — `match_path` rebuilds the typed params from the path,
+    /// exactly like a fresh navigation after a browser refresh. (The unit
+    /// fallback covers paths that no longer resolve; every entry minted by a
+    /// real navigation round-trips through its own route pattern.)
+    fn materialize_top(&self) {
+        let cold = {
+            let s = self.stack.borrow();
+            match s.last() {
+                Some(e) if e.live.is_none() => Some((e.route, e.path.clone(), e.state.clone())),
+                _ => None,
+            }
+        };
+        let Some((route, path, state)) = cold else { return };
+        let params = (self.match_path)(&path)
+            .map(|(_, p)| p)
+            .unwrap_or_else(|| Box::new(()));
+        let r = (self.mount_screen)(route, params, state);
+        let options = options_of(&r);
+        if let Some(top) = self.stack.borrow_mut().last_mut() {
+            top.live = Some(LiveScreen { node: r.node, scope_id: r.scope_id, options });
+        }
+    }
+
+    /// Under [`StackRetention::Rebuild`], dispose the surface of the screen a
+    /// push is about to cover — pop re-mounts it from its URL. The surface is
+    /// taken out before `release_screen` so no stack borrow is held across
+    /// author `on_cleanup` (which may navigate).
+    fn dispose_covered_top(&self) {
+        if self.retention != StackRetention::Rebuild {
+            return;
+        }
+        let covered = self
+            .stack
+            .borrow_mut()
+            .last_mut()
+            .and_then(|e| e.live.take());
+        if let Some(l) = covered {
+            (self.release_screen)(l.scope_id);
+        }
     }
 
     /// Seat the framework-attached initial screen. When a cold-start deep
@@ -471,22 +581,31 @@ impl<B: Backend> SharedStack<B> {
         options: StackScreenOptions,
     ) {
         if route != self.initial_route {
-            let r = (self.mount_screen)(self.initial_route, Box::new(()), None);
-            let base_options = options_of(&r);
+            // Under `Retain`, mount the index eagerly (native semantics —
+            // back reveals it instantly, state and all). Under `Rebuild`,
+            // seat a COLD entry: the parent was never actually visited, so
+            // it must not load (run effects, fetch resources) until a pop
+            // reveals it — browser semantics.
+            let live = match self.retention {
+                StackRetention::Rebuild => None,
+                _ => {
+                    let r = (self.mount_screen)(self.initial_route, Box::new(()), None);
+                    let options = options_of(&r);
+                    Some(LiveScreen { node: r.node, scope_id: r.scope_id, options })
+                }
+            };
             self.stack.borrow_mut().push(StackEntry {
                 route: self.initial_route,
                 path: self.initial_path.clone(),
-                node: r.node,
-                scope_id: r.scope_id,
-                options: base_options,
+                state: None,
+                live,
             });
         }
         self.stack.borrow_mut().push(StackEntry {
             route,
             path,
-            node,
-            scope_id,
-            options,
+            state: None,
+            live: Some(LiveScreen { node, scope_id, options }),
         });
         self.show_top();
         let len = self.stack.borrow().len();
@@ -495,14 +614,14 @@ impl<B: Backend> SharedStack<B> {
     }
 
     fn push(&self, name: &'static str, params: Box<dyn Any>, state: Option<Rc<dyn Any>>, url: String) {
-        let r = (self.mount_screen)(name, params, state);
+        let r = (self.mount_screen)(name, params, state.clone());
         let options = options_of(&r);
+        self.dispose_covered_top();
         self.stack.borrow_mut().push(StackEntry {
             route: name,
             path: url,
-            node: r.node,
-            scope_id: r.scope_id,
-            options,
+            state,
+            live: Some(LiveScreen { node: r.node, scope_id: r.scope_id, options }),
         });
         self.show_top();
         // Copy the length out so no `stack` borrow is held across the
@@ -520,8 +639,14 @@ impl<B: Backend> SharedStack<B> {
         }
         let popped = self.stack.borrow_mut().pop();
         if let Some(entry) = popped {
-            (self.release_screen)(entry.scope_id);
+            if let Some(l) = entry.live {
+                (self.release_screen)(l.scope_id);
+            }
         }
+        // Re-mount the revealed screen if it was disposed (Rebuild) or never
+        // mounted (cold deep-link parent) — from its URL, like a fresh
+        // navigation.
+        self.materialize_top();
         self.show_top();
         let len = self.stack.borrow().len();
         (self.depth_changed)(len);
@@ -540,18 +665,19 @@ impl<B: Backend> SharedStack<B> {
     }
 
     fn replace(&self, name: &'static str, params: Box<dyn Any>, state: Option<Rc<dyn Any>>, url: String) {
-        let r = (self.mount_screen)(name, params, state);
+        let r = (self.mount_screen)(name, params, state.clone());
         let options = options_of(&r);
         let old = self.stack.borrow_mut().pop();
         if let Some(entry) = old {
-            (self.release_screen)(entry.scope_id);
+            if let Some(l) = entry.live {
+                (self.release_screen)(l.scope_id);
+            }
         }
         self.stack.borrow_mut().push(StackEntry {
             route: name,
             path: url,
-            node: r.node,
-            scope_id: r.scope_id,
-            options,
+            state,
+            live: Some(LiveScreen { node: r.node, scope_id: r.scope_id, options }),
         });
         self.show_top();
         // Borrow-free callback, same hardening as `push`/`pop`.
@@ -564,16 +690,17 @@ impl<B: Backend> SharedStack<B> {
         // Release the whole stack, then seat the new single screen.
         let old: Vec<_> = self.stack.borrow_mut().drain(..).collect();
         for entry in old {
-            (self.release_screen)(entry.scope_id);
+            if let Some(l) = entry.live {
+                (self.release_screen)(l.scope_id);
+            }
         }
-        let r = (self.mount_screen)(name, params, state);
+        let r = (self.mount_screen)(name, params, state.clone());
         let options = options_of(&r);
         self.stack.borrow_mut().push(StackEntry {
             route: name,
             path: url,
-            node: r.node,
-            scope_id: r.scope_id,
-            options,
+            state,
+            live: Some(LiveScreen { node: r.node, scope_id: r.scope_id, options }),
         });
         self.show_top();
         (self.depth_changed)(1);
@@ -629,12 +756,27 @@ impl<B: Backend + 'static> NavigatorHandler<B> for StackHandler<B> {
             depth_changed,
             active_changed,
             base,
+            match_path,
             ..
         } = host;
 
-        let layout = presentation
+        let (layout, retention) = presentation
             .downcast_ref::<StackPresentation>()
-            .and_then(|p| p.layout.clone());
+            .map(|p| (p.layout.clone(), p.retention))
+            .unwrap_or((None, StackRetention::default()));
+        // Resolve the platform default at mount: browsers treat Back as a
+        // URL-driven re-render (nothing below the visible page stays
+        // resident); native stacks keep covered screens alive.
+        let retention = match retention {
+            StackRetention::PlatformDefault => {
+                if matches!(runtime_core::platform(), runtime_core::Platform::Web) {
+                    StackRetention::Rebuild
+                } else {
+                    StackRetention::Retain
+                }
+            }
+            resolved => resolved,
+        };
 
         let shared = Rc::new(SharedStack::<B> {
             outlet: RefCell::new(None),
@@ -642,6 +784,8 @@ impl<B: Backend + 'static> NavigatorHandler<B> for StackHandler<B> {
             pending_initial: RefCell::new(None),
             initial_route,
             initial_path: runtime_core::primitives::navigator::join_path(&base, initial_path),
+            retention,
+            match_path,
             active_route: nav_state.active_route,
             active_path: nav_state.active_path,
             mount_screen,
@@ -766,7 +910,9 @@ impl<B: Backend + 'static> NavigatorHandler<B> for StackHandler<B> {
                 let old: Vec<StackEntry<B::Node>> =
                     shared.stack.borrow_mut().drain(..).collect();
                 for entry in old {
-                    (shared.release_screen)(entry.scope_id);
+                    if let Some(l) = entry.live {
+                        (shared.release_screen)(l.scope_id);
+                    }
                 }
                 shared.seat_initial(route, path, screen, scope_id, opts);
             } else {
@@ -895,7 +1041,7 @@ pub use fallback::register;
 pub mod prelude {
     pub use super::{
         header_state, register, StackBuilder, StackContext, StackHandle, StackNavigator,
-        StackPresentation, StackScreenExt, StackScreenOptions,
+        StackPresentation, StackRetention, StackScreenExt, StackScreenOptions,
     };
     pub use runtime_core::primitives::navigator::{HeaderButton, StackHeaderState};
 }

@@ -11,7 +11,9 @@ use mock_backend::MockBackend;
 use runtime_core::primitives::navigator::Screen;
 use runtime_core::scheduling::{install_scheduler, ScheduleHandle, Scheduler};
 use runtime_core::{text, ui, view, Element, Ref, Route};
-use stack_navigator_v2::{StackBuilder, StackHandle, StackHandler, StackNavigator, StackPresentation};
+use stack_navigator_v2::{
+    StackBuilder, StackHandle, StackHandler, StackNavigator, StackPresentation, StackRetention,
+};
 
 const HOME: Route<()> = Route::<()>::new("home", "/");
 const DETAIL: Route<()> = Route::<()>::new("detail", "/detail");
@@ -165,6 +167,132 @@ fn regression_cold_deep_link_reconstructs_back_stack() {
     assert_eq!(path, "/");
     assert_eq!(depth, 1);
     assert!(!can_go_back);
+}
+
+/// Per-screen lifecycle counters: how many times the screen body was built,
+/// and how many times a built instance was disposed.
+#[derive(Clone, Default)]
+struct Counters {
+    builds: Rc<std::cell::Cell<u32>>,
+    disposals: Rc<std::cell::Cell<u32>>,
+}
+
+/// Mount a HOME/DETAIL stack whose HOME screen reports into `c`.
+fn mount_counted(
+    backend: &Rc<RefCell<MockBackend>>,
+    nav: Ref<StackHandle>,
+    c: Counters,
+    retention: StackRetention,
+) -> Box<dyn Any> {
+    let nav_for_app = nav;
+    Box::new(runtime_core::mount(backend.clone(), move || {
+        let nav = nav_for_app.clone();
+        let c = c.clone();
+        StackNavigator::new(&HOME)
+            .screen(HOME, move |_| {
+                c.builds.set(c.builds.get() + 1);
+                let disposals = c.disposals.clone();
+                runtime_core::on_cleanup(move || disposals.set(disposals.get() + 1));
+                Screen::new(view(vec![text("HOME SCREEN").into()]))
+            })
+            .screen(DETAIL, |_| Screen::new(view(vec![text("DETAIL SCREEN").into()])))
+            .layout(|nav| ui! { view { { nav.outlet } } })
+            .retention(retention)
+            .bind(nav)
+            .into()
+    }))
+}
+
+/// Browser semantics (`Rebuild`, the web default): pushing over a screen
+/// DISPOSES it — nothing below the visible screen stays resident — and pop
+/// re-mounts the revealed screen from its URL like a fresh navigation.
+#[test]
+fn regression_rebuild_disposes_covered_screen_and_pop_remounts() {
+    scheduler();
+
+    let mut mock = MockBackend::new();
+    mock.register_navigator::<StackPresentation, _>(|| Box::new(StackHandler::<MockBackend>::new()));
+    let backend = Rc::new(RefCell::new(mock));
+
+    let c = Counters::default();
+    let nav: Ref<StackHandle> = Ref::new();
+    let _owner = mount_counted(&backend, nav.clone(), c.clone(), StackRetention::Rebuild);
+    runtime_core::drain_buffered_microtasks();
+    assert_eq!(c.builds.get(), 1, "index mounted once");
+
+    // Push covers the index — its scope must be dropped, not parked.
+    nav.get().expect("handle filled").push(&DETAIL, ());
+    runtime_core::drain_buffered_microtasks();
+    assert_eq!(c.disposals.get(), 1, "covered screen disposed on push (browser semantics)");
+    assert!(!backend.borrow().contains_text("HOME SCREEN"));
+
+    // Pop re-mounts it fresh from its URL.
+    nav.get().unwrap().pop();
+    runtime_core::drain_buffered_microtasks();
+    assert_eq!(c.builds.get(), 2, "pop re-mounts the revealed screen fresh");
+    assert!(backend.borrow().contains_text("HOME SCREEN"));
+    assert!(!backend.borrow().contains_text("DETAIL SCREEN"));
+}
+
+/// Native semantics (`Retain`, the non-web default — what the mock's
+/// platform resolves to): covered screens stay alive and pop reveals the
+/// SAME instance, no rebuild.
+#[test]
+fn retain_keeps_covered_screen_alive_across_push_pop() {
+    scheduler();
+
+    let mut mock = MockBackend::new();
+    mock.register_navigator::<StackPresentation, _>(|| Box::new(StackHandler::<MockBackend>::new()));
+    let backend = Rc::new(RefCell::new(mock));
+
+    let c = Counters::default();
+    let nav: Ref<StackHandle> = Ref::new();
+    let _owner = mount_counted(&backend, nav.clone(), c.clone(), StackRetention::Retain);
+    runtime_core::drain_buffered_microtasks();
+
+    nav.get().expect("handle filled").push(&DETAIL, ());
+    runtime_core::drain_buffered_microtasks();
+    assert_eq!(c.disposals.get(), 0, "covered screen stays alive (native semantics)");
+
+    nav.get().unwrap().pop();
+    runtime_core::drain_buffered_microtasks();
+    assert_eq!(c.builds.get(), 1, "pop reveals the retained instance, no rebuild");
+    assert!(backend.borrow().contains_text("HOME SCREEN"));
+}
+
+/// `Rebuild` + cold deep link: the synthesized parent entry is URL-only —
+/// a page loaded at /detail must NEVER load the index (no build, no effects,
+/// no fetches) until the user actually pops to it.
+#[test]
+fn regression_rebuild_cold_deep_link_never_mounts_parent_until_pop() {
+    scheduler();
+
+    let mut mock = MockBackend::new();
+    mock.register_navigator::<StackPresentation, _>(|| Box::new(StackHandler::<MockBackend>::new()));
+    let backend = Rc::new(RefCell::new(mock));
+
+    runtime_core::primitives::navigator::set_initial_path(Some("/detail".to_string()));
+    let c = Counters::default();
+    let nav: Ref<StackHandle> = Ref::new();
+    let _owner = mount_counted(&backend, nav.clone(), c.clone(), StackRetention::Rebuild);
+    runtime_core::drain_buffered_microtasks();
+
+    let handle = nav.get().expect("handle filled");
+    let control = handle.inner().control().expect("control plane");
+    assert_eq!(c.builds.get(), 0, "unvisited deep-link parent must not mount");
+    assert!(backend.borrow().contains_text("DETAIL SCREEN"));
+    let (route, _, depth, can_go_back) = control.nav_state_snapshot().expect("nav state");
+    assert_eq!(route, "detail");
+    assert_eq!(depth, 2, "cold parent still counts for depth/back");
+    assert!(can_go_back);
+
+    // Popping is the first time the parent actually loads.
+    nav.get().unwrap().pop();
+    runtime_core::drain_buffered_microtasks();
+    assert_eq!(c.builds.get(), 1, "parent mounts on first reveal");
+    assert!(backend.borrow().contains_text("HOME SCREEN"));
+    let (route, path, depth, _) = control.nav_state_snapshot().expect("nav state");
+    assert_eq!((route, path.as_str(), depth), ("home", "/", 1));
 }
 
 #[test]
