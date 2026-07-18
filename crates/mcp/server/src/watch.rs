@@ -8,7 +8,7 @@
 //!
 //! **In-process limitation.** Re-extracting from this process's
 //! inventory only picks up components linked into THIS binary. A
-//! user editing `examples/mcp-demo/src/components.rs` and saving
+//! user editing `crates/mcp/examples/mcp-demo/src/components.rs` and saving
 //! does NOT cause new ctors to fire in the running server — the
 //! linker section is fixed at link time. Two practical paths:
 //!

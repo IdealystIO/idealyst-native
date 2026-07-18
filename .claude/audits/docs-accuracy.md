@@ -1,8 +1,8 @@
 ---
 name: docs-accuracy
-description: Documentation under examples/docs must accurately reflect the current framework, UI, and primitive surface. Accuracy only — not style, depth, or completeness.
+description: Documentation under websites/docs must accurately reflect the current framework, UI, and primitive surface. Accuracy only — not style, depth, or completeness.
 targets:
-  - examples/docs
+  - websites/docs
 severity: high
 ---
 
@@ -10,12 +10,12 @@ severity: high
 
 ## Background
 
-Docs live at `examples/docs/`:
+Docs live at `websites/docs/`:
 
-- **Live docs pages** at `examples/docs/src/pages/*.rs` — Rust source that
+- **Live docs pages** at `websites/docs/src/pages/*.rs` — Rust source that
   renders the documentation site. Prose is embedded as string literals,
   and code samples sit inside `CodeBlock(code = "...")` calls.
-- **Content plans** at `examples/docs/docs-content-plan/*.md` — markdown
+- **Content plans** at `websites/docs/docs-content-plan/*.md` — markdown
   source plans that run ahead of the live pages.
 
 The documentation is **a user manual**. It is meant to be approachable
@@ -52,8 +52,8 @@ If a doc is short and accurate, that is the desired state. Only
 
 ## Checklist
 
-Apply each item to **every page** under `examples/docs/src/pages/` and
-**every plan** under `examples/docs/docs-content-plan/`. Flag findings
+Apply each item to **every page** under `websites/docs/src/pages/` and
+**every plan** under `websites/docs/docs-content-plan/`. Flag findings
 at the doc location, not the framework location.
 
 - [ ] **Type / trait / enum-variant names** — for each capitalized
@@ -93,7 +93,7 @@ at the doc location, not the framework location.
       refactors are common.
 - [ ] **Cross-references between doc pages** — internal links like
       `[Styles](#)` or "see the Reactivity page" should resolve to a
-      real page in `examples/docs/src/pages/mod.rs`'s registered routes.
+      real page in `websites/docs/src/pages/mod.rs`'s registered routes.
       Flag placeholder `(#)` links that ship as the live target.
 - [ ] **Plan vs. live contradictions** — when both a content plan
       (`docs-content-plan/NN-topic.md`) and a live page (`pages/topic.rs`)
@@ -125,8 +125,8 @@ For each finding include:
   - low: factually wrong detail with low blast radius (e.g. stale path
     cited only in passing, plan-vs-live contradiction in a low-traffic
     plan).
-- **Location**: `examples/docs/src/pages/file.rs:line` or
-  `examples/docs/docs-content-plan/file.md:line`. Include the exact
+- **Location**: `websites/docs/src/pages/file.rs:line` or
+  `websites/docs/docs-content-plan/file.md:line`. Include the exact
   string from the doc as a short quote.
 - **Issue**: one-line description of the inaccuracy.
 - **Why**: cite the framework source of truth — the file/symbol that

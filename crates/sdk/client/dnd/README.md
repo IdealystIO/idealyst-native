@@ -103,7 +103,7 @@ called `backend_web::install_global_self(&backend)` at startup for the animated
 ghost offset to take effect (a standard app-bootstrap step, not specific to
 this SDK).
 
-See `examples/dnd-demo` for a working screen.
+See `crates/sdk/client/dnd/examples/dnd-demo` for a working screen.
 
 ## What it deliberately leaves to you
 

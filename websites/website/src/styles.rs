@@ -1120,7 +1120,7 @@ stylesheet! {
 }
 
 // Outer chassis around the embedded wgpu canvas lives on the
-// `Simulator` component (`examples/website/src/components/simulator.rs`,
+// `Simulator` component (`websites/website/src/components/simulator.rs`,
 // `chassis_sheet`) so the loaded and placeholder paths render the
 // same bezel without duplicating the style here.
 

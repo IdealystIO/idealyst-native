@@ -170,7 +170,7 @@ If a child only sometimes appears, express that with `if` / `if let` / `match` *
 
 ### 9.5 Local helpers vs. promoting to a component
 
-A snake_case `fn xyz() -> Element` is fine as a one-off, file-local helper that takes no props and is called from one place (e.g., `examples/website/src/pages/targets.rs::phones()`). The moment it starts taking parameters, gets called from a second site, or grows variants, promote it to a `#[component]` so call sites can use `ui!` struct-literal syntax (`Phones(variant = ...)`) instead of positional function arguments. Don't grow positional helper signatures — that's how `tone: ToneRef, variant: VariantRef, label: String, ...` happens.
+A snake_case `fn xyz() -> Element` is fine as a one-off, file-local helper that takes no props and is called from one place (e.g., `websites/website/src/pages/targets.rs::phones()`). The moment it starts taking parameters, gets called from a second site, or grows variants, promote it to a `#[component]` so call sites can use `ui!` struct-literal syntax (`Phones(variant = ...)`) instead of positional function arguments. Don't grow positional helper signatures — that's how `tone: ToneRef, variant: VariantRef, label: String, ...` happens.
 
 ### 9.6 Optional callbacks: bind only when present
 
@@ -196,8 +196,8 @@ The inverse also holds: don't drive-by rewrite components you aren't otherwise m
 
 **Known cleanup hotspots** flagged by the initial audit (drop into these when you're already in the file):
 
-- `examples/website/src/shell.rs` — `layout_with_toc`-style helpers build TOC entries via `Vec::with_capacity` + `.push(ui!{...})`.
-- `examples/website/src/pages/type_safety.rs` — `section()` helper.
-- `examples/website/src/pages/targets.rs` — `target_row()` helper.
-- `examples/website/src/pages/further_reading.rs` — pre-sized vec extended in a loop.
-- `examples/website/src/pages/why_rust.rs` — inline `if let Some(src)` + conditional push instead of `ui!`-internal `if`.
+- `websites/website/src/shell.rs` — `layout_with_toc`-style helpers build TOC entries via `Vec::with_capacity` + `.push(ui!{...})`.
+- `websites/website/src/pages/type_safety.rs` — `section()` helper.
+- `websites/website/src/pages/targets.rs` — `target_row()` helper.
+- `websites/website/src/pages/further_reading.rs` — pre-sized vec extended in a loop.
+- `websites/website/src/pages/why_rust.rs` — inline `if let Some(src)` + conditional push instead of `ui!`-internal `if`.

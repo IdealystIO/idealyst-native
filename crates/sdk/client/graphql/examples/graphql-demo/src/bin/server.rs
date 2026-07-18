@@ -5,7 +5,7 @@
 //! cargo run -p graphql-demo --bin server --features server
 //! ```
 //!
-//! `idealyst dev --web examples/graphql-demo` stages the wasm bundle into
+//! `idealyst dev --web crates/sdk/client/graphql/examples/graphql-demo` stages the wasm bundle into
 //! `<crate>/pkg/`; the server serves that at `/pkg` and the crate root
 //! (which holds the committed `index.html`) at `/`. Open
 //! `http://127.0.0.1:3000/`.
@@ -18,7 +18,7 @@ use axum::Router;
 // keeps the linker from dead-stripping the `#[server]` route's
 // `inventory::submit!` static — without a reference into the lib,
 // `server::router()` would register zero routes and `/_srv/*` would 404.
-// (Same note as examples/todo-sync-demo/src/bin/server.rs.)
+// (Same note as crates/sdk/client/sync/examples/todo-sync-demo/src/bin/server.rs.)
 use graphql_demo::schema;
 use tower_http::services::ServeDir;
 
@@ -36,7 +36,7 @@ async fn main() {
 
     if !pkg_dir.exists() {
         eprintln!("warning: {} doesn't exist yet — run", pkg_dir.display());
-        eprintln!("  idealyst dev --web examples/graphql-demo");
+        eprintln!("  idealyst dev --web crates/sdk/client/graphql/examples/graphql-demo");
         eprintln!("(or `idealyst build --web …`) to produce the wasm bundle.");
     }
 

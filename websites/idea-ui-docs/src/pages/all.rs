@@ -5,7 +5,7 @@
 //! name (`button`, `checkbox`, …). Those stable anchors let
 //! `native_parity::align` line every component up exactly across web and macОS,
 //! so a single capture of `/all` covers the whole library at once. See
-//! `tests/parity.rs` + `idealyst test --parity web,macos examples/idea-ui-docs`.
+//! `tests/parity.rs` + `idealyst test --parity web,macos websites/idea-ui-docs`.
 //!
 //! The page is data-driven: it iterates [`crate::routes::CATALOG`] and reuses
 //! each entry's existing `body` builder, so it stays complete automatically as

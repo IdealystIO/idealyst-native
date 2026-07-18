@@ -8,7 +8,7 @@
 // canvas would then not render, notably on web where native is the only renderer).
 // `use … as _` forces the link without a concrete-typed call. `video` needs no
 // anchor (it's referenced directly via `video::Video` in `screens.rs`). See
-// [[project_inventory_self_registration]]. Mirrors `examples/canvas-demo`.
+// [[project_inventory_self_registration]]. Mirrors `crates/sdk/client/canvas/examples/canvas-demo`.
 use canvas_native as _;
 
 use std::cell::{Cell, RefCell};

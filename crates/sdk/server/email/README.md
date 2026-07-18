@@ -72,7 +72,7 @@ divider) live in [`idea-ui-mail`](../../../ui/idea-ui-mail), the same way
 
 `email` runs in the server binary. Apps depend on it as an **optional** dep
 enabled by their `server` feature, so the wasm client never compiles it. See
-[`examples/email-demo`](../../../../examples/email-demo).
+[`examples/email-demo`](./examples/email-demo).
 
 ## Testing checklist
 
@@ -83,7 +83,7 @@ resolution, overlay dropping, document wrapping).
 
 | Provider  | Tests | Verification |
 | --------- | ----- | ------------ |
-| `memory`  | 🧪 unit (send/capture, validation, template render) | ✅ host-verified; `examples/email-demo` writes an HTML preview |
+| `memory`  | 🧪 unit (send/capture, validation, template render) | ✅ host-verified; `crates/sdk/server/email/examples/email-demo` writes an HTML preview |
 | `ses`     | — (compiles under `--features ses`) | ⚠️ **compile-checked only** — no live AWS run |
 
 ```sh

@@ -455,7 +455,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
 ///   client build. We `cargo run --manifest-path <server_manifest>`
 ///   (adding `--bin <server_bin>` when set).
 /// - **In-crate bin** (`server_bin = "…"` only): the toy / single-crate
-///   shape used by `examples/server-fn-demo`. We `cargo run -p <pkg>
+///   shape used by `crates/api/server/examples/server-fn-demo`. We `cargo run -p <pkg>
 ///   --bin <server_bin> --features server`.
 ///
 /// Either way the server serves the static `dist/web` bundle at `/`, so

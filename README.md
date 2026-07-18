@@ -421,10 +421,10 @@ Other examples worth knowing about:
 
 - [`examples/fiddle`](examples/fiddle): sandbox for quick framework
   experiments.
-- [`examples/idea-ui-docs`](examples/idea-ui-docs): the live docs site for
+- [`websites/idea-ui-docs`](websites/idea-ui-docs): the live docs site for
   the `idea-ui` component library, built with the framework itself.
-- [`examples/hello-roku`](examples/hello-roku): minimal Roku target.
-- [`examples/mcp-demo`](examples/mcp-demo): exercises the framework MCP
+- [`crates/backend/roku/examples/hello-roku`](crates/backend/roku/examples/hello-roku): minimal Roku target.
+- [`crates/mcp/examples/mcp-demo`](crates/mcp/examples/mcp-demo): exercises the framework MCP
   catalog.
 
 ## Build profile

@@ -10,7 +10,7 @@
 //! # Run it
 //!
 //! ```bash
-//! idealyst test --parity web,macos examples/idea-ui-docs
+//! idealyst test --parity web,macos websites/idea-ui-docs
 //! ```
 //!
 //! Launches both apps at a matched viewport, points `IDEALYST_WEB_BRIDGE` /
@@ -42,7 +42,7 @@ fn web_and_macos_render_with_parity() {
     let (Some(mut web), Some(mut mac)) = (parity::connect("web"), parity::connect("macos")) else {
         eprintln!(
             "SKIP web_and_macos_render_with_parity: no bridges provisioned. \
-             Run `idealyst test --parity web,macos examples/idea-ui-docs`."
+             Run `idealyst test --parity web,macos websites/idea-ui-docs`."
         );
         return;
     };

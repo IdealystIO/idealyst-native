@@ -87,7 +87,7 @@ let viewer = pdf::PdfReactive(move || doc.get(), /*page*/ 0, /*w*/ 520.0, /*h*/ 
 ```
 
 The page is fit (aspect-preserved, centered) into the fixed `width × height` box.
-[`examples/pdf-demo`](../../../examples/pdf-demo/) wires this to the
+[`examples/pdf-demo`](./examples/pdf-demo/) wires this to the
 [`file-picker`](../file-picker/) SDK — **Open PDF…** loads a file from disk and
 renders it on the GPU. Run it with **`idealyst dev --macos --local`**: the canvas
 carries a `draw` closure in its external payload that can't cross the dev-server

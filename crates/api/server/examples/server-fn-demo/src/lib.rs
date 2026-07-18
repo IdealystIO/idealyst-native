@@ -17,7 +17,7 @@
 //! Building blocks:
 //!   - `cargo run -p server-fn-demo --bin server --features server`
 //!     hosts the API + serves the wasm bundle from `./pkg/`.
-//!   - `idealyst build --web examples/server-fn-demo` produces
+//!   - `idealyst build --web crates/api/server/examples/server-fn-demo` produces
 //!     the wasm bundle (and copies it into `./pkg/`).
 //!
 //! Open `http://127.0.0.1:3000` to see the UI; every interaction

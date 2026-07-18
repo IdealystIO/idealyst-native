@@ -13,7 +13,7 @@ Full-stack todo app demonstrating the `server` SDK:
 One command:
 
 ```sh
-idealyst run server examples/server-fn-demo
+idealyst run server crates/api/server/examples/server-fn-demo
 ```
 
 `idealyst run server` reads `server_bin` from the project manifest
@@ -28,10 +28,10 @@ the bind port.
 **1. Build the wasm client:**
 
 ```sh
-idealyst build --web examples/server-fn-demo
+idealyst build --web crates/api/server/examples/server-fn-demo
 ```
 
-That emits a self-contained static bundle at `examples/server-fn-demo/dist/web/` (its own `index.html` plus a `pkg/` subdir with `server_fn_demo.js` + `server_fn_demo_bg.wasm`). The server serves that directory. Re-run any time the client code changes.
+That emits a self-contained static bundle at `crates/api/server/examples/server-fn-demo/dist/web/` (its own `index.html` plus a `pkg/` subdir with `server_fn_demo.js` + `server_fn_demo_bg.wasm`). The server serves that directory. Re-run any time the client code changes.
 
 **2. Start the server:**
 
@@ -74,8 +74,8 @@ cargo run -p server-fn-demo --bin server --features server
 **2. Launch the app on a simulator / emulator:**
 
 ```sh
-idealyst dev --ios --local examples/server-fn-demo       # iOS simulator
-idealyst dev --android --local examples/server-fn-demo   # Android emulator
+idealyst dev --ios --local crates/api/server/examples/server-fn-demo       # iOS simulator
+idealyst dev --android --local crates/api/server/examples/server-fn-demo   # Android emulator
 ```
 
 The app points at the host automatically: `http://127.0.0.1:3000` on the iOS simulator (it shares the host loopback) and `http://10.0.2.2:3000` on the Android emulator (its host-loopback alias) — see `configure_server()` in `src/lib.rs`.
@@ -87,7 +87,7 @@ Cleartext HTTP to those hosts is allowed because `idealyst dev`/`run` generates 
 ## Layout
 
 ```
-examples/server-fn-demo/
+crates/api/server/examples/server-fn-demo/
 ├── Cargo.toml          # one package, one bin + lib, dual-feature
 ├── index.html          # source page (loads /pkg/server_fn_demo.js)
 ├── src/
@@ -109,7 +109,7 @@ The `#[server]` macro keys off `feature = "server"` to choose between the real f
 
 ```sh
 # correct — separate invocations
-idealyst build --web examples/server-fn-demo                    # client (no server feature)
+idealyst build --web crates/api/server/examples/server-fn-demo                    # client (no server feature)
 cargo build -p server-fn-demo --bin server --features server    # server
 
 # wrong — feature unification compiles the server body for the client

@@ -185,11 +185,11 @@ there's one logical client per browser.)
 `Partition::entries()` is a reactive `Signal<Vec<Entry<T>>>` where each
 `Entry` carries an [`EntryStatus`] (`Synced` / `Pending` / `Conflicted`) —
 so a list can render a sync indicator per item without the app tracking any
-state. See `examples/todo-sync-demo` for a **full-stack** TODO app that does
+state. See `crates/sdk/client/sync/examples/todo-sync-demo` for a **full-stack** TODO app that does
 exactly this: a server holds the data behind `#[server]` pull/push fns (via
 `sync_transport!`), and the client downloads tasks, edits them offline
 (badges turn *Pending*), and reconnects to replay/reconcile (badges settle
-to *Synced*). Run both with one command: `idealyst dev --web examples/todo-sync-demo`.
+to *Synced*). Run both with one command: `idealyst dev --web crates/sdk/client/sync/examples/todo-sync-demo`.
 
 ## Reference server
 

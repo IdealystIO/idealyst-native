@@ -309,7 +309,7 @@ impl StringCallbackTarget {
 // `create_graphics`'s return without leaking the slot the way the
 // previous `performSelector:withDelay:0` shape required (see the
 // `mem::forget` keepalive in
-// `examples/website/src/components/simulator.rs`).
+// `websites/website/src/components/simulator.rs`).
 
 use std::cell::Cell;
 use runtime_core::primitives::graphics::{

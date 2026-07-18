@@ -74,7 +74,7 @@ turns on (say) `redis` without the worker runtime.
   This is the right default for single-node dev and the in-memory backend (a
   separate process can't share an in-memory queue).
 
-See [`examples/jobs-demo`](../../../../examples/jobs-demo) for the full-stack wiring.
+See [`examples/jobs-demo`](./examples/jobs-demo) for the full-stack wiring.
 
 ## Testing checklist
 
@@ -83,7 +83,7 @@ backend state machine, the `#[job]` macro, and the worker loop end-to-end).
 
 | Backend    | Tests | Native verification |
 | ---------- | ----- | ------------------- |
-| `memory`   | 🧪 unit (enqueue/reserve/ack, retry, delay, visibility reclaim, dead-letter, priority) · 🔌 integration (macro + worker: injected state, retry-then-succeed, dead-letter, unknown-job) | ✅ host-verified (also run live in `examples/jobs-demo`) |
+| `memory`   | 🧪 unit (enqueue/reserve/ack, retry, delay, visibility reclaim, dead-letter, priority) · 🔌 integration (macro + worker: injected state, retry-then-succeed, dead-letter, unknown-job) | ✅ host-verified (also run live in `crates/sdk/server/jobs/examples/jobs-demo`) |
 | `redis`    | 🖥️ host (`tests/redis_backend.rs`, `#[ignore]`) | ✅ **host-verified** against a live Redis |
 | `postgres` | 🖥️ host (`tests/postgres_backend.rs`, `#[ignore]`) | ⚠️ compile-checked; ignored host tests ready — run against a live Postgres |
 | `sqs`      | 🖥️ host (`tests/sqs_backend.rs`, `#[ignore]`) | ⚠️ compile-checked; ignored host test ready — needs AWS credentials + a live queue |

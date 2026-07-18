@@ -56,7 +56,7 @@ If you're new to the codebase:
 
 The introduction page in the docs site has the full architectural
 treatment:
-[`examples/docs/src/pages/introduction.rs`](../examples/docs/src/pages/introduction.rs).
+[`websites/docs/src/pages/introduction.rs`](../websites/docs/src/pages/introduction.rs).
 
 Each top-level dir has its own README explaining what lives there
 and why.

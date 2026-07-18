@@ -1,5 +1,5 @@
 //! `Simulator` \u{2014} embeds a live Idealyst app inside the marketing
-//! site. Mirrors `examples/docs/src/components/simulator.rs`: thin
+//! site. Mirrors `websites/docs/src/components/simulator.rs`: thin
 //! wrapper around the framework's `Graphics` primitive and the
 //! `host-web` shell that runs the wgpu init, render loop, and
 //! browser-event translation.

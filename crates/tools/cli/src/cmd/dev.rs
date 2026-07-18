@@ -1496,7 +1496,7 @@ fn launch_ssr(
 ///
 /// - **In-crate** (`server_bin` only): the server serves
 ///   `CARGO_MANIFEST_DIR/dist/web` (baked at compile time; see
-///   `examples/server-fn-demo/src/bin/server.rs`). We stage the full
+///   `crates/api/server/examples/server-fn-demo/src/bin/server.rs`). We stage the full
 ///   bundle there and **restart the server** on each rebuild (cargo
 ///   re-runs, picking up server-code changes too), then refresh.
 /// - **Standalone** (`server_manifest`): the server is its own workspace

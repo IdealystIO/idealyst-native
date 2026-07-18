@@ -8,7 +8,7 @@ over a 40 MHz SPI bus.
 
 ## Crate is outside the workspace
 
-This crate lives at `examples/esp32-ili9341/` but is **not** a
+This crate lives at `crates/backend/cpu/examples/esp32-ili9341/` but is **not** a
 member of the root workspace — its target triple
 (`riscv32imc-esp-espidf`), profile settings, and build-script
 linker wiring conflict with the host workspace. Build commands
@@ -125,7 +125,7 @@ with a virtual ILI9341. The fastest path:
    extension. You'll need a free Wokwi account; the extension
    prompts on first run.
 2. Open this directory in VS Code (`code .` from inside
-   `examples/esp32-ili9341/`).
+   `crates/backend/cpu/examples/esp32-ili9341/`).
 3. Build: `cargo build --release`.
 4. Press **F1 → Wokwi: Start Simulator**. The extension reads
    `wokwi.toml` (firmware path) and `diagram.json` (wiring),

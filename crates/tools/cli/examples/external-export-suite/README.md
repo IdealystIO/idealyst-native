@@ -14,10 +14,10 @@ Two Idealyst components exported to **every supported front-end framework**.
 
 ```bash
 # Generate the Web Component suite into dist/external/
-idealyst export examples/external-export-suite
+idealyst export crates/tools/cli/examples/external-export-suite
 
 # Run the no-build consumers (vanilla + Vue) — served statically:
-idealyst serve examples/external-export-suite --port 8080
+idealyst serve crates/tools/cli/examples/external-export-suite --port 8080
 #   → http://localhost:8080/consumers/vanilla/
 #   → http://localhost:8080/consumers/vue/
 ```

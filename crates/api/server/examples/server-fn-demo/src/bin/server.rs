@@ -6,7 +6,7 @@
 //! ```
 //!
 //! Static files come from the `pkg/` directory the CLI populates
-//! when you run `idealyst build --web examples/server-fn-demo`,
+//! when you run `idealyst build --web crates/api/server/examples/server-fn-demo`,
 //! plus the hand-written `index.html` next to the package's
 //! `Cargo.toml`. Open `http://127.0.0.1:3000/` to see the UI.
 
@@ -47,7 +47,7 @@ async fn main() {
 
     if !pkg_dir.exists() {
         eprintln!("warning: {} doesn't exist yet — run", dist_dir.display());
-        eprintln!("  idealyst build --web examples/server-fn-demo");
+        eprintln!("  idealyst build --web crates/api/server/examples/server-fn-demo");
         eprintln!("to produce the wasm bundle before opening the page.");
     }
 

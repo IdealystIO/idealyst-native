@@ -22,7 +22,7 @@
 //! ## Run it
 //!
 //! ```text
-//! idealyst dev --web examples/graphql-demo
+//! idealyst dev --web crates/sdk/client/graphql/examples/graphql-demo
 //! ```
 
 use std::rc::Rc;

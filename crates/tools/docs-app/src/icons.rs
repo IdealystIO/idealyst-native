@@ -10,7 +10,7 @@
 //! pack in the catalog whose crate this app doesn't link renders its
 //! metadata with no grid (see `shell::icon_set_page`).
 //!
-//! The virtualization mirrors `examples/icon-gallery`: ~1600 icons are far
+//! The virtualization mirrors `crates/ui/icons-lucide/examples/icon-gallery`: ~1600 icons are far
 //! too many native views to mount at once, so the (filtered) icons are
 //! chunked into fixed-height rows and handed to `flat_list`, which only
 //! realizes the rows in view.
@@ -93,7 +93,7 @@ pub fn match_count(set: &'static [IconEntry], query: &str) -> usize {
 // ---- Grid styles + row renderer -------------------------------------------
 //
 // Layout-only (transparent rows over the themed `PageColumn` background).
-// Mirrors `examples/icon-gallery`.
+// Mirrors `crates/ui/icons-lucide/examples/icon-gallery`.
 
 fn sheet(rules: StyleRules) -> Rc<StyleSheet> {
     Rc::new(StyleSheet::r#static(rules))

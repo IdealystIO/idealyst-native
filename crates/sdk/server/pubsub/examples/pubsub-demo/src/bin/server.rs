@@ -33,7 +33,7 @@ async fn main() {
     let static_dir = project_dir.clone();
     if !pkg_dir.exists() {
         eprintln!("warning: {} doesn't exist yet — run", pkg_dir.display());
-        eprintln!("  idealyst dev --web examples/pubsub-demo");
+        eprintln!("  idealyst dev --web crates/sdk/server/pubsub/examples/pubsub-demo");
     }
 
     let app: Router = server::router()

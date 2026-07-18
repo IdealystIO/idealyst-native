@@ -6,7 +6,7 @@ here so the next person hits the plan, not the symptom.
 
 ## Symptom
 
-Changing screens in a `DrawerNavigator` app (e.g. `examples/idea-ui-docs`) on
+Changing screens in a `DrawerNavigator` app (e.g. `websites/idea-ui-docs`) on
 macOS is laggy, and the lag is worse for reactive-heavy pages. Diagnosed with
 the Robot bridge + `IDEALYST_LAYOUT_TRACE=1` (and a throwaway
 `IDEALYST_PASS_ORIGIN=1` backtrace dump in `schedule_layout_pass`): a single

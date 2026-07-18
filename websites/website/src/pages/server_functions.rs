@@ -389,7 +389,7 @@ fn where_next() -> Element {
             }
         },
         ui! {
-            Typography(content = "The example app at `examples/server-fn-demo` is a \
+            Typography(content = "The example app at `crates/api/server/examples/server-fn-demo` is a \
                 runnable todo app exercising every concept on this page \u{2014} \
                 CRUD, batching, cancellation, extractors, the async_reducer pattern, \
                 all of it.".to_string())

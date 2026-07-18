@@ -70,7 +70,7 @@ seam — async-graphql already supports `execute_stream`; a
 `SubscriptionTransport` over a WebSocket (the `net` SDK, or a
 server-functions `#[channel]`) layers on without reworking the above.
 
-See [`examples/graphql-demo`](../../../examples/graphql-demo) for a full-stack
+See [`examples/graphql-demo`](./examples/graphql-demo) for a full-stack
 app.
 
 [`graphql_client`]: https://crates.io/crates/graphql_client

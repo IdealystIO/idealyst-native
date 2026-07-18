@@ -4,9 +4,9 @@
 //! Robot relay — the same suite runs on web, macOS, iOS, and Android:
 //!
 //! ```text
-//! idealyst test --macos examples/robot-e2e-demo
-//! idealyst test --web   examples/robot-e2e-demo
-//! idealyst test --ios   examples/robot-e2e-demo
+//! idealyst test --macos crates/dev/robot-e2e/examples/robot-e2e-demo
+//! idealyst test --web   crates/dev/robot-e2e/examples/robot-e2e-demo
+//! idealyst test --ios   crates/dev/robot-e2e/examples/robot-e2e-demo
 //! ```
 //!
 //! `idealyst test` launches the app, stands up the relay, and points these
@@ -15,7 +15,7 @@
 //! in-app demo suite stands down, then test:
 //!
 //! ```text
-//! IDEALYST_TEST_DRIVER=1 idealyst dev --macos examples/robot-e2e-demo   # term 1
+//! IDEALYST_TEST_DRIVER=1 idealyst dev --macos crates/dev/robot-e2e/examples/robot-e2e-demo   # term 1
 //! cargo test -p robot-e2e-demo --test robot -- --test-threads=1         # term 2
 //! ```
 //!

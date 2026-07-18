@@ -245,7 +245,7 @@ for &locale in t::Locale::ALL {
 ```
 
 The strings are baked into the first paint, per locale, tied to a path. See
-[`examples/i18n-demo`](../../../examples/i18n-demo) for a runnable end-to-end
+[`examples/i18n-demo`](./examples/i18n-demo) for a runnable end-to-end
 demo (bundled switch + opt-in fetch + an SSG build via
 `cargo run -p i18n-demo --example ssg`).
 

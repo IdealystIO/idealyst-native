@@ -15,8 +15,8 @@
 //! idealyst dev --web                              # opens a browser tab
 //! idealyst dev --macos --local                    # native AppKit window
 //! # or, from the repo root:
-//! idealyst dev --web examples/file-drop-demo
-//! idealyst dev --macos --local examples/file-drop-demo
+//! idealyst dev --web crates/sdk/client/file-picker/examples/file-drop-demo
+//! idealyst dev --macos --local crates/sdk/client/file-picker/examples/file-drop-demo
 //! ```
 //!
 //! Then drag a file from Finder / the desktop / another tab onto the dashed

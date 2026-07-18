@@ -20,7 +20,7 @@
 //! components show up because this crate links idea-ui and references
 //! its components in the shell, which brings idea-ui's
 //! `inventory::submit!` ctors into the binary (the linker-section
-//! concern flagged in `examples/mcp-demo/Cargo.toml` — validated by the
+//! concern flagged in `crates/mcp/examples/mcp-demo/Cargo.toml` — validated by the
 //! `idea_ui_components_are_present_in_runtime_catalog` unit test in
 //! `catalog.rs`).
 //!
@@ -78,7 +78,7 @@ fn model() -> Rc<CatalogModel> {
 
 // =============================================================================
 // Per-target SDK-handler registration. Called by the CLI-generated
-// wrapper before mount. Mirrors examples/idea-ui-docs.
+// wrapper before mount. Mirrors websites/idea-ui-docs.
 // =============================================================================
 
 #[cfg(target_arch = "wasm32")]

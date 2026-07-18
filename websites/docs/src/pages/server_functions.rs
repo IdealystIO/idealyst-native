@@ -523,7 +523,7 @@ docs! {
             [link("Net", to = "net"),
              " — the HTTP client SDK underneath. Same cancel-token primitive, \
               same ", code("IntoBody"), " / ", code("FromBody"), " traits."],
-            [code("examples/server-fn-demo"),
+            [code("crates/api/server/examples/server-fn-demo"),
              " — runnable full-stack todo app exercising every concept on this \
               page."],
         ),

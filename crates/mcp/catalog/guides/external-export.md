@@ -190,5 +190,5 @@ safe (and matter if you ever hand-write a bridge):
 - Exported components and their props structs must be reachable down their
   `module_path` (declared in `pub` modules).
 
-See the in-repo `examples/external-export-suite` for two components exported
+See the in-repo `crates/tools/cli/examples/external-export-suite` for two components exported
 to all five frameworks with a runnable consumer app each.

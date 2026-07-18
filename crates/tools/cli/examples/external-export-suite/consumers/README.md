@@ -7,7 +7,7 @@ components** (`<idl-greeter>` and `<idl-stepper>`) from
 Generate the components first:
 
 ```bash
-idealyst export examples/external-export-suite
+idealyst export crates/tools/cli/examples/external-export-suite
 ```
 
 | Framework | Folder | How to run | Verified live |

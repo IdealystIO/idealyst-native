@@ -13,7 +13,7 @@
 //! ## Run it
 //!
 //! ```text
-//! idealyst dev --web examples/pubsub-demo
+//! idealyst dev --web crates/sdk/server/pubsub/examples/pubsub-demo
 //! ```
 //! Open two tabs, type in one → both feeds update.
 

@@ -5,7 +5,7 @@
 
 use runtime_core::{FillRule, IconData};
 
-/// Lightbulb logo, traced from `examples/website/assets/light.svg`,
+/// Lightbulb logo, traced from `websites/website/assets/light.svg`,
 /// rescaled from 235×235 to a 48×48 viewBox. ONE continuous path
 /// (single `M`) drawn bottom-up:
 ///

@@ -111,7 +111,7 @@ falling back to same-origin (which is what the local server serves):
 
 ```sh
 CONTACT_API_BASE=https://<id>.lambda-url.<region>.on.aws \
-  idealyst build --web examples/contact-form-lambda
+  idealyst build --web crates/api/server-aws/examples/contact-form-lambda
 ```
 
 ## Environment variables (server build)

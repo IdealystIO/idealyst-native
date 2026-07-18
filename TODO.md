@@ -25,4 +25,4 @@ This is a temporary list of todos so I don't forget.
 ### Pre-existing breakage noticed in passing (not from a11y work)
 - `port-preview` — `discover_framework_core` import unresolved
 - `idea-ui-docs` — missing `icon_button!` macro
-- `docs` (examples/docs lib test) — 47 compile errors
+- `docs` (websites/docs lib test) — 47 compile errors

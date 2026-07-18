@@ -19,7 +19,7 @@
 //!   then handed back as a plain owned path.
 //!
 //! VERIFICATION: macOS `NSOpenPanel` is exercised on the dev host via
-//! `examples/file-picker-demo`. The iOS document-picker / PHPicker paths are
+//! `crates/sdk/client/file-picker/examples/file-picker-demo`. The iOS document-picker / PHPicker paths are
 //! compile-checked for `aarch64-apple-ios` and resolve only at runtime on a
 //! device (same posture `file-export`'s iOS path documents).
 

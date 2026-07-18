@@ -16,7 +16,7 @@
 //! ## Run it
 //!
 //! ```text
-//! idealyst dev --web examples/todo-sync-demo
+//! idealyst dev --web crates/sdk/client/sync/examples/todo-sync-demo
 //! ```
 //!
 //! That builds the wasm client, starts the server (serving both the bundle

@@ -29,8 +29,8 @@ why `tab` and `drawer` are no longer navigator *kinds* — they're layout.
 Navigators **self-register** at backend construction (`inventory`), so an app's
 `register_extensions` can stay a no-op — the same as the 0.1 nav SDKs.
 
-Working examples: [`examples/swap-demo`](../examples/swap-demo) (3-tab router) and
-[`examples/stack-demo-v2`](../examples/stack-demo-v2) (push/pop with header slots).
+Working examples: [`crates/sdk/client/navigators/swap/examples/swap-demo`](../crates/sdk/client/navigators/swap/examples/swap-demo) (3-tab router) and
+[`crates/sdk/client/navigators/stack-v2/examples/stack-demo-v2`](../crates/sdk/client/navigators/stack-v2/examples/stack-demo-v2) (push/pop with header slots).
 
 ---
 

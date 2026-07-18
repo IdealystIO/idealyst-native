@@ -65,13 +65,13 @@ with a shared backend (redis/postgres).
 `pubsub` runs in the server binary. Apps depend on it as an **optional** dep
 enabled by their `server` feature, with all `pubsub` references behind
 `#[cfg(feature = "server")]`, so the wasm client never compiles it. See
-[`examples/pubsub-demo`](../../../../examples/pubsub-demo).
+[`examples/pubsub-demo`](./examples/pubsub-demo).
 
 ## Testing checklist
 
 `cargo test -p pubsub` runs the memory-backend suite (fan-out, topic isolation,
 late-subscriber-misses, typed `Topic` roundtrip).
-`examples/pubsub-demo` has a full end-to-end WS fan-out test
+`crates/sdk/server/pubsub/examples/pubsub-demo` has a full end-to-end WS fan-out test
 (`cargo test -p pubsub-demo --features server`).
 
 | Backend    | Tests | Verification |

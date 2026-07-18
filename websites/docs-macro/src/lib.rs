@@ -8,7 +8,7 @@
 //!    metadata, consumable by MCP servers, search indexers, and
 //!    other introspection tools.
 //!
-//! See `examples/docs/docs-content-plan/docs-macro-design.md` for
+//! See `websites/docs/docs-content-plan/docs-macro-design.md` for
 //! the input grammar and design rationale.
 
 use proc_macro::TokenStream;

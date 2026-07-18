@@ -566,16 +566,16 @@ v1's design doesn't lock us out.
 
 Concrete plan once the primitive lands:
 
-1. Create `examples/website-simulator/` as a new workspace member.
+1. Create `websites/website-simulator/` as a new workspace member.
 2. Move `host-web`, `ios-sim`, `android-sim`, `render-api`,
-   `welcome` deps out of `examples/website/Cargo.toml` and into
-   `examples/website-simulator/Cargo.toml`.
+   `welcome` deps out of `websites/website/Cargo.toml` and into
+   `websites/website-simulator/Cargo.toml`.
 3. Move the current `Simulator` component's wgpu plumbing into
    `website_simulator::app(props: SimulatorProps) -> Element`.
-4. Rewrite `examples/website/src/components/simulator.rs` to
+4. Rewrite `websites/website/src/components/simulator.rs` to
    construct `lazy::<SimulatorProps>("simulator", props)` with a
    placeholder + on_state callback.
-5. Declare the chunk in `examples/website/Cargo.toml`:
+5. Declare the chunk in `websites/website/Cargo.toml`:
    ```toml
    [package.metadata.idealyst.chunks]
    simulator = { path = "../website-simulator" }
@@ -645,6 +645,6 @@ every non-home page drops by ~3x.
    manifest, dynamic `import()`, mounts via `mount_chunk`, fires
    state callbacks, cleans up via `unmount_chunk` on detach.
 7. **Migrate the website Simulator** — first real user of the
-   primitive. Create `examples/website-simulator/`, move heavy
-   deps out of `examples/website/`, rewrite the `Simulator`
+   primitive. Create `websites/website-simulator/`, move heavy
+   deps out of `websites/website/`, rewrite the `Simulator`
    component as a `Lazy` wrapper.

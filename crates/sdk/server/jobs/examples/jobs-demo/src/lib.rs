@@ -13,7 +13,7 @@
 //! ## Run it
 //!
 //! ```text
-//! idealyst dev --web examples/jobs-demo
+//! idealyst dev --web crates/sdk/server/jobs/examples/jobs-demo
 //! ```
 //! Type an address, press **Sign up** → the `#[server]` fn enqueues the job →
 //! the worker logs `[worker] sending welcome email to …`.

@@ -24,7 +24,7 @@ is not registered. Did the app forget to call
 ```
 
 The panic aborts the mount, so `#app` stays empty. (Reproduced with
-`examples/conformance`, which mounts a `stack_navigator::Navigator`.)
+`crates/dev/robot-e2e/examples/conformance`, which mounts a `stack_navigator::Navigator`.)
 
 ## Root cause
 
@@ -73,7 +73,7 @@ the primary local web workflow for any app with chrome.
 
 ## Reproduction
 
-1. `cd examples/conformance`
+1. `cd crates/dev/robot-e2e/examples/conformance`
 2. `idealyst dev --web --local --port 8090`
 3. Open `http://127.0.0.1:8090/` — blank page; console shows the
    `create_navigator … is not registered` panic.

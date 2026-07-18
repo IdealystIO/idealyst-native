@@ -232,7 +232,7 @@ docs! {
             let toggle  = async_reducer(todos, toggle_todo,        |s, t|    /* replace-by-id */);
             let delete  = async_reducer(todos, delete_todo,        |s, id|   /* remove-by-id */);
         "##),
-        p("This is exactly the shape ", code("examples/server-fn-demo"),
+        p("This is exactly the shape ", code("crates/api/server/examples/server-fn-demo"),
           " uses for a todo app with create / toggle / delete + a refresh button."),
     },
 

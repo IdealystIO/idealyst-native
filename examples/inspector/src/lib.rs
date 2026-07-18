@@ -12,7 +12,7 @@
 //!
 //! ```text
 //! # 1. a target app, built with the robot bridge:
-//! idealyst dev --macos --local examples/conformance
+//! idealyst dev --macos --local crates/dev/robot-e2e/examples/conformance
 //! # 2. the inspector (this app), in another shell:
 //! idealyst dev --macos --local examples/inspector
 //! ```
@@ -139,7 +139,7 @@ fn picker_page(nav: Ref<StackHandle>) -> Element {
             text(
                 "No apps found in ~/.idealyst/apps. Launch one with \
                  `--features robot` (e.g. `idealyst dev --macos --local \
-                 examples/conformance`), then Rescan.",
+                 crates/dev/robot-e2e/examples/conformance`), then Rescan.",
             )
             .into_element(),
         );

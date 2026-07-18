@@ -817,7 +817,7 @@ pub fn entry_page(model: &CatalogModel, kind: Kind, slug: &str) -> Element {
 /// reactive scope* is active when it's built (see
 /// `runtime_core::walker::virtualizer`). A plain page fn provides no such
 /// scope, so the grid would never re-filter on search; a component body
-/// does — the same reason `examples/icon-gallery` is a `#[component]`.
+/// does — the same reason `crates/ui/icons-lucide/examples/icon-gallery` is a `#[component]`.
 fn icon_set_page(entry: &Entry) -> Element {
     use crate::icons;
     use crate::styles::{PageColumn, PagePad};

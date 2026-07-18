@@ -13,7 +13,7 @@ Decentralized WebSocket fan-out on the [`pubsub`](../../crates/sdk/server/pubsub
 ## Run
 
 ```sh
-idealyst dev --web examples/pubsub-demo
+idealyst dev --web crates/sdk/server/pubsub/examples/pubsub-demo
 ```
 
 Open two tabs. Type in one → both feeds update (fan-out over the in-process

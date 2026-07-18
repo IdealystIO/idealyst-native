@@ -13,7 +13,7 @@ license.workspace = true
 #   - SSG: `cargo run -p i18n-demo --example ssg` renders one static,
 #     fully-localized HTML document per locale (proving the SSR/SSG path).
 #
-# Run the interactive app on web with `idealyst dev --web examples/i18n-demo`.
+# Run the interactive app on web with `idealyst dev --web crates/sdk/client/i18n/examples/i18n-demo`.
 
 [lib]
 crate-type = ["rlib"]

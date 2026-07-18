@@ -7,13 +7,13 @@ description = "Catalog-driven documentation app — renders an Idealyst project'
 
 # `cdylib` for the wasm target; `rlib` so CLI-generated native wrappers
 # under `target/idealyst/<platform>/` can depend on this crate as a
-# library (mirrors examples/idea-ui-docs).
+# library (mirrors websites/idea-ui-docs).
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [features]
 # No-op feature consumed by the auto-generated web wrapper under
-# `target/idealyst/<app>/web/wrapper/`. See examples/idea-ui-docs.
+# `target/idealyst/<app>/web/wrapper/`. See websites/idea-ui-docs.
 runtime-server = []
 # `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper.
 sidecar = ["dep:dev-server", "drawer-navigator/runtime-server"]

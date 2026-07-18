@@ -109,4 +109,4 @@ front-end syntax" in the root README).
 
 The `#[component]`-generated invocation macros and the reactivity-rewriter
 shape are easy to inspect with `cargo expand` on any component in
-`examples/welcome` or `examples/idea-ui-docs`.
+`examples/welcome` or `websites/idea-ui-docs`.

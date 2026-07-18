@@ -102,5 +102,5 @@ ui/          The app. Depends on `api` (for the stubs) + the UI runtime.
 server-bin/  Depends on `api` with `features = ["server"]`; calls router().
 ```
 
-The reference implementation is `examples/server-fn-demo`; the full v1 design is
+The reference implementation is `crates/api/server/examples/server-fn-demo`; the full v1 design is
 in `crates/api/server/DESIGN.md`.

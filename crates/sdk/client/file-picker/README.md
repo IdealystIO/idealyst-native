@@ -100,7 +100,7 @@ separate, not-yet-built feature.
 `runtime-core` for the view handler + reactive signal); disable it if you only
 want the imperative `pick()`.
 
-See [`examples/file-drop-demo`](../../../examples/file-drop-demo) for a runnable
+See [`examples/file-drop-demo`](./examples/file-drop-demo) for a runnable
 drop-zone demo.
 
 ## No permission required
@@ -126,7 +126,7 @@ The Android Kotlin shim (`runtime/kotlin/.../RustFilePicker.kt`) is
 auto-discovered and compiled by `idealyst run android` via the
 `[package.metadata.idealyst.android]` block — no `MainActivity` edits needed.
 
-See [`examples/file-picker-demo`](../../../examples/file-picker-demo) for a
+See [`examples/file-picker-demo`](./examples/file-picker-demo) for a
 runnable demo.
 
 ## Testing checklist

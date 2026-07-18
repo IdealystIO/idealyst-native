@@ -534,5 +534,5 @@ For grep:
   futures.
 - [Net](./15-net.md) — the HTTP client SDK underneath. Same
   cancel-token primitive, same `IntoBody`/`FromBody` traits.
-- `examples/server-fn-demo` — runnable full-stack todo app
+- `crates/api/server/examples/server-fn-demo` — runnable full-stack todo app
   exercising every concept on this page.

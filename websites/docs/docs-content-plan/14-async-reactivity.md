@@ -251,7 +251,7 @@ let toggle  = async_reducer(todos, toggle_todo, /* replace-by-id */);
 let delete  = async_reducer(todos, delete_todo, /* remove-by-id */);
 ```
 
-This is exactly the shape `examples/server-fn-demo` uses for a
+This is exactly the shape `crates/api/server/examples/server-fn-demo` uses for a
 todo app with create/toggle/delete + a refresh button.
 
 ## `NetworkState` / `AsyncStatus`

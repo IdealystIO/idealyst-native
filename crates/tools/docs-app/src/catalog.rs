@@ -6,7 +6,7 @@
 //! in one pure module (no `Element`, no `ui!`) means it's unit-testable
 //! without a backend: the tests in this file assert that idea-ui's
 //! components actually land in the runtime catalog (the inventory
-//! linker-section concern flagged in `examples/mcp-demo/Cargo.toml`),
+//! linker-section concern flagged in `crates/mcp/examples/mcp-demo/Cargo.toml`),
 //! and that the kind grouping + slugging behave.
 //!
 //! ## Why owned, not borrowed

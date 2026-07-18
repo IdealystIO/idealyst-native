@@ -13,7 +13,7 @@ Full-stack background jobs on the [`jobs`](../../crates/sdk/server/jobs) SDK.
 ## Run
 
 ```sh
-idealyst dev --web examples/jobs-demo
+idealyst dev --web crates/sdk/server/jobs/examples/jobs-demo
 ```
 
 Type an address, press **Sign up** → `signup` enqueues the job → the worker logs

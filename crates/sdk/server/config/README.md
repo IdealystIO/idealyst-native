@@ -98,9 +98,9 @@ through the AWS provider chain, so a missing credential surfaces on the first
 
 Runs in the server / worker binary. Apps depend on it as an **optional** dep
 enabled by their `server` feature, so the wasm client never compiles it. See
-[`examples/email-demo`](../../../../examples/email-demo) (standalone) and the
-`server`-gated bins in [`examples/jobs-demo`](../../../../examples/jobs-demo) /
-[`examples/pubsub-demo`](../../../../examples/pubsub-demo).
+[`crates/sdk/server/email/examples/email-demo`](../email/examples/email-demo) (standalone) and the
+`server`-gated bins in [`crates/sdk/server/jobs/examples/jobs-demo`](../jobs/examples/jobs-demo) /
+[`crates/sdk/server/pubsub/examples/pubsub-demo`](../pubsub/examples/pubsub-demo).
 
 ## Testing checklist
 

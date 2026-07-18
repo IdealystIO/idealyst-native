@@ -5,7 +5,7 @@
 //! cargo run -p todo-sync-demo --bin server --features server
 //! ```
 //!
-//! `idealyst dev --web examples/todo-sync-demo` stages the wasm bundle into
+//! `idealyst dev --web crates/sdk/client/sync/examples/todo-sync-demo` stages the wasm bundle into
 //! `<crate>/pkg/`; the server serves that at `/pkg` and the crate root
 //! (which holds the committed `index.html`) at `/`. Open
 //! `http://127.0.0.1:3000/`.
@@ -18,7 +18,7 @@ use axum::Router;
 // that keeps the linker from dead-stripping its `inventory::submit!` route
 // statics — without a reference into the lib, `server::router()` would
 // register zero routes and every `/_srv/<fn>` would 404. (See the same note
-// in examples/server-fn-demo/src/bin/server.rs.)
+// in crates/api/server/examples/server-fn-demo/src/bin/server.rs.)
 use todo_sync_demo::state::AppState;
 use tower_http::services::ServeDir;
 
@@ -37,7 +37,7 @@ async fn main() {
 
     if !pkg_dir.exists() {
         eprintln!("warning: {} doesn't exist yet — run", pkg_dir.display());
-        eprintln!("  idealyst dev --web examples/todo-sync-demo");
+        eprintln!("  idealyst dev --web crates/sdk/client/sync/examples/todo-sync-demo");
         eprintln!("(or `idealyst build --web …`) to produce the wasm bundle.");
     }
 
