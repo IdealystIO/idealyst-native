@@ -32,8 +32,8 @@ embuild = "0.33"
 # Idealyst CPU rasterizer + framework runtime. `default-features =
 # false` keeps the desktop `preview` feature (winit + softbuffer)
 # out of the embedded dep graph.
-backend-cpu  = { path = "../../crates/backend/cpu", default-features = false }
-runtime-core = { path = "../../crates/runtime/core" }
+backend-cpu  = { path = "../..", default-features = false }
+runtime-core = { path = "../../../../runtime/core" }
 
 # ESP-IDF Rust bindings + standard-library wrapper.
 # `esp-idf-svc` brings in `esp-idf-sys` + a `std`-compatible

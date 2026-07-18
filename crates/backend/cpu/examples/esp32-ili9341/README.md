@@ -193,4 +193,4 @@ Frame budget at 30 fps is 33 ms. With the demo scene that lands at
 ~12 ms / frame on the C3, leaving 20 ms of headroom. A full UI of
 ~20 nodes should hold 30 fps; busier scenes will want the
 damage-rect tracking mentioned in
-[../../crates/backend/cpu/README.md](../../crates/backend/cpu/README.md).
+[../../README.md](../../README.md).

@@ -22,7 +22,8 @@ use std::rc::Rc;
 use video_compose::{Corner, VideoPipeline};
 
 /// A font for the text watermark (web has no system fonts, so it must be bundled).
-static FONT: &[u8] = include_bytes!("../../welcome/fonts/Inter-Bold.ttf");
+static FONT: &[u8] =
+    include_bytes!("../../../../../../../examples/welcome/fonts/Inter-Bold.ttf");
 
 // `camera` and `video` self-register their externals via `inventory` at backend
 // construction; the compositor owns its own GPU device. Nothing to register.
