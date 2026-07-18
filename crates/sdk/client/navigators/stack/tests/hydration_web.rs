@@ -59,8 +59,9 @@ fn initial_screen_not_duplicated_under_hydration() {
     let ssr_html = {
         let b = ssr_builds.clone();
         // Register the navigator's SSR chrome handler — same as the app's
-        // `register_ssr_extensions` — so the container carries `ui-nav-root`
-        // and the client adopts it (rather than rebuilding fresh).
+        // `register_ssr_extensions` — so the container carries the
+        // structural `NAV_ROOT_HYDRATION_CLASS` marker and the client
+        // adopts it (rather than rebuilding fresh).
         backend_ssr::render_path_with(
             "/",
             |bk| stack_navigator::chrome::register(bk),

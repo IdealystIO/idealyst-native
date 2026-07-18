@@ -207,6 +207,36 @@ pub struct NavigatorHost<N: Clone + 'static> {
     /// must-run-outside-the-outer-borrow rule as `build_node`.
     pub build_layout_with_outlet:
         Rc<dyn Fn(crate::element::Element) -> (N /* root */, Option<N> /* outlet */)>,
+
+    /// Screen-root style overlay slot, shared with the framework's
+    /// `mount_screen`. When a handler fills it (via
+    /// [`set_screen_style_overlay`](Self::set_screen_style_overlay),
+    /// during `init` — before any screen mounts), every screen the
+    /// substrate mounts gets these rules layered onto its root element's
+    /// style **override** layer
+    /// ([`Element::with_style_overrides`](crate::element::Element::with_style_overrides))
+    /// before it's built.
+    ///
+    /// This is how a handler that positions screens itself — e.g. the
+    /// web/SSR stack mounting screens full-bleed into a plain container
+    /// — expresses that placement through the style system instead of
+    /// stamping raw CSS classes on the built node (which the backend's
+    /// full-`className` style re-apply silently wiped). Handlers whose
+    /// platform containers own screen geometry (UIKit, Android) leave it
+    /// empty.
+    pub screen_style_overlay:
+        Rc<std::cell::RefCell<Option<Rc<crate::style::StyleRules>>>>,
+}
+
+impl<N: Clone + 'static> NavigatorHost<N> {
+    /// Ask the substrate to layer `rules` onto every mounted screen
+    /// root's style override layer. Call from `NavigatorHandler::init`
+    /// (the slot is read at each `mount_screen`, and the framework never
+    /// mounts before `init` returns). See
+    /// [`screen_style_overlay`](Self::screen_style_overlay).
+    pub fn set_screen_style_overlay(&self, rules: Rc<crate::style::StyleRules>) {
+        *self.screen_style_overlay.borrow_mut() = Some(rules);
+    }
 }
 
 /// Implementation contract for a registered navigator kind. SDK

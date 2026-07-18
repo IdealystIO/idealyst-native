@@ -61,7 +61,8 @@ fn app_tree() -> runtime_core::Element {
 fn deep_link_target_reactive_text_survives_hydration() {
     // 1. Render the SSR HTML for the navigator AT THE DEEP LINK "/contact".
     //    The chrome handler is registered (as the app's `register_ssr_extensions`
-    //    does) so the container carries `ui-nav-root` for client adoption.
+    //    does) so the container carries the structural
+    //    `NAV_ROOT_HYDRATION_CLASS` marker for client adoption.
     let ssr_html = backend_ssr::render_path_with(
         "/contact",
         |bk| stack_navigator::chrome::register(bk),

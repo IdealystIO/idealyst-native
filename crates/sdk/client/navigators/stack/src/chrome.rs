@@ -13,7 +13,10 @@
 
 use crate::{StackPresentation, StackScreenOptions};
 use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives::navigator::{NavigatorHandler, NavigatorHost, RegisterNavigator};
+use runtime_core::primitives::navigator::{
+    stack_screen_fill_rules, NavigatorHandler, NavigatorHost, RegisterNavigator,
+    NAV_ROOT_HYDRATION_CLASS,
+};
 use runtime_core::Backend;
 use std::any::Any;
 use std::rc::Rc;
@@ -42,22 +45,30 @@ impl<B: Backend + 'static> NavigatorHandler<B> for StackChromeHandler<B> {
     fn init(
         &mut self,
         backend: &mut B,
-        _host: NavigatorHost<B::Node>,
+        host: NavigatorHost<B::Node>,
         _presentation: Rc<dyn Any>,
     ) -> B::Node {
         // The framework walker mounts the path-matched screen and hands
-        // it to `attach_initial`; we only need the container here.
+        // it to `attach_initial`; we only need the container here. Its
+        // styling (`stack_container_rules()` — fill + `position:relative`)
+        // is the navigator element's default style, applied by the walker
+        // through the normal pipeline after `init` — so the server
+        // resolves the identical content-hashed class the hydrated client
+        // mints, and no stylesheet or class rule is injected here.
         let root = backend.create_view(&AccessibilityProps::default());
-        // Stamp the same `ui-nav-root` class the live web navigator stamps
-        // (`web-navigator-helpers::create_inner`) so the server's first paint
-        // matches the client AND the client can ADOPT this container during
-        // hydration (`WebBackend::hydrate_adopt_container("ui-nav-root")`).
-        // Without it the SSR container is a bare `<div>`, hydration can't find
-        // the nav root, rebuilds it fresh, and orphans the whole SSR screen
-        // subtree — dropping the screen's reactive text. No-op on native
-        // backends (default `attach_html_class`); the SSR backend adds the
-        // class. Matches `css::nav_class::ROOT`.
-        backend.attach_html_class(&root, "ui-nav-root");
+        // Structural hydration marker (NOT a styled class): the hydrating
+        // client finds this container via
+        // `WebBackend::hydrate_adopt_container(NAV_ROOT_HYDRATION_CLASS)`.
+        // Without it hydration can't find the nav root, rebuilds it fresh,
+        // and orphans the whole SSR screen subtree — dropping the screen's
+        // reactive text. No-op on native backends (default
+        // `attach_html_class`); the SSR backend adds the class.
+        backend.attach_html_class(&root, NAV_ROOT_HYDRATION_CLASS);
+        // Screens mount directly into the container (this handler has no
+        // author layout), so ask the substrate to pin every mounted screen
+        // full-bleed via its style override layer — the style-system
+        // replacement for the old `ui-nav-screen` class stamp.
+        host.set_screen_style_overlay(stack_screen_fill_rules());
         self.root = Some(root.clone());
         root
     }
@@ -83,12 +94,10 @@ impl<B: Backend + 'static> NavigatorHandler<B> for StackChromeHandler<B> {
             backend.insert(&mut root, header);
         }
 
-        // Stamp `ui-nav-screen` on the screen node — the same class the live
-        // web navigator applies in no-layout mode (`stamp_screen_class`). It
-        // carries the full-bleed `position:absolute; inset:0` rule, so the
-        // server's first paint positions the screen exactly as the hydrated
-        // client will. No-op on native backends. Matches `css::nav_class::SCREEN`.
-        backend.attach_html_class(&screen, "ui-nav-screen");
+        // Full-bleed screen placement already rides the screen root's style
+        // (the `set_screen_style_overlay` set in `init` — applied by the
+        // substrate before the screen was built), so the node arrives here
+        // styled; nothing to stamp.
         backend.insert(&mut root, screen);
     }
 }

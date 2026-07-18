@@ -45,6 +45,10 @@ wire = { workspace = true, optional = true }
 # dependency — and therefore no target cfg.
 [dev-dependencies]
 backend-ssr = { workspace = true }
+# `tests/ssr.rs` asserts the emitted stylesheet contains the exact
+# `rules_to_css` bodies of the stack's style-system rules (container fill +
+# screen full-bleed) instead of hand-written `ui-nav-*` class rules.
+css = { workspace = true }
 
 # Regression test for navigator screen content surfacing in the robot
 # registry. Needs the `robot` feature, so it only builds when that's on.

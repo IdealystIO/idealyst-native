@@ -1022,6 +1022,73 @@ impl Element {
         self
     }
 
+    /// Layer `rules` as a style **override** on this primitive, on top of
+    /// whatever style it already carries (or a fresh empty application
+    /// when it has none). Unlike [`with_style`](Self::with_style) — which
+    /// REPLACES the element's style — this preserves the author's styling
+    /// and merges `rules` into the [`crate::style::StyleApplication`]
+    /// override layer. Overrides resolve LAST, so every field `rules`
+    /// sets wins deterministically — no reliance on CSS specificity or
+    /// stylesheet source order on web.
+    ///
+    /// This is the substrate hook behind navigator screen placement (see
+    /// `NavigatorHost::set_screen_style_overlay`): a handler can force
+    /// full-bleed positioning on a mounted screen's root without
+    /// clobbering — or being clobbered by — the screen's own styles.
+    /// Reactive styles stay reactive: the override is re-merged on every
+    /// resolution, so it also survives restyles. (The legacy web
+    /// class-splicing approach did not: the backend's style apply does a
+    /// full `className` replace, which silently dropped a spliced class
+    /// on the first reactive re-apply.)
+    ///
+    /// Wrapper variants with no node of their own (`Fragment`, `Repeat`,
+    /// `Presence`, `Dynamic`) are left unchanged — same rationale as
+    /// `with_style`. The robot `Component` wrapper is transparent.
+    pub fn with_style_overrides(mut self, rules: Rc<crate::style::StyleRules>) -> Self {
+        #[cfg(feature = "robot")]
+        if let Element::Component { instance, child } = self {
+            return Element::Component {
+                instance,
+                child: Box::new(child.with_style_overrides(rules)),
+            };
+        }
+        match &mut self {
+            Element::View { style, .. }
+            | Element::Text { style, .. }
+            | Element::Button { style, .. }
+            | Element::Pressable { style, .. }
+            | Element::Image { style, .. }
+            | Element::Icon { style, .. }
+            | Element::TextInput { style, .. }
+            | Element::TextArea { style, .. }
+            | Element::Toggle { style, .. }
+            | Element::ScrollView { style, .. }
+            | Element::Slider { style, .. }
+            | Element::ActivityIndicator { style, .. }
+            | Element::Virtualizer { style, .. }
+            | Element::Graphics { style, .. }
+            | Element::When { style, .. }
+            | Element::Switch { style, .. }
+            | Element::Each { style, .. }
+            | Element::Link { style, .. }
+            | Element::Portal { style, .. }
+            | Element::External { style, .. }
+            | Element::Lazy { style, .. }
+            | Element::Navigator { style, .. }
+            | Element::NavigatorOutlet { style, .. } => {
+                *style = Some(overlay_style_source(style.take(), rules));
+            }
+            // No node of their own — see `with_style`.
+            Element::Repeat { .. }
+            | Element::Fragment { .. }
+            | Element::Presence { .. }
+            | Element::Dynamic { .. } => {}
+            #[cfg(feature = "robot")]
+            Element::Component { .. } => unreachable!(),
+        }
+        self
+    }
+
     /// Mutable access to this primitive's [`AccessibilityProps`], or
     /// `None` for the control-flow / wrapper variants that carry no
     /// node of their own (`When`, `Switch`, `Each`, `Repeat`,
@@ -1088,5 +1155,54 @@ impl Element {
             *slot = a11y;
         }
         self
+    }
+}
+
+/// Wrap an element's existing style source so `rules` rides its
+/// [`crate::style::StyleApplication`] override layer — the mechanics
+/// behind [`Element::with_style_overrides`]. Every source shape is
+/// preserved: a static application gains the overrides in place, a
+/// reactive closure is wrapped so the overrides re-merge on every
+/// resolution, and a `SignalClass` binding gets the overrides folded
+/// into each pre-resolved application (and its non-JS fallback) so the
+/// minted per-value classes all carry them.
+fn overlay_style_source(
+    prev: Option<StyleSource>,
+    rules: Rc<crate::style::StyleRules>,
+) -> StyleSource {
+    use crate::style::{StyleApplication, StyleRules, StyleSheet};
+
+    // Shared empty base sheet for elements that had no style of their
+    // own — registry-cached (not a `thread_local!`) to respect the
+    // Android/bionic TLS-key budget, same pattern as
+    // `default_outlet_style`.
+    fn empty_sheet() -> Rc<StyleSheet> {
+        static KEY: u8 = 0;
+        crate::style::cached_stylesheet(&KEY as *const u8 as usize, || {
+            Rc::new(StyleSheet::r#static(StyleRules::default()))
+        })
+    }
+
+    match prev {
+        None => StyleSource::Static(
+            StyleApplication::new(empty_sheet()).with_overrides((*rules).clone()),
+        ),
+        Some(StyleSource::Static(app)) => {
+            StyleSource::Static(app.with_overrides((*rules).clone()))
+        }
+        Some(StyleSource::Reactive(f)) => {
+            StyleSource::Reactive(Box::new(move || f().with_overrides((*rules).clone())))
+        }
+        Some(StyleSource::SignalClass(mut spec)) => {
+            spec.apps = std::mem::take(&mut spec.apps)
+                .into_iter()
+                .map(|app| app.with_overrides((*rules).clone()))
+                .collect();
+            let fallback = spec.compute_fallback.clone();
+            let rules_for_fallback = rules.clone();
+            spec.compute_fallback =
+                Rc::new(move || (fallback)().with_overrides((*rules_for_fallback).clone()));
+            StyleSource::SignalClass(spec)
+        }
     }
 }

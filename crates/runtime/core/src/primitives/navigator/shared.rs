@@ -1601,9 +1601,10 @@ pub struct SwapContext {
 /// content, so an app whose root is a navigator renders collapsed instead of
 /// filling the viewport (web `#app` and native window roots size CHILDREN
 /// that ask for space; they don't force it). This is the outlet-model
-/// counterpart of the legacy web navigators' `.ui-nav-root { width/height:
-/// 100% }` rule, expressed as backend-neutral `StyleRules` so every backend
-/// gets the same behavior. `flex-grow: 1` + `min-height: 0` additionally let
+/// counterpart of the class-styled tab/drawer navigators' `.ui-nav-root {
+/// width/height: 100% }` rule (and of the stack's
+/// [`stack_container_rules`]), expressed as backend-neutral `StyleRules` so
+/// every backend gets the same behavior. `flex-grow: 1` + `min-height: 0` additionally let
 /// a navigator share a flex column with author chrome (header above, bar
 /// below) by absorbing the remaining space.
 ///
@@ -1647,6 +1648,73 @@ pub fn outlet_fill_rules() -> crate::style::StyleRules {
         ..Default::default()
     }
 }
+
+/// The stack navigator's default container style — the app shell fills
+/// its parent box on every backend (the iOS/Android handlers materialize
+/// the container's Taffy node from the navigator element's style ALONE,
+/// so `None` collapses to 0 and renders blank), and `position: relative`
+/// makes the container the containing block the
+/// [`stack_screen_fill_rules`] absolute screen placement resolves
+/// against on web/SSR. `Relative` is already the framework's default
+/// `Position`, so declaring it is a no-op for native layout — it only
+/// matters where unset position lowers to CSS `static`.
+///
+/// This is the single source of the container's styling: the stack SDK
+/// installs it as the `Element::Navigator` default style (when the
+/// author sets none), the walker applies it through the normal style
+/// pipeline, and web + SSR therefore resolve the identical
+/// content-hashed class — the replacement for the previously injected
+/// `.ui-nav-root { … }` class rule. An author `.with_style(...)` on the
+/// navigator element replaces it wholesale (same contract as before);
+/// a restyled container should re-declare its size and position.
+pub fn stack_container_rules() -> Rc<crate::style::StyleRules> {
+    use crate::style::Length;
+    Rc::new(crate::style::StyleRules {
+        position: Some(crate::style::Position::Relative),
+        width: Some(Length::Percent(100.0).into()),
+        height: Some(Length::Percent(100.0).into()),
+        flex_grow: Some(1.0f32.into()),
+        ..Default::default()
+    })
+}
+
+/// Full-bleed placement for a screen mounted directly into the stack
+/// container (no author layout): absolute, pinned to all four edges of
+/// the [`stack_container_rules`] box. Handlers request it via
+/// [`NavigatorHost::set_screen_style_overlay`](super::host::NavigatorHost::set_screen_style_overlay),
+/// which layers it onto each screen root's style **override** layer —
+/// the style-system replacement for the injected
+/// `.ui-nav-screen { position:absolute!important; inset:0!important }`
+/// class: the override layer resolves last, so the pin wins over the
+/// screen's own position rules deterministically instead of via CSS
+/// `!important` against stylesheet source order.
+///
+/// No width/height on purpose: with all four edges pinned and auto
+/// size, the box stretches to the container — and a screen that sets
+/// its own width/height keeps it (matching the legacy rule, whose
+/// `width/height:100%` was NOT `!important` precisely so authors could
+/// override it).
+pub fn stack_screen_fill_rules() -> Rc<crate::style::StyleRules> {
+    use crate::style::Length;
+    Rc::new(crate::style::StyleRules {
+        position: Some(crate::style::Position::Absolute),
+        top: Some(Length::Px(0.0).into()),
+        right: Some(Length::Px(0.0).into()),
+        bottom: Some(Length::Px(0.0).into()),
+        left: Some(Length::Px(0.0).into()),
+        ..Default::default()
+    })
+}
+
+/// Structural marker class for SSR-hydration adoption of a stack
+/// navigator container. Carries **no styling** — the container's visual
+/// rules ride its normal `apply_style` class — it exists only so the
+/// hydrating web client can locate the server-rendered container node
+/// (`WebBackend::hydrate_adopt_container`) regardless of what styled
+/// class the container resolved to. The SSR stack chrome handler stamps
+/// it via `Backend::attach_html_class`; the live client never renders
+/// it into fresh DOM.
+pub const NAV_ROOT_HYDRATION_CLASS: &str = "idealyst-nav-root";
 
 /// [`outlet_fill_rules`] packaged as the `StyleSource` the walker attaches
 /// to a style-less `NavigatorOutlet`.

@@ -1989,6 +1989,13 @@ where
                     (node, None)
                 })
             },
+            // The wire ships pre-built screens (mount_screen just surfaces
+            // staged nodes), so a handler-set overlay has nothing to apply
+            // to on this proxy — screen styling was baked in host-side by
+            // the recording backend's own walker (whose handler sets the
+            // same overlay there). A fresh, unread slot keeps the contract
+            // honest.
+            screen_style_overlay: Rc::new(RefCell::new(None)),
         };
 
         let nav_node = self.backend.borrow_mut().create_navigator(

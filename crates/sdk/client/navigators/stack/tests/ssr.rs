@@ -126,9 +126,107 @@ fn render_all_crawls_every_literal_screen() {
     assert!(result.pages["/contact"].html.contains("CONTACT"));
 }
 
-/// Collector is opt-in. When `enable_route_collector` isn't called,
-/// `take_route_collector` returns None and the framework path stays
-/// zero-allocation.
+/// Regression (navigator styling goes through the style system): the SSR
+/// stack no longer stamps hand-named `ui-nav-*` classes or ships the
+/// injected navigator stylesheet. Instead the container carries
+/// `stack_container_rules()` and the screen carries the
+/// `stack_screen_fill_rules()` override — both resolved to normal
+/// content-hashed classes whose rule bodies land in the emitted
+/// stylesheet, exactly as the live web client mints them (byte-identical
+/// first paint). The only remaining class-shaped artifact is the
+/// structural `NAV_ROOT_HYDRATION_CLASS` marker, which carries no CSS and
+/// exists solely so the hydrating client can adopt the container.
+#[test]
+fn regression_stack_ssr_styles_via_style_system_not_injected_classes() {
+    use runtime_core::primitives::navigator::{
+        stack_container_rules, stack_screen_fill_rules, NAV_ROOT_HYDRATION_CLASS,
+    };
+
+    let page = render_path_with(
+        "/about",
+        |b| stack_navigator::chrome::register(b),
+        || {
+            Navigator::new(&HOME)
+                .screen(HOME, |_| Screen::new(view(vec![text("home").into()])))
+                .screen(ABOUT, |_| Screen::new(view(vec![text("ABOUT BODY").into()])))
+                .into()
+        },
+    );
+    let html = &page.html;
+    let head_css = &page.head_css;
+
+    // No legacy class names in the markup or the emitted stylesheet.
+    assert!(!html.contains("ui-nav-root"), "legacy container class leaked: {html}");
+    assert!(!html.contains("ui-nav-screen"), "legacy screen class leaked: {html}");
+    assert!(
+        !head_css.contains("ui-nav-"),
+        "legacy navigator stylesheet leaked into head CSS: {head_css}"
+    );
+
+    // The structural hydration marker is present on the container.
+    assert!(
+        html.contains(NAV_ROOT_HYDRATION_CLASS),
+        "hydration adoption marker missing: {html}"
+    );
+
+    // The style-system rule bodies are in the emitted stylesheet — the
+    // same `rules_to_css` bytes the live web backend inserts, so the
+    // first paint matches the hydrated client.
+    let container_css = css::rules_to_css(&stack_container_rules());
+    assert!(
+        head_css.contains(&container_css),
+        "container fill rules missing from emitted CSS (wanted `{container_css}`): {head_css}"
+    );
+    let screen_css = css::rules_to_css(&stack_screen_fill_rules());
+    assert!(
+        head_css.contains(&screen_css),
+        "screen full-bleed rules missing from emitted CSS (wanted `{screen_css}`): {head_css}"
+    );
+}
+
+/// Regression: the screen fill override must COMPOSE with the screen's own
+/// style, not replace it — the author's styling survives while the
+/// navigator's placement fields win.
+#[test]
+fn regression_stack_ssr_screen_fill_composes_with_author_style() {
+    use runtime_core::{Color, StyleApplication, StyleRules, StyleSheet, Tokenized};
+    use std::rc::Rc;
+
+    let page = render_path_with(
+        "/",
+        |b| stack_navigator::chrome::register(b),
+        || {
+            Navigator::new(&HOME)
+                .screen(HOME, |_| {
+                    let author = Rc::new(StyleSheet::r#static(StyleRules {
+                        background: Some(Tokenized::Literal(Color("#123456".into()))),
+                        ..Default::default()
+                    }));
+                    Screen::new(
+                        view(vec![text("home").into()])
+                            .with_style(StyleApplication::new(author)),
+                    )
+                })
+                .into()
+        },
+    );
+    let head_css = &page.head_css;
+
+    // One class carries BOTH the author background and the navigator's
+    // absolute placement — a single merged resolution, not two competing
+    // rules. Find the rule body containing the absolute placement and
+    // assert the author's background lives in the SAME body.
+    let abs_at = head_css
+        .find("position: absolute")
+        .expect("screen fill placement missing from emitted CSS");
+    let body_start = head_css[..abs_at].rfind('{').expect("rule body open brace");
+    let body_end = abs_at + head_css[abs_at..].find('}').expect("rule body close brace");
+    let body = &head_css[body_start..body_end];
+    assert!(
+        body.contains("#123456"),
+        "author background must be merged into the screen's fill rule, got body `{body}` in: {head_css}"
+    );
+}
 #[test]
 fn route_collector_disabled_by_default() {
     let _ = render_path("/", || {

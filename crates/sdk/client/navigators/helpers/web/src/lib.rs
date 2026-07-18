@@ -55,6 +55,7 @@
 use backend_web::WebBackend;
 use runtime_core::primitives::navigator::{
     MountResult, NavCommand, NavState, NavigatorControl, NavigatorHandle, NavigatorOps,
+    NAV_ROOT_HYDRATION_CLASS,
 };
 use runtime_core::Signal;
 use std::any::Any;
@@ -372,6 +373,15 @@ pub struct NavigatorInstance {
     /// `NavigatorAttachInitial` is what actually mounts the home
     /// screen (it carries the canonical server-built subtree).
     defer_initial_mount: bool,
+    /// `true` for navigators styled through the style system (the
+    /// stack): the container carries `stack_container_rules()` via
+    /// `apply_style`, screens arrive with the full-bleed placement
+    /// already merged into their root style (the SDK handler's
+    /// `set_screen_style_overlay`), and this instance must NOT stamp
+    /// any legacy `ui-nav-*` class (`stamp_screen_class` /
+    /// `refocus`'s active marker). `false` = the legacy class-based
+    /// chrome (tab + drawer) — classes + injected sheet as before.
+    style_system: bool,
 }
 
 impl NavigatorInstance {
@@ -428,8 +438,14 @@ impl NavigatorInstance {
     /// that only one screen is mounted at a time — the `ui-nav-active`
     /// class is left in place as a hook for app-level CSS that
     /// wants to target the visible screen, but it's no longer
-    /// load-bearing for visibility.
+    /// load-bearing for visibility. Legacy class chrome only:
+    /// style-system navigators (the stack) stamp no classes at all,
+    /// and the class was doubly useless there — the style apply's
+    /// full-`className` replace wiped it on any reactive restyle.
     fn refocus(&self) {
+        if self.style_system {
+            return;
+        }
         if let Some(entry) = self.stack.last() {
             if let Ok(elem) = entry.node.clone().dyn_into::<web_sys::Element>() {
                 set_class_present(&elem, "ui-nav-active", true);
@@ -479,7 +495,7 @@ impl NavigatorInstance {
         if !self.defer_initial_mount && !backend_web::is_hydrating() {
             return;
         }
-        if !self.has_layout() {
+        if !self.has_layout() && !self.style_system {
             Self::stamp_screen_class(&screen);
         }
         self.insert_screen_node(&screen)
@@ -521,14 +537,18 @@ impl NavigatorInstance {
         let result = (self.mount_screen)(name, params);
         let node = result.node;
         let scope_id = result.scope_id;
-        // The `ui-nav-screen` class adds `position:absolute; inset:0`
-        // so the screen fills the `.ui-nav-root` container regardless
-        // of its intrinsic size. Only applied in no-layout mode —
-        // in layout mode the screen is a normal flow child of the
-        // outlet (which lives somewhere inside the user's layout
-        // tree); absolute-positioning to `.ui-nav-root` would
-        // teleport it out of the layout's bounds.
-        if !self.has_layout() {
+        // Legacy class chrome only: the `ui-nav-screen` class adds
+        // `position:absolute; inset:0` so the screen fills the
+        // `.ui-nav-root` container regardless of its intrinsic size.
+        // Only applied in no-layout mode — in layout mode the screen is
+        // a normal flow child of the outlet (which lives somewhere
+        // inside the user's layout tree); absolute-positioning to
+        // `.ui-nav-root` would teleport it out of the layout's bounds.
+        // Style-system navigators (the stack) skip this entirely: the
+        // full-bleed placement is already merged into the screen root's
+        // style override layer by the substrate
+        // (`NavigatorHost::set_screen_style_overlay`).
+        if !self.has_layout() && !self.style_system {
             Self::stamp_screen_class(&node);
         }
         self.insert_screen_node(&node)
@@ -788,6 +808,22 @@ fn frame_div(
     d
 }
 
+/// How [`create_inner`] styles the navigator container and matches it
+/// during SSR hydration.
+enum ContainerChrome {
+    /// Style-system chrome (the stack): the container's styling
+    /// (`stack_container_rules()`) is the navigator ELEMENT's default
+    /// style, applied by the walker after init — same content-hashed
+    /// class on web and SSR. Hydration adopts by the structural
+    /// [`NAV_ROOT_HYDRATION_CLASS`] marker, no stylesheet is injected,
+    /// and the instance stamps no `ui-nav-*` classes anywhere.
+    StyleSystem,
+    /// Legacy class-based chrome (tab + drawer): inject
+    /// `css::navigator_layout_css()` once, stamp `ui-nav-root`, adopt by
+    /// it.
+    LegacyClasses,
+}
+
 /// Create the navigator container, mount the initial / deep-linked
 /// stack, install the dispatcher on the control plane, and wire up
 /// the global popstate handler.
@@ -798,28 +834,39 @@ fn frame_div(
 /// the underlying screen-swap machinery is identical. So this
 /// function builds the per-instance state + microtask + popstate
 /// registration unconditionally; the *dispatcher* installed on
-/// `control` is what varies by kind, and the caller supplies it via
-/// `install_dispatcher`.
+/// `control` is what varies by kind (supplied via `install_dispatcher`),
+/// and `chrome` picks how the container is styled/adopted.
 fn create_inner<F>(
     b: &mut WebBackend,
     callbacks: WebNavCallbacks<Node>,
     control: Rc<NavigatorControl>,
     install_dispatcher: F,
+    chrome: ContainerChrome,
 ) -> Node
 where
     F: FnOnce(Rc<RefCell<NavigatorInstance>>),
 {
-    ensure_navigator_css(b);
+    let style_system = matches!(chrome, ContainerChrome::StyleSystem);
+    if !style_system {
+        ensure_navigator_css(b);
+    }
 
     let doc = web_sys::window()
         .expect("window")
         .document()
         .expect("document");
-    // HYDRATION: adopt the server `.ui-nav-root` so the navigator's `root`
+    // HYDRATION: adopt the server container so the navigator's `root`
     // IS `#app`'s existing child — `finish` then sees `root_in_mount` and
     // keeps the server DOM instead of clear+append. Frame + content adopt
-    // below via the match/enter helpers.
-    let container: web_sys::Element = match b.hydrate_adopt_container("ui-nav-root") {
+    // below via the match/enter helpers. Style-system chrome matches the
+    // structural marker the SSR chrome handler stamps; legacy chrome
+    // matches the stamped `ui-nav-root`.
+    let adopt_class = if style_system {
+        NAV_ROOT_HYDRATION_CLASS
+    } else {
+        "ui-nav-root"
+    };
+    let container: web_sys::Element = match b.hydrate_adopt_container(adopt_class) {
         Some(adopted) => {
             // HYDRATION (no-layout stack/tab): the initial screen mounts
             // DIRECTLY into this container via the SYNCHRONOUS walker
@@ -841,10 +888,15 @@ where
             let c = doc
                 .create_element("div")
                 .expect("create_element nav container failed");
-            // No `.ui-default` — see view.rs. The `.ui-nav-root` rule
-            // sets `position: relative` on the container; layout chrome
-            // (when present) stacks via normal block flow inside.
-            set_class_present(&c, "ui-nav-root", true);
+            // No `.ui-default` — see view.rs. Legacy chrome relies on the
+            // injected `.ui-nav-root` rule for `position: relative` +
+            // fill; style-system chrome gets the equivalent rules from
+            // the navigator element's default style, which the walker
+            // applies to this same node right after the handler's init
+            // returns (`stack_container_rules()`).
+            if !style_system {
+                set_class_present(&c, "ui-nav-root", true);
+            }
             c
         }
     };
@@ -882,6 +934,7 @@ where
         // immediately and stop firing on navigation.
         build_layout_retainer: callbacks.build_layout.clone(),
         defer_initial_mount: callbacks.defer_initial_mount,
+        style_system,
     }));
 
     // Web's `.layout(...)` escape hatch — author-supplied chrome
@@ -1049,7 +1102,11 @@ pub fn create(
     callbacks: WebNavCallbacks<Node>,
     control: Rc<NavigatorControl>,
 ) -> Node {
-    create_inner(b, callbacks, control.clone(), move |instance| {
+    create_inner(
+        b,
+        callbacks,
+        control.clone(),
+        move |instance| {
         control.install(Box::new(move |cmd| match cmd {
             NavCommand::Push { name, url, params, .. } => {
                 instance.borrow_mut().push(name, params, url)
@@ -1069,7 +1126,12 @@ pub fn create(
                 );
             }
         }));
-    })
+        },
+        // The stack styles through the style system — no injected
+        // `ui-nav-*` classes or stylesheet (screens get their full-bleed
+        // placement from the SDK handler's `set_screen_style_overlay`).
+        ContainerChrome::StyleSystem,
+    )
 }
 
 /// Tab navigator entry point on web.
@@ -1127,7 +1189,7 @@ pub fn create_tab(
                 );
             }
         }));
-    })
+    }, ContainerChrome::LegacyClasses)
 }
 
 /// Drawer navigator entry point on web.
@@ -1291,7 +1353,7 @@ pub fn create_drawer(
             }
             }
         }));
-    });
+    }, ContainerChrome::LegacyClasses);
 
     // Drawer-on-web layout: column flex with optional top + bottom
     // wrappers and a middle row containing optional sidebar + the
@@ -1736,9 +1798,13 @@ fn ensure_navigator_css(_b: &mut WebBackend) {
         if injected.get() {
             return;
         }
-        // `.ui-nav-root` — plain stack navigator container. Holds
-        // exactly one `.ui-nav-screen` at a time; navigation
-        // unmounts the previous and mounts the new.
+        // Injected for the LEGACY class-styled navigators only (tab +
+        // drawer — `ContainerChrome::LegacyClasses`). The stack styles
+        // through the style system and never reaches this fn.
+        //
+        // `.ui-nav-root` — navigator container. Holds exactly one
+        // `.ui-nav-screen` at a time; navigation unmounts the previous
+        // and mounts the new.
         //
         // `.ui-nav-drawer-root` — drawer navigator on web pins the
         // sidebar to the left and the body (the screen outlet) takes

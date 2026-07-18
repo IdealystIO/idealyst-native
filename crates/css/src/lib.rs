@@ -18,15 +18,30 @@ use runtime_core::StyleRules;
 // Navigator chrome layout — single source of truth
 // ---------------------------------------------------------------------------
 
-/// Class names stamped on navigator chrome nodes. Both the live web
-/// backend (`web-navigator-helpers`, via `set_attribute("class", …)`)
-/// and the generic SSR chrome handlers (`Backend::attach_html_class`)
-/// stamp these exact strings, so the first-paint DOM structure is
-/// identical and [`NAVIGATOR_LAYOUT_CSS`] styles both the same way.
+/// Class names stamped on navigator chrome nodes by the LEGACY
+/// class-based navigators (tab + drawer). Both the live web backend
+/// (`web-navigator-helpers`, via `set_attribute("class", …)`) and the
+/// generic SSR chrome handlers (`Backend::attach_html_class`) stamp
+/// these exact strings, so the first-paint DOM structure is identical
+/// and [`NAVIGATOR_LAYOUT_CSS`] styles both the same way.
+///
+/// The **stack** navigator no longer uses any of these: its container
+/// styling is the navigator element's default style
+/// (`runtime_core::primitives::navigator::stack_container_rules`) and
+/// its screens get their full-bleed placement through the substrate's
+/// screen style overlay (`NavigatorHost::set_screen_style_overlay`) —
+/// both resolved to normal content-hashed classes by the style system,
+/// with only the structural `NAV_ROOT_HYDRATION_CLASS` marker stamped
+/// for SSR adoption. [`ROOT`]/[`SCREEN`] remain here because the tab
+/// navigator (and any tab/drawer instance without an author layout)
+/// still stamps them.
 pub mod nav_class {
-    /// Stack/drawer navigator container (always paired with a kind class).
+    /// Tab/drawer navigator container (paired with a kind class for the
+    /// drawer). No longer stamped by the stack navigator — see the
+    /// module docs.
     pub const ROOT: &str = "ui-nav-root";
-    /// A single mounted screen inside a stack navigator (full-bleed).
+    /// A mounted screen inside a no-layout tab navigator (full-bleed).
+    /// No longer stamped by the stack navigator — see the module docs.
     pub const SCREEN: &str = "ui-nav-screen";
     /// Drawer navigator container (paired with [`ROOT`]).
     pub const DRAWER_ROOT: &str = "ui-nav-drawer-root";

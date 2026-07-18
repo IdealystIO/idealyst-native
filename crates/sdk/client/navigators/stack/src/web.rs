@@ -51,6 +51,17 @@ impl NavigatorHandler<WebBackend> for WebStackHandler {
         host: NavigatorHost<Node>,
         _presentation: Rc<dyn Any>,
     ) -> Node {
+        // Screens mount straight into the container (the web stack has no
+        // author layout), so ask the substrate to pin every mounted screen
+        // full-bleed via its style OVERRIDE layer. This replaces the old
+        // `ui-nav-screen` class stamp: the override composes with the
+        // screen's own styles and survives reactive restyles (the spliced
+        // class was wiped by the backend's full-`className` re-apply),
+        // and no stylesheet is injected into `<head>`.
+        host.set_screen_style_overlay(
+            runtime_core::primitives::navigator::stack_screen_fill_rules(),
+        );
+
         let NavigatorHost {
             initial_route,
             initial_path,

@@ -111,6 +111,16 @@ impl NavigatorHandler<WireRecordingBackend> for RecordingStackHandler {
             &Default::default(),
         );
 
+        // Screens ship over the wire to a web dev-client that mounts them
+        // straight into the navigator container, so bake the full-bleed
+        // placement into each screen root's style here (the substrate
+        // applies it before the recording backend sees the node — resolved
+        // styles ride the wire like any other). Mirrors `web.rs`; the
+        // dev-client's helpers no longer stamp any screen class.
+        host.set_screen_style_overlay(
+            runtime_core::primitives::navigator::stack_screen_fill_rules(),
+        );
+
         self.nav = Some(nav);
         self.rec = Some(rec.clone());
         self.control = Some(host.control.clone());

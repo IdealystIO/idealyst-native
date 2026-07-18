@@ -105,6 +105,15 @@ pub(super) fn build<B: Backend + 'static>(
     control.retain_scope(nav_scope);
     control.attach_nav_state(nav_state.clone());
 
+    // Screen-root style overlay slot: filled by a handler in `init`
+    // (`NavigatorHost::set_screen_style_overlay`), read on every mount
+    // below. `init` runs inside `create_navigator` — strictly before any
+    // `mount_screen` call (both the non-deferred initial mount further
+    // down and the web handlers' deferred microtask mounts) — so a
+    // handler-set overlay covers every screen, including the initial one.
+    let screen_style_overlay: Rc<RefCell<Option<Rc<crate::style::StyleRules>>>> =
+        Rc::new(RefCell::new(None));
+
     // mount_screen: build a screen subtree inside its own scope; return
     // (node, scope_id, opaque options). Weak control to avoid Rc-cycle
     // through dispatcher → mount_screen → control.
@@ -118,6 +127,7 @@ pub(super) fn build<B: Backend + 'static>(
         let control_for_mount = Rc::downgrade(&control);
         let base_for_mount = my_base.clone();
         let active_route_for_mount = nav_state.active_route;
+        let overlay_for_mount = screen_style_overlay.clone();
         Rc::new(move |name, params, state| {
             let entry = screens.get(name).unwrap_or_else(|| {
                 panic!("Navigator: route '{}' is not registered", name)
@@ -154,7 +164,15 @@ pub(super) fn build<B: Backend + 'static>(
                 });
                 crate::with_current_identity(screen_id, || {
                     let screen = builder(params);
-                    let n = super::build(&backend, 0, screen.primitive);
+                    // Handler-requested screen placement (e.g. the web/SSR
+                    // stack's full-bleed absolute fill) rides the root
+                    // element's style OVERRIDE layer — composing with the
+                    // screen's own styles instead of competing with them.
+                    let primitive = match overlay_for_mount.borrow().as_ref() {
+                        Some(rules) => screen.primitive.with_style_overrides(rules.clone()),
+                        None => screen.primitive,
+                    };
+                    let n = super::build(&backend, 0, primitive);
                     (n, screen.options)
                 })
             });
@@ -441,6 +459,7 @@ pub(super) fn build<B: Backend + 'static>(
         insert_node,
         clear_children,
         build_layout_with_outlet,
+        screen_style_overlay,
     };
 
     let node = time_backend_create(pkind!(Navigator), || {

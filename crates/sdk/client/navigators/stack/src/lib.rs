@@ -453,18 +453,16 @@ impl Navigator {
 
         let Navigator { config, presentation, slot_styles, style, ref_fill } = self;
         // The navigator is the app shell — it must fill its parent box on every
-        // backend. The iOS/Android handlers materialize the navigator
+        // backend (the iOS/Android handlers materialize the navigator
         // container's Taffy node from this `style` field ALONE; with `style:
-        // None` that container carries no size and collapses to 0 — the whole
-        // screen renders blank on Android even though web/macOS look fine (they
-        // self-fill via CSS / their own container sizing). Default to a fill
-        // style so the container claims its parent's box uniformly. Mirrors
-        // `drawer-navigator`, which already does exactly this.
+        // None` that container collapses to 0 and renders blank), and on
+        // web/SSR its `position: relative` is the containing block the
+        // absolute full-bleed screens resolve against. One canonical rules
+        // fn (`stack_container_rules`) supplies both, applied through the
+        // normal style pipeline — so web and SSR resolve the identical
+        // content-hashed class and no `.ui-nav-root` class rule is injected.
         let style = style.or_else(|| {
-            let mut fill = StyleRules::default();
-            fill.flex_grow = Some(1.0f32.into());
-            fill.width = Some(runtime_core::Length::pct(100.0).into());
-            fill.height = Some(runtime_core::Length::pct(100.0).into());
+            let fill = (*runtime_core::primitives::navigator::stack_container_rules()).clone();
             Some(Rc::new(StyleSheet::r#static(fill)).into_style_source())
         });
         Element::Navigator {
