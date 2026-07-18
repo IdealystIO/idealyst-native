@@ -26,3 +26,4 @@ This is a temporary list of todos so I don't forget.
 - `port-preview` — `discover_framework_core` import unresolved
 - `idea-ui-docs` — missing `icon_button!` macro
 - `docs` (websites/docs lib test) — 47 compile errors
+- `website` SSR example targets (`websites/website/examples/{serve,ssr}.rs`, need `--features ssr`) — API drift: `ServeConfig` gained `extra_head`, `render_document` gained a third arg, `codeblock::register` expects the macOS backend under the sidecar cfg
