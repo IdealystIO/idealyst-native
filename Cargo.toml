@@ -212,10 +212,10 @@ members = [
     "crates/tools/port/project",
     "crates/tools/port/preview",
     "examples/hello-roku",
-    "examples/idea-ui-docs",
-    "examples/idea-ui-docs-gpu",
-    "examples/docs",
-    "examples/docs-macro",
+    "websites/idea-ui-docs",
+    "websites/idea-ui-docs-gpu",
+    "websites/docs",
+    "websites/docs-macro",
     "examples/welcome",
     "examples/file-drop-demo",
     "examples/external-export-suite",
@@ -242,8 +242,8 @@ members = [
     "examples/login-demo",
     "examples/mcp-demo",
     "examples/fiddle",
-    "examples/website",
-    "examples/tutorial",
+    "websites/website",
+    "websites/tutorial",
     "examples/toolbar-demo",
     "examples/menu-demo",
     "examples/icon-gallery",
@@ -304,7 +304,7 @@ dev-hot = { path = "crates/dev/hot" }
 runtime-macros = { path = "crates/runtime/macros" }
 mcp-catalog = { path = "crates/mcp/catalog" }
 mcp-server = { path = "crates/mcp/server" }
-docs-macro = { path = "examples/docs-macro" }
+docs-macro = { path = "websites/docs-macro" }
 runtime-layout = { path = "crates/runtime/layout" }
 wire = { path = "crates/dev/wire" }
 dev-client = { path = "crates/dev/client" }

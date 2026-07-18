@@ -346,7 +346,7 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<()> {
         eprintln!(
             "[build web] serve with `Content-Encoding: gzip` on every response (the bundle's \
              filenames are unchanged but their bytes are gzipped). See \
-             examples/website/scripts/export-static.sh for a reference S3 upload."
+             websites/website/scripts/export-static.sh for a reference S3 upload."
         );
     }
     Ok(())
