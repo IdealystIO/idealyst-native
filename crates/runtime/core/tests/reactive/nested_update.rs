@@ -10,7 +10,7 @@
 //! they panic against the pre-fix code and pass after.
 //!
 //! Real-world trigger: the `reactive-loops` demo's "Add item" handler
-//! pushes a `Row { count: signal!(0) }` inside `items.update(|l| …)`.
+//! pushes a `Row { count: signal(0) }` inside `items.update(|l| …)`.
 
 use runtime_core::{signal, Signal};
 
@@ -18,7 +18,7 @@ use runtime_core::{signal, Signal};
 /// and the nested signal must be live + independent afterward.
 #[test]
 fn create_signal_inside_update_closure() {
-    let items: Signal<Vec<Signal<i32>>> = signal!(Vec::new());
+    let items: Signal<Vec<Signal<i32>>> = signal(Vec::new());
 
     items.update(|v| {
         // `Signal::new` re-enters the arena — the regression.
@@ -43,8 +43,8 @@ fn create_signal_inside_update_closure() {
 /// (same re-entrant arena access, read path).
 #[test]
 fn read_other_signal_inside_update_closure() {
-    let a: Signal<i32> = signal!(10);
-    let b: Signal<i32> = signal!(0);
+    let a: Signal<i32> = signal(10);
+    let b: Signal<i32> = signal(0);
 
     b.update(|v| {
         *v = a.get() + 1;
@@ -58,11 +58,11 @@ fn read_other_signal_inside_update_closure() {
 /// successive `update` calls — the `reactive-loops` "Add item" loop.
 #[test]
 fn repeated_add_with_nested_signal() {
-    let items: Signal<Vec<Signal<i32>>> = signal!(Vec::new());
+    let items: Signal<Vec<Signal<i32>>> = signal(Vec::new());
 
     for start in 0..5 {
         // Allocate INSIDE the update closure — the re-entrant case.
-        items.update(move |l| l.push(signal!(start)));
+        items.update(move |l| l.push(signal(start)));
     }
 
     let snapshot: Vec<i32> = items.get().iter().map(|s| s.get()).collect();

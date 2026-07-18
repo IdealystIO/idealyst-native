@@ -42,7 +42,7 @@ const D_SETTINGS: Route<()> = Route::<()>::new("settings", "/settings");
 pub fn app() -> Element {
     install_idea_theme(light_theme());
 
-    let drawer_open = signal!(false);
+    let drawer_open = signal(false);
     let nav: Ref<SwapHandle> = Ref::new();
 
     let builder = SwapNavigator::new(&D_HOME)
@@ -154,7 +154,7 @@ fn feed_stack() -> Element {
     let nav: Ref<StackHandle> = Ref::new();
     // Shared selection: the list sets it, the detail reads it (both live in this
     // stack's builder scope).
-    let selected = signal!(0usize);
+    let selected = signal(0usize);
 
     let builder = StackNavigator::new(&F_LIST)
         .screen(F_LIST, {

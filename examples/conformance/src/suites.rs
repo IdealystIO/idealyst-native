@@ -161,7 +161,7 @@ fn navigation_suite() -> robot_e2e::Suite {
     )
 }
 
-/// `methods! { … }` invocation over the robot surface — the same
+/// `#[method]` invocation over the robot surface — the same
 /// `list_components` → `invoke_method` path the MCP server and the Inspector
 /// use. Also asserts the element↔component link the macro/walker establish
 /// (so the Inspector can resolve a selected element to its methods).
@@ -171,7 +171,7 @@ fn component_methods_suite() -> robot_e2e::Suite {
     suite(
         "component methods",
         vec![test(
-            "list_components + invoke_method drive a methods! component; element link resolves",
+            "list_components + invoke_method drive a #[method] component; element link resolves",
             |page: &Page| {
                 // Locate the live instance and confirm the walker linked it to
                 // its root element id (what the Inspector resolves a selection

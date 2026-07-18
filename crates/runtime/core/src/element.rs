@@ -884,7 +884,7 @@ pub enum Element {
     /// Robot-only transparent wrapper tagging `child` (a `#[component]`'s
     /// root primitive) with the component instance it renders. The
     /// `#[component]` macro emits it (via `__component_root`) for any
-    /// component with a `methods! { … }` block; the walker unwraps it
+    /// component with `#[method]` fns; the walker unwraps it
     /// BEFORE dispatch — arming a pending element↔component link the child's
     /// registration consumes — so no backend or other `Element` consumer
     /// ever sees it. Lets the inspector resolve a selected element to the

@@ -139,7 +139,7 @@ download completes, an icon that animates in response to user
 input:
 
 ```rust
-let progress = signal!(0.0);
+let progress = signal(0.0);
 
 ui! {
     icon(LOGO).stroke(move || progress.get())

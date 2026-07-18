@@ -9,7 +9,7 @@ the Backend Interface.
 | Crate | Path | Role |
 | --- | --- | --- |
 | `runtime-core` | [`core/`](./core) | Primitives, reactivity (signals/effects/scopes), the render walker, the `Backend` trait itself. Every other crate in the framework depends on this. |
-| `runtime-macros` | [`macros/`](./macros) | `ui!`, `jsx!`, `#[component]`, `stylesheet!`, `methods!`. Compile-time DSLs that lower into plain `runtime-core` calls. No runtime cost. |
+| `runtime-macros` | [`macros/`](./macros) | `ui!`, `jsx!`, `#[component]`, `stylesheet!`, `#[method]`. Compile-time DSLs that lower into plain `runtime-core` calls. No runtime cost. |
 | `reactive-arena` / `reactive-refs` | [`reactive/`](./reactive) | The reactive substrate split into a pure-data arena + a typed-handle layer. `runtime-core` re-exports what authors use. |
 | `runtime-layout` | [`layout/`](./layout) | Taffy wrapper (flex + grid). Used by backends that don't have a native layout engine — currently iOS, Android, and Roku. Web inherits the browser's layout. |
 

@@ -143,7 +143,7 @@ pub fn TableRow(props: TableRowProps) -> Element {
     // handlers. The signal is created in this row's scope, so it lives as
     // long as the cells that subscribe to it.
     if let Some(cb) = props.on_row_click {
-        let hovered = signal!(false);
+        let hovered = signal(false);
         let cells: Vec<Element> = children
             .into_iter()
             .map(|cell| make_row_cell_interactive(cell, hovered, cb.clone()))

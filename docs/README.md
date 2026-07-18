@@ -60,6 +60,14 @@ If you're new to the codebase, read the docs in this order:
 
 ## Migrating
 
+- [`migration-0.2-to-0.3.md`](./migration-0.2-to-0.3.md). The reactive-surface
+  unification: `signal!` / `memo!` macros removed (plain `signal(v)` /
+  `memo(move || …)` fns), `memo` returns read-only `ReadSignal<T>`, the
+  `ReadSignal` / `WriteSignal` capability halves + `.split()`, and inline
+  component props. Two `sed`s cover most of it. Also catalogs the
+  additive 0.3 tooling: snapshot-trap guardrails, `ui!` IDE recovery,
+  `idealyst catalog-json`, the VS Code extension, and the proven
+  rust-analyzer wiring.
 - [`migration-0.1-to-0.2.md`](./migration-0.1-to-0.2.md). Moving navigation
   to the 0.2 model — the `swap` / `stack` primitives, the outlet + author
   layout, and the `idea-ui-nav` chrome (`TabBar` / `Drawer` / `StackHeader`).

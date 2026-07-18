@@ -106,7 +106,7 @@ fn hidden_sheet() -> Rc<StyleSheet> {
 /// long-press (touch). See the module docs.
 #[component(children)]
 pub fn Tooltip(props: TooltipProps) -> Element {
-    let open = signal!(false);
+    let open = signal(false);
     let anchor_ref: Ref<ViewHandle> = Ref::new();
     let text = props.text;
     // TODO(reactive-sweep): route `side`/`align`/`offset`/`dismiss_ms`

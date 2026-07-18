@@ -29,7 +29,7 @@ recipe!(
         use ::runtime_core::{signal, text, ui, Signal};
 
         // The text the button updates: prompt → fix coordinates (or an error).
-        let label: Signal<String> = signal!("Tap to locate".to_string());
+        let label: Signal<String> = signal("Tap to locate".to_string());
 
         let on_press = move || {
             label.set("Locating…".to_string());

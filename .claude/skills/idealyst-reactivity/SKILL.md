@@ -1,11 +1,11 @@
 ---
 name: idealyst-reactivity
-description: The deeper reactivity surface in THIS repo — memo/rx!, batch/untrack, reducer/resource, provide/inject context, when/switch/fragment, watch/Subscription, on_cleanup, and the sharp edges (stale-set no-op, Ref::with borrow abort, no set-in-memo, dispose-on-hide). Use when the plain signal!/effect! pair isn't enough, when debugging "my signal stopped updating" / "RefCell already borrowed" / a frozen wasm tab, or when reaching for derived state, context, or reactive control flow. Complements the idealyst-components skill.
+description: The deeper reactivity surface in THIS repo — memo/rx!, batch/untrack, reducer/resource, provide/inject context, when/switch/fragment, watch/Subscription, on_cleanup, and the sharp edges (stale-set no-op, Ref::with borrow abort, no set-in-memo, dispose-on-hide). Use when the plain signal()/effect! pair isn't enough, when debugging "my signal stopped updating" / "RefCell already borrowed" / a frozen wasm tab, or when reaching for derived state, context, or reactive control flow. Complements the idealyst-components skill.
 ---
 
 # Reactivity in depth
 
-The everyday surface — `signal!`, `effect!`, `watch` — is covered by the
+The everyday surface — the `signal()` function, `effect!`, `watch` — is covered by the
 [idealyst-components](../idealyst-components/SKILL.md) skill and the
 [[reactivity]] MCP guide. **This** skill is the layer beneath: derived state,
 tracking control, reactive control flow, and the edges you hit only sometimes.
@@ -20,7 +20,7 @@ Ground truth is the source below — read it before guessing at semantics.
 | --- | --- |
 | `memo`/`memo_with`, `reducer`, `provide`/`inject`, `on_cleanup`, `untrack`, `batch`, `watch`/`Subscription`, `Signal` methods | `crates/runtime/core/src/reactive.rs` |
 | `when`, `switch`, `fragment` constructors | `crates/runtime/core/src/builder.rs` |
-| `rx!`, `signal!`, `effect!`, `memo!`, `bind!`, `children!`, `node_ref!` macros | `crates/runtime/core/src/lib.rs` |
+| `signal()` fn + `rx!`, `effect!`, `bind!`, `children!`, `node_ref!` macros (the `signal!` and `memo!` macros were REMOVED — plain fns now) | `crates/runtime/core/src/lib.rs` |
 | `derived(...)` style-variant source (NOT the reactive one) | `crates/runtime/core/src/style.rs` |
 | `resource(...)` async state | `crates/runtime/core/src/resource.rs` |
 | `Ref` generational-slot semantics + the `with` borrow rule | `crates/runtime/reactive/refs/src/lib.rs` |
@@ -29,7 +29,8 @@ Ground truth is the source below — read it before guessing at semantics.
 
 | You need… | Use | Notes |
 | --- | --- | --- |
-| Derived value read in many places / expensive | `memo!(expr)` → `Signal<T>` | change-gated (`PartialEq`); `memo_with(eq,f)` for no-`PartialEq`. Body must be pure — **no `.set()` inside** (panics). |
+| Derived value read in many places / expensive | `memo(move \|\| expr)` → `ReadSignal<T>` | change-gated (`PartialEq`); `memo_with(eq,f)` for no-`PartialEq`. Body must be pure — **no `.set()` inside** (panics); output is read-only by type. |
+| Prove a prop/handle only reads (or only writes) | `.read_only()` / `.write_only()` / `.split()` | zero-cost newtypes over the same slot; `ReadSignal` props for observe-only, `WriteSignal` for report-up. Unified `Signal` stays right for two-way (`TextInput.value`). |
 | Inline live prop value from a computed expr | `rx!(expr)` | = `Reactive::derive(move \|\| expr)`. Bare `Signal` prop is already live. |
 | Read a signal without subscribing | `untrack(\|\| s.get())` | |
 | Coalesce several writes into one fan-out | `batch(\|\| { … })` | Handlers are **born batched** already — rarely needed by hand. |
@@ -51,9 +52,11 @@ scope.
 
 ## Sharp edges (recognize these in the wild)
 
-- **"My signal stopped updating"** → usually a raw `Signal::new`/`Effect::new`
-  where the `signal!`/`effect!` macro (scope-anchored) was needed, or a stale
-  handle. `idealyst lint` (`prefer-signal-macro`/`prefer-effect-macro`) flags it.
+- **"My signal stopped updating"** → usually a raw `Effect::new` where the
+  scope-owned `effect!` was needed, or a stale handle. (Signal creation is the
+  plain `signal(value)` fn; scope anchoring happens inside the constructor, so
+  `Signal::new` is merely redundant, not broken.) `idealyst lint`
+  (`prefer-signal-fn`/`prefer-effect-macro`) flags both spellings.
 - **Stale `set` is a safe no-op** — generational handles mean a `.set()` after
   the owning scope tore down does nothing (not a panic). Deferred/async
   callbacks after unmount are safe.
@@ -61,7 +64,7 @@ scope.
   `Ref::with` / `handle.with` closure, which holds the arena borrow. Read the
   value out, close the `with`, then `set`. The `is_reactive_busy` guard does NOT
   catch this.
-- **Panic inside a `memo!`** → you wrote `.set()`/`.update()` in the compute
+- **Panic inside a `memo`** → you wrote `.set()`/`.update()` in the compute
   body. Memos are pure derivations.
 - **A mutual write-loop panics (depth 256), not hangs** — look for A→B→A.
 - **Frozen wasm tab** → a future self-rewaking (`wake_by_ref` + `Pending`) spins
@@ -69,7 +72,17 @@ scope.
 - **`bind!` only works inside `text_fmt!`** — anywhere else is a compile error;
   use `rx!` for a live value elsewhere.
 - **`.get()` outside a reactive context** is a one-shot read that subscribes
-  nothing.
+  nothing. Commonest form is the **hoisted-snapshot trap**: `let ok =
+  x.get()…;` at component-body level then `if ok { … }` in `ui!` — `ok` is a
+  frozen `bool`, the branch is static, silently. Keep derivations behind
+  `move ||` (`memo(move || …)`) or inline the `.get()` into the condition
+  (auto-promoted to `when`). "A `let` freezes, a closure flows." GUARDED:
+  debug builds warn at runtime (untracked build read, names the component;
+  `__take_untracked_build_read_warnings` in tests), the `snapshot-condition`
+  lint flags it (ambient in `idealyst dev`), and `.get_untracked()` declares
+  an intentional snapshot (silences both). Walker internals: branch builds
+  use `untrack_for_build` (NOT public `untrack`) so the warning stays live
+  inside rebuilt `when`/`switch` branches.
 
 ## Keep docs aligned (CLAUDE.md §2)
 

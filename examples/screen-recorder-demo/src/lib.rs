@@ -48,10 +48,10 @@ pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBack
 pub fn app() -> Element {
     install_idea_theme(light_theme());
 
-    let frames: Signal<u32> = signal!(0);
-    let dims: Signal<(u32, u32)> = signal!((0, 0));
-    let status: Signal<String> = signal!("Idle — press Start recording".to_string());
-    let started: Signal<bool> = signal!(false);
+    let frames: Signal<u32> = signal(0);
+    let dims: Signal<(u32, u32)> = signal((0, 0));
+    let status: Signal<String> = signal("Idle — press Start recording".to_string());
+    let started: Signal<bool> = signal(false);
 
     // The live stream + its frame-tap subscription, shared between the start
     // and stop buttons. Capture runs while the `MediaStream` is alive; dropping

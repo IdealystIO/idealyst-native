@@ -32,7 +32,7 @@ fn count_update_text(events: &[Event], needle: &str) -> usize {
 #[test]
 fn closure_text_content_is_reactive() {
     let rt = TestRuntime::new();
-    let n: Signal<i32> = signal!(1);
+    let n: Signal<i32> = signal(1);
 
     let tree: Element = ui! {
         view {
@@ -65,7 +65,7 @@ fn closure_text_content_is_reactive() {
 #[test]
 fn value_text_content_is_static() {
     let rt = TestRuntime::new();
-    let other: Signal<i32> = signal!(0);
+    let other: Signal<i32> = signal(0);
 
     let tree: Element = ui! {
         view {

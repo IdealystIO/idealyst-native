@@ -80,6 +80,20 @@ const REJECTED_RULE_PLACEHOLDER: &str = ".__idl-rejected-rule{}";
 /// outright would shift them all and corrupt the bookkeeping. We log the
 /// first rejection so the portability slip is diagnosable, then stay quiet
 /// (these rules re-insert on every theme re-apply; one warning is enough).
+/// Format a `.class { body }` rule string. Manual concatenation to
+/// avoid the `format!` machinery, which monomorphizes a path through
+/// `Display` and pulls more code into the binary than this simple
+/// join needs.
+fn class_rule(class_name: &str, body: &str) -> String {
+    let mut rule = String::with_capacity(class_name.len() + body.len() + 6);
+    rule.push('.');
+    rule.push_str(class_name);
+    rule.push_str(" { ");
+    rule.push_str(body);
+    rule.push_str(" }");
+    rule
+}
+
 fn insert_rule_or_placeholder(sheet: &web_sys::CssStyleSheet, rule: &str, idx: u32) -> u32 {
     match sheet.insert_rule_with_index(rule, idx) {
         Ok(new_idx) => new_idx,
@@ -243,16 +257,7 @@ impl WebBackend {
     /// dynamic rules churning under theme toggles, that was O(N²)
     /// per toggle and pegged the main thread.
     pub(crate) fn insert_rule(&mut self, class_name: &str, body: &str) -> u32 {
-        // Manual concatenation to avoid the `format!` machinery,
-        // which monomorphizes a path through `Display` and pulls
-        // more code into the binary than this simple join needs.
-        let mut rule = String::with_capacity(class_name.len() + body.len() + 6);
-        rule.push('.');
-        rule.push_str(class_name);
-        rule.push_str(" { ");
-        rule.push_str(body);
-        rule.push_str(" }");
-        self.insert_rule_raw(&rule)
+        self.insert_rule_raw(&class_rule(class_name, body))
     }
 
     /// Insert a complete, already-formatted CSS rule (selector + body,
@@ -279,6 +284,54 @@ impl WebBackend {
             let end = sheet.css_rules().map(|r| r.length()).unwrap_or(0);
             insert_rule_or_placeholder(&sheet, rule, end)
         }
+    }
+
+    /// Insert a GROUP of rules whose relative CSSOM order carries
+    /// meaning, returning one index per rule in input order. Used for a
+    /// dynamic class's `base + overlay` cohort: the base rule and its
+    /// `@media` / `@container` overlays share the same class selector
+    /// (equal specificity), so an overlay only wins because it sits
+    /// LATER in the sheet — mobile-first cascade order.
+    ///
+    /// [`Self::insert_rule_raw`] recycles freed slots LIFO off
+    /// `free_rule_indices`. A released group frees its slots base-first
+    /// (see `release_dynamic_rule`), so re-minting the same group
+    /// one-rule-at-a-time handed the base rule the overlay's (higher)
+    /// slot and the overlay the base's (lower) slot — physically
+    /// inverting the group. From then on the base rule beat its own
+    /// `@media` overlay at every viewport width, so a `breakpoint lg`
+    /// layout silently degraded to the mobile one after a styled
+    /// subtree was rebuilt (released + re-applied), until a reload
+    /// re-emitted the sheet in source order.
+    ///
+    /// Fixed here by drawing the group's recycled slots up front and
+    /// sorting them ascending before assignment: rule `i` always lands
+    /// at a lower physical index than rule `i + 1`. Slots not covered
+    /// by the free list append at the sheet's end, which is greater
+    /// than every recycled index, so ordering holds across the
+    /// recycle/append boundary too.
+    pub(crate) fn insert_rule_group(&mut self, rules: &[String]) -> Vec<u32> {
+        let take = rules.len().min(self.free_rule_indices.len());
+        let mut slots: Vec<u32> = self
+            .free_rule_indices
+            .split_off(self.free_rule_indices.len() - take);
+        slots.sort_unstable();
+        let sheet = self.sheet();
+        rules
+            .iter()
+            .enumerate()
+            .map(|(i, rule)| {
+                if let Some(&idx) = slots.get(i) {
+                    // Same net-zero deleteRule + insertRule slot
+                    // recycle as `insert_rule_raw`.
+                    let _ = sheet.delete_rule(idx);
+                    insert_rule_or_placeholder(&sheet, rule, idx)
+                } else {
+                    let end = sheet.css_rules().map(|r| r.length()).unwrap_or(0);
+                    insert_rule_or_placeholder(&sheet, rule, end)
+                }
+            })
+            .collect()
     }
 
     /// Mark a previously-inserted rule's slot free for re-use.
@@ -895,18 +948,22 @@ impl WebBackend {
                 let _t = PhaseTimer::start("rules_to_css");
                 rules_to_css(base)
             };
-            let base_idx = {
-                let _t = PhaseTimer::start("insert_rule");
-                self.insert_rule(&class_name, &base_body)
-            };
 
-            // Insert each state overlay as a pseudo-class scoped rule,
-            // and each breakpoint overlay as a `@media (min-width: …)`
-            // rule. Both kinds' CSSOM indices go in one vec so
-            // `release_dynamic_rule` deletes them all on teardown.
-            let mut overlay_indices: Vec<u32> = Vec::with_capacity(
-                overlays.len() + breakpoint_overlays.len() + container_overlays.len(),
+            // Collect the whole cohort's rule strings — base first,
+            // then each state overlay as a pseudo-class scoped rule,
+            // each breakpoint overlay as a `@media (min-width: …)`
+            // rule, each container overlay as an `@container` rule —
+            // and insert them as ONE ordered group at the end. The
+            // group insert (`insert_rule_group`) guarantees the
+            // base's physical index is below every overlay's, which
+            // the equal-specificity mobile-first cascade depends on;
+            // per-rule inserts through the LIFO slot recycler used to
+            // invert that order on re-mint. All indices go in one vec
+            // so `release_dynamic_rule` deletes them on teardown.
+            let mut group_rules: Vec<String> = Vec::with_capacity(
+                1 + overlays.len() + breakpoint_overlays.len() + container_overlays.len(),
             );
+            group_rules.push(class_rule(&class_name, &base_body));
             for (bit, overlay) in overlays {
                 let pseudo = match *bit {
                     runtime_core::StateBits::HOVERED => ":hover",
@@ -939,11 +996,7 @@ impl WebBackend {
                 } else {
                     body
                 };
-                let idx = {
-                    let _t = PhaseTimer::start("insert_rule");
-                    self.insert_rule(&selector, &body)
-                };
-                overlay_indices.push(idx);
+                group_rules.push(class_rule(&selector, &body));
             }
             // Breakpoint overlays: emitted ascending by rank (the walker
             // pre-sorts `breakpoint_overlays`), so stacked `@media`
@@ -957,11 +1010,7 @@ impl WebBackend {
                 // `None` only for `Breakpoint::Xs` (the base, no media
                 // query) — which the walker never emits as an overlay.
                 if let Some(rule) = css::breakpoint_media_rule(&class_name, *bp, &body) {
-                    let idx = {
-                        let _t = PhaseTimer::start("insert_rule");
-                        self.insert_rule_raw(&rule)
-                    };
-                    overlay_indices.push(idx);
+                    group_rules.push(rule);
                 }
             }
             // Container overlays: emitted ascending by threshold (the
@@ -975,13 +1024,15 @@ impl WebBackend {
                     let _t = PhaseTimer::start("rules_to_css");
                     rules_to_css(overlay)
                 };
-                let rule = css::container_query_rule(&class_name, *threshold, &body);
-                let idx = {
-                    let _t = PhaseTimer::start("insert_rule");
-                    self.insert_rule_raw(&rule)
-                };
-                overlay_indices.push(idx);
+                group_rules.push(css::container_query_rule(&class_name, *threshold, &body));
             }
+
+            let indices = {
+                let _t = PhaseTimer::start("insert_rule");
+                self.insert_rule_group(&group_rules)
+            };
+            let base_idx = indices[0];
+            let overlay_indices: Vec<u32> = indices[1..].to_vec();
 
             let shared = std::rc::Rc::new(DynamicPtrEntry {
                 class_name,
@@ -1050,10 +1101,15 @@ impl WebBackend {
             entry.shared.clone()
         } else {
             let class_name = hash_class_name(&key);
-            let base_idx = self.insert_rule(&class_name, &rules_to_css_text(base));
-            let mut overlay_indices: Vec<u32> = Vec::with_capacity(
-                overlays.len() + breakpoint_overlays.len() + container_overlays.len(),
+            // Ordered group insert, mirroring the box path: the base
+            // rule must physically precede its equal-specificity
+            // `@media` / `@container` overlays, and per-rule inserts
+            // through the LIFO slot recycler can invert that on
+            // re-mint (see `insert_rule_group`).
+            let mut group_rules: Vec<String> = Vec::with_capacity(
+                1 + overlays.len() + breakpoint_overlays.len() + container_overlays.len(),
             );
+            group_rules.push(class_rule(&class_name, &rules_to_css_text(base)));
             for (bit, overlay) in overlays {
                 let pseudo = match *bit {
                     runtime_core::StateBits::HOVERED => ":hover",
@@ -1071,19 +1127,21 @@ impl WebBackend {
                 } else {
                     body
                 };
-                overlay_indices.push(self.insert_rule(&selector, &body));
+                group_rules.push(class_rule(&selector, &body));
             }
             for (bp, overlay) in breakpoint_overlays {
                 let body = rules_to_css_text(overlay);
                 if let Some(rule) = css::breakpoint_media_rule(&class_name, *bp, &body) {
-                    overlay_indices.push(self.insert_rule_raw(&rule));
+                    group_rules.push(rule);
                 }
             }
             for (threshold, overlay) in container_overlays {
                 let body = rules_to_css_text(overlay);
-                let rule = css::container_query_rule(&class_name, *threshold, &body);
-                overlay_indices.push(self.insert_rule_raw(&rule));
+                group_rules.push(css::container_query_rule(&class_name, *threshold, &body));
             }
+            let indices = self.insert_rule_group(&group_rules);
+            let base_idx = indices[0];
+            let overlay_indices: Vec<u32> = indices[1..].to_vec();
 
             let shared = std::rc::Rc::new(DynamicPtrEntry {
                 class_name,

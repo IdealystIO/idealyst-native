@@ -446,7 +446,20 @@ fn macros_table_documents_effect_and_signal() {
     // A trailing `!` resolves the same entry — `list_macros` consumers
     // pass either spelling.
     assert!(mcp_catalog::lookup_macro("effect!").is_some());
-    assert!(mcp_catalog::lookup_macro("signal").is_some());
+
+    // Signal creation is a plain FUNCTION now — the `signal!` macro was
+    // removed, so it must NOT resolve as a macro; it lives in the
+    // utilities table instead (an agent asking about state creation
+    // finds `signal(value)` there).
+    assert!(mcp_catalog::lookup_macro("signal").is_none(), "signal! macro was removed");
+    let sig = mcp_catalog::lookup_utility("signal").expect("`signal` fn documented as utility");
+    assert_eq!(sig.module_path, "runtime_core");
+    assert_eq!(sig.category, mcp_catalog::UtilityCategory::Reactive);
+    assert!(
+        sig.docs.contains("macro was removed"),
+        "signal docs must warn old-form users: {:?}",
+        sig.docs,
+    );
 
     // The attribute macros live here too, keyed by bare name.
     let component = mcp_catalog::lookup_macro("component").expect("`#[component]` registered");
@@ -1011,8 +1024,8 @@ fn struct_schema_also_emits_type_entry() {
 }
 
 // -----------------------------------------------------------------------------
-// MethodEntry — emitted from `methods! { fn name(&self, …) { … } }`
-// blocks inside `#[component]` bodies.
+// MethodEntry — emitted from `#[method] fn name(…) { … }` declarations
+// inside `#[component]` bodies.
 // -----------------------------------------------------------------------------
 
 #[allow(dead_code)]
@@ -1025,17 +1038,18 @@ pub struct CounterProps {
 /// pick up both `reset` and `bump_by` with their docs and parameters.
 #[component]
 pub fn counter(_props: &CounterProps) -> runtime_core::Element {
-    let value = runtime_core::signal!(0_i32);
-    methods! {
-        /// Reset the counter to zero.
-        fn reset(&self) {
-            value.set(0);
-        }
-        /// Bump the counter by `n` (positive or negative).
-        fn bump_by(&self, n: i32) {
-            value.update(|v| *v += n);
-        }
+    let value = runtime_core::signal(0_i32);
+    /// Reset the counter to zero.
+    #[method]
+    fn reset() {
+        value.set(0);
     }
+    /// Bump the counter by `n` (positive or negative).
+    #[method]
+    fn bump_by(n: i32) {
+        value.update(|v| *v += n);
+    }
+    
     ::runtime_core::view(::std::vec::Vec::new())
 }
 

@@ -15,7 +15,7 @@ use crate::common::{Event, TestRuntime};
 /// `when(true)` mounts the then-branch.
 #[test]
 fn when_true_mounts_then_branch() {
-    let s = signal!(true);
+    let s = signal(true);
 
     let rt = TestRuntime::new();
     let _owner = rt.render(
@@ -37,7 +37,7 @@ fn when_true_mounts_then_branch() {
 /// `when(false)` mounts the else-branch.
 #[test]
 fn when_false_mounts_else_branch() {
-    let s = signal!(false);
+    let s = signal(false);
     let rt = TestRuntime::new();
     let _owner = rt.render(
         when(move || s.get(), || text("then").into(), || text("else").into()),
@@ -55,7 +55,7 @@ fn when_false_mounts_else_branch() {
 /// Flipping the condition mounts the other branch.
 #[test]
 fn when_flip_mounts_other_branch() {
-    let s = signal!(true);
+    let s = signal(true);
     let rt = TestRuntime::new();
     let _owner = rt.render(
         when(move || s.get(), || text("then").into(), || text("else").into()),

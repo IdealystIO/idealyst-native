@@ -6,7 +6,7 @@
 //!
 //! ```ignore
 //! let trigger: Ref<PressableHandle> = Ref::new();
-//! let open = signal!(false);
+//! let open = signal(false);
 //! ui! {
 //!     Button(label = "Actions", on_click = move || open.set(true), bind_to = Some(trigger))
 //!     if open.get() {
@@ -343,7 +343,7 @@ impl Default for SubMenuProps {
 /// won't expand there — mobile menus are a separate consideration.
 #[component]
 pub fn SubMenu(props: SubMenuProps) -> Element {
-    let open: Signal<bool> = signal!(false);
+    let open: Signal<bool> = signal(false);
     let trigger_ref: Ref<ViewHandle> = Ref::new();
     let items = Rc::new(props.items);
     let side = props.side;

@@ -145,7 +145,7 @@ pub fn Select(props: SelectProps) -> Element {
     // to swap the glyph reactively. Snapshot for now.
     let icon_data = props.icon.get().unwrap_or(CHEVRON_DOWN);
 
-    let open: Signal<bool> = signal!(false);
+    let open: Signal<bool> = signal(false);
     let trigger_ref: Ref<PressableHandle> = Ref::new();
 
     let label_options = options.clone();

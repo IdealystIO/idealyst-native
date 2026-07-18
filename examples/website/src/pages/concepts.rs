@@ -98,7 +98,7 @@ fn primitives() -> Element {
 }
 
 fn reactivity() -> Element {
-    let snippet = "let count = signal!(0);\n\
+    let snippet = "let count = signal(0);\n\
                    \n\
                    // `text_fmt!` builds a reactive text source. `bind!(signal)`\n\
                    // marks the args the framework subscribes to:\n\

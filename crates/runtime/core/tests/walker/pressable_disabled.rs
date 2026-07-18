@@ -61,7 +61,7 @@ fn static_disabled_blocks_press_while_enabled_fires() {
 #[test]
 fn reactive_disabled_blocks_and_unblocks_press() {
     let rt = TestRuntime::new();
-    let off: Signal<bool> = signal!(false);
+    let off: Signal<bool> = signal(false);
     let fired = Rc::new(RefCell::new(0u32));
     let f = fired.clone();
 

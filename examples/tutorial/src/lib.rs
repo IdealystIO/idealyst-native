@@ -69,7 +69,7 @@ pub fn app() -> Element {
     let nav: Ref<DrawerHandle> = Ref::new();
     // App-level dark-mode state — lifted out of any screen scope so it
     // survives navigation. Captured by the sidebar builder below.
-    let is_dark: Signal<bool> = signal!(start_dark);
+    let is_dark: Signal<bool> = signal(start_dark);
 
     // Pin the sidebar (vs. modal slide-in) at wide viewports.
     install_navigator_pin_width(900.0);

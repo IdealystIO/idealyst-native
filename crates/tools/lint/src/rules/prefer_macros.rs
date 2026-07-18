@@ -1,27 +1,33 @@
-//! Rules that flag the *raw* reactive primitives where an idealyst macro
-//! is the intended authoring surface:
+//! Rules that flag drift from the canonical reactive authoring surface:
 //!
-//! - `Signal::new(v)` → `signal!(v)`   (`prefer-signal-macro`)
+//! - `Signal::new(v)` / `signal!(v)` → `signal(v)` (`prefer-signal-fn`)
+//! - `memo!(…)` → `memo(move || …)`   (`prefer-memo-fn`)
 //! - `Effect::new(|| …)` → `effect!{ … }` (`prefer-effect-macro`)
-//! - `memo(|| …)` → `memo!(…)`          (`prefer-memo-macro`)
 //!
-//! The macros aren't sugar — they anchor the created handle to the owning
-//! reactive scope (so it isn't dropped early) and let the reactivity
-//! rewrite see the dependency. Calling the raw constructor skips that, the
-//! classic "my signal stopped updating" footgun.
+//! Signal creation and memoization are plain **functions** — `signal(value)`
+//! and `memo(move || …)` — because neither needs token manipulation:
+//! scope anchoring happens inside the constructors, and the memo author
+//! writes the closure anyway. Their macros were removed (`signal!`
+//! expanded verbatim to `Signal::new`; `memo!` only inserted `move ||`),
+//! so an invocation of either won't compile; `Signal::new` still works
+//! but is the redundant spelling. `effect!` remains a macro on merit: it
+//! wraps a bare BLOCK in a `move` closure and expands to the scope-owned
+//! `Effect::scoped` (the raw `Effect::new` constructor is sealed).
 //!
 //! Detection is path-shaped and works regardless of import prefix:
 //! `Signal::new`, `runtime_core::Signal::new`, and `reactive::Signal::new`
-//! all match. Anything written inside a `signal!( … )` invocation is a
-//! token blob `syn` never descends into, so legitimate macro use is never
-//! flagged.
+//! all match. Macro *bodies* are token blobs `syn` never descends into,
+//! so `ui! { … }` contents are invisible here — but macro *invocations*
+//! themselves are visible nodes, which is how leftover `signal!(…)` /
+//! `memo!(…)` calls are caught (with a better message than rustc's
+//! "cannot find macro").
 
 use crate::diagnostic::RawDiag;
 use crate::rules::{last_segment, nth_from_end};
 
-pub(crate) const SIGNAL_RULE: &str = "prefer-signal-macro";
+pub(crate) const SIGNAL_RULE: &str = "prefer-signal-fn";
 pub(crate) const EFFECT_RULE: &str = "prefer-effect-macro";
-pub(crate) const MEMO_RULE: &str = "prefer-memo-macro";
+pub(crate) const MEMO_RULE: &str = "prefer-memo-fn";
 
 pub(crate) fn check_call(call: &syn::ExprCall, out: &mut Vec<RawDiag>) {
     let syn::Expr::Path(path_expr) = &*call.func else {
@@ -36,12 +42,13 @@ pub(crate) fn check_call(call: &syn::ExprCall, out: &mut Vec<RawDiag>) {
             out.push(
                 RawDiag::new(
                     SIGNAL_RULE,
-                    "creating a signal with `Signal::new` bypasses the `signal!` macro",
+                    "`Signal::new` is the redundant spelling of signal creation",
                     span_of(path_expr),
                 )
                 .with_help(
-                    "use `signal!(value)` — it anchors the signal to the owning scope so it \
-                     isn't dropped before its subscribers run",
+                    "use `signal(value)` — the canonical creation form (identical \
+                     behavior; `signal` is the plain function re-exported at the \
+                     crate root)",
                 ),
             );
         }
@@ -59,18 +66,45 @@ pub(crate) fn check_call(call: &syn::ExprCall, out: &mut Vec<RawDiag>) {
                 ),
             );
         }
-        // The `memo(…)` free function — match the trailing segment so an
-        // imported `memo` and a qualified `reactive::memo` both fire. The
-        // `memo!` macro itself expands to this call, but macro bodies are
-        // never visited, so only hand-written calls reach here.
-        (_, Some("memo")) => {
+        // No arm for the `memo(…)` free function: it IS the canonical
+        // form (the old `prefer-memo-macro` rule flagged it toward the
+        // since-removed `memo!` — that direction inverted with the
+        // macro's removal; leftover `memo!` invocations are caught in
+        // `check_macro` below).
+        _ => {}
+    }
+}
+
+/// Flag invocations of the removed `signal!` / `memo!` macros. They no
+/// longer exist in runtime-core, so rustc will also error — but with an
+/// unhelpful "cannot find macro `signal` in this scope" (the *function*
+/// of the same name IS in scope). These diagnostics supply the actual fix.
+pub(crate) fn check_macro(mac: &syn::Macro, out: &mut Vec<RawDiag>) {
+    use syn::spanned::Spanned;
+    match last_segment(&mac.path).as_deref() {
+        Some("signal") => {
+            out.push(
+                RawDiag::new(
+                    SIGNAL_RULE,
+                    "the `signal!` macro was removed",
+                    mac.path.span(),
+                )
+                .with_help(
+                    "drop the `!` — signal creation is the plain function `signal(value)`",
+                ),
+            );
+        }
+        Some("memo") => {
             out.push(
                 RawDiag::new(
                     MEMO_RULE,
-                    "calling the `memo` function directly bypasses the `memo!` macro",
-                    span_of(path_expr),
+                    "the `memo!` macro was removed",
+                    mac.path.span(),
                 )
-                .with_help("use `memo!(|| … )` so the derived value tracks its dependencies"),
+                .with_help(
+                    "write the closure yourself — `memo(move || …)` is the plain-fn form \
+                     (the macro only inserted the `move ||`)",
+                ),
             );
         }
         _ => {}

@@ -294,7 +294,7 @@ ui! {
 With a reactive variant axis:
 
 ```rust
-let size = signal!(CardSize::Medium);
+let size = signal(CardSize::Medium);
 
 ui! {
     View(style = Card().size(size)) {

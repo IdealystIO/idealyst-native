@@ -30,7 +30,8 @@ pub use registry::{NavigatorHandlerFactory, NavigatorRegistry, RegisterNavigator
 pub use scroll::{ambient_scroll_context, ScrollContext};
 pub use shared::{
     ambient_navigator, capture_ambient_nav_context, current_nav_base, current_screen_route,
-    current_screen_state, enable_route_collector, join_path, match_pattern, match_prefix,
+    consumed_prefix, current_screen_state, enable_route_collector, join_path, match_pattern,
+    match_prefix,
     navigator_fill_rules, navigator_outlet, outlet_fill_rules, peek_initial_path, record_routes,
     set_initial_path, take_initial_path,
     take_route_collector, use_can_go_back, use_focus, AmbientNavContext, AmbientNavContextGuard,

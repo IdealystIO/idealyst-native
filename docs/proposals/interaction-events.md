@@ -436,7 +436,7 @@ components reading the raw stream. A few canonical sketches:
 ```rust
 #[component]
 pub fn tappable(props: &TappableProps, children: Vec<Element>) -> Element {
-    let start: Signal<Option<(f32, f32, std::time::Instant)>> = signal!(None);
+    let start: Signal<Option<(f32, f32, std::time::Instant)>> = signal(None);
     let on_tap = props.on_tap.clone();
     let slop_px = 8.0_f32;
     let max_ms = 250_u128;
@@ -475,7 +475,7 @@ Same shape, with a scheduled callback after a threshold:
 ```rust
 #[component]
 pub fn long_pressable(props: &LongPressableProps, children: Vec<Element>) -> Element {
-    let task: Signal<Option<ScheduledTask>> = signal!(None);
+    let task: Signal<Option<ScheduledTask>> = signal(None);
     let on_long = props.on_long_press.clone();
     let threshold_ms = props.threshold_ms.unwrap_or(500);
 
@@ -505,7 +505,7 @@ signal value aborts the pending callback.
 ```rust
 #[component]
 pub fn draggable(props: &DraggableProps, children: Vec<Element>) -> Element {
-    let start: Signal<Option<(f32, f32, u32)>> = signal!(None);
+    let start: Signal<Option<(f32, f32, u32)>> = signal(None);
     let on_drag = props.on_drag.clone();
 
     ui! {
@@ -534,7 +534,7 @@ the pointer that started the drag drives subsequent moves.
 Two pointers tracked simultaneously:
 
 ```rust
-let pointers: Signal<HashMap<u32, (f32, f32)>> = signal!(HashMap::new());
+let pointers: Signal<HashMap<u32, (f32, f32)>> = signal(HashMap::new());
 // …on Move with two active pointers, compute the distance ratio
 //   against the initial-down distance to get a scale factor…
 ```

@@ -50,7 +50,7 @@ fn count_create_text_any(events: &[Event]) -> usize {
 #[test]
 fn dynamic_rebuilds_subtree_when_eager_read_changes() {
     let rt = TestRuntime::new();
-    let flag: Signal<bool> = signal!(true);
+    let flag: Signal<bool> = signal(true);
 
     // `flag.get()` is read EAGERLY while building the subtree, so it's a
     // rebuild dependency.
@@ -90,7 +90,7 @@ fn dynamic_rebuilds_subtree_when_eager_read_changes() {
 #[test]
 fn closure_child_in_ui_is_reactive() {
     let rt = TestRuntime::new();
-    let n: Signal<i32> = signal!(0);
+    let n: Signal<i32> = signal(0);
 
     // `move || …` sits in child position as an ordinary Rust expression; the
     // `ChildList for Fn` impl splices it as a `dynamic` subtree.
@@ -120,8 +120,8 @@ fn closure_child_in_ui_is_reactive() {
 #[test]
 fn dynamic_does_not_rebuild_on_unrelated_signal() {
     let rt = TestRuntime::new();
-    let read: Signal<bool> = signal!(true);
-    let unrelated: Signal<i32> = signal!(0);
+    let read: Signal<bool> = signal(true);
+    let unrelated: Signal<i32> = signal(0);
 
     let d = dynamic(move || {
         // Only `read` is touched; `unrelated` is never read here.
@@ -154,7 +154,7 @@ fn dynamic_does_not_rebuild_on_unrelated_signal() {
 #[test]
 fn dynamic_defers_inner_reactive_reads_no_rebuild() {
     let rt = TestRuntime::new();
-    let inner: Signal<i32> = signal!(1);
+    let inner: Signal<i32> = signal(1);
 
     // `inner` is NOT read eagerly by the Dynamic closure — it's read inside
     // the reactive `text` closure, which owns its own effect.

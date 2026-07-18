@@ -31,6 +31,7 @@ impl Severity {
 }
 
 /// A rule finding before severity/suppression/location resolution.
+#[derive(Debug)]
 pub(crate) struct RawDiag {
     pub(crate) rule: &'static str,
     pub(crate) message: String,

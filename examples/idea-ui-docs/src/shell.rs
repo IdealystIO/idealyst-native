@@ -149,7 +149,7 @@ pub fn sidebar(slot: SlotProps, q: Signal<String>) -> Element {
 
     // The search now lives in a dialog. This open-state drives the modal; the
     // sidebar shows a button that opens it.
-    let open: Signal<bool> = signal!(false);
+    let open: Signal<bool> = signal(false);
 
     // Search TRIGGER — a button styled like a search field. Opening clears any
     // prior query so each search starts fresh.
@@ -700,7 +700,7 @@ fn _force_imports() -> Element {
     ui! {
         Stack {
             Spacer()
-            Switch(value = runtime_core::signal!(false))
+            Switch(value = runtime_core::signal(false))
         }
     }
 }

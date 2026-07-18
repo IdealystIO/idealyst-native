@@ -75,7 +75,7 @@ Each porter ships an explicit table (e.g.
 each source-language call shape:
 
 - **Mechanical** — call maps to an idealyst primitive
-  (`useState`/`createSignal`/`ref` → `signal!`,
+  (`useState`/`createSignal`/`ref` → `signal(…)`,
   `useEffect`/`createEffect`/`watchEffect` → `effect!`).
 - **Unknown** — everything else. Ported as a plain function call.
 
@@ -198,7 +198,7 @@ pub struct CounterProps {
 
 #[component(default(initial = 0))]
 pub fn counter(props: &CounterProps) -> Element {
-    let count = signal!(props.initial);
+    let count = signal(props.initial);
     effect!({
         todo!("port handler-body (line N): console.log → idiomatic Rust logging — <original>");
     });
@@ -365,7 +365,7 @@ The most common shapes in real React code are all covered:
 | `export default (…) => …` | `pub fn default_` (synthesized name) |
 | `interface Props { x: number, on: (id: string) => void }` | `pub struct FooProps { pub x: i32, pub on: Option<Box<dyn Fn(String) + Send + Sync>> }` |
 | `({ x, onClick })` (no interface) | Untyped fields harvested; `on*` keys typed as `Option<Box<dyn Fn() + Send + Sync>>` |
-| `useState(x)` / `createSignal(x)` / `ref(x)` / Svelte reactive `let` | `signal!(x)` |
+| `useState(x)` / `createSignal(x)` / `ref(x)` / Svelte reactive `let` | `signal(x)` |
 | `useEffect(fn, deps)` / `createEffect(fn)` / `watchEffect(fn)` / Svelte `$:` | `effect!({ … })` |
 | `useEffect(() => { setup; return () => cleanup; })` | `effect!({ setup; on_cleanup(move \|\| cleanup); })` |
 | Solid `onCleanup(fn)` inside `createEffect` | `on_cleanup(move \|\| fn_body);` inside `effect!({…})` |

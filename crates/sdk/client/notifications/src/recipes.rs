@@ -30,7 +30,7 @@ recipe!(
         use ::runtime_core::{signal, text, ui};
 
         // Reactive status line; the press handler writes into it.
-        let status = signal!("Tap to notify".to_string());
+        let status = signal("Tap to notify".to_string());
 
         let on_click = move || {
             spawn_async(async move {
@@ -68,7 +68,7 @@ recipe!(
         use ::runtime_core::{signal, text, ui};
         use ::std::time::Duration;
 
-        let status = signal!("idle".to_string());
+        let status = signal("idle".to_string());
         // A stable id lets us replace or cancel this exact reminder later.
         let id = NotificationId::from("reminder");
 

@@ -1,68 +1,78 @@
-//! `methods! { ... }` block lifting inside `#[component]`.
+//! `#[method]` fn lifting inside `#[component]` — the component's
+//! imperative surface (commands).
 //!
-//! A component author can declare imperative methods exposed to their
-//! parent by writing a `methods!` block at the top level of the
-//! component's body:
+//! A component author declares methods as nested fns marked `#[method]`:
 //!
 //! ```ignore
 //! #[component]
-//! pub fn counter(props: &CounterProps) -> Bindable<CounterHandle> {
-//!     let value = props.value;
-//!     methods! {
-//!         fn reset(&self) { value.set(0); }
-//!         fn bump_by(&self, n: i32) { value.update(|v| *v += n); }
-//!     }
-//!     view(children![/* ... */])
+//! pub fn Counter() -> Element {
+//!     let value = signal(0);
+//!
+//!     #[method]
+//!     /// Reset the count to zero.
+//!     fn reset() { value.set(0); }
+//!
+//!     #[method]
+//!     fn bump_by(n: i32) { value.update(|v| *v += n); }
+//!
+//!     ui! { /* ... */ }
 //! }
+//!
+//! // Caller — the ordinary tag form binds via the auto-injected prop:
+//! let h: Ref<CounterHandle> = Ref::new();
+//! ui! { Counter(bind_to = h) }
+//! h.get().map(|c| c.bump_by(3));   // .get(), not .with() — methods write signals
 //! ```
 //!
-//! This module:
-//!  - finds the `methods!` statement in the function body,
-//!  - parses its inner `fn name(&self, args...) { body }` declarations,
-//!  - generates a sibling `CounterHandle` struct with `Rc<dyn Fn(...)>`
-//!    fields, a `Clone` impl, and `pub fn name(...)` accessors that
-//!    invoke each closure,
-//!  - replaces the in-body `methods!` statement with a `let __handle
-//!    = CounterHandle { ... }` construction whose fields hold `move`
-//!    closures wrapping each method body,
-//!  - wraps the function's trailing expression in
-//!    `Bindable::new(<tail>.into(), __handle)` so the implicit return
-//!    matches the `Bindable<H>` return type.
+//! No `pub` (the generated handle carries the public surface), no
+//! `&self` (captures come from the closure over the component body —
+//! which a real nested fn could never do; the attribute is what licenses
+//! the transform), and `()` returns only: **methods are commands, not
+//! queries** — reads stay signals, so the handle can never become a
+//! subscription-bypassing read side-channel.
 //!
-//! Author rules:
-//!  - exactly zero or one `methods!` block per component,
-//!  - methods take `&self` (cosmetic — captures come from the closure,
-//!    not from struct fields) plus zero or more typed args,
-//!  - method bodies return `()` only (v1 limitation).
+//! This module:
+//!  - finds the `#[method]` fn items in the function body,
+//!  - generates a sibling `CounterHandle` struct with `Rc<dyn Fn(...)>`
+//!    fields, a `Clone` impl, and `pub fn name(...)` accessors,
+//!  - removes the fn items and constructs the handle just before the
+//!    tail (maximal capture scope), filling the auto-injected
+//!    `bind_to: Option<Ref<CounterHandle>>` prop when present,
+//!  - registers the methods with the robot bridge (JSON-invocable),
+//!  - wraps the tail in `__component_root` (element↔component link);
+//!    only the LEGACY explicit-props form still wraps in
+//!    `Bindable::new` (fn-call `.bind()` binding — no prop injection
+//!    is possible into an author-written props struct).
 //!
 //! The handle's name is derived from the component's fn name by
 //! converting `snake_case` to `PascalCase` and appending `Handle`
-//! (`counter` → `CounterHandle`).
+//! (`Counter` → `CounterHandle`).
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
-use syn::parse::{Parse, ParseStream};
+
 use syn::{Block, FnArg, Ident, ItemFn, Pat, Stmt, Type};
 
-/// Extract any `methods!` block from the function body. If present:
+/// Extract the body's `#[method]` fns. If present:
 ///  - synthesizes the handle struct + impls (returned in the
 ///    `TokenStream2`),
-///  - replaces the in-body `methods!` statement with a handle
-///    construction binding,
-///  - wraps the tail expression with `Bindable::new(...)`.
+///  - removes the fn items, constructing the handle just before the
+///    tail (plus the `bind_to` fill on the new path),
+///  - wraps the tail (`__component_root`; legacy adds `Bindable::new`).
 ///
-/// If no `methods!` block is present, returns an empty `TokenStream2`
+/// If no `#[method]` fns are present, returns an empty `TokenStream2`
 /// and leaves the function untouched.
 pub(crate) fn extract_and_rewrite(
     item_fn: &mut ItemFn,
+    bind_to_injected: bool,
 ) -> syn::Result<(TokenStream2, Vec<MethodInfo>)> {
-    let Some((idx, methods)) = find_and_parse_methods(item_fn)? else {
+    let Some((indices, methods)) = find_and_parse_methods(item_fn)? else {
         return Ok((TokenStream2::new(), Vec::new()));
     };
 
     let handle_name = derive_handle_name(&item_fn.sig.ident);
     let fn_name = item_fn.sig.ident.clone();
-    let extra = generate_handle_type(&handle_name, &methods);
+    let extra = generate_handle_type(&handle_name, &item_fn.sig.ident, &methods);
 
     let infos: Vec<MethodInfo> = methods
         .iter()
@@ -80,50 +90,134 @@ pub(crate) fn extract_and_rewrite(
         })
         .collect();
 
-    rewrite_body(item_fn, idx, &handle_name, &fn_name, &methods);
+    rewrite_body(item_fn, &indices, &handle_name, &fn_name, &methods, bind_to_injected);
 
     Ok((extra, infos))
 }
 
-/// Walks the function body for a `methods! { ... }` statement. Returns
-/// (statement index, parsed methods) if found, or `None`. Errors if
-/// more than one `methods!` block is present.
-fn find_and_parse_methods(item_fn: &ItemFn) -> syn::Result<Option<(usize, Vec<MethodDef>)>> {
-    let mut found: Option<(usize, &syn::StmtMacro)> = None;
-    for (i, stmt) in item_fn.block.stmts.iter().enumerate() {
+/// Cheap pre-scan used by the `#[component]` pipeline BEFORE the props
+/// machinery runs: does the body declare any `#[method]` fns? Drives the
+/// `bind_to` prop injection (which must happen before inline-props
+/// expansion turns parameters into fields).
+pub(crate) fn has_method_fns(item_fn: &ItemFn) -> bool {
+    item_fn.block.stmts.iter().any(|s| as_method_fn(s).is_some())
+}
+
+/// `Some(&ItemFn)` when the statement is a nested fn carrying `#[method]`.
+fn as_method_fn(stmt: &Stmt) -> Option<&ItemFn> {
+    let Stmt::Item(syn::Item::Fn(f)) = stmt else { return None };
+    f.attrs.iter().any(|a| a.path().is_ident("method")).then_some(f)
+}
+
+/// Walks the function body for `#[method]`-marked nested fns. Returns
+/// (statement indices, parsed methods) if any are found. Also rejects a
+/// leftover `methods! { … }` block with a pointer at the new spelling —
+/// without this, the author would get rustc's unhelpful "cannot find
+/// macro `methods`".
+fn find_and_parse_methods(item_fn: &ItemFn) -> syn::Result<Option<(Vec<usize>, Vec<MethodDef>)>> {
+    for stmt in &item_fn.block.stmts {
         if let Stmt::Macro(m) = stmt {
             if m.mac.path.is_ident("methods") {
-                if found.is_some() {
-                    return Err(syn::Error::new_spanned(
-                        &m.mac.path,
-                        "only one `methods!` block per component is allowed",
-                    ));
-                }
-                found = Some((i, m));
+                return Err(syn::Error::new_spanned(
+                    &m.mac.path,
+                    "`methods! { … }` was replaced by `#[method]` on nested fns: \
+                     write `#[method] fn name(args…) { … }` directly in the component \
+                     body (no `&self`, no visibility — the generated handle carries \
+                     the public surface)",
+                ));
             }
         }
     }
-    let Some((idx, m)) = found else { return Ok(None) };
-    let parsed: MethodsBody = syn::parse2(m.mac.tokens.clone())?;
-    Ok(Some((idx, parsed.methods)))
-}
 
-/// Parsed contents of a `methods! { ... }` block.
-struct MethodsBody {
-    methods: Vec<MethodDef>,
-}
-
-impl Parse for MethodsBody {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let mut methods = Vec::new();
-        while !input.is_empty() {
-            methods.push(input.parse()?);
-        }
-        Ok(MethodsBody { methods })
+    let mut indices = Vec::new();
+    let mut methods = Vec::new();
+    for (i, stmt) in item_fn.block.stmts.iter().enumerate() {
+        let Some(f) = as_method_fn(stmt) else { continue };
+        indices.push(i);
+        methods.push(parse_method_fn(f)?);
     }
+    if indices.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((indices, methods)))
 }
 
-/// One method declaration inside `methods! { ... }`.
+/// Validate + digest one `#[method] fn`. The nested-fn spelling reads as
+/// plain Rust, so the validations teach what the transformation permits:
+/// the body becomes a `move` closure over the component's state (which a
+/// real nested fn could never capture — the attribute is what licenses
+/// it).
+fn parse_method_fn(f: &ItemFn) -> syn::Result<MethodDef> {
+    if !matches!(f.vis, syn::Visibility::Inherited) {
+        return Err(syn::Error::new_spanned(
+            &f.vis,
+            "`#[method]` fns take no visibility — the generated handle struct \
+             carries the public surface",
+        ));
+    }
+    if let Some(a) = &f.sig.asyncness {
+        return Err(syn::Error::new_spanned(a, "`#[method]` fns cannot be async (v1)"));
+    }
+    if let Some(u) = &f.sig.unsafety {
+        return Err(syn::Error::new_spanned(u, "`#[method]` fns cannot be unsafe"));
+    }
+    if !f.sig.generics.params.is_empty() {
+        return Err(syn::Error::new_spanned(
+            &f.sig.generics,
+            "`#[method]` fns cannot be generic — the handle stores them type-erased",
+        ));
+    }
+    if let syn::ReturnType::Type(arrow, _) = &f.sig.output {
+        return Err(syn::Error::new_spanned(
+            arrow,
+            "`#[method]` fns return `()` only — methods are COMMANDS; expose reads \
+             as signals (a `ReadSignal` prop or a memo), not through the handle",
+        ));
+    }
+
+    let mut args = Vec::new();
+    for a in &f.sig.inputs {
+        match a {
+            FnArg::Receiver(r) => {
+                return Err(syn::Error::new_spanned(
+                    r,
+                    "`#[method]` fns take no `&self` — state comes from the closure \
+                     capturing the component body, not from a receiver",
+                ));
+            }
+            FnArg::Typed(pt) => {
+                let ident = match &*pt.pat {
+                    Pat::Ident(pi) => pi.ident.clone(),
+                    _ => {
+                        return Err(syn::Error::new_spanned(
+                            &pt.pat,
+                            "`#[method]` arguments must use plain identifier patterns",
+                        ));
+                    }
+                };
+                args.push((ident, (*pt.ty).clone()));
+            }
+        }
+    }
+
+    // Docs ride along for the MCP catalog; the `#[method]` marker itself
+    // is consumed here (rustc never sees it).
+    let attrs = f
+        .attrs
+        .iter()
+        .filter(|a| !a.path().is_ident("method"))
+        .cloned()
+        .collect();
+
+    Ok(MethodDef {
+        attrs,
+        name: f.sig.ident.clone(),
+        args,
+        body: (*f.block).clone(),
+    })
+}
+
+/// One digested `#[method]` fn declaration.
 struct MethodDef {
     /// Outer attributes (most importantly, `///` doc comments) attached
     /// to the `fn name(...)` line. Captured so the MCP catalog can
@@ -161,74 +255,8 @@ fn method_docs(attrs: &[syn::Attribute]) -> String {
     lines.join("\n")
 }
 
-impl Parse for MethodDef {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let attrs = input.call(syn::Attribute::parse_outer)?;
-        let _fn_kw: syn::Token![fn] = input.parse()?;
-        let name: Ident = input.parse()?;
-        let args_content;
-        syn::parenthesized!(args_content in input);
-        // Use syn's FnArg parser so we get the same error messages as
-        // a regular fn signature. The first arg must be `&self`.
-        let raw_args: syn::punctuated::Punctuated<FnArg, syn::Token![,]> =
-            args_content.parse_terminated(FnArg::parse, syn::Token![,])?;
-        let mut iter = raw_args.into_iter();
-        match iter.next() {
-            Some(FnArg::Receiver(r)) => {
-                if r.reference.is_none() || r.mutability.is_some() {
-                    return Err(syn::Error::new_spanned(
-                        r,
-                        "methods! receivers must be `&self` (no `mut`, no owned `self`)",
-                    ));
-                }
-            }
-            other => {
-                return Err(syn::Error::new_spanned(
-                    other.map(|x| quote!(#x)).unwrap_or_else(|| quote!()),
-                    "methods! functions must start with `&self`",
-                ));
-            }
-        }
-        let mut args = Vec::new();
-        for a in iter {
-            match a {
-                FnArg::Typed(pt) => {
-                    let ident = match &*pt.pat {
-                        Pat::Ident(pi) => pi.ident.clone(),
-                        _ => {
-                            return Err(syn::Error::new_spanned(
-                                &pt.pat,
-                                "methods! arguments must use plain identifier patterns",
-                            ));
-                        }
-                    };
-                    args.push((ident, (*pt.ty).clone()));
-                }
-                FnArg::Receiver(r) => {
-                    return Err(syn::Error::new_spanned(
-                        r,
-                        "only the first methods! argument may be `&self`",
-                    ));
-                }
-            }
-        }
-        // No return type in v1 — bodies must return `()`. If the user
-        // writes `-> T`, parse it and reject.
-        if input.peek(syn::Token![->]) {
-            let arrow: syn::Token![->] = input.parse()?;
-            let _ty: Type = input.parse()?;
-            return Err(syn::Error::new_spanned(
-                arrow,
-                "methods! return types are not supported yet; use `()`",
-            ));
-        }
-        let body: Block = input.parse()?;
-        Ok(MethodDef { attrs, name, args, body })
-    }
-}
-
 /// `counter` → `CounterHandle`. snake_case to PascalCase + Handle.
-fn derive_handle_name(fn_name: &Ident) -> Ident {
+pub(crate) fn derive_handle_name(fn_name: &Ident) -> Ident {
     let raw = fn_name.to_string();
     let mut pascal = String::with_capacity(raw.len());
     let mut next_upper = true;
@@ -250,7 +278,22 @@ fn derive_handle_name(fn_name: &Ident) -> Ident {
 ///   pub struct CounterHandle { __reset: Rc<dyn Fn()>, ... }
 ///   impl Clone for CounterHandle { fn clone(&self) -> Self { ... } }
 ///   impl CounterHandle { pub fn reset(&self) { (self.__reset)() } ... }
-fn generate_handle_type(name: &Ident, methods: &[MethodDef]) -> TokenStream2 {
+///
+/// The `///` docs from each `#[method]` fn ride onto the generated
+/// accessor, and the struct gets a synthesized doc naming the component
+/// and the invocation rule — so completion and hover in the IDE show
+/// real documentation, not bare signatures.
+fn generate_handle_type(
+    name: &Ident,
+    component: &Ident,
+    methods: &[MethodDef],
+) -> TokenStream2 {
+    let struct_doc = format!(
+        "Imperative handle for [`{component}`]'s `#[method]` fns. Obtain it \
+         through the auto-injected `bind_to` prop \
+         (`ui! {{ {component}(bind_to = my_ref) }}`); invoke via \
+         `my_ref.get()` — not `.with()`, since methods write signals."
+    );
     let fields = methods.iter().map(|m| {
         let f = field_ident(&m.name);
         let arg_tys = m.args.iter().map(|(_, ty)| ty);
@@ -263,79 +306,154 @@ fn generate_handle_type(name: &Ident, methods: &[MethodDef]) -> TokenStream2 {
     let accessors = methods.iter().map(|m| {
         let method_name = &m.name;
         let f = field_ident(&m.name);
+        let docs = m.attrs.iter().filter(|a| a.path().is_ident("doc"));
         let arg_names = m.args.iter().map(|(n, _)| n);
         let arg_names2 = m.args.iter().map(|(n, _)| n);
         let arg_tys = m.args.iter().map(|(_, ty)| ty);
         quote! {
+            #(#docs)*
             pub fn #method_name(&self, #(#arg_names: #arg_tys),*) {
                 (self.#f)(#(#arg_names2),*);
             }
         }
     });
+    let part_params = methods.iter().map(|m| {
+        let f = field_ident(&m.name);
+        let arg_tys = m.args.iter().map(|(_, ty)| ty);
+        quote! { #f: ::std::rc::Rc<dyn Fn(#(#arg_tys),*)> }
+    });
+    let part_names = methods.iter().map(|m| field_ident(&m.name));
 
+    // The struct lives in a hidden CHILD module so its closure-plumbing
+    // fields are truly private: the component sits in the PARENT module,
+    // and same-module code sees private fields — which polluted
+    // completion with `__bump`-style internals for any caller in the
+    // component's own file. The re-export keeps the author-facing path
+    // (`Ref<CounterHandle>`) unchanged; construction goes through the
+    // doc-hidden `__from_parts` (args in method-declaration order).
+    let mod_name = handle_mod_ident(component);
     quote! {
-        pub struct #name {
-            #(#fields,)*
-        }
+        #[doc(hidden)]
+        pub mod #mod_name {
+            #[doc = #struct_doc]
+            pub struct #name {
+                #(#fields,)*
+            }
 
-        impl ::std::clone::Clone for #name {
-            fn clone(&self) -> Self {
-                Self {
-                    #(#clone_fields,)*
+            impl ::std::clone::Clone for #name {
+                fn clone(&self) -> Self {
+                    Self {
+                        #(#clone_fields,)*
+                    }
+                }
+            }
+
+            impl #name {
+                #(#accessors)*
+
+                /// Internal constructor for the `#[component]` codegen —
+                /// not part of the handle's public surface.
+                #[doc(hidden)]
+                pub fn __from_parts(#(#part_params),*) -> Self {
+                    Self { #(#part_names,)* }
                 }
             }
         }
 
-        impl #name {
-            #(#accessors)*
-        }
+        pub use #mod_name::#name;
     }
 }
 
+/// `Counter` → `__counter_handle` — the hidden module hosting the
+/// generated handle so its fields stay private to the codegen.
+fn handle_mod_ident(component: &Ident) -> Ident {
+    let raw = component.to_string();
+    let mut snake = String::with_capacity(raw.len() + 10);
+    for (i, c) in raw.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if i != 0 {
+                snake.push('_');
+            }
+            snake.extend(c.to_lowercase());
+        } else {
+            snake.push(c);
+        }
+    }
+    format_ident!("__{}_handle", snake, span = component.span())
+}
+
 /// Mutates the function body in place:
-///   1. Replaces the methods! statement at `idx` with a let-binding
-///      that constructs the handle by wrapping each method body in
-///      a `move` closure (so captures happen at the call site, not
-///      inside an impl method).
-///   2. Wraps the trailing tail expression with
-///      `Bindable::new(<tail>.into(), __handle)`.
+///   1. Removes the `#[method]` fn items (their bodies move into `move`
+///      closures, so captures come from the component body — which a
+///      real nested fn could never do; that's the licensed transform).
+///   2. Just before the tail expression (maximal capture scope — every
+///      binding in the body is visible there, regardless of where the
+///      `#[method]` fns were declared), inserts: the handle
+///      construction, the `bind_to` fill (new path), and the robot
+///      registration + keepalive.
+///   3. Wraps the tail: new path (`bind_to` injected) keeps the plain
+///      `Element` return, wrapping only in `__component_root` for the
+///      robot element↔component link; the legacy explicit-props path
+///      still wraps in `Bindable::new` (fn-call `.bind()` binding).
 fn rewrite_body(
     item_fn: &mut ItemFn,
-    idx: usize,
+    indices: &[usize],
     handle_name: &Ident,
     fn_name: &Ident,
     methods: &[MethodDef],
+    bind_to_injected: bool,
 ) {
     // Build the handle construction block.
     let field_inits = methods.iter().map(|m| {
-        let f = field_ident(&m.name);
         let body = &m.body;
         let arg_names = m.args.iter().map(|(n, _)| n);
         let arg_tys = m.args.iter().map(|(_, ty)| ty);
         let arg_tys2 = m.args.iter().map(|(_, ty)| ty);
         // The cast is necessary so the closure coerces to the trait
-        // object the field expects — closure types are unique per
-        // closure, but `Rc<dyn Fn(...)>` is a single concrete field
+        // object the constructor expects — closure types are unique per
+        // closure, but `Rc<dyn Fn(...)>` is a single concrete parameter
         // type.
         quote! {
-            #f: {
+            {
                 let __c = ::std::rc::Rc::new(move |#(#arg_names: #arg_tys),*| #body);
                 __c as ::std::rc::Rc<dyn Fn(#(#arg_tys2),*)>
             }
         }
     });
 
+    // Construction goes through the doc-hidden `__from_parts` (the
+    // fields are private to the generated child module), passing the
+    // method closures in declaration order.
     let handle_construction: Stmt = syn::parse_quote! {
-        let __component_handle = #handle_name {
-            #(#field_inits,)*
-        };
+        let __component_handle = #handle_name::__from_parts(#(#field_inits),*);
     };
 
-    // Replace the methods! macro stmt with the construction binding.
-    item_fn.block.stmts[idx] = handle_construction;
+    // Remove the `#[method]` fn items (descending so indices stay valid).
+    for &i in indices.iter().rev() {
+        item_fn.block.stmts.remove(i);
+    }
+
+    // Insertion point: just before the tail expression, so the handle's
+    // closures (and the fill below) see every binding in the body.
+    let idx = item_fn.block.stmts.len().saturating_sub(1);
+    item_fn.block.stmts.insert(idx, handle_construction);
+
+    // New path: fill the injected `bind_to` prop with the handle, so the
+    // ordinary `ui! { Tag(bind_to = my_ref) }` tag form binds — no
+    // `Bindable` return, no fn-call form. `Ref` fills exactly once, at
+    // build (same contract as idea-ui's unconditional primitive binds).
+    if bind_to_injected {
+        let fill_stmt: Stmt = syn::parse_quote! {
+            if let ::core::option::Option::Some(__r) = bind_to {
+                __r.fill(::std::clone::Clone::clone(&__component_handle));
+            }
+        };
+        item_fn.block.stmts.insert(idx + 1, fill_stmt);
+    }
+    let idx = if bind_to_injected { idx + 1 } else { idx };
 
     // Insert robot auto-registration directly after the handle binding.
-    // Each `methods!` declaration becomes a JSON-callable adapter that
+    // Each `#[method]` fn becomes a JSON-callable adapter that
     // deserializes each argument by name, then forwards to the handle's
     // method. The whole block is `#[cfg]`-gated to the consuming crate's
     // `robot` feature so non-robot builds pay nothing.
@@ -458,12 +576,23 @@ fn rewrite_body(
     // the raw tokens — so a tail-position macro shows up as
     // `Stmt::Macro`, not `Stmt::Expr`. Handle both.
     let Some(last) = item_fn.block.stmts.last_mut() else {
-        return; // shouldn't happen — methods! present implies body has stmts
+        return; // shouldn't happen — #[method] present implies body has stmts
     };
-    match last {
-        Stmt::Expr(expr, None) => {
-            let inner = std::mem::replace(expr, syn::parse_quote!(()));
-            *expr = syn::parse_quote! {
+    let wrap = |inner: syn::Expr| -> syn::Expr {
+        if bind_to_injected {
+            // New path: the handle already reached the caller through the
+            // injected `bind_to` prop, so the component returns a plain
+            // `Element` — only the robot element↔component link wraps.
+            syn::parse_quote! {
+                ::runtime_core::__component_root(
+                    ::runtime_core::IntoElement::into_element(#inner),
+                    __robot_component_instance,
+                )
+            }
+        } else {
+            // Legacy explicit-props path: the handle escapes through the
+            // `Bindable` return (fn-call `.bind()` binding).
+            syn::parse_quote! {
                 ::runtime_core::Bindable::new(
                     ::runtime_core::__component_root(
                         ::runtime_core::IntoElement::into_element(#inner),
@@ -471,26 +600,21 @@ fn rewrite_body(
                     ),
                     __component_handle,
                 )
-            };
+            }
+        }
+    };
+    match last {
+        Stmt::Expr(expr, None) => {
+            let inner = std::mem::replace(expr, syn::parse_quote!(()));
+            *expr = wrap(inner);
         }
         Stmt::Macro(m) if m.semi_token.is_none() => {
-            // Tail-position macro invocation — e.g. `jsx! { ... }` as
+            // Tail-position macro invocation — e.g. `ui! { ... }` as
             // the implicit return. Reinterpret it as an expression so
             // we can wrap it the same way.
             let mac = m.mac.clone();
             let inner: syn::Expr = syn::parse_quote!(#mac);
-            *last = Stmt::Expr(
-                syn::parse_quote! {
-                    ::runtime_core::Bindable::new(
-                        ::runtime_core::__component_root(
-                            ::runtime_core::IntoElement::into_element(#inner),
-                            __robot_component_instance,
-                        ),
-                        __component_handle,
-                    )
-                },
-                None,
-            );
+            *last = Stmt::Expr(wrap(inner), None);
         }
         _ => {}
     }
@@ -500,4 +624,118 @@ fn rewrite_body(
 /// any user-visible identifier in the handle.
 fn field_ident(method_name: &Ident) -> Ident {
     format_ident!("__{}", method_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quote::quote;
+
+    fn run(
+        tokens: TokenStream2,
+        bind_to_injected: bool,
+    ) -> syn::Result<(String, String)> {
+        let mut item_fn: ItemFn = syn::parse2(tokens).unwrap();
+        let (extra, _infos) = extract_and_rewrite(&mut item_fn, bind_to_injected)?;
+        let squash = |t: TokenStream2| -> String {
+            t.to_string().chars().filter(|c| !c.is_whitespace()).collect()
+        };
+        Ok((squash(extra), squash(quote!(#item_fn))))
+    }
+
+    #[test]
+    fn generates_handle_struct_accessors_and_forwards_docs() {
+        let (extra, body) = run(
+            quote! {
+                fn Counter() -> Element {
+                    let value = signal(0);
+                    /// Reset the count to zero.
+                    #[method]
+                    fn reset() { value.set(0); }
+                    #[method]
+                    fn bump(n: i32) { value.update(|v| *v += n); }
+                    view(Vec::new())
+                }
+            },
+            true,
+        )
+        .unwrap();
+        assert!(extra.contains("pubmod__counter_handle"), "handle lives in a hidden module: {extra}");
+        assert!(extra.contains("pubstructCounterHandle"), "{extra}");
+        assert!(extra.contains("pubuse__counter_handle::CounterHandle"), "re-exported at the original path: {extra}");
+        assert!(extra.contains("pubfnreset(&self,)"), "{extra}");
+        assert!(extra.contains("pubfnbump(&self,n:i32)"), "{extra}");
+        // Docs ride onto the accessor AND the struct gets a synthesized doc.
+        assert!(extra.contains("Resetthecounttozero."), "method doc forwarded: {extra}");
+        assert!(extra.contains("Imperativehandlefor[`Counter`]"), "{extra}");
+        // Body: handle constructed + method items removed.
+        assert!(body.contains("let__component_handle=CounterHandle::__from_parts"), "{body}");
+        assert!(!body.contains("#[method]"), "method items must be consumed: {body}");
+    }
+
+    #[test]
+    fn injected_path_fills_bind_to_and_skips_bindable() {
+        let (_extra, body) = run(
+            quote! {
+                fn Tally() -> Element {
+                    let value = signal(0);
+                    #[method]
+                    fn reset() { value.set(0); }
+                    view(Vec::new())
+                }
+            },
+            true,
+        )
+        .unwrap();
+        assert!(body.contains("__r.fill"), "bind_to fill emitted: {body}");
+        assert!(!body.contains("Bindable::new"), "new path returns plain Element: {body}");
+        assert!(body.contains("__component_root"), "robot link wrap kept: {body}");
+    }
+
+    #[test]
+    fn legacy_path_keeps_bindable_wrap() {
+        let (_extra, body) = run(
+            quote! {
+                fn counter(props: &CounterProps) -> Bindable<CounterHandle> {
+                    let value = signal(0);
+                    #[method]
+                    fn reset() { value.set(0); }
+                    view(Vec::new())
+                }
+            },
+            false,
+        )
+        .unwrap();
+        assert!(body.contains("Bindable::new"), "legacy keeps the Bindable return: {body}");
+        assert!(!body.contains("__r.fill"), "no bind_to in scope on the legacy path: {body}");
+    }
+
+    #[test]
+    fn validations_reject_bad_shapes() {
+        for (tokens, needle) in [
+            (quote! { fn C() -> Element { #[method] pub fn x() {} view(Vec::new()) } }, "no visibility"),
+            (quote! { fn C() -> Element { #[method] fn x(&self) {} view(Vec::new()) } }, "no `&self`"),
+            (quote! { fn C() -> Element { #[method] fn x() -> i32 { 1 } view(Vec::new()) } }, "COMMANDS"),
+            (quote! { fn C() -> Element { #[method] async fn x() {} view(Vec::new()) } }, "async"),
+        ] {
+            let err = run(tokens, true).unwrap_err().to_string();
+            assert!(err.contains(needle), "expected {needle:?} in: {err}");
+        }
+    }
+
+    #[test]
+    fn leftover_methods_bang_gets_migration_error() {
+        let err = run(
+            quote! {
+                fn C() -> Element {
+                    methods! { fn reset(&self) {} }
+                    view(Vec::new())
+                }
+            },
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("replaced by `#[method]`"), "{err}");
+    }
 }

@@ -43,7 +43,7 @@ use runtime_core::{rx, signal, ui, viewport_size, when, Element, Signal};
 pub fn app() -> Element {
     install_idea_theme(light_theme());
 
-    let count: Signal<i32> = signal!(0);
+    let count: Signal<i32> = signal(0);
     let inc = move || count.update(|c| *c += 1);
 
     // Viewport-conditional content — the determinism test. Bound to a

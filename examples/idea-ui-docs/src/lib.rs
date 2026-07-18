@@ -82,8 +82,8 @@ pub fn app() -> Element {
     let nav: Ref<DrawerHandle> = Ref::new();
     // App-level state surviving navigation: dark-mode flag for the
     // header toggle, and the sidebar search query.
-    let is_dark: Signal<bool> = signal!(false);
-    let q: Signal<String> = signal!(String::new());
+    let is_dark: Signal<bool> = signal(false);
+    let q: Signal<String> = signal(String::new());
 
     // Pin the sidebar (vs. modal slide-in) at wide viewports.
     install_navigator_pin_width(900.0);

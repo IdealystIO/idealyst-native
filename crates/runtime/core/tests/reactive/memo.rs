@@ -16,7 +16,7 @@ use crate::common::{counted_effect, counted_memo};
 /// effective change.
 #[test]
 fn chained_memos_propagate_one_recompute_each() {
-    let s: Signal<i32> = signal!(0);
+    let s: Signal<i32> = signal(0);
 
     let (a_count, a) = counted_memo(move || s.get() + 1);
     let (b_count, _b) = counted_memo(move || a.get() * 2);
@@ -34,7 +34,7 @@ fn chained_memos_propagate_one_recompute_each() {
 /// fires once per memo update; memo computes once per dep change.
 #[test]
 fn memo_shared_by_multiple_effects_computes_once() {
-    let s: Signal<i32> = signal!(0);
+    let s: Signal<i32> = signal(0);
     let (mcount, m) = counted_memo(move || s.get() * 10);
 
     let (e1, _e1h) = counted_effect(move || {
@@ -64,7 +64,7 @@ fn memo_shared_by_multiple_effects_computes_once() {
 /// that's not byte-identical.
 #[test]
 fn memo_with_skips_propagation_on_custom_eq() {
-    let s: Signal<f32> = signal!(0.0);
+    let s: Signal<f32> = signal(0.0);
     let m = memo_with(
         |a: &f32, b: &f32| (a - b).abs() < 0.01, // "close enough"
         move || s.get(),
@@ -95,8 +95,8 @@ fn memo_with_skips_propagation_on_custom_eq() {
 #[test]
 #[should_panic(expected = "memo")]
 fn writing_signal_inside_memo_compute_panics() {
-    let s: Signal<i32> = signal!(0);
-    let sink: Signal<i32> = signal!(0);
+    let s: Signal<i32> = signal(0);
+    let sink: Signal<i32> = signal(0);
 
     // Memo's compute closure writes to a signal — this should panic
     // via the `assert_not_in_memo_compute` guard.
@@ -111,7 +111,7 @@ fn writing_signal_inside_memo_compute_panics() {
 #[test]
 #[should_panic(expected = "memo")]
 fn updating_signal_inside_memo_compute_panics() {
-    let sink: Signal<i32> = signal!(0);
+    let sink: Signal<i32> = signal(0);
 
     let _ = memo(move || {
         sink.update(|v| *v += 1);
@@ -123,9 +123,9 @@ fn updating_signal_inside_memo_compute_panics() {
 /// recomputes when ANY changes, exactly once.
 #[test]
 fn memo_with_multiple_deps_recomputes_once_per_any_change() {
-    let a: Signal<i32> = signal!(0);
-    let b: Signal<i32> = signal!(0);
-    let c: Signal<i32> = signal!(0);
+    let a: Signal<i32> = signal(0);
+    let b: Signal<i32> = signal(0);
+    let c: Signal<i32> = signal(0);
 
     let (mcount, m) = counted_memo(move || a.get() + b.get() + c.get());
 
@@ -146,7 +146,7 @@ fn memo_with_multiple_deps_recomputes_once_per_any_change() {
 /// output should NOT fire the subscriber effect.
 #[test]
 fn effect_subscribes_to_memo_output_not_to_memo_deps() {
-    let s: Signal<i32> = signal!(0);
+    let s: Signal<i32> = signal(0);
     let m = memo(move || s.get() / 10); // 0..9 → 0
 
     let (count, _e) = counted_effect(move || {
@@ -173,9 +173,9 @@ fn effect_subscribes_to_memo_output_not_to_memo_deps() {
 /// tracks reads on each compute, like any other Effect.
 #[test]
 fn memo_dynamic_deps() {
-    let cond: Signal<bool> = signal!(true);
-    let a: Signal<i32> = signal!(10);
-    let b: Signal<i32> = signal!(20);
+    let cond: Signal<bool> = signal(true);
+    let a: Signal<i32> = signal(10);
+    let b: Signal<i32> = signal(20);
 
     let (mcount, m) = counted_memo(move || if cond.get() { a.get() } else { b.get() });
 
@@ -207,30 +207,27 @@ fn memo_dynamic_deps() {
     );
 }
 
-/// `memo!(expr)` is sugar for `memo(move || expr)` — same caching, same
-/// one-recompute-per-effective-change behavior. Pins the macro to the
-/// fn it wraps so the two can't drift.
+/// The plain `memo(move || …)` fn is the canonical (and only) call-site
+/// form — the `memo!` macro was removed. Pins the fn-form ergonomics the
+/// macro used to demonstrate: `Copy` signal handles capture by value in
+/// the `move` closure, single- and multi-dep bodies recompute on change.
 #[test]
-fn memo_macro_is_sugar_for_memo_fn() {
-    use runtime_core::memo; // also brings the `memo!` macro into scope
+fn memo_fn_form_captures_copy_handles_and_recomputes() {
+    use runtime_core::memo;
 
-    let s: Signal<i32> = signal!(2);
+    let s: Signal<i32> = signal(2);
 
-    // Macro and fn over the same body must agree at every step.
-    let via_macro = memo!(s.get() * 3);
-    let via_fn = memo(move || s.get() * 3);
-    assert_eq!(via_macro.get(), 6);
-    assert_eq!(via_fn.get(), 6);
+    let tripled = memo(move || s.get() * 3);
+    assert_eq!(tripled.get(), 6);
 
     s.set(5);
-    assert_eq!(via_macro.get(), 15, "memo! recomputes when its dep changes");
-    assert_eq!(via_fn.get(), 15);
+    assert_eq!(tripled.get(), 15, "memo recomputes when its dep changes");
 
-    // Multi-dep body captures `Copy` signal handles by value via the
-    // macro's `move ||`, exactly like the fn form.
-    let a: Signal<i32> = signal!(1);
-    let b: Signal<i32> = signal!(10);
-    let sum = memo!(a.get() + b.get());
+    // Multi-dep body: both `Copy` handles capture by value; a change to
+    // either dep recomputes.
+    let a: Signal<i32> = signal(1);
+    let b: Signal<i32> = signal(10);
+    let sum = memo(move || a.get() + b.get());
     assert_eq!(sum.get(), 11);
     b.set(40);
     assert_eq!(sum.get(), 41);

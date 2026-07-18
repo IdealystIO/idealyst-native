@@ -333,18 +333,18 @@ pub fn start() {
 fn app() -> Element {
     // Root signals — owned at the app level so they survive every
     // re-render the framework triggers on signal updates.
-    let files: Signal<BTreeMap<String, String>> = signal!(starter_files());
-    let active: Signal<String> = signal!(STARTER_ENTRY.to_string());
+    let files: Signal<BTreeMap<String, String>> = signal(starter_files());
+    let active: Signal<String> = signal(STARTER_ENTRY.to_string());
     // Buffer holds the active file's contents. Initialized to the
     // starter entry's text; the tree's click handler refreshes it
     // when the user picks a different file. Kept separate from
     // `files` so per-keystroke updates don't churn the whole map.
-    let buffer: Signal<String> = signal!(STARTER_LIB_RS.to_string());
-    let iframe_url: Signal<String> = signal!("about:blank".to_string());
-    let status: Signal<String> = signal!("Press Run to compile".to_string());
-    let is_compiling: Signal<bool> = signal!(false);
-    let mode_sim: Signal<bool> = signal!(true);
-    let expanded: Signal<BTreeSet<String>> = signal!(BTreeSet::new());
+    let buffer: Signal<String> = signal(STARTER_LIB_RS.to_string());
+    let iframe_url: Signal<String> = signal("about:blank".to_string());
+    let status: Signal<String> = signal("Press Run to compile".to_string());
+    let is_compiling: Signal<bool> = signal(false);
+    let mode_sim: Signal<bool> = signal(true);
+    let expanded: Signal<BTreeSet<String>> = signal(BTreeSet::new());
 
     let tree = file_tree_panel(files, active, expanded, buffer);
     let editor = editor_panel(files, active, buffer);

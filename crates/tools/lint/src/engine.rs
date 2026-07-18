@@ -160,7 +160,7 @@ mod tests {
     fn flags_raw_signal_new() {
         let diags = lint("fn f() { let s = Signal::new(0); }");
         assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].rule, "prefer-signal-macro");
+        assert_eq!(diags[0].rule, "prefer-signal-fn");
         assert_eq!(diags[0].severity, Severity::Warn);
     }
 
@@ -168,7 +168,25 @@ mod tests {
     fn flags_qualified_signal_new() {
         let diags = lint("fn f() { let s = runtime_core::Signal::new(0); }");
         assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].rule, "prefer-signal-macro");
+        assert_eq!(diags[0].rule, "prefer-signal-fn");
+    }
+
+    #[test]
+    fn flags_removed_signal_macro_invocation() {
+        // The `signal!` macro no longer exists; the lint supplies the
+        // drop-the-bang fix with a better message than rustc's
+        // "cannot find macro".
+        let diags = lint("fn f() { let s = signal!(0); }");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].rule, "prefer-signal-fn");
+        assert!(diags[0].message.contains("removed"), "{}", diags[0].message);
+    }
+
+    #[test]
+    fn signal_fn_call_is_clean() {
+        // The canonical form must not be flagged by any rule.
+        let diags = lint("fn f() { let s = signal(0); }");
+        assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]
@@ -179,10 +197,19 @@ mod tests {
     }
 
     #[test]
-    fn flags_memo_call() {
-        let diags = lint("fn f() { let m = memo(|| 1); }");
-        assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].rule, "prefer-memo-macro");
+    fn memo_fn_call_is_clean() {
+        // `memo(move || …)` is the canonical form since the `memo!`
+        // macro's removal — it must not be flagged by any rule.
+        let diags = lint("fn f() { let m = memo(move || 1); }");
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn flags_removed_memo_macro_invocation() {
+        let diags = lint("fn f() { let m = memo!(1 + 2); }");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].rule, "prefer-memo-fn");
+        assert!(diags[0].message.contains("removed"), "{}", diags[0].message);
     }
 
     #[test]
@@ -238,7 +265,7 @@ mod tests {
 
     #[test]
     fn off_level_suppresses() {
-        let cfg = parse_config("[rules]\nprefer-signal-macro = \"off\"\n");
+        let cfg = parse_config("[rules]\nprefer-signal-fn = \"off\"\n");
         let diags = lint_source("fn f() { Signal::new(0); }", Path::new("t.rs"), &cfg).unwrap();
         assert!(diags.is_empty());
     }

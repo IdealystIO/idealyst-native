@@ -9,7 +9,7 @@
 //! # idealyst-lint.toml
 //! [rules]
 //! component-pascal-case = "error"
-//! prefer-signal-macro   = "warn"
+//! prefer-signal-fn   = "warn"
 //! prefer-ui-macro       = "off"
 //! ```
 
@@ -149,9 +149,9 @@ impl Scope {
 ///
 /// ```ignore
 /// // idealyst-lint-disable-file                     (whole file)
-/// // idealyst-lint-disable-file prefer-signal-macro (whole file, one rule)
+/// // idealyst-lint-disable-file prefer-signal-fn (whole file, one rule)
 /// let s = Signal::new(0); // idealyst-lint-disable-line
-/// // idealyst-lint-disable-next-line prefer-signal-macro
+/// // idealyst-lint-disable-next-line prefer-signal-fn
 /// let s = Signal::new(0);
 /// ```
 ///
@@ -240,7 +240,7 @@ mod tests {
             r#"
             [rules]
             component-pascal-case = "off"
-            prefer-signal-macro = "error"
+            prefer-signal-fn = "error"
             "#,
         )
         .unwrap();
@@ -248,7 +248,7 @@ mod tests {
         let unknown = cfg.apply_overrides(file);
         assert!(unknown.is_empty());
         assert_eq!(cfg.level_for("component-pascal-case"), Level::Off);
-        assert_eq!(cfg.level_for("prefer-signal-macro"), Level::Error);
+        assert_eq!(cfg.level_for("prefer-signal-fn"), Level::Error);
     }
 
     #[test]
@@ -267,10 +267,10 @@ mod tests {
 
     #[test]
     fn disable_next_line_targets_following_line() {
-        let src = "// idealyst-lint-disable-next-line prefer-signal-macro\nlet s = Signal::new(0);\n";
+        let src = "// idealyst-lint-disable-next-line prefer-signal-fn\nlet s = Signal::new(0);\n";
         let sup = Suppressions::parse(src);
-        assert!(sup.suppresses("prefer-signal-macro", 2));
-        assert!(!sup.suppresses("prefer-signal-macro", 1));
+        assert!(sup.suppresses("prefer-signal-fn", 2));
+        assert!(!sup.suppresses("prefer-signal-fn", 1));
         assert!(!sup.suppresses("prefer-ui-macro", 2), "other rules unaffected");
     }
 
@@ -278,7 +278,7 @@ mod tests {
     fn disable_line_targets_same_line() {
         let src = "let s = Signal::new(0); // idealyst-lint-disable-line\n";
         let sup = Suppressions::parse(src);
-        assert!(sup.suppresses("prefer-signal-macro", 1));
+        assert!(sup.suppresses("prefer-signal-fn", 1));
     }
 
     #[test]
@@ -298,9 +298,9 @@ mod tests {
 
     #[test]
     fn disable_file_scoped_to_one_rule() {
-        let src = "// idealyst-lint-disable-file prefer-signal-macro\n";
+        let src = "// idealyst-lint-disable-file prefer-signal-fn\n";
         let sup = Suppressions::parse(src);
-        assert!(sup.suppresses("prefer-signal-macro", 5));
+        assert!(sup.suppresses("prefer-signal-fn", 5));
         assert!(!sup.suppresses("component-pascal-case", 5));
     }
 }

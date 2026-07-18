@@ -26,6 +26,8 @@ mod batch_tests;
 mod context;
 #[path = "reactive/memo.rs"]
 mod memo_tests;
+#[path = "reactive/split.rs"]
+mod split;
 #[path = "reactive/on_and_defer.rs"]
 mod on_and_defer;
 #[path = "reactive/reducer.rs"]

@@ -281,6 +281,10 @@ pub enum UtilityCategory {
     Theme,
     Layout,
     Math,
+    /// Reactive-surface functions (`signal`, `memo`). These moved here
+    /// from the macros table when the `signal!` / `memo!` macros were
+    /// replaced by the plain `signal(value)` / `memo(move || …)` fns.
+    Reactive,
 }
 
 impl UtilityCategory {
@@ -292,11 +296,12 @@ impl UtilityCategory {
             Self::Theme => "theme",
             Self::Layout => "layout",
             Self::Math => "math",
+            Self::Reactive => "reactive",
         }
     }
 }
 
-/// A framework authoring macro — `signal!`, `effect!`, `ui!`,
+/// A framework authoring macro — `effect!`, `ui!`,
 /// `#[component]`, `stylesheet!`, etc. These are the *verbs* of
 /// writing an idealyst app: the `macro_rules!` and proc-macros an
 /// author types directly, as opposed to the [`UtilityEntry`] free
@@ -340,7 +345,9 @@ pub struct MacroEntry {
 /// catalog JSON and the `list_macros` filter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MacroKind {
-    /// State + reactivity: `signal!`, `effect!`, `rx!`, `bind!`.
+    /// State + reactivity: `effect!`, `rx!`, `bind!`. (Signal creation
+    /// and memoization are the plain `signal(…)` / `memo(…)` functions —
+    /// [`UtilityEntry`]s, not macros.)
     Reactive,
     /// Element-tree construction: `ui!`, `jsx!`, `text_fmt!`, `lazy!`,
     /// `node_ref!`, `children!`.
@@ -418,7 +425,7 @@ pub struct GuideEntry {
 }
 
 /// An imperative method exposed on a `#[component]`'s handle —
-/// captured from the component's `methods! { fn name(&self, ...) { ... } }`
+/// captured from the component's `#[method] fn name(...) { ... }` declarations
 /// block (see [`runtime_macros::methods_block`]). Methods are
 /// open: any user component author can declare them.
 #[derive(Debug)]
@@ -429,13 +436,13 @@ pub struct MethodEntry {
     /// yields the method list for one component.
     pub parent_module_path: &'static str,
     pub parent_name: &'static str,
-    /// Method ident as written in the `methods!` block.
+    /// Method ident as written on the `#[method]` fn.
     pub name: &'static str,
     pub docs: &'static str,
     /// Method params (after `&self`), in declaration order.
     pub params: &'static [ParamSpec],
     /// Pretty-printed return type; empty for `()`. v1 of
-    /// `methods!` forbids return types so this is always `""`
+    /// `#[method]` forbids return types so this is always `""`
     /// today, but the field is present so a future relax is
     /// schema-compatible.
     pub return_type: &'static str,
@@ -841,7 +848,7 @@ pub fn guides() -> impl Iterator<Item = &'static GuideEntry> {
     inventory::iter::<GuideEntry>()
 }
 
-/// Iterate every [`MethodEntry`] registered from `methods!` blocks.
+/// Iterate every [`MethodEntry`] registered from `#[method]` fns.
 pub fn methods() -> impl Iterator<Item = &'static MethodEntry> {
     inventory::iter::<MethodEntry>()
 }

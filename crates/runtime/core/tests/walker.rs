@@ -40,6 +40,12 @@ mod ui_for_flattening;
 mod ui_iteration_and_branches;
 #[path = "walker/component_dispatch.rs"]
 mod component_dispatch;
+#[path = "walker/inline_props.rs"]
+mod inline_props;
+#[path = "walker/snapshot_warning.rs"]
+mod snapshot_warning;
+#[path = "walker/method_handles.rs"]
+mod method_handles;
 // Gated on `async-driver` because the spawn_async block in
 // `walker/lazy.rs` is only compiled in then — without it the chunk
 // path is a no-op regardless of `Backend::renders_lazy_chunks()`, so

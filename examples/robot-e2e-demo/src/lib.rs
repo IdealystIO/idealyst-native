@@ -64,9 +64,9 @@ pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBack
 pub fn app() -> Element {
     install_idea_theme(light_theme());
 
-    let count: Signal<i32> = signal!(0);
-    let show_secret: Signal<bool> = signal!(false);
-    let name: Signal<String> = signal!(String::new());
+    let count: Signal<i32> = signal(0);
+    let show_secret: Signal<bool> = signal(false);
+    let name: Signal<String> = signal(String::new());
 
     // Expose `count` by name so an out-of-process driver (`idealyst test`,
     // the inspector) can read it via the `read_signal` bridge verb — the

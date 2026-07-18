@@ -149,7 +149,7 @@ pub(crate) fn root_page(state: State, nav: Ref<StackHandle>) -> Element {
         confirmed,
         modal_branch,
         ui! { ReflowBox() },
-        // A `methods!`-bearing component: exercises robot/inspector method
+        // A `#[method]`-bearing component: exercises robot/inspector method
         // invocation (`bump_by` / `reset`) + the element↔component link. The
         // `ui!` tag form works now that `BuildElement::build` coerces a
         // `Bindable<Handle>` return via `IntoElement` (the handle is dropped —
@@ -176,8 +176,8 @@ pub(crate) fn root_page(state: State, nav: Ref<StackHandle>) -> Element {
 /// shrink (the whiteboard "delete button won't disappear on the last canvas").
 #[component]
 fn ReflowBox() -> Element {
-    let rows: Signal<Vec<i32>> = signal!(vec![0, 1, 2]);
-    let active: Signal<usize> = signal!(0);
+    let rows: Signal<Vec<i32>> = signal(vec![0, 1, 2]);
+    let active: Signal<usize> = signal(0);
     let remove = move || {
         // Mimic `delete_canvas`: CHANGE `active` to a different value FIRST
         // (re-running the row's sibling effect that reads active + the list),
@@ -297,9 +297,9 @@ pub(crate) fn detail_page(nav: Ref<StackHandle>) -> Element {
 pub(crate) fn components_page(nav: Ref<StackHandle>) -> Element {
     use idea_ui::{Button, Checkbox, Switch};
 
-    let sw = runtime_core::signal!(false);
-    let cb = runtime_core::signal!(false);
-    let clicks = runtime_core::signal!(0_i32);
+    let sw = runtime_core::signal(false);
+    let cb = runtime_core::signal(false);
+    let clicks = runtime_core::signal(0_i32);
 
     let on_sw: Rc<dyn Fn(bool)> = Rc::new(move |v| sw.set(v));
     let on_cb: Rc<dyn Fn(bool)> = Rc::new(move |v| cb.set(v));
@@ -346,7 +346,7 @@ pub(crate) fn components_page(nav: Ref<StackHandle>) -> Element {
 }
 
 // ---------------------------------------------------------------------------
-// MethodCounter — a `methods!`-bearing component for exercising component
+// MethodCounter — a `#[method]`-bearing component for exercising component
 // method invocation (robot bridge + the inspector's "select element → call
 // its methods"). The `#[component]` macro registers the methods AND links
 // this instance to its root element id, so selecting the `method-counter`
@@ -360,21 +360,23 @@ pub(crate) struct MethodCounterProps {
 
 #[component]
 pub(crate) fn MethodCounter(props: &MethodCounterProps) -> Bindable<MethodCounterHandle> {
-    let value = signal!(props.initial);
-    methods! {
-        // No-arg — the easy manual test: Invoke it and the value visibly
-        // ticks up (no JSON args to type). Watch the value in the TARGET
-        // app window (it's this component's own label), not the inspector.
-        fn increment(&self) {
-            value.update(|v| *v += 1);
-        }
-        fn reset(&self) {
-            value.set(0);
-        }
-        fn bump_by(&self, n: i32) {
-            value.update(|v| *v += n);
-        }
+    let value = signal(props.initial);
+    // No-arg — the easy manual test: Invoke it and the value visibly
+    // ticks up (no JSON args to type). Watch the value in the TARGET
+    // app window (it's this component's own label), not the inspector.
+    #[method]
+    fn increment() {
+        value.update(|v| *v += 1);
     }
+    #[method]
+    fn reset() {
+        value.set(0);
+    }
+    #[method]
+    fn bump_by(n: i32) {
+        value.update(|v| *v += n);
+    }
+    
     // Builder-form tail (reliable `test_id` under `runtime-core/robot`); the
     // `#[component]` macro wraps this root view in the instance link.
     let label = text(format!("methods: {}", value.get()))

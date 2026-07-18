@@ -21,7 +21,7 @@ use runtime_core::{external_link, signal, IntoElement, Signal};
 #[test]
 fn reactive_url_updates_in_place_without_rebuild() {
     let rt = TestRuntime::new();
-    let toggled: Signal<bool> = signal!(false);
+    let toggled: Signal<bool> = signal(false);
 
     // `url` follows the signal: example.com while false, docs while true.
     let tree = external_link("", Vec::new())

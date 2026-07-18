@@ -6,7 +6,7 @@ tags = ["core", "reactivity", "advanced", "patterns"]
 
 # Reactivity In Depth
 
-[[reactivity]] covers the everyday surface — `signal!`, `effect!`, `watch`.
+[[reactivity]] covers the everyday surface — `signal`, `effect!`, `watch`.
 This guide is the layer beneath it: the derived-state primitives, the tracking
 controls, the reactive control-flow builders, and the sharp edges you only hit
 sometimes but need to recognize when you do. Everything here is in
@@ -15,18 +15,40 @@ constructors); reach for these when the plain signal/effect pair isn't enough.
 
 ## Derived state
 
-### `memo!` / `memo` — cached, change-gated derivation
+### `memo` — cached, change-gated derivation
 
-`memo!(expr)` (or `memo(|| …)`) returns a `Signal<T>` that recomputes when the
-signals it reads change, and **notifies subscribers only when the new value
+`memo(move || expr)` returns a `ReadSignal<T>` that recomputes when the signals
+the closure reads change, and **notifies subscribers only when the new value
 differs** (`T: PartialEq`). Use it for derived state read in several places or
 expensive to compute — the work runs once per dependency change, not once per
-read.
+read. (A `memo!` macro used to exist; it was removed — write the `move ||`
+yourself.)
 
 ```rust
-let count = signal!(0);
-let doubled = memo!(count.get() * 2);   // Signal<i32>, cached until count changes
+let count = signal(0);
+let doubled = memo(move || count.get() * 2);   // ReadSignal<i32>, cached until count changes
 ```
+
+The return is the **read half only** — a memo is a pure derivation, so its
+output cannot be `.set()` (the old writable return invited values that were
+silently clobbered on the next dependency change).
+
+### `split` / `read_only` / `write_only` — capability halves
+
+Any `Signal<T>` can hand out capability-restricted views over the same slot:
+
+```rust
+let (count, set_count) = signal(0).split();   // (ReadSignal<i32>, WriteSignal<i32>)
+let view_of = my_state.read_only();           // observe-only handle
+let report  = my_state.write_only();          // write-only handle (reads impossible)
+```
+
+Semantics are unchanged — same tracking, same generational stale-write no-op,
+still `Copy`; only the TYPE narrows. Use `ReadSignal<T>` for props a component
+observes without mutating (the signature then *proves* it), `WriteSignal<T>`
+for children that report values upward without subscribing themselves. The
+unified `Signal<T>` stays the right type for genuinely two-way props
+(`TextInput.value` and friends).
 
 - For a type without `PartialEq`, or a "close enough" comparison (float
   tolerance, trait-object contents), call `memo_with(eq, f)` directly.
@@ -53,7 +75,7 @@ Typography(content = rx!(format!("clicked {}×", count.get())))
 stylesheet sink — this is the one you saw in `divider.rs`/`stack.rs` routing a
 reactive style axis. It is a different type from the reactive-condition
 `Derived<T>` that `when`/`switch` consume. Rule of thumb: `derived(...)` at a
-`sheet.axis(...)` call site = style variant; `rx!`/`memo!` = reactive value.
+`sheet.axis(...)` call site = style variant; `rx!`/`memo(...)` = reactive value.
 
 ## Tracking control
 
@@ -189,6 +211,26 @@ intended.
 - **`.get()` outside a reactive context is a one-shot read.** It returns the
   current value and subscribes nothing. Subscription only happens inside an
   effect / `ui!` closure / `text_fmt!` / `rx!` body.
+- **The hoisted-snapshot trap.** The commonest form of the previous point,
+  and it *looks* reactive:
+
+  ```rust
+  let too_short = name.get().len() < 3;   // runs ONCE at build — frozen bool
+  ui! { if too_short { … } }              // static branch, silently never updates
+  ```
+
+  The component body is not a tracked context, so a derivation hoisted into a
+  plain `let` is a build-time snapshot; the `if` then dispatches on a plain
+  `bool` → static. Keep derivations behind `move ||`:
+  `let too_short = memo(move || name.get().len() < 3);` (a `ReadSignal<bool>`
+  condition is live), or inline the read — a visible `.get()` in a `ui!` `if`
+  condition is auto-promoted to a reactive `when`. Rule of thumb: **a `let`
+  freezes, a closure flows.** Debug builds warn at runtime on an untracked
+  `.get()` during a component build (naming the component), and the
+  `snapshot-condition` lint flags the pattern at the `let`. Build-time
+  snapshots are legitimate when intentional — a structural choice that
+  shouldn't rebuild — declare them with `.get_untracked()` (reads without
+  subscribing, silences both diagnostics).
 - **A mutual write-loop panics, it doesn't hang.** A > B > A cascade trips the
   `MAX_EFFECT_DEPTH` (256) guard with a recognizable backtrace instead of a
   stack overflow.

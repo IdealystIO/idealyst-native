@@ -78,7 +78,7 @@ pub fn tooltip() -> Element {
 // =============================================================================
 
 pub fn popover() -> Element {
-    let open = signal!(false);
+    let open = signal(false);
     let trigger: Ref<PressableHandle> = Ref::new();
     let on_toggle: Rc<dyn Fn()> = Rc::new(move || open.update(|v| *v = !*v));
     let on_dismiss: Rc<dyn Fn()> = Rc::new(move || open.set(false));
@@ -134,7 +134,7 @@ pub fn popover() -> Element {
 
             Section(title = "Recipe — context menu".to_string()) {
                 CodePanel(src = r##"let trigger: Ref<PressableHandle> = Ref::new();
-let open = signal!(false);
+let open = signal(false);
 
 ui! {
     Button(
@@ -170,7 +170,7 @@ ui! {
 // =============================================================================
 
 pub fn modal() -> Element {
-    let open = signal!(false);
+    let open = signal(false);
     let on_open: Rc<dyn Fn()> = Rc::new(move || open.set(true));
     let on_close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
     let content_close = on_close.clone();
@@ -226,7 +226,7 @@ pub fn modal() -> Element {
                     `content` is a closure (not a `{ }` block) because it's rebuilt fresh on \
                     each open. on_dismiss (backdrop tap / Escape / back) fires the host's \
                     close.".to_string())
-                CodePanel(src = r##"let open = signal!(false);
+                CodePanel(src = r##"let open = signal(false);
 let on_close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
 
 ui! {
@@ -291,7 +291,7 @@ pub fn collapsible() -> Element {
             Section(title = "Props".to_string()) {
                 PropsTable(rows = vec![
                     Prop { name: "title",       ty: "Reactive<String>",      desc: "Header text. Static literal, Signal<String>, or rx!(...)." },
-                    Prop { name: "value",       ty: "Signal<bool>",          desc: "Controlled open state. The host owns this — pass signal!(false) for default-closed." },
+                    Prop { name: "value",       ty: "Signal<bool>",          desc: "Controlled open state. The host owns this — pass signal(false) for default-closed." },
                     Prop { name: "on_change",   ty: "Rc<dyn Fn(bool)>",      desc: "Fires on header click with the requested new state. Wire Rc::new(move |v| value.set(v)) for standard toggle." },
                     Prop { name: "transition",  ty: "CollapsibleTransition", desc: "Measured (default) — animates MaxHeight 0↔measured-content-height. Snap — instant." },
                     Prop { name: "duration_ms", ty: "u32",                   desc: "Open/close duration. Default 240; only meaningful with Measured. Keep near 240 to match baked chrome transitions." },
@@ -300,7 +300,7 @@ pub fn collapsible() -> Element {
             }
 
             Section(title = "Recipe".to_string()) {
-                CodePanel(src = r##"let open = signal!(false);
+                CodePanel(src = r##"let open = signal(false);
 let on_change: Rc<dyn Fn(bool)> = Rc::new(move |v| open.set(v));
 
 ui! {
@@ -328,7 +328,7 @@ ui! {
 }
 
 fn collapsible_demo_measured() -> Element {
-    let open = signal!(false);
+    let open = signal(false);
     let on_change: Rc<dyn Fn(bool)> = Rc::new(move |v| open.set(v));
     ui! {
         DemoSurface {
@@ -357,7 +357,7 @@ fn collapsible_demo_measured() -> Element {
 }
 
 fn collapsible_demo_snap() -> Element {
-    let open = signal!(false);
+    let open = signal(false);
     let on_change: Rc<dyn Fn(bool)> = Rc::new(move |v| open.set(v));
     ui! {
         DemoSurface {
@@ -436,7 +436,7 @@ pub fn alert() -> Element {
 }
 
 fn alert_dismissible_demo() -> Element {
-    let shown = signal!(true);
+    let shown = signal(true);
     let on_dismiss: Rc<dyn Fn()> = Rc::new(move || shown.set(false));
     ui! {
         DemoSurface {

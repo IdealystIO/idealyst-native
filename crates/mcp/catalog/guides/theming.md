@@ -103,7 +103,7 @@ it reads changes — no hand-rolled effect required:
 use idea_ui::{dark_theme, install_idea_theme_reactive, light_theme};
 use runtime_core::signal;
 
-let dark = signal!(false);
+let dark = signal(false);
 install_idea_theme_reactive(move || if dark.get() { dark_theme() } else { light_theme() });
 // flipping `dark` now re-themes the whole app.
 ```

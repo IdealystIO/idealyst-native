@@ -116,7 +116,7 @@ pub fn tabs() -> Element {
 }
 
 fn tabs_underline_section() -> Element {
-    let active = signal!("overview".to_string());
+    let active = signal("overview".to_string());
     let on_change: Rc<dyn Fn(String)> = Rc::new(move |id| active.set(id));
 
     // The strip owns the active id; the caller wires the panel swap via
@@ -158,7 +158,7 @@ fn tabs_underline_section() -> Element {
                 Tabs(
                     active = active,
                     on_change = on_change,
-                    tabs = signal!(vec![
+                    tabs = signal(vec![
                         Tab::new("overview", "Overview"),
                         Tab::new("activity", "Activity"),
                         Tab::new("settings", "Settings"),
@@ -166,7 +166,7 @@ fn tabs_underline_section() -> Element {
                 )
                 panel
             }
-            CodePanel(src = r##"let active = signal!("overview".to_string());
+            CodePanel(src = r##"let active = signal("overview".to_string());
 let on_change: Rc<dyn Fn(String)> = Rc::new(move |id| active.set(id));
 
 let panel = runtime_core::switch(
@@ -182,7 +182,7 @@ ui! {
     Tabs(
         active = active,                  // active tab's id (Reactive<String>)
         on_change = on_change,            // Fn(String) — the tapped id
-        tabs = signal!(vec![              // reactive, id-keyed list
+        tabs = signal(vec![              // reactive, id-keyed list
             Tab::new("overview", "Overview"),
             Tab::new("activity", "Activity"),
             Tab::new("settings", "Settings"),
@@ -195,7 +195,7 @@ ui! {
 }
 
 fn tabs_pill_section() -> Element {
-    let active = signal!("list".to_string());
+    let active = signal("list".to_string());
     let on_change: Rc<dyn Fn(String)> = Rc::new(move |id| active.set(id));
 
     ui! {
@@ -207,7 +207,7 @@ fn tabs_pill_section() -> Element {
                     indicator = TabIndicator::Dot,
                     active = active,
                     on_change = on_change,
-                    tabs = signal!(vec![
+                    tabs = signal(vec![
                         Tab::new("list", "List"),
                         Tab::new("grid", "Grid"),
                         Tab::new("cards", "Cards"),
@@ -241,7 +241,7 @@ fn tabs_props_section() -> Element {
 // =============================================================================
 
 pub fn pagination() -> Element {
-    let page = signal!(3usize);
+    let page = signal(3usize);
     let on_page: Rc<dyn Fn(usize)> = Rc::new(move |p| page.set(p));
 
     body(vec![
@@ -254,7 +254,7 @@ pub fn pagination() -> Element {
                 DemoSurface {
                     Pagination(page = page, total = 20usize, on_change = on_page)
                 }
-                CodePanel(src = r##"let page = signal!(1usize);
+                CodePanel(src = r##"let page = signal(1usize);
 ui! {
     Pagination(
         page = page,                       // Signal<usize>, 1-based
@@ -281,7 +281,7 @@ ui! {
 // =============================================================================
 
 pub fn menu() -> Element {
-    let open = signal!(false);
+    let open = signal(false);
     let trigger: Ref<PressableHandle> = Ref::new();
     let open_menu: Rc<dyn Fn()> = Rc::new(move || open.set(true));
     let close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
@@ -341,7 +341,7 @@ pub fn menu() -> Element {
                         }
                     }
                 }
-                CodePanel(src = r##"let open = signal!(false);
+                CodePanel(src = r##"let open = signal(false);
 let trigger: Ref<PressableHandle> = Ref::new();
 let close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
 

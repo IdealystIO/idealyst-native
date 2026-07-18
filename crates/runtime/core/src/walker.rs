@@ -121,7 +121,7 @@ pub fn render<B: Backend + 'static>(backend: Rc<RefCell<B>>, tree: Element) -> O
 ///
 /// ```ignore
 /// mount(backend, || {
-///     let phase = signal!(0u8);
+///     let phase = signal(0u8);
 ///     effect!({
 ///         std::mem::forget(after_ms(900, move || phase.set(1)));
 ///     });
@@ -404,7 +404,7 @@ pub(super) fn build_inner<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     node: Element,
 ) -> B::Node {
-    // Robot: a `#[component]` with `methods!` wraps its root primitive in
+    // Robot: a `#[component]` with `#[method]` fns wraps its root primitive in
     // `Element::Component` (via `__component_root`). Unwrap it BEFORE anything
     // else sees it — arm the element↔component link, then build the real
     // child. The child's registration (just below, on recursion) consumes the

@@ -153,7 +153,7 @@ docs! {
         p("For programmatic control — a progress indicator that draws as a download \
            completes, an icon that animates in response to user input:"),
         code(rust, r##"
-            let progress = signal!(0.0);
+            let progress = signal(0.0);
 
             ui! {
                 icon(LOGO).stroke(move || progress.get())

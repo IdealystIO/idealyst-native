@@ -28,7 +28,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LetClass {
     /// Plain reactive value. `let x = 0;` plus mutation
-    /// elsewhere → `signal!(0)`.
+    /// elsewhere → `signal(0)`.
     ReactiveLet,
     /// Never mutated → forward as `let x = …;` verbatim.
     ConstLet,

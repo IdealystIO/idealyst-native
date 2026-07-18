@@ -31,7 +31,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use runtime_core::{memo, on_cleanup, signal, text, ui, view, when, Element, IntoElement, Signal};
+use runtime_core::{memo, on_cleanup, signal, text, ui, view, when, Element, IntoElement, ReadSignal, Signal};
 
 use crate::common::{Event, MockBackendConfig, TestRuntime};
 
@@ -160,7 +160,7 @@ fn static_range_maps_to_components() {
 #[test]
 fn signal_iteration_rebuilds_on_change() {
     let rt = TestRuntime::new();
-    let data: Signal<Vec<&'static str>> = signal!(vec!["a", "b"]);
+    let data: Signal<Vec<&'static str>> = signal(vec!["a", "b"]);
     let tree: Element = ui! {
         view {
             for s in data, key = *s {
@@ -198,7 +198,7 @@ fn signal_iteration_rebuilds_on_change() {
 fn each_releases_old_row_scopes_on_rebuild() {
     let rt = TestRuntime::new();
     let cleaned = Rc::new(Cell::new(0usize));
-    let data: Signal<Vec<i32>> = signal!(vec![1, 2]);
+    let data: Signal<Vec<i32>> = signal(vec![1, 2]);
     let c = cleaned.clone();
     let tree: Element = ui! {
         view {
@@ -227,7 +227,7 @@ fn each_releases_old_row_scopes_on_rebuild() {
 #[test]
 fn snapshot_get_iteration_is_static() {
     let rt = TestRuntime::new();
-    let data: Signal<Vec<&'static str>> = signal!(vec!["a", "b"]);
+    let data: Signal<Vec<&'static str>> = signal(vec!["a", "b"]);
     let tree: Element = ui! {
         view {
             for s in data.get() {
@@ -254,7 +254,7 @@ fn snapshot_get_iteration_is_static() {
 #[test]
 fn reactive_range_count_rebuilds() {
     let rt = TestRuntime::new();
-    let n: Signal<usize> = signal!(2usize);
+    let n: Signal<usize> = signal(2usize);
     let tree: Element = ui! {
         view {
             for i in 0..n.get() {
@@ -276,7 +276,7 @@ fn reactive_range_count_rebuilds() {
 #[test]
 fn reactive_for_multi_node_body_flattens_on_rebuild() {
     let rt = TestRuntime::new();
-    let data: Signal<Vec<i32>> = signal!(vec![1]);
+    let data: Signal<Vec<i32>> = signal(vec![1]);
     let tree: Element = ui! {
         view {
             for n in data, key = *n {
@@ -310,7 +310,7 @@ fn reactive_for_multi_node_body_flattens_on_rebuild() {
 #[test]
 fn reactive_flat_list_creates_virtualizer_and_reacts_to_data() {
     let rt = TestRuntime::new();
-    let data: Signal<Vec<i32>> = signal!(vec![1, 2, 3]);
+    let data: Signal<Vec<i32>> = signal(vec![1, 2, 3]);
     let tree: Element = ui! {
         view {
             flat_list(
@@ -345,7 +345,7 @@ fn reactive_flat_list_creates_virtualizer_and_reacts_to_data() {
 fn flat_list_grid_lanes_and_spacing_reach_backend() {
     use runtime_core::{Axis, Lanes};
     let rt = TestRuntime::new();
-    let data: Signal<Vec<i32>> = signal!(vec![1, 2, 3, 4, 5, 6]);
+    let data: Signal<Vec<i32>> = signal(vec![1, 2, 3, 4, 5, 6]);
     let tree: Element = ui! {
         view {
             flat_list(
@@ -383,7 +383,7 @@ fn flat_list_grid_lanes_and_spacing_reach_backend() {
 #[test]
 fn flat_list_mounts_rows_with_real_content() {
     let rt = TestRuntime::new();
-    let data: Signal<Vec<i32>> = signal!(vec![10, 20, 30]);
+    let data: Signal<Vec<i32>> = signal(vec![10, 20, 30]);
     let tree: Element = ui! {
         flat_list(
             data = data,
@@ -403,7 +403,7 @@ fn flat_list_mounts_rows_with_real_content() {
 #[test]
 fn flat_list_mounts_only_new_row_on_growth() {
     let rt = TestRuntime::new();
-    let data: Signal<Vec<i32>> = signal!(vec![1, 2]);
+    let data: Signal<Vec<i32>> = signal(vec![1, 2]);
     let tree: Element = ui! {
         flat_list(
             data = data,
@@ -427,7 +427,7 @@ fn flat_list_mounts_only_new_row_on_growth() {
 fn flat_list_releases_row_scopes_on_shrink() {
     let rt = TestRuntime::new();
     let cleaned = Rc::new(Cell::new(0usize));
-    let data: Signal<Vec<i32>> = signal!(vec![1, 2, 3]);
+    let data: Signal<Vec<i32>> = signal(vec![1, 2, 3]);
     let c = cleaned.clone();
     let tree: Element = ui! {
         flat_list(
@@ -460,7 +460,7 @@ fn flat_list_releases_row_scopes_on_shrink() {
 /// backend (web/iOS/Android/wgpu).
 #[test]
 fn for_count_signal_renders_real_rows_not_placeholder() {
-    let count_sig: Signal<usize> = signal!(3);
+    let count_sig: Signal<usize> = signal(3);
     let tree: Element = ui! {
         for _i in structured_count(count_sig) {
             text { "row".to_string() }
@@ -489,7 +489,7 @@ fn for_count_signal_renders_real_rows_not_placeholder() {
 #[test]
 fn for_count_signal_mounts_real_rows_end_to_end() {
     let rt = TestRuntime::new();
-    let n: Signal<usize> = signal!(2usize);
+    let n: Signal<usize> = signal(2usize);
     let tree: Element = ui! {
         for _i in structured_count(n) {
             text { "cell".to_string() }
@@ -533,7 +533,7 @@ fn static_if_else_mounts_single_branch() {
 #[test]
 fn reactive_if_else_flips_on_signal() {
     let rt = TestRuntime::new();
-    let flag: Signal<bool> = signal!(true);
+    let flag: Signal<bool> = signal(true);
     let tree: Element = ui! {
         view {
             if flag.get() {
@@ -557,7 +557,7 @@ fn reactive_if_else_flips_on_signal() {
 #[test]
 fn reactive_if_without_else_toggles_presence() {
     let rt = TestRuntime::new();
-    let show: Signal<bool> = signal!(false);
+    let show: Signal<bool> = signal(false);
     let tree: Element = ui! {
         view {
             if show.get() {
@@ -584,8 +584,8 @@ fn reactive_if_without_else_toggles_presence() {
 #[test]
 fn reactive_if_bare_signal_bool_reevaluates() {
     let rt = TestRuntime::new();
-    let ids: Signal<Vec<i32>> = signal!(vec![1, 2]);
-    let del_visible: Signal<bool> = memo(move || ids.get().len() > 1);
+    let ids: Signal<Vec<i32>> = signal(vec![1, 2]);
+    let del_visible: ReadSignal<bool> = memo(move || ids.get().len() > 1);
     let tree: Element = ui! {
         view {
             if del_visible {
@@ -621,8 +621,8 @@ fn reactive_if_bare_signal_bool_reevaluates() {
 #[test]
 fn reactive_if_visible_get_on_memo_reevaluates() {
     let rt = TestRuntime::new();
-    let ids: Signal<Vec<i32>> = signal!(vec![1, 2]);
-    let del_visible: Signal<bool> = memo(move || ids.get().len() > 1);
+    let ids: Signal<Vec<i32>> = signal(vec![1, 2]);
+    let del_visible: ReadSignal<bool> = memo(move || ids.get().len() > 1);
     let tree: Element = ui! {
         view {
             if del_visible.get() {
@@ -657,7 +657,7 @@ fn reactive_if_visible_get_on_memo_reevaluates() {
 #[test]
 fn reactive_if_opaque_bool_call_reevaluates() {
     let rt = TestRuntime::new();
-    let ids: Signal<Vec<i32>> = signal!(vec![1, 2]);
+    let ids: Signal<Vec<i32>> = signal(vec![1, 2]);
     let del_visible = move || ids.get().len() > 1; // `impl Fn() -> bool`, reads `ids`
     let tree: Element = ui! {
         view {
@@ -689,7 +689,7 @@ fn reactive_if_opaque_bool_call_reevaluates() {
 fn reactive_if_flip_releases_old_branch_scope() {
     let rt = TestRuntime::new();
     let cleaned = Rc::new(Cell::new(0usize));
-    let flag: Signal<bool> = signal!(true);
+    let flag: Signal<bool> = signal(true);
     let c = cleaned.clone();
     let tree: Element = ui! {
         view {
@@ -768,7 +768,7 @@ fn static_match_mounts_single_arm() {
 #[test]
 fn reactive_match_switches_on_signal_with_default() {
     let rt = TestRuntime::new();
-    let mode: Signal<u32> = signal!(0u32);
+    let mode: Signal<u32> = signal(0u32);
     let tree: Element = ui! {
         view {
             match mode.get() {
@@ -798,7 +798,7 @@ fn reactive_match_switches_on_signal_with_default() {
 fn reactive_match_arm_change_releases_old_arm_scope() {
     let rt = TestRuntime::new();
     let cleaned = Rc::new(Cell::new(0usize));
-    let mode: Signal<u32> = signal!(0u32);
+    let mode: Signal<u32> = signal(0u32);
     let c = cleaned.clone();
     let tree: Element = ui! {
         view {
@@ -917,7 +917,7 @@ fn anchorless_region_splices_flat_in_place() {
         supports_child_splice: true,
         ..Default::default()
     });
-    let data: Signal<Vec<&'static str>> = signal!(vec!["a", "b"]);
+    let data: Signal<Vec<&'static str>> = signal(vec!["a", "b"]);
     let tree: Element = ui! {
         view {
             for x in data, key = *x {
@@ -959,7 +959,7 @@ fn anchorless_region_splices_flat_in_place() {
 #[test]
 fn default_backend_uses_anchored_region() {
     let rt = TestRuntime::new(); // no splice support
-    let data: Signal<Vec<&'static str>> = signal!(vec!["a", "b"]);
+    let data: Signal<Vec<&'static str>> = signal(vec!["a", "b"]);
     let tree: Element = ui! {
         view {
             for x in data, key = *x {
@@ -987,7 +987,7 @@ fn anchorless_region_splices_at_position_among_siblings() {
         supports_child_splice: true,
         ..Default::default()
     });
-    let data: Signal<Vec<&'static str>> = signal!(vec!["a", "b"]);
+    let data: Signal<Vec<&'static str>> = signal(vec!["a", "b"]);
     let tree: Element = ui! {
         view {
             text { "header".to_string() }
@@ -1058,7 +1058,7 @@ fn anchorless_when_splices_branch_without_anchor() {
         supports_child_splice: true,
         ..Default::default()
     });
-    let on: Signal<bool> = signal!(false);
+    let on: Signal<bool> = signal(false);
     let tree: Element = view(vec![
         text("header").into_element(),
         when(
@@ -1128,7 +1128,7 @@ fn anchorless_when_splices_branch_without_anchor() {
 #[test]
 fn default_backend_when_uses_anchored_path() {
     let rt = TestRuntime::new(); // no splice support
-    let on: Signal<bool> = signal!(false);
+    let on: Signal<bool> = signal(false);
     let tree: Element = view(vec![when(
         move || on.get(),
         || text("then").into_element(),
@@ -1184,7 +1184,7 @@ fn keyed_add_preserves_existing_row_scopes() {
         ..Default::default()
     });
     let cleaned = Rc::new(Cell::new(0usize));
-    let data: Signal<Vec<i32>> = signal!(vec![1, 2]);
+    let data: Signal<Vec<i32>> = signal(vec![1, 2]);
     let c = cleaned.clone();
     let tree: Element = ui! {
         view {
@@ -1218,7 +1218,7 @@ fn keyed_remove_drops_only_removed_row_scope() {
         ..Default::default()
     });
     let removed = Rc::new(RefCell::new(Vec::<i32>::new()));
-    let data: Signal<Vec<i32>> = signal!(vec![1, 2, 3]);
+    let data: Signal<Vec<i32>> = signal(vec![1, 2, 3]);
     let r = removed.clone();
     let tree: Element = ui! {
         view {
@@ -1261,7 +1261,7 @@ fn keyed_readd_same_key_gets_fresh_scope() {
         ..Default::default()
     });
     let removed = Rc::new(RefCell::new(Vec::<i32>::new()));
-    let data: Signal<Vec<i32>> = signal!(vec![1, 2, 3]);
+    let data: Signal<Vec<i32>> = signal(vec![1, 2, 3]);
     let r = removed.clone();
     let tree: Element = ui! {
         view {
@@ -1303,7 +1303,7 @@ fn keyed_reorder_preserves_scopes_without_rebuild() {
         ..Default::default()
     });
     let cleaned = Rc::new(Cell::new(0usize));
-    let data: Signal<Vec<i32>> = signal!(vec![1, 2, 3]);
+    let data: Signal<Vec<i32>> = signal(vec![1, 2, 3]);
     let c = cleaned.clone();
     let tree: Element = ui! {
         view {

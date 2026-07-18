@@ -5,19 +5,20 @@ Flags three idiom-drift patterns in idealyst projects, over the project's
 
 | Rule | Default | Flags | Use instead |
 |------|---------|-------|-------------|
-| `prefer-signal-macro` | warn | `Signal::new(v)` | `signal!(v)` |
+| `prefer-signal-fn` | warn | `Signal::new(v)`, removed `signal!(v)` | `signal(v)` |
 | `prefer-effect-macro` | warn | `Effect::new(\|\| …)` | `effect! { … }` |
-| `prefer-memo-macro` | warn | `memo(\|\| …)` | `memo!(…)` |
+| `prefer-memo-fn` | warn | removed `memo!(…)` | `memo(move \|\| …)` |
 | `prefer-ui-macro` | warn | `builder::view(…)`, `BuildElement::build(…)`, `Element::View { … }` | `ui! { … }` / `jsx! { … }` |
 | `component-pascal-case` | error | `#[component] fn icon_button` | `#[component] fn IconButton` |
+| `snapshot-condition` | warn | hoisted `let ok = x.get()…;` used as a `ui!` `if` condition | `memo(move \|\| …)`, inline the `.get()`, or `.get_untracked()` if intentional |
 
-> **Why un-expanded source?** After macro expansion, `signal!(0)` *is*
+> **Why un-expanded source?** After macro expansion, `signal(0)` *is*
 > `Signal::new(0)` and `ui! { … }` *is* `BuildElement::build(…)` — the idiom
 > choice has vanished. A clippy/rust-analyzer lint pass runs post-expansion
 > and can't see it. This linter parses with `syn` and walks the tree before
 > expansion, which is the only place the question "did the author use the
 > macro?" still has an answer. As a bonus, `syn` never descends into macro
-> token streams, so anything *inside* `ui! { … }` / `signal!( … )` is
+> token streams, so anything *inside* `ui! { … }` / `signal( … )` is
 > invisible — legitimate macro use is never flagged.
 
 ## CLI

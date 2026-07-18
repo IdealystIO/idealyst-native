@@ -38,7 +38,7 @@ use wire::Command;
 /// `(tree, click_count_signal)` pair so the caller can both render
 /// the tree and observe state mutated by the button's `on_click`.
 fn sample_tree() -> (Element, runtime_core::Signal<i32>) {
-    let click_count = signal!(0_i32);
+    let click_count = signal(0_i32);
     // `Element::Button.on_click` is `derive::Action` since the
     // generator migration — bare `Fn()` closures lift via the
     // blanket `IntoAction for F: Fn()` impl (which wraps the
@@ -202,7 +202,7 @@ fn regression_robot_snapshot_reflects_reactive_text() {
 
     // Created at top-level test scope (no active owner) so the signal
     // outlives `render`'s tree-build, exactly like an app-owned signal.
-    let count = signal!(0_i32);
+    let count = signal(0_i32);
 
     let tree: Element = view(vec![text(move || format!("count: {}", count.get()))
         .test_id("count-label")
@@ -312,7 +312,7 @@ fn regression_when_branch_swap_disposes_old_branch_from_robot_registry() {
     robot.reset();
 
     // `onboarded` starts false → the onboarding branch is live.
-    let onboarded = signal!(false);
+    let onboarded = signal(false);
 
     let tree: Element = when(
         move || onboarded.get(),
@@ -368,27 +368,28 @@ fn regression_when_branch_swap_disposes_old_branch_from_robot_registry() {
 #[derive(Default)]
 struct MethodCounterProps {}
 
-/// A component with a `methods!` block, defined in THIS test crate —
+/// A component with `#[method]` fns, defined in THIS test crate —
 /// which does not enable its own `robot` feature (only `runtime-core`'s
 /// `robot` is on, via dev-deps). See the regression test below.
 #[component]
 fn MethodCounter(_props: &MethodCounterProps) -> Element {
-    let value = signal!(0_i32);
-    methods! {
-        /// Reset the counter to zero.
-        fn reset(&self) {
-            value.set(0);
-        }
-        /// Bump the counter by `n`.
-        fn bump_by(&self, n: i32) {
-            value.update(|v| *v += n);
-        }
+    let value = signal(0_i32);
+    /// Reset the counter to zero.
+    #[method]
+    fn reset() {
+        value.set(0);
     }
-    let _ = value; // captured by the methods! closures above
+    /// Bump the counter by `n`.
+    #[method]
+    fn bump_by(n: i32) {
+        value.update(|v| *v += n);
+    }
+    
+    let _ = value; // captured by the #[method] closures above
     runtime_core::view(vec![runtime_core::text("mc").test_id("mc").into()])
 }
 
-/// **Regression for two `methods!` bugs at once:**
+/// **Regression for two component-method bugs at once:**
 ///
 /// 1. The `#[component]` macro used to gate `register_component(...)` on
 ///    `#[cfg(feature = "robot")]` — evaluated against the *defining*
@@ -414,7 +415,7 @@ fn regression_component_methods_register_without_local_feature() {
     let mc = comps
         .iter()
         .find(|c| c.name == "MethodCounter")
-        .expect("MethodCounter's methods! must register without a crate-local robot feature");
+        .expect("MethodCounter's #[method] fns must register without a crate-local robot feature");
 
     let names: Vec<&str> = mc.methods.iter().map(|(n, _)| *n).collect();
     assert!(names.contains(&"reset"), "got {:?}", names);
@@ -637,7 +638,7 @@ fn robot_finds_element_by_test_id() {
 /// silently dropped after every hot-patch.
 #[test]
 fn aas_hot_patch_preserves_button_handler_id() {
-    let click_count = signal!(0_i32);
+    let click_count = signal(0_i32);
     let on_click = (move || {
         click_count.set(click_count.get() + 1);
     })

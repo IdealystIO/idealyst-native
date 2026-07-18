@@ -46,7 +46,7 @@ fn hydrate_tree(tree_fn: impl Fn() -> Element + Copy + 'static, marker: &str) ->
 // Reactive (i18n-shaped) text: `text(Reactive<String>)` → `TextSource::Bound`.
 const RTEXT: &str = "REACTIVE-MARKER";
 fn reactive_text_tree() -> Element {
-    let sig = signal!(RTEXT.to_string());
+    let sig = signal(RTEXT.to_string());
     view(vec![text(rx!(sig.get())).into()]).into()
 }
 
@@ -59,7 +59,7 @@ fn animated_reactive_tree() -> Element {
     effect!({
         opacity.animate(TweenTo::new(1.0_f32, Duration::from_millis(50)).ease_out());
     });
-    let sig = signal!(ANIM_RTEXT.to_string());
+    let sig = signal(ANIM_RTEXT.to_string());
     view(vec![text(rx!(sig.get())).into()]).bind(r).into()
 }
 
@@ -87,7 +87,7 @@ fn scroll_reactive_tree() -> Element {
     effect!({
         slide.animate(TweenTo::new(0.0_f32, Duration::from_millis(50)).ease_out());
     });
-    let sig = signal!(SCROLL_RTEXT.to_string());
+    let sig = signal(SCROLL_RTEXT.to_string());
     let panel = view(vec![text(rx!(sig.get())).into()]).bind(r).into();
     scroll_view(vec![panel]).into()
 }

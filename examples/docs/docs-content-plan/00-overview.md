@@ -330,12 +330,12 @@ is deliberately small.
 
 ### Signals
 
-A **signal** holds a value. You make one with `signal!(initial)`,
+A **signal** holds a value. You make one with `signal(initial)`,
 read it with `.get()`, and change it with `.set(new)` or
 `.update(|v| ...)`.
 
 ```rust
-let count = signal!(0);
+let count = signal(0);
 count.set(5);
 count.update(|n| *n += 1);
 ```
@@ -354,7 +354,7 @@ it changes, it has to live in a signal.
 
 > **From Solid.** Signals here are conceptually identical to
 > `createSignal`. Reads are tracked, effects re-run on change,
-> components run once. The API names differ (`signal!`, `.get()`,
+> components run once. The API names differ (`signal`, `.get()`,
 > `.set()` here vs `createSignal`, `value()`, `setValue` in Solid) but
 > the model is the same.
 

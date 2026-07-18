@@ -27,7 +27,7 @@ const GLYPH_B: IconData = IconData {
 #[test]
 fn reactive_icon_data_swaps_glyph_in_place_without_rebuild() {
     let rt = TestRuntime::new();
-    let toggled: Signal<bool> = signal!(false);
+    let toggled: Signal<bool> = signal(false);
 
     let tree = icon(GLYPH_A)
         .data(move || if toggled.get() { GLYPH_B } else { GLYPH_A })
@@ -60,7 +60,7 @@ fn reactive_icon_data_swaps_glyph_in_place_without_rebuild() {
 #[test]
 fn reactive_icon_data_effect_is_freed_on_owner_drop() {
     let rt = TestRuntime::new();
-    let toggled: Signal<bool> = signal!(false);
+    let toggled: Signal<bool> = signal(false);
 
     let effects_baseline = arena_stats().effects_in_use;
 

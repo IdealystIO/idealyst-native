@@ -58,7 +58,7 @@ fn one_tree() -> Element {
     let example = "// One component. No `#[cfg(target_os)]`, no platform branches.\n\
                    #[component]\n\
                    fn app() -> Element {\n    \
-                       let count = signal!(0);\n    \
+                       let count = signal(0);\n    \
                        ui! {\n        \
                            view {\n            \
                                text { format!(\"Taps: {}\", count.get()) }\n            \

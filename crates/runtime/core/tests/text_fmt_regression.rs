@@ -36,8 +36,8 @@ use common::{Event, TestRuntime};
 /// or silently install N copies of the same closure in release.
 #[test]
 fn regression_text_fmt_macro_emits_stringifier_per_signal() {
-    let s1: Signal<u32> = signal!(7);
-    let s2: Signal<u32> = signal!(42);
+    let s1: Signal<u32> = signal(7);
+    let s2: Signal<u32> = signal(42);
 
     let src = runtime_core::text_fmt!("a={} b={}", bind!(s1), bind!(s2));
 
@@ -99,7 +99,7 @@ fn regression_text_fmt_no_signals_emits_empty_stringifiers() {
 #[test]
 fn regression_text_fmt_compute_fallback_path_still_works() {
     let rt = TestRuntime::new();
-    let count: Signal<u32> = signal!(0);
+    let count: Signal<u32> = signal(0);
 
     // `text_fmt!` constructs a `TextSource::JsBinding` regardless of
     // backend — the variant is fixed at the call site. The walker
@@ -139,7 +139,7 @@ fn regression_text_fmt_compute_fallback_path_still_works() {
 /// someone removes the field accidentally this test fails at compile.
 #[test]
 fn regression_text_fmt_manual_jsbinding_spec_compiles() {
-    let s: Signal<u32> = signal!(0);
+    let s: Signal<u32> = signal(0);
     let _src: TextSource = TextSource::JsBinding(JsBindingSpec {
         signal_ids: vec![s.id()],
         template_parts: vec!["v=".into(), "".into()],

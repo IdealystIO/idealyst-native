@@ -38,7 +38,7 @@ pub fn app() -> Element {
     // Animation clock for the last card: one shared scope-owned rAF loop
     // ticks a signal; the canvas painter reads it, so each frame re-runs
     // the painter through the renderer's reactive Effect.
-    let t = signal!(0.0_f32);
+    let t = signal(0.0_f32);
     raf_loop_scoped(move || t.set(t.get() + 0.015));
 
     let body: Vec<Element> = vec![
@@ -238,9 +238,9 @@ fn pan_zoom_card() -> Element {
     // Absolute camera pan + a repaint tick. `gesturing` is true mid-drag (so the
     // layer is NOT re-baked, just re-composited under the live delta); `baked`
     // holds the camera at the last bake.
-    let cam_x = signal!(0.0_f32);
-    let cam_y = signal!(0.0_f32);
-    let version = signal!(0_u64);
+    let cam_x = signal(0.0_f32);
+    let cam_y = signal(0.0_f32);
+    let version = signal(0_u64);
     let gesturing = Rc::new(Cell::new(false));
     let baked = Rc::new(Cell::new((0.0_f32, 0.0_f32)));
     // Drag origin: (start_touch_x, start_touch_y, start_cam_x, start_cam_y).

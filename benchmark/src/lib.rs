@@ -1289,7 +1289,7 @@ fn sidebar() -> Element {
         let title = s.title;
         let selected_for_read = current_suite_sig.clone();
         let selected_for_write = current_suite_sig.clone();
-        let row_signal = signal!(current_suite_sig.get() == suite_name);
+        let row_signal = signal(current_suite_sig.get() == suite_name);
         {
             let row_signal = row_signal.clone();
             runtime_core::effect!({
@@ -1348,7 +1348,7 @@ fn sidebar() -> Element {
                                 let label = v.label;
                                 let selected_for_read = selected.clone();
                                 let selected_for_write = selected.clone();
-                                let row_signal = signal!(selected.get().contains(id));
+                                let row_signal = signal(selected.get().contains(id));
                                 {
                                     let row_signal = row_signal.clone();
                                     runtime_core::effect!({
@@ -1635,24 +1635,24 @@ pub fn start() {
     let mut params: HashMap<(&'static str, &'static str), Signal<String>> = HashMap::new();
     for suite in SUITES {
         for p in suite.params {
-            params.insert((suite.name, p.name), signal!(param_initial_value(suite.name, p)));
+            params.insert((suite.name, p.name), signal(param_initial_value(suite.name, p)));
         }
     }
     let all_selected: HashSet<&'static str> = VARIANTS.iter().map(|v| v.id).collect();
     let initial_suite = SUITES.first().expect("SUITES must be non-empty").name;
 
     let state = Rc::new(RunnerState {
-        selected_variants:    signal!(Rc::new(all_selected)),
-        current_suite:        signal!(initial_suite),
+        selected_variants:    signal(Rc::new(all_selected)),
+        current_suite:        signal(initial_suite),
         params,
         results:              Rc::new(RefCell::new(HashMap::new())),
-        results_version:      signal!(0u64),
-        current_variant:      signal!(None),
-        current_status:       signal!("Choose variants and press Run".to_string()),
-        iframe_url:           signal!("about:blank".to_string()),
-        run_in_progress:      signal!(false),
-        run_finalized:        signal!(false),
-        elapsed_seconds:      signal!(0.0),
+        results_version:      signal(0u64),
+        current_variant:      signal(None),
+        current_status:       signal("Choose variants and press Run".to_string()),
+        iframe_url:           signal("about:blank".to_string()),
+        run_in_progress:      signal(false),
+        run_finalized:        signal(false),
+        elapsed_seconds:      signal(0.0),
         queue:                RefCell::new(Vec::new()),
         run_start_ms:         RefCell::new(0.0),
         ticker_handle:        RefCell::new(None),

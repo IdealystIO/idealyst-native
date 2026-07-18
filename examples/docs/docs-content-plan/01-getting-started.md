@@ -102,7 +102,7 @@ use runtime_core::{component, signal, ui, Element};
 
 #[component]
 pub fn app() -> Element {
-    let count = signal!(0);
+    let count = signal(0);
 
     ui! {
         View {
@@ -124,7 +124,7 @@ A few things to notice, without going deep on any of them yet:
 
 - `#[component]` marks `app()` as a component. Every Idealyst app
   starts from one.
-- `signal!(0)` declares reactive state. The `count.get()` inside
+- `signal(0)` declares reactive state. The `count.get()` inside
   `format!` is a tracked read; the `count.update(...)` inside the
   button's `on_click` is a write. The framework keeps the
   surrounding `Text` in sync when the button is pressed — see

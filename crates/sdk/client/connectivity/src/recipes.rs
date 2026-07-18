@@ -40,7 +40,7 @@ recipe!(
         }
 
         // Seed from the synchronous snapshot, then keep it fresh.
-        let status = signal!(label(current()));
+        let status = signal(label(current()));
 
         // Subscribe; on every change, write the fresh snapshot into the
         // signal. Anchor the returned guard to the component scope by moving

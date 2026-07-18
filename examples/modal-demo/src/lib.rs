@@ -55,8 +55,8 @@ pub fn app() -> Element {
 
     // Each modal is host-owned open state — `if open.get() { Modal { … } }`.
     // Signals are `Copy`, so the same handle is captured by every closure.
-    let short_open = signal!(false);
-    let tall_open = signal!(false);
+    let short_open = signal(false);
+    let tall_open = signal(false);
 
     // Handlers are bound as `Rc<dyn Fn()>` (not inline `Rc::new(closure)`):
     // the `ui!` macro feeds field values through `.into()`, and a concrete

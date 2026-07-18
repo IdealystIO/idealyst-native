@@ -723,7 +723,7 @@ fn signal_reactivity_alongside_tokens() {
     use std::cell::Cell;
     use std::rc::Rc;
 
-    let s: Signal<i32> = signal!(0);
+    let s: Signal<i32> = signal(0);
     let count: Rc<Cell<usize>> = Rc::new(Cell::new(0));
     let ct = count.clone();
 
@@ -784,7 +784,7 @@ fn signal_class_falls_back_to_reactive_effect_on_unsupporting_backend() {
         ..Default::default()
     }));
 
-    let sig: Signal<u32> = signal!(0u32);
+    let sig: Signal<u32> = signal(0u32);
     let sheet_a_for_map = sheet_a.clone();
     let sheet_b_for_map = sheet_b.clone();
     let spec = signal_class(sig, &[0u32, 1u32], move |v| match v {
@@ -1028,7 +1028,7 @@ fn builder_constant_variant_is_static() {
 fn builder_derived_variant_is_reactive() {
     use runtime_core::{derived, IntoStyleSource, Signal, StyleSource};
 
-    let sig: Signal<bool> = signal!(false);
+    let sig: Signal<bool> = signal(false);
     let src = NavStyle()
         .active(derived(move || {
             if sig.get() {
@@ -1050,7 +1050,7 @@ fn builder_derived_variant_is_reactive() {
 fn builder_signal_variant_is_reactive() {
     use runtime_core::{IntoStyleSource, Signal, StyleSource};
 
-    let sig: Signal<NavStyleActive> = signal!(NavStyleActive::Off);
+    let sig: Signal<NavStyleActive> = signal(NavStyleActive::Off);
     let src = NavStyle().active(sig).into_style_source();
     assert!(
         matches!(src, StyleSource::Reactive(_)),
@@ -1073,7 +1073,7 @@ fn derived_builder_variant_reapplies_style_on_signal_change() {
     use common::{Event, TestRuntime};
 
     let rt = TestRuntime::new();
-    let active: Signal<bool> = signal!(false);
+    let active: Signal<bool> = signal(false);
 
     let tree = view(vec![])
         .with_style(NavStyle().active(derived(move || {

@@ -66,8 +66,8 @@ async fn run_pick(request: PickRequest, status: Signal<String>, info: Signal<Str
 pub fn app() -> Element {
     install_idea_theme(light_theme());
 
-    let status: Signal<String> = signal!("Pick a file to begin".to_string());
-    let info: Signal<String> = signal!(String::new());
+    let status: Signal<String> = signal("Pick a file to begin".to_string());
+    let info: Signal<String> = signal(String::new());
 
     let on_docs = move || {
         status.set("Opening file picker…".to_string());

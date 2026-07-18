@@ -34,7 +34,7 @@ pub enum HookClass {
 /// runtime-core equivalent with no runtime shim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mechanical {
-    /// `useState(init)` → `let [name] = signal!(init);`
+    /// `useState(init)` → `let [name] = signal(init);`
     /// The lowering pass also records the matching setter ident
     /// so JSX/handler walkers can rewrite `setX(v)` → `x.set(v)`.
     UseState,
@@ -56,7 +56,7 @@ pub enum Mechanical {
     /// are dropped (signals capture by value already).
     UseCallback,
     /// `useRef(init)` → `Ref::new()` when used for an imperative
-    /// handle, or `signal!(init)` when used as a mutable cell.
+    /// handle, or `signal(init)` when used as a mutable cell.
     /// The lowering pass picks based on how the ref is used; if
     /// neither pattern matches it falls through to a hole.
     UseRef,

@@ -425,7 +425,7 @@ pub fn app() -> Element {
     // driver. The toggle button writes back through this signal
     // and the BS runtime re-applies every styled node when it
     // changes.
-    let theme: Signal<String> = signal!("dark".to_string());
+    let theme: Signal<String> = signal("dark".to_string());
     install_themes(
         theme,
         &[
@@ -439,10 +439,10 @@ pub fn app() -> Element {
     // are generic over the signal they're called against, so the
     // same #[method] pair drives every row. Mutating any one
     // signal reactively repopulates only that carousel.
-    let trending: Signal<Vec<i32>> = signal!(vec![1, 2, 3, 5, 8, 13, 21, 34, 55]);
-    let recent: Signal<Vec<i32>> = signal!(vec![10, 20, 30, 40, 50, 60, 70, 80]);
-    let top_picks: Signal<Vec<i32>> = signal!(vec![100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]);
-    let popular: Signal<Vec<i32>> = signal!(vec![7, 14, 21, 28, 35, 42, 49, 56, 63, 70]);
+    let trending: Signal<Vec<i32>> = signal(vec![1, 2, 3, 5, 8, 13, 21, 34, 55]);
+    let recent: Signal<Vec<i32>> = signal(vec![10, 20, 30, 40, 50, 60, 70, 80]);
+    let top_picks: Signal<Vec<i32>> = signal(vec![100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]);
+    let popular: Signal<Vec<i32>> = signal(vec![7, 14, 21, 28, 35, 42, 49, 56, 63, 70]);
 
     ui! {
         view(style = page_style()) {

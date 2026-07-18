@@ -54,7 +54,7 @@ pub fn page() -> Element {
                     muted = true,
                 )
                 CodeBlock(
-                    code = "let open = signal!(false);\n\
+                    code = "let open = signal(false);\n\
                             ui! {\n    \
                                 if open.get() {\n        \
                                     Typography(content = \"It's open!\".to_string())\n    \

@@ -123,7 +123,9 @@ Components in this repo have one canonical shape. When writing a new component, 
 
 Components MUST be declared with the `#[component]` attribute. The macro generates the props struct's `BuildElement` impl, the `pub type Tag = TagProps` alias that makes `Tag()` work as a `ui!` call site, and the `Default` glue the struct-literal dispatch relies on. Don't hand-roll bespoke builder methods, manual `BuildElement` impls, `pascal_to_snake` shims, or centralized `build_impl!`-style registries.
 
-The *contract* — props struct + `Default` + `BuildElement` — is what `ui!` actually requires; `#[component]` is just the standard way to satisfy it. If you find yourself reaching for a manual impl, the macro should grow instead (e.g., it accepts `#[component(children)]` for container components that move children out of props, and `#[component(default(field = expr))]` for non-Default starting values).
+Prefer **inline props** — declare props as ordinary fn parameters (`#[component] fn Badge(label: String, #[prop(default = 3)] count: i32) -> Element`) and the macro generates the props struct itself, wrapping data params `Reactive<T>` by the same rules as `#[props]`. Per-arg `#[prop(default = expr)]` / `#[prop(static)]` / `#[prop(reactive)]` override defaults and wrapping; a `children: Vec<Element>` param receives the call site's block. The explicit `#[props]` struct + `props: &FooProps` form remains for props that need extra derives (`IdealystSchema`, doc-controls) or a hand-rolled `Default`.
+
+The *contract* — props struct + `Default` + `BuildElement` — is what `ui!` actually requires; `#[component]` is just the standard way to satisfy it. If you find yourself reaching for a manual impl, the macro should grow instead (e.g., it accepts `#[component(children)]` for container components that move children out of props, and `#[component(default(field = expr))]` for non-Default starting values on the explicit-struct form — inline props declare defaults per-arg instead).
 
 For container components, name the fn PascalCase to match the tag (`fn Card`, not `fn card`). The fn and the `pub type Card = CardProps` alias coexist in different namespaces — the fn-call form (`Card(props)`) and the struct-literal form (`ui! { Card(...) }`) both work, and `#[component]` adds `#[allow(non_snake_case)]` automatically.
 
@@ -181,6 +183,10 @@ if let Some(cb) = on_press {
 ```
 
 This pattern lives in `crates/ui/idea-ui/src/components/button.rs` and `modal.rs` — match it. A silent no-op handler blocks hit-test fall-through on some backends and confuses event-routing assertions.
+
+### 9.6a Signal props: narrowest capability wins
+
+A signal-typed prop should declare the narrowest half it needs: `ReadSignal<T>` when the component only observes (`Signal::read_only()` / `.split()` at the call site coerce; `memo` outputs already are one), `WriteSignal<T>` when a child only reports values upward, and the unified `Signal<T>` ONLY for genuinely two-way props (`TextInput.value`, `Toggle.value`, `Slider.value`). The signature then proves what the component can do to the caller's state. Apply on components you're already touching (per 9.7), not as a repo-wide sweep.
 
 ### 9.7 Bring code you touch up to standard
 

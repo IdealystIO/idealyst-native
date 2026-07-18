@@ -13,7 +13,7 @@ Idealyst's reactive layer is signal-based, similar in shape to SolidJS or Leptos
 `Signal<T>` is a reactive cell. Read via `.get()`, write via `.set(v)` or `.update(|v| …)`.
 
 ```rust
-let count = signal!(0_i32);
+let count = signal(0_i32);
 count.set(1);
 let value = count.get(); // 1
 ```
@@ -73,10 +73,18 @@ opacity.animate(TweenTo::new(1.0, Duration::from_millis(400)).ease_out());
 
 Use `animate_at!` to schedule animations at a specific offset, or `timeline!` for choreographed sequences.
 
-## Two pitfalls
+## Three pitfalls
 
 1. **Don't `.get()` outside an effect** unless you want the current value once. Inside a reactive context (closure inside `ui!`, `effect!`, `text_fmt!`), `.get()` registers a dependency.
-2. **`HashMap::get()` is not a signal read** — the reactivity detector keys on `.get()` calls and false-positives benignly here. Don't worry about it; it just means an extra effect run that immediately settles.
+2. **The hoisted-snapshot trap** — pitfall 1 in disguise, and the easiest bug to ship:
+
+   ```rust
+   let too_short = name.get().len() < 3;   // runs ONCE at build — frozen bool
+   ui! { if too_short { … } }              // static branch: silently never updates
+   ```
+
+   The component body runs once and is not a tracked context. Keep derivations behind `move ||` — `let too_short = memo(move || name.get().len() < 3);` gives a live `ReadSignal<bool>` condition — or inline the read (`if name.get().len() < 3` is auto-promoted to a reactive branch). **A `let` freezes, a closure flows.** Debug builds warn at runtime when this happens (naming the component), and the `snapshot-condition` lint flags it at the `let`. For an *intentional* build-time snapshot, declare it: `.get_untracked()` reads without subscribing and silences both diagnostics.
+3. **`HashMap::get()` is not a signal read** — the reactivity detector keys on `.get()` calls and false-positives benignly here. Don't worry about it; it just means an extra effect run that immediately settles.
 
 ## See also
 

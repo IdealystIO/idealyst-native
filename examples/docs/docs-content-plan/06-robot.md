@@ -133,7 +133,7 @@ So if you have:
 ```rust
 #[component]
 pub fn counter(props: &Props) -> Bindable<CounterHandle> {
-    let value = signal!(0);
+    let value = signal(0);
     methods! {
         fn reset(&self) { value.set(0); }
         fn bump_by(&self, n: i32) { value.update(|v| *v += n); }

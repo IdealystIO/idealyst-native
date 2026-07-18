@@ -57,7 +57,7 @@ pub fn app() -> Element {
     // plain helper. Keeping `text(closure)` out of the `#[component]` body
     // — same structure as `stack-demo` — avoids the macro's body-closure
     // rewriting colliding with the reactive `text` source.
-    let count: Signal<i32> = signal!(0);
+    let count: Signal<i32> = signal(0);
     screen(count)
 }
 

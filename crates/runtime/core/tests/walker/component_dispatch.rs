@@ -44,7 +44,7 @@ fn Label(props: &LabelProps) -> Element {
 fn dispatches_with_required_signal_prop() {
     SEEN.with(|s| s.borrow_mut().clear());
     let rt = TestRuntime::new();
-    let s = signal!(7);
+    let s = signal(7);
     let tree = ui! { Label(value = s) };
     let _owner = rt.render(tree);
     assert_eq!(

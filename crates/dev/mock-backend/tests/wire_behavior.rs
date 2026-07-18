@@ -120,7 +120,7 @@ fn static_tree_reconstructs_structure_and_text() {
 
 #[test]
 fn reactive_text_update_propagates_over_wire() {
-    let count = signal!(0_i32);
+    let count = signal(0_i32);
     let count_for_app = count;
     let mut harness = WireHarness::mount(move || {
         view(vec![reactive_text(move || format!("count: {}", count_for_app.get()))])
@@ -152,7 +152,7 @@ fn reactive_text_update_propagates_over_wire() {
 
 #[test]
 fn reactive_button_label_update_propagates_over_wire() {
-    let label = signal!(0_i32);
+    let label = signal(0_i32);
     let label_for_app = label;
     let mut harness = WireHarness::mount(move || {
         Element::Button {

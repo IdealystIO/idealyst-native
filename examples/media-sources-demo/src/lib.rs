@@ -33,10 +33,10 @@ pub fn app() -> Element {
     // One stream signal per source. Each `Video` reads its own via a reactive
     // `stream(..)` source, so flipping the signal populates that video in
     // place — no remount.
-    let cam_sig: Signal<Option<MediaStream>> = signal!(None);
-    let screen_sig: Signal<Option<MediaStream>> = signal!(None);
-    let cam_status: Signal<String> = signal!("idle".to_string());
-    let screen_status: Signal<String> = signal!("idle".to_string());
+    let cam_sig: Signal<Option<MediaStream>> = signal(None);
+    let screen_sig: Signal<Option<MediaStream>> = signal(None);
+    let cam_status: Signal<String> = signal("idle".to_string());
+    let screen_status: Signal<String> = signal("idle".to_string());
 
     let cam_video = video::Video(video::VideoProps {
         source: video::stream(move || cam_sig.get()),

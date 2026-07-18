@@ -78,8 +78,8 @@ fn rebuild_tree(mode: Signal<u32>, count: Signal<usize>) -> Element {
 #[test]
 fn rebuild_pattern_actually_rebuilds_to_new_count() {
     let rt = TestRuntime::new();
-    let mode: Signal<u32> = signal!(0u32);
-    let count: Signal<usize> = signal!(50usize);
+    let mode: Signal<u32> = signal(0u32);
+    let count: Signal<usize> = signal(50usize);
 
     let _owner = rt.render(rebuild_tree(mode, count));
 
@@ -130,8 +130,8 @@ fn rebuild_pattern_actually_rebuilds_to_new_count() {
 #[test]
 fn rebuild_at_bench_scale_produces_max_rows() {
     let rt = TestRuntime::new();
-    let mode: Signal<u32> = signal!(0u32);
-    let count: Signal<usize> = signal!(1000usize);
+    let mode: Signal<u32> = signal(0u32);
+    let count: Signal<usize> = signal(1000usize);
 
     let _owner = rt.render(rebuild_tree(mode, count));
 
@@ -174,8 +174,8 @@ fn rebuild_at_bench_scale_produces_max_rows() {
 #[test]
 fn bare_count_set_without_discriminant_touch_does_not_rebuild() {
     let rt = TestRuntime::new();
-    let mode: Signal<u32> = signal!(0u32);
-    let count: Signal<usize> = signal!(100usize);
+    let mode: Signal<u32> = signal(0u32);
+    let count: Signal<usize> = signal(100usize);
 
     let _owner = rt.render(rebuild_tree(mode, count));
 

@@ -16,7 +16,7 @@
 use super::debug::time_backend_create;
 use crate::backend::Backend;
 use crate::element::Element;
-use crate::reactive::{self, untrack, Effect};
+use crate::reactive::{self, untrack_for_build, Effect};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -68,7 +68,7 @@ pub(super) fn build_dynamic<B: Backend + 'static>(
             // only the closure's own reads should. Inner reactive constructs
             // (nested `text(move || …)`, `when`) defer their reads to their
             // own effects created here and are unaffected.
-            untrack(|| {
+            untrack_for_build(|| {
                 let child_node = super::build(&backend_for_effect, 0, element);
                 let mut placeholder_mut = placeholder_for_effect.clone();
                 backend_for_effect

@@ -28,7 +28,7 @@
 //! #[component]
 //! pub fn app() -> Element {
 //!     install_idea_theme(light_theme());
-//!     let count = signal!(0);
+//!     let count = signal(0);
 //!     ui! {
 //!         Stack(gap = StackGap::Lg) {
 //!             Typography(content = "Hello, idea-ui".to_string(), kind = TypographyKind::H1)

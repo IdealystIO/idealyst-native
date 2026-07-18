@@ -70,8 +70,8 @@ pub fn app() -> Element {
     let ctx: DragContext<ChipData> = DragContext::new();
 
     // Each bin remembers the last chip dropped on it.
-    let bin_a: Signal<Option<ChipData>> = signal!(None);
-    let bin_b: Signal<Option<ChipData>> = signal!(None);
+    let bin_a: Signal<Option<ChipData>> = signal(None);
+    let bin_b: Signal<Option<ChipData>> = signal(None);
 
     let palette = view(CHIPS.iter().map(|c| chip(&ctx, *c)).collect::<Vec<_>>())
         .with_style(palette_sheet())

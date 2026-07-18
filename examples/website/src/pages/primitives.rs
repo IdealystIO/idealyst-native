@@ -191,13 +191,13 @@ fn content_primitives() -> Element {
 
 fn inputs() -> Element {
     // text_input
-    let name = signal!("Idealyst".to_string());
+    let name = signal("Idealyst".to_string());
     // toggle
-    let enabled = signal!(true);
+    let enabled = signal(true);
     // slider
-    let volume = signal!(0.5_f32);
+    let volume = signal(0.5_f32);
     // button
-    let clicks = signal!(0_i32);
+    let clicks = signal(0_i32);
 
     ui! {
         PrimSection(
@@ -283,7 +283,7 @@ fn navigation() -> Element {
 // =============================================================================
 
 fn lists() -> Element {
-    let people: runtime_core::Signal<Vec<(u32, &'static str)>> = signal!(vec![
+    let people: runtime_core::Signal<Vec<(u32, &'static str)>> = signal(vec![
         (1, "Aria"),
         (2, "Bram"),
         (3, "Cleo"),
@@ -340,7 +340,7 @@ fn floating() -> Element {
 }
 
 fn overlay_cell() -> Element {
-    let open = signal!(false);
+    let open = signal(false);
     ui! {
         PrimCell(tag = "overlay", blurb = "A viewport-anchored portal — centered, with a dismissible backdrop. Use for modals.") {
             view(style = PrimRow()) {
@@ -366,7 +366,7 @@ fn overlay_cell() -> Element {
 }
 
 fn anchored_overlay_cell() -> Element {
-    let open = signal!(false);
+    let open = signal(false);
     let anchor: Ref<ViewHandle> = Ref::new();
     ui! {
         PrimCell(tag = "anchored_overlay", blurb = "A portal that tracks a trigger element — popovers, dropdowns, tooltips.") {
@@ -392,7 +392,7 @@ fn anchored_overlay_cell() -> Element {
 }
 
 fn presence_cell() -> Element {
-    let shown = signal!(true);
+    let shown = signal(true);
     ui! {
         PrimCell(tag = "presence", blurb = "Mounts and unmounts with enter/exit animations — the exit plays before the node leaves.") {
             view(style = PrimRow()) {
@@ -414,7 +414,7 @@ fn presence_cell() -> Element {
 // =============================================================================
 
 fn control_flow() -> Element {
-    let on = signal!(false);
+    let on = signal(false);
     ui! {
         PrimSection(
             title = "Control flow",

@@ -142,11 +142,11 @@ docs! {
     },
 
     section(heading = "Drive component methods") {
-        p("The most interesting part for testing apps that use ", code("methods!"), ":"),
+        p("The most interesting part for testing apps that use ", code("#[method]"), ":"),
 
         list(
             [code("list_components"), " — every mounted ", code("#[component]"),
-             " instance that declared a ", code("methods!"), " block. Returns ",
+             " instance that declared ", code("#[method]"), " fns. Returns ",
              code("{instance_id, fn_name, methods: [{name, args}]}"), "."],
             [code("invoke_method"), " — call one of those methods with a JSON args \
              object keyed by parameter name."],
@@ -156,12 +156,14 @@ docs! {
 
         code(rust, r##"
             #[component]
-            pub fn counter(props: &Props) -> Bindable<CounterHandle> {
-                let value = signal!(0);
-                methods! {
-                    fn reset(&self) { value.set(0); }
-                    fn bump_by(&self, n: i32) { value.update(|v| *v += n); }
-                }
+            pub fn Counter() -> Element {
+                let value = signal(0);
+
+                #[method]
+                fn reset() { value.set(0); }
+                #[method]
+                fn bump_by(n: i32) { value.update(|v| *v += n); }
+
                 // ...
             }
         "##),
@@ -181,7 +183,7 @@ docs! {
            into the parameter types reported by ", code("list_components"), " — \
            anything ", code("serde"), " can decode works, including custom structs."),
 
-        p("This is what makes ", code("methods!"), " actually useful for testing: \
+        p("This is what makes ", code("#[method]"), " actually useful for testing: \
            the parent's view of a component's imperative surface becomes the \
            test's view too."),
     },

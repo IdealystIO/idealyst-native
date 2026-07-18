@@ -381,7 +381,11 @@ fn collect_from_nodes(nodes: &[JsxNode], out: &mut Vec<(String, u32)>) {
 // Emit
 // =============================================================================
 
-pub fn emit(jsx: Jsx) -> TokenStream2 {
+/// `input` is the raw macro input, forwarded to the shared salvage shell
+/// (see `ui::emit_shell`) so the happy-path expansion stays textually
+/// aligned with the recovery expansion rust-analyzer compares it against
+/// during completion.
+pub fn emit(jsx: Jsx, input: &TokenStream2) -> TokenStream2 {
     let body = match jsx.elements.len() {
         0 => quote! { ::runtime_core::view(::std::vec::Vec::new()) },
         // Single top-level node — but a fragment at this position has
@@ -403,7 +407,7 @@ pub fn emit(jsx: Jsx) -> TokenStream2 {
             }
         }
     };
-    quote! { ::runtime_core::IntoElement::into_element(#body) }
+    crate::ui::emit_shell(input, body)
 }
 
 /// Wraps a fragment's children in `view(...)` so it can stand in where a
@@ -763,13 +767,13 @@ mod tests {
     use super::*;
 
     fn parse_and_emit(input: TokenStream2) -> String {
-        let jsx: Jsx = syn::parse2(input).expect("parse jsx");
-        emit(jsx).to_string()
+        let jsx: Jsx = syn::parse2(input.clone()).expect("parse jsx");
+        emit(jsx, &input).to_string()
     }
 
     fn parse_err(input: TokenStream2) -> String {
-        match syn::parse2::<Jsx>(input) {
-            Ok(j) => panic!("expected parse error, got: {}", emit(j)),
+        match syn::parse2::<Jsx>(input.clone()) {
+            Ok(j) => panic!("expected parse error, got: {}", emit(j, &input)),
             Err(e) => e.to_string(),
         }
     }

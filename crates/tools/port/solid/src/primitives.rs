@@ -16,7 +16,7 @@ pub enum PrimitiveClass {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mechanical {
-    /// `const [v, setV] = createSignal(init)` → `let v = signal!(init);`
+    /// `const [v, setV] = createSignal(init)` → `let v = signal(init);`
     /// Solid signals are *called* to read (`v()`) — the lowering pass
     /// rewrites reads to `v.get()` and `setV(x)` to `v.set(x)`.
     CreateSignal,

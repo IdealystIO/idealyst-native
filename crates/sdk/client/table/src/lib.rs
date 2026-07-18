@@ -216,7 +216,7 @@ pub fn table(mut props: TableProps) -> Bound<TableHandle> {
 /// element is treated as a single one-cell row so nothing silently
 /// vanishes.
 ///
-/// Note: idea-ui's `TableRow` is a plain `#[component]` (no `methods!`),
+/// Note: idea-ui's `TableRow` is a plain `#[component]` (no `#[method]` fns),
 /// so it is never wrapped in `Element::Component` — the Fragment arrives
 /// here intact even under the `robot` feature.
 #[cfg(not(target_arch = "wasm32"))]

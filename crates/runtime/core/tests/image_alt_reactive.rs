@@ -19,7 +19,7 @@ use runtime_core::{image, signal, IntoElement, Signal};
 #[test]
 fn reactive_alt_updates_in_place_without_rebuild() {
     let rt = TestRuntime::new();
-    let described: Signal<bool> = signal!(false);
+    let described: Signal<bool> = signal(false);
 
     let tree = image("https://example.com/x.png")
         .alt_reactive(move || {

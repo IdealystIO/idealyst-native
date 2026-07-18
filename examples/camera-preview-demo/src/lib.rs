@@ -29,9 +29,9 @@ pub fn app() -> Element {
 
     // The live source, once opened. `MediaStream` is `Clone` (Rc); the signal
     // holds it (keeping capture alive) and the `Video` clones it to display.
-    let stream_sig: Signal<Option<MediaStream>> = signal!(None);
-    let status: Signal<String> = signal!("Idle — press Start camera".to_string());
-    let started: Signal<bool> = signal!(false);
+    let stream_sig: Signal<Option<MediaStream>> = signal(None);
+    let status: Signal<String> = signal("Idle — press Start camera".to_string());
+    let started: Signal<bool> = signal(false);
 
     let status_text = text(move || status.get()).into_element();
 

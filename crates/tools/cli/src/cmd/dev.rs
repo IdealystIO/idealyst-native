@@ -289,6 +289,24 @@ pub struct Args {
     pub interactive: bool,
 }
 
+/// Run the source linter over the project and print human findings to
+/// stderr. Advisory: never fails the dev command (see call site).
+fn ambient_lint_pass(dir: &Path) {
+    let Ok(loaded) = lint::Config::discover(dir) else { return };
+    let run = lint::lint_path(dir, &loaded.config);
+    if run.diagnostics.is_empty() {
+        return;
+    }
+    let mut out = Vec::new();
+    if lint::report::human(&run, &mut out, false).is_ok() {
+        eprintln!(
+            "[dev] lint found {} issue(s) (advisory — `idealyst lint` for details):",
+            run.diagnostics.len()
+        );
+        eprint!("{}", String::from_utf8_lossy(&out));
+    }
+}
+
 pub fn run(args: Args) -> Result<()> {
     let dir = std::fs::canonicalize(&args.dir).with_context(|| {
         format!("cannot resolve project dir {}", args.dir.display())
@@ -300,6 +318,15 @@ pub fn run(args: Args) -> Result<()> {
     // shape ("missing targets") regardless of how they invoked.
     let manifest = parse_manifest(&dir)?;
     let active_targets = resolve_targets(&args, &manifest.app.targets)?;
+
+    // Ambient lint pass: idiom-drift findings (including the
+    // hoisted-snapshot trap, `snapshot-condition`) surface on every dev
+    // start without the user ever opting into `idealyst lint`. Advisory
+    // only — findings print, dev continues; `idealyst lint
+    // --deny-warnings` remains the enforcing form (CI). Failures in the
+    // pass itself (bad config, unreadable file) are swallowed: linting
+    // must never block a dev loop.
+    ambient_lint_pass(&dir);
 
     // Full-stack projects declare a server (`server_bin` / `server_manifest`).
     let backend_declared =

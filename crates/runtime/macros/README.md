@@ -22,7 +22,7 @@ Rewrites a function into a reusable component:
    the next call (see [`../hot`](../hot)).
 4. With the `mcp` feature, emits a `ComponentEntry` into the `inventory`
    slice consumed by [`../mcp`](../mcp).
-5. A `methods!` block inside the body declares imperative methods the
+5. `#[method]` fns inside the body declare imperative methods the
    parent can call through a `Ref<MyHandle>`. The macro generates the
    handle struct, the dispatch table, and the registration call.
 

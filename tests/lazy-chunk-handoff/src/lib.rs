@@ -38,7 +38,7 @@ pub fn app() -> Element {
     // path, the panic infrastructure, and the reactive scheduler — all
     // the things data-pruning could plausibly damage.
     let chunk = lazy! {
-        let count: Signal<u32> = signal!(0);
+        let count: Signal<u32> = signal(0);
         let inc: Rc<dyn Fn()> = Rc::new(move || count.update(|n| *n += 1));
         ui! {
             view {

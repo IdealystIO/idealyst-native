@@ -40,7 +40,7 @@ pub fn engine() -> Element {
             )
             CodePanel(src = r##"use runtime_core::{signal, effect};
 
-let count = signal!(0);
+let count = signal(0);
 
 effect!({
     // reading count here subscribes this effect to it:
@@ -60,7 +60,7 @@ count.set(1); // re-runs the effect — and nothing else"##.to_string())
             )
             CodePanel(src = r##"use runtime_core::{signal, ui, rx};
 
-let count = signal!(0);
+let count = signal(0);
 
 // This text node IS an effect. Reading `count` inside `rx!` subscribes
 // it; a write repaints just this node — no diff, no tree walk.
@@ -147,8 +147,8 @@ pub fn performance() -> Element {
             )
             CodePanel(src = r##"use runtime_core::{signal, batch};
 
-let first = signal!(0);
-let second = signal!(0);
+let first = signal(0);
+let second = signal(0);
 
 batch(|| {
     first.set(1);

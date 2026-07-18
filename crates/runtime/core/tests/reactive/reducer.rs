@@ -94,7 +94,7 @@ fn dispatch_from_effect_does_not_self_subscribe() {
 #[test]
 fn reducer_body_reads_are_not_tracked() {
     use runtime_core::{signal, Signal};
-    let modifier: Signal<i32> = signal!(10);
+    let modifier: Signal<i32> = signal(10);
 
     let (state, dispatch) = reducer(0i32, move |s, _a: Action| s + modifier.get());
 

@@ -229,7 +229,7 @@ docs! {
     section(heading = "TextInput") {
         p("A text field whose value is owned by the parent."),
         code(rust, r##"
-            let value = signal!(String::new());
+            let value = signal(String::new());
 
             ui! {
                 text_input(
@@ -249,7 +249,7 @@ docs! {
           ". The builder function is ", code("toggle(...)"),
           "; the primitive variant is ", code("Toggle"), "."),
         code(rust, r##"
-            let enabled = signal!(true);
+            let enabled = signal(true);
 
             ui! {
                 toggle(
@@ -263,7 +263,7 @@ docs! {
     section(heading = "Slider") {
         p("A numeric slider with min/max bounds and an optional step."),
         code(rust, r##"
-            let volume = signal!(50.0);
+            let volume = signal(50.0);
 
             ui! {
                 slider(

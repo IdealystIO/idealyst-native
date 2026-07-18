@@ -58,7 +58,7 @@ pub fn page() -> Element {
 // ============================================================================
 
 fn signals() -> Element {
-    let snippet = "let count = signal!(0_i32);\n\
+    let snippet = "let count = signal(0_i32);\n\
                    \n\
                    count.set(1);                 // overwrite\n\
                    count.update(|n| *n += 1);    // mutate in place\n\
@@ -86,7 +86,7 @@ fn signals() -> Element {
 }
 
 fn derived() -> Element {
-    let snippet = "let count = signal!(0_i32);\n\
+    let snippet = "let count = signal(0_i32);\n\
                    \n\
                    // A derived value recomputes when its inputs change, and is\n\
                    // itself a reactive source other scopes can subscribe to.\n\
@@ -112,7 +112,7 @@ fn derived() -> Element {
 }
 
 fn effects() -> Element {
-    let snippet = "let theme_bg = signal!(Color(\"#ffffff\".into()));\n\
+    let snippet = "let theme_bg = signal(Color(\"#ffffff\".into()));\n\
                    \n\
                    // Runs now, and re-runs whenever any signal it reads changes.\n\
                    effect!({\n    \
@@ -159,7 +159,7 @@ fn no_vdom() -> Element {
 }
 
 fn async_data() -> Element {
-    let snippet = "let user_id = signal!(1_u64);\n\
+    let snippet = "let user_id = signal(1_u64);\n\
                    \n\
                    // Re-fetches whenever `user_id` changes; prior fetch is cancelled.\n\
                    let user = resource(user_id, |id, cancel| async move {\n    \

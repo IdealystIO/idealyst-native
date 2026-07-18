@@ -49,7 +49,7 @@ use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
 use runtime_core::{
     component, each_keyed, memo, on_defer, pressable, signal, text, text_input, ui, view, when,
-    EachKey, EachRowBuild, Element, IdealystSchema, IntoElement, Reactive, Ref, Signal,
+    EachKey, EachRowBuild, Element, IdealystSchema, IntoElement, Reactive, ReadSignal, Ref, Signal,
     StyleApplication, TextInputHandle, VariantEnum, ViewHandle,
 };
 
@@ -166,17 +166,17 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
         .find(|o| o.id == value.get())
         .map(|o| o.label.get())
         .unwrap_or_default();
-    let query: Signal<String> = signal!(initial_query);
-    let open: Signal<bool> = signal!(false);
+    let query: Signal<String> = signal(initial_query);
+    let open: Signal<bool> = signal(false);
     // Keyboard highlight as a position into the *current* filtered list.
-    let highlight: Signal<usize> = signal!(0usize);
+    let highlight: Signal<usize> = signal(0usize);
 
     let input_ref: Ref<TextInputHandle> = Ref::new();
     let wrapper_ref: Ref<ViewHandle> = Ref::new();
 
     // Filtered option indices, recomputed when the query, the committed
     // value, or any option label changes.
-    let filtered: Signal<Vec<usize>> = {
+    let filtered: ReadSignal<Vec<usize>> = {
         let options = options.clone();
         memo(move || {
             let q = query.get();
@@ -385,7 +385,7 @@ fn row(
     o: SelectOption,
     oi: usize,
     commit: Rc<dyn Fn(usize)>,
-    filtered: Signal<Vec<usize>>,
+    filtered: ReadSignal<Vec<usize>>,
     highlight: Signal<usize>,
     value: Signal<String>,
 ) -> Element {

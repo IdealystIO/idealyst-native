@@ -1692,7 +1692,7 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "List the framework authoring macros — the verbs of writing an app (`signal!`, `effect!`, `ui!`, `#[component]`, `stylesheet!`, `animated!`). Lightweight { name, invocation, kind, summary }; pass `filter` (case-insensitive, glob `*`, matches name/invocation/kind) to narrow, then `describe_macro` for full docs + what it expands to.")]
+    #[tool(description = "List the framework authoring macros — the verbs of writing an app (`effect!`, `ui!`, `#[component]`, `stylesheet!`, `animated!`). NOTE: signal creation is the plain `signal(value)` FUNCTION (see `list_utilities`), not a macro. Lightweight { name, invocation, kind, summary }; pass `filter` (case-insensitive, glob `*`, matches name/invocation/kind) to narrow, then `describe_macro` for full docs + what it expands to.")]
     async fn list_macros(
         &self,
         Parameters(req): Parameters<FilterRequest>,
@@ -1810,7 +1810,7 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "List every imperative method declared via `methods! { fn foo(&self, …) { … } }` blocks. Returns one entry per method, tagged with its parent component. Filter by passing the parent component's name.")]
+    #[tool(description = "List every imperative method declared via `#[method] fn foo(…) { … }` inside `#[component]` bodies. Returns one entry per method, tagged with its parent component. Filter by passing the parent component's name.")]
     async fn list_methods(
         &self,
         Parameters(req): Parameters<NameRequest>,
@@ -2418,7 +2418,7 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "Run the idealyst source linter over a project and return its findings as JSON. Same engine and rules as the `idealyst lint` CLI: it flags idiom drift in un-expanded Rust source — raw reactive primitives that should be macros (`Signal::new`→`signal!`, `Effect::new`→`effect!`, `memo(…)`→`memo!`), hand-built elements instead of `ui!`/`jsx!` (`builder::…`, `BuildElement::build`, `Element::Variant {…}`), and non-PascalCase `#[component]` functions. Respects `idealyst-lint.toml` (rule levels) and inline `// idealyst-lint-disable` directives discovered from the target path. Pass `path` to lint a specific file/dir; omit it to lint the single live app's project root, else the server's working directory. Returns { path, files_scanned, error_count, warn_count, total_diagnostics, failed, truncated, parse_errors, diagnostics[] } where each diagnostic is { rule, severity, message, help, file, line, column, end_line, end_column, source_line }.")]
+    #[tool(description = "Run the idealyst source linter over a project and return its findings as JSON. Same engine and rules as the `idealyst lint` CLI: it flags idiom drift in un-expanded Rust source — drift from the canonical reactive surface (`Signal::new` and the removed `signal!` macro→the `signal(…)` function, the removed `memo!` macro→the `memo(move || …)` function, `Effect::new`→`effect!`), hand-built elements instead of `ui!`/`jsx!` (`builder::…`, `BuildElement::build`, `Element::Variant {…}`), and non-PascalCase `#[component]` functions. Respects `idealyst-lint.toml` (rule levels) and inline `// idealyst-lint-disable` directives discovered from the target path. Pass `path` to lint a specific file/dir; omit it to lint the single live app's project root, else the server's working directory. Returns { path, files_scanned, error_count, warn_count, total_diagnostics, failed, truncated, parse_errors, diagnostics[] } where each diagnostic is { rule, severity, message, help, file, line, column, end_line, end_column, source_line }.")]
     async fn lint_project(
         &self,
         Parameters(req): Parameters<LintRequest>,
@@ -3345,10 +3345,16 @@ mod tests {
             .filter_map(|m| m["name"].as_str())
             .collect();
         assert!(names.contains(&"ui"), "list_macros must include `ui`; got {names:?}");
-        assert!(names.contains(&"signal"), "list_macros must include `signal`; got {names:?}");
+        // Signal creation is the plain `signal(value)` function now — it
+        // moved to the utilities table when the `signal!` macro was
+        // removed, so the macros list must NOT carry it.
+        assert!(
+            !names.contains(&"signal"),
+            "the removed `signal!` macro must not be listed; got {names:?}"
+        );
 
         // describe_macro resolves bare name AND a trailing `!`.
-        for needle in ["ui", "signal!"] {
+        for needle in ["ui", "effect!"] {
             let d = svc
                 .describe_macro(Parameters(NameRequest { name: needle.into(), app: None }))
                 .await
@@ -3883,8 +3889,8 @@ mod tests {
             "expected component-pascal-case; got {rules:?}"
         );
         assert!(
-            rules.contains(&"prefer-signal-macro".to_string()),
-            "expected prefer-signal-macro; got {rules:?}"
+            rules.contains(&"prefer-signal-fn".to_string()),
+            "expected prefer-signal-fn; got {rules:?}"
         );
         assert_eq!(v["files_scanned"], 1);
         assert!(v["error_count"].as_u64().unwrap() >= 1, "got {v}");

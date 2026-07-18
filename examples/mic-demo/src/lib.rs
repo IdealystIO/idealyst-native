@@ -40,10 +40,10 @@ pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBack
 pub fn app() -> Element {
     install_idea_theme(light_theme());
 
-    let level: Signal<f32> = signal!(0.0);
-    let rate: Signal<u32> = signal!(0);
-    let status: Signal<String> = signal!("Idle — press Start microphone".to_string());
-    let started: Signal<bool> = signal!(false);
+    let level: Signal<f32> = signal(0.0);
+    let rate: Signal<u32> = signal(0);
+    let status: Signal<String> = signal("Idle — press Start microphone".to_string());
+    let started: Signal<bool> = signal(false);
 
     // Pump the atomic bridge into the signals once per frame. The change
     // guards keep an idle (silent) or steady meter from re-rendering every

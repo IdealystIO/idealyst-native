@@ -34,7 +34,7 @@ A `Copy` handle to an arena-stored cell of type `T`. Reads subscribe
 the currently-running `Effect`; writes notify subscribers.
 
 ```rust
-let count = signal!(0);                         // creates a Signal<i32>
+let count = signal(0);                         // creates a Signal<i32>
 let _ = count.get();                            // reads, subscribes current effect
 count.set(5);                                   // writes, notifies subscribers
 count.update(|n| *n += 1);                      // in-place mutation
@@ -45,9 +45,22 @@ closure that needs it without `.clone()`. This is what makes
 `move || count.update(...)` work without `let count = count.clone()`
 ceremony.
 
-The cell is owned by whichever `Scope` was active when `signal!` ran.
+The cell is owned by whichever `Scope` was active when `signal(...)` ran.
 When the scope drops, the slot is freed; subsequent `.get()` on a
 freed signal panics with "signal used after its scope was dropped".
+
+### `ReadSignal` / `WriteSignal` — capability halves
+
+`signal.split()` (or `.read_only()` / `.write_only()`) hands out
+zero-cost newtype views over the same slot whose TYPE permits only
+reading or only writing — same tracking, same generational
+stale-write no-op, still `Copy`. Use them to encode least privilege
+in signatures: a `ReadSignal<T>` prop proves the component observes
+without mutating (every `memo` output is one), a `WriteSignal<T>`
+lets a child report upward without being able to subscribe itself.
+The unified `Signal<T>` remains the right type for genuinely two-way
+props. Deliberately no `Deref` between them — deref would hand the
+other capability back.
 
 ### `Effect`
 
@@ -162,7 +175,7 @@ This means signal/effect creation code is identical whether or not a
 scope is around:
 
 ```rust
-let count = signal!(0);                         // owns it if no scope; otherwise scope owns
+let count = signal(0);                         // owns it if no scope; otherwise scope owns
 let _e = Effect::new(|| …);                     // same
 ```
 

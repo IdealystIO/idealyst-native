@@ -50,7 +50,7 @@ docs! {
         code(rust, r##"
             use runtime_core::{resource, signal, Resource};
 
-            let user_id = signal!(1u64);
+            let user_id = signal(1u64);
 
             let user: Resource<User, ServerError> = resource(
                 user_id,                                 // dep — tracked
@@ -162,7 +162,7 @@ docs! {
         code(rust, r##"
             use runtime_core::{async_reducer, signal, AsyncReducer, AsyncStatus};
 
-            let todos: Signal<Vec<Todo>> = signal!(Vec::new());
+            let todos: Signal<Vec<Todo>> = signal(Vec::new());
 
             let create: AsyncReducer<CreateTodo, ServerError> = async_reducer(
                 todos,                                                      // state

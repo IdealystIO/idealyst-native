@@ -60,7 +60,7 @@
 //! ```ignore
 //! use runtime_core::{signal, ui, Easing, presence, PresenceAnim, PresenceState};
 //!
-//! let open = signal!(false);
+//! let open = signal(false);
 //! ui! {
 //!     Presence(
 //!         present = move || open.get(),

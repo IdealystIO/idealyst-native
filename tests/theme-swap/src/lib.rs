@@ -31,8 +31,8 @@ use std::rc::Rc;
 pub fn app() -> Element {
     install_idea_theme(light_theme());
 
-    let is_dark: Signal<bool> = signal!(false);
-    let swap_count: Signal<u32> = signal!(0);
+    let is_dark: Signal<bool> = signal(false);
+    let swap_count: Signal<u32> = signal(0);
 
     let toggle: Rc<dyn Fn()> = Rc::new(move || {
         let now_dark = !is_dark.get();

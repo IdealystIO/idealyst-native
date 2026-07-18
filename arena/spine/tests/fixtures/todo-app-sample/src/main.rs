@@ -8,8 +8,8 @@ use idealyst::prelude::*;
 
 #[component]
 fn TodoApp() -> Element {
-    let items = signal!(Vec::<String>::new());
-    let draft = signal!(String::new());
+    let items = signal(Vec::<String>::new());
+    let draft = signal(String::new());
 
     // Hydrate persisted items on mount.
     let saved = storage::get("todo.items").unwrap_or_default();

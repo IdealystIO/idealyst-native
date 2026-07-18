@@ -12,7 +12,7 @@ use crate::common::counted_effect;
 /// re-run, not two.
 #[test]
 fn two_writes_one_signal_collapse_to_one_fire() {
-    let s: Signal<i32> = signal!(0);
+    let s: Signal<i32> = signal(0);
     let (count, _e) = counted_effect(move || {
         let _ = s.get();
     });
@@ -37,9 +37,9 @@ fn two_writes_one_signal_collapse_to_one_fire() {
 /// signals fires once total (deduplication at the effect level).
 #[test]
 fn writes_to_multiple_signals_dedupe_per_effect() {
-    let a: Signal<i32> = signal!(0);
-    let b: Signal<i32> = signal!(0);
-    let c: Signal<i32> = signal!(0);
+    let a: Signal<i32> = signal(0);
+    let b: Signal<i32> = signal(0);
+    let c: Signal<i32> = signal(0);
 
     let (count, _e) = counted_effect(move || {
         let _ = a.get();
@@ -64,7 +64,7 @@ fn writes_to_multiple_signals_dedupe_per_effect() {
 /// batch closes. Effects fire once for the whole nest.
 #[test]
 fn nested_batches_commit_at_outer_close() {
-    let s: Signal<i32> = signal!(0);
+    let s: Signal<i32> = signal(0);
     let (count, _e) = counted_effect(move || {
         let _ = s.get();
     });
@@ -90,7 +90,7 @@ fn nested_batches_commit_at_outer_close() {
 /// same batch — batching defers notification, not the write itself.
 #[test]
 fn writes_inside_batch_are_immediately_visible() {
-    let s: Signal<i32> = signal!(0);
+    let s: Signal<i32> = signal(0);
 
     batch(|| {
         s.set(1);
@@ -107,7 +107,7 @@ fn writes_inside_batch_are_immediately_visible() {
 /// notification.
 #[test]
 fn effect_created_inside_batch_fires_initial_immediately() {
-    let s: Signal<i32> = signal!(0);
+    let s: Signal<i32> = signal(0);
 
     batch(|| {
         s.set(1);
@@ -126,7 +126,7 @@ fn batch_returns_closure_result() {
     let result: i32 = batch(|| 42);
     assert_eq!(result, 42);
 
-    let s: Signal<i32> = signal!(0);
+    let s: Signal<i32> = signal(0);
     let result: i32 = batch(|| {
         s.set(7);
         s.get()
@@ -137,7 +137,7 @@ fn batch_returns_closure_result() {
 /// Empty batch is a no-op — no effects fire and nothing panics.
 #[test]
 fn empty_batch_is_noop() {
-    let s: Signal<i32> = signal!(0);
+    let s: Signal<i32> = signal(0);
     let (count, _e) = counted_effect(move || {
         let _ = s.get();
     });

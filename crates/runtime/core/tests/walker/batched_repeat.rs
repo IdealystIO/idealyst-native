@@ -345,8 +345,8 @@ fn batched_path_is_taken_on_each_rebuild_via_switch() {
         supports_batched_repeat: true,
         ..Default::default()
     });
-    let mode: Signal<u32> = signal!(0u32);
-    let count: Signal<usize> = signal!(2usize);
+    let mode: Signal<u32> = signal(0u32);
+    let count: Signal<usize> = signal(2usize);
     let sheet = make_static_sheet();
 
     let tree = switch(

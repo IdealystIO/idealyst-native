@@ -6,7 +6,7 @@
 //! counter so tests can assert on the exact fire count.
 //!
 //! ```ignore
-//! let s = signal!(0);
+//! let s = signal(0);
 //! let (count, _effect) = counted_effect(move || { let _ = s.get(); });
 //! s.set(1);
 //! s.set(2);
@@ -68,7 +68,7 @@ where
 /// Note: the counter increments on every memo recomputation, NOT on
 /// every read of the memoized value. Readers subscribe to the cache;
 /// recomputation happens only when a tracked input changes.
-pub fn counted_memo<T, F>(compute: F) -> (FireCounter, runtime_core::Signal<T>)
+pub fn counted_memo<T, F>(compute: F) -> (FireCounter, runtime_core::ReadSignal<T>)
 where
     T: Clone + PartialEq + 'static,
     F: Fn() -> T + 'static,

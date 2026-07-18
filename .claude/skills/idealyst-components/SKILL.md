@@ -77,7 +77,7 @@ named after the bug. Run `cargo test -p idea-ui`.
 ## Reviewing a component
 
 Walk the checklist at the bottom of the reference guide. The machine-checkable
-subset is caught by `idealyst lint` (`prefer-signal-macro`, `prefer-ui-macro`,
+subset is caught by `idealyst lint` (`prefer-signal-fn`, `prefer-ui-macro`,
 `component-pascal-case`, …) — run it before claiming conformance.
 
 ## When you edit a component, keep docs aligned (CLAUDE.md §2)

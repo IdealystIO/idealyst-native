@@ -18,19 +18,12 @@ use crate::{MacroEntry, MacroKind};
 
 // ---------------------------------------------------------------------
 // Reactive — state + reactivity (runtime_core macro_rules!)
+//
+// NOTE: signal creation is NOT here — the `signal!` macro was removed
+// (it expanded verbatim to `Signal::new`, no macro-only capability) and
+// replaced by the plain `signal(value)` function, documented as a
+// `UtilityEntry` in `utilities.rs` under `UtilityCategory::Reactive`.
 // ---------------------------------------------------------------------
-
-inventory::submit! {
-    MacroEntry {
-        name: "signal",
-        invocation: "signal!(initial)",
-        kind: MacroKind::Reactive,
-        module_path: "runtime_core",
-        docs: "Create a reactive `Signal<T>` from an initial value. `T` is inferred. Read with `.get()` (subscribes the surrounding reactive scope), write with `.set(v)` / `.update(|v| …)`. The unit of mutable state in a component. See [[reactivity]].",
-        expansion: "Signal::new(initial)",
-        _seal: (),
-    }
-}
 
 inventory::submit! {
     MacroEntry {
@@ -68,17 +61,10 @@ inventory::submit! {
     }
 }
 
-inventory::submit! {
-    MacroEntry {
-        name: "memo",
-        invocation: "memo!(expr)",
-        kind: MacroKind::Reactive,
-        module_path: "runtime_core",
-        docs: "Cached derived signal: recomputes the body when a signal it reads changes, and notifies subscribers only when the value actually differs (`T: PartialEq`). Use for derived state read in several places or expensive to compute — the work runs once per dependency change, not once per read. For a cheap derivation, a plain closure or `rx!` is lighter; for a type without `PartialEq`, call `memo_with` directly. See [[reactivity]].",
-        expansion: "memo(move || expr)",
-        _seal: (),
-    }
-}
+// `memo` is NOT here either — like `signal!`, the `memo!` macro was
+// removed (it only inserted `move ||` around a closure the author writes
+// anyway). `memo(move || …)` is documented as a `UtilityEntry` in
+// `utilities.rs` under `UtilityCategory::Reactive`.
 
 // ---------------------------------------------------------------------
 // Markup — element-tree construction (ui!/jsx!/text_fmt!/lazy! are

@@ -1,12 +1,13 @@
 //! `lint` — the idealyst source linter engine.
 //!
 //! Flags three idiom-drift patterns over a project's **un-expanded** Rust
-//! source (the only place the choice is still visible — after macro
-//! expansion `signal!(0)` and `Signal::new(0)` are identical):
+//! source (the only place the choice is still visible — `effect!` expands
+//! to the raw constructor, so post-expansion the idiom has vanished):
 //!
-//! 1. Raw reactive primitives instead of their macros — `Signal::new`,
-//!    `Effect::new`, `memo(…)` (`prefer-signal-macro`,
-//!    `prefer-effect-macro`, `prefer-memo-macro`).
+//! 1. Drift from the canonical reactive surface — redundant `Signal::new`
+//!    and the removed `signal!` / `memo!` macros (→ the `signal(…)` /
+//!    `memo(move || …)` functions; `prefer-signal-fn`, `prefer-memo-fn`),
+//!    raw `Effect::new` (`prefer-effect-macro`).
 //! 2. Hand-built elements instead of `ui!` / `jsx!` — `builder::…`,
 //!    `BuildElement::build`, `Element::Variant { … }` (`prefer-ui-macro`).
 //! 3. Non-PascalCase `#[component]` functions (`component-pascal-case`).

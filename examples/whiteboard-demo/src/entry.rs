@@ -215,30 +215,30 @@ pub fn app() -> Element {
     // ---- State (root scope → survives navigation) ------------------------
     let nav: Ref<StackHandle> = node_ref!();
     let state = BoardState {
-        width: signal!(crate::WIDTH_MEDIUM),
-        color_css: signal!(crate::PALETTE[0].1),
-        cam_on: signal!(false),
-        cam_stream: signal!(None),
+        width: signal(crate::WIDTH_MEDIUM),
+        color_css: signal(crate::PALETTE[0].1),
+        cam_on: signal(false),
+        cam_stream: signal(None),
         // Camera widget top-left, in viewport points. `-1` = "not yet placed";
         // an Effect drops it bottom-left once the viewport size is known.
-        cam_x: signal!(-1.0),
-        cam_y: signal!(-1.0),
-        recording: signal!(false),
-        rec_path: signal!(None),
-        palette_open: signal!(false),
-        layers_open: signal!(false),
-        active_canvas: signal!(0),
+        cam_x: signal(-1.0),
+        cam_y: signal(-1.0),
+        recording: signal(false),
+        rec_path: signal(None),
+        palette_open: signal(false),
+        layers_open: signal(false),
+        active_canvas: signal(0),
         // Canvas 0 is seeded below (store + this id list); next new canvas = id 1.
-        canvas_ids: signal!(vec![0u64]),
-        next_id: signal!(1),
-        aspect: signal!(crate::settings::DEFAULT_ASPECT),
-        canvas_bg: signal!(CanvasBg::Auto),
-        dark: signal!(start_dark),
-        camera_shape: signal!(CameraShape::RoundedRect),
-        camera_size: signal!(CameraSize::Medium),
-        keys_enabled: signal!(true),
-        gestures_enabled: signal!(true),
-        canvas_anim: signal!(1.0),
+        canvas_ids: signal(vec![0u64]),
+        next_id: signal(1),
+        aspect: signal(crate::settings::DEFAULT_ASPECT),
+        canvas_bg: signal(CanvasBg::Auto),
+        dark: signal(start_dark),
+        camera_shape: signal(CameraShape::RoundedRect),
+        camera_size: signal(CameraSize::Medium),
+        keys_enabled: signal(true),
+        gestures_enabled: signal(true),
+        canvas_anim: signal(1.0),
         nav,
     };
 
@@ -265,7 +265,7 @@ pub fn app() -> Element {
     // canvas video stream). Set on START, dropped on STOP — see [`MicHandle`].
     let mic_handle: MicHandle = Rc::new(RefCell::new(None));
     let strokes: Strokes = Rc::new(RefCell::new(Vec::new()));
-    let version: Signal<u64> = signal!(0);
+    let version: Signal<u64> = signal(0);
 
     // The saved canvas documents. Seeded with the active doc (id 0); the live
     // `strokes` Rc above is canvas 0's working copy. `!Copy`, so it's cloned into
@@ -361,7 +361,7 @@ pub fn app() -> Element {
     // on web that may land AFTER the preview is popped — writing a signal whose
     // scope was already freed would panic. Root-scoped, the late write is a
     // harmless no-op.
-    let preview_url: Signal<String> = signal!(String::new());
+    let preview_url: Signal<String> = signal(String::new());
 
     // ---- The stack navigator: board (root) + Settings + Preview ----------
     // `header_shown(false)` everywhere — the board is full-bleed canvas, and the

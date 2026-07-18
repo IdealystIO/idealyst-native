@@ -264,7 +264,7 @@ fires `on_change` for every input event with the new text. The
 canonical pattern:
 
 ```rust
-let name = signal!(String::new());
+let name = signal(String::new());
 ui! {
     TextInput(value = name, on_change = move |s| name.set(s))
 }

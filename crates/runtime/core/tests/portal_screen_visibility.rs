@@ -37,7 +37,7 @@ fn last_hidden(events: &[Event]) -> Option<bool> {
 #[test]
 fn portal_hides_when_its_screen_is_not_the_active_route() {
     let rt = TestRuntime::with_config(MockBackendConfig::default());
-    let active: Signal<&'static str> = signal!("A");
+    let active: Signal<&'static str> = signal("A");
 
     // Stand in for a navigator screen "A": provide its nav context, then build
     // a portal in the same scope (as a screen's overlay would).

@@ -226,11 +226,11 @@ pub fn app() -> Element {
     install_idea_theme(light_theme());
     configure_server();
 
-    let username: Signal<String> = signal!("demo".to_string());
-    let password: Signal<String> = signal!(String::new());
-    let user: Signal<Option<String>> = signal!(None); // logged-in username
-    let status: Signal<String> = signal!("Enter demo / password".to_string());
-    let protected: Signal<String> = signal!(String::new());
+    let username: Signal<String> = signal("demo".to_string());
+    let password: Signal<String> = signal(String::new());
+    let user: Signal<Option<String>> = signal(None); // logged-in username
+    let status: Signal<String> = signal("Enter demo / password".to_string());
+    let protected: Signal<String> = signal(String::new());
 
     // On mount, ask the server who we are — if a session cookie survives a
     // reload, this restores the logged-in state without re-entering creds.

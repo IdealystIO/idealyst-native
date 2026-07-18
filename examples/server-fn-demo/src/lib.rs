@@ -286,7 +286,7 @@ pub fn app() -> Element {
     configure_server();
 
     // Single source of truth: the live todo list.
-    let todos: Signal<Vec<Todo>> = signal!(Vec::new());
+    let todos: Signal<Vec<Todo>> = signal(Vec::new());
 
     // Four async actions, each folding its response back into
     // `todos`. The reducer shape is the canonical "mutation

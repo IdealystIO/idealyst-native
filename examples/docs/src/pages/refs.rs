@@ -63,7 +63,7 @@ docs! {
 
             #[component]
             pub fn counter(props: &CounterProps) -> Bindable<CounterHandle> {
-                let value = signal!(props.initial);
+                let value = signal(props.initial);
 
                 methods! {
                     fn reset(&self) {
@@ -273,7 +273,7 @@ docs! {
 
         code(rust, r##"
             let trigger: Ref<ButtonHandle> = Ref::new();
-            let is_open = signal!(false);
+            let is_open = signal(false);
 
             ui! {
                 button(

@@ -28,7 +28,7 @@ use std::rc::Rc;
 
 use drawer_navigator::DrawerHandle;
 use idea_ui::{current_breakpoint, Breakpoint};
-use runtime_core::{memo, Ref, Signal, StyleApplication, StyleSheet};
+use runtime_core::{memo, ReadSignal, Ref, Signal, StyleApplication, StyleSheet};
 
 /// Width (dp) below which the sidebar collapses into the drawer
 /// overlay. Single source of truth for the collapse breakpoint:
@@ -118,13 +118,13 @@ thread_local! {
     /// [`idea_ui::current_breakpoint`], so subscribers only re-fire when
     /// the viewport crosses [`SIDEBAR_COLLAPSE_PX`], not on every pixel
     /// of a resize drag. Lazily created on first read.
-    static COLLAPSED_MEMO: OnceCell<Signal<bool>> = const { OnceCell::new() };
+    static COLLAPSED_MEMO: OnceCell<ReadSignal<bool>> = const { OnceCell::new() };
 }
 
 /// Reactive flag: is the sidebar collapsed into the drawer overlay?
 /// Read inside a style closure / effect to subscribe to crossings of
 /// the collapse breakpoint.
-pub fn sidebar_collapsed() -> Signal<bool> {
+pub fn sidebar_collapsed() -> ReadSignal<bool> {
     COLLAPSED_MEMO.with(|cell| {
         // Root-anchor this thread-lifetime cached memo so it isn't owned
         // by whatever transient scope first touches it (e.g. an SSR

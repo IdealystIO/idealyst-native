@@ -118,7 +118,7 @@ docs! {
 
             #[component]
             pub fn app() -> Element {
-                let count = signal!(0);
+                let count = signal(0);
 
                 ui! {
                     view {
@@ -141,7 +141,7 @@ docs! {
         list(
             [code("#[component]"), " marks ", code("app()"), " as a component. \
               Every Idealyst app starts from one."],
-            [code("signal!(0)"), " declares reactive state. The ", code("count.get()"),
+            [code("signal(0)"), " declares reactive state. The ", code("count.get()"),
              " inside ", code("format!"), " is a tracked read; the ", code("count.update(...)"),
              " inside the button's ", code("on_click"), " is a write. The framework \
               keeps the surrounding ", code("Text"), " in sync when the button is \

@@ -59,7 +59,7 @@ independent constraints make that boundary airtight rather than conventional.
    enclosing scope. There is no client state for a body to close over.
 
 3. **Reference boundary (the v0 gap).** Even with 1 and 2, a v0 body can still
-   *name* a client-only item (`signal!()`, `web_sys::window()`) because the
+   *name* a client-only item (`signal()`, `web_sys::window()`) because the
    shared crate links the UI runtime. We close this with **dependency layering**:
 
    ```

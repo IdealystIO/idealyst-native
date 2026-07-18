@@ -35,7 +35,7 @@ registry, three consumers:
   directly: fill out forms, navigate, assert state. It reaches the app's
   Robot bridge by discovery (`~/.idealyst/apps/`) or an explicit
   `--robot-port`.
-- **`#[component]` methods.** A `methods! { ... }` block inside a component
+- **`#[component]` methods.** Nested `#[method]` fns inside a component
   is auto-registered as JSON-callable. External automation can invoke
   component methods by name without per-app glue.
 
@@ -149,11 +149,11 @@ summarised in the matrix further down.
 | `framework-core`: primitives, reactivity, render walker | Working |
 | `ui!` / `jsx!` / `#[component]` macros | Working |
 | `stylesheet!` macro (themes, variants, overrides) | Working |
-| `Ref<H>`: primitive handles + user-component handles via `methods!` | Working |
+| `Ref<H>`: primitive handles + user-component handles via `#[method]` | Working |
 | Reactive `if` / `when`, `for` loops in DSLs | Working |
 | `idea-ui` component library (Card, Modal, Popover, Select, Switch, Tabs, Field, Alert, …) | Working |
 | Icon registry (`icons-lucide`) | Working |
-| Robot automation + MCP server: introspection registry, `#[component] methods!`, agent control | Working |
+| Robot automation + MCP server: introspection registry, `#[component]` + `#[method]`, agent control | Working |
 | Hot reload: dev server + runtime-server (Application-as-a-Service) shell + wire protocol | Working |
 | Server-driven UI: wire protocol + `SceneModel` snapshot | Working |
 | Custom rendering: `render-wgpu` (core, phone, tablet, tv skins) | In progress |
@@ -213,7 +213,7 @@ use framework_core::{ui, component, signal, Element};
 
 #[component]
 pub fn app() -> Element {
-    let count = signal!(0);
+    let count = signal(0);
 
     ui! {
         Text { "Hello from idealyst-native" }

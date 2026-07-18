@@ -107,7 +107,7 @@ DrawerNavigator::new(&HOME)
 use swap_navigator::{SwapNavigator, SwapBuilder, SwapHandle};
 use idea_ui_nav::{Drawer, DrawerSide};
 
-let open = signal!(false);   // the drawer's open state lives with YOU now
+let open = signal(false);   // the drawer's open state lives with YOU now
 
 SwapNavigator::new(&HOME)
     .screen(HOME, |_| Screen::new(home()))

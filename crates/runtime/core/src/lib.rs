@@ -94,7 +94,7 @@ pub mod robot;
 /// Stub `robot` surface compiled when the `robot` feature is OFF.
 ///
 /// The `#[component]` macro emits `register_component(...)` + a keepalive
-/// `Effect` for every `methods! { ... }` block UNCONDITIONALLY — gating
+/// `Effect` for every `#[method]`-bearing component UNCONDITIONALLY — gating
 /// it on the *consuming* crate's `robot` feature was a footgun (a
 /// scaffolded app, or idea-ui, never sets that feature, so its component
 /// methods silently never registered; see
@@ -143,7 +143,7 @@ pub mod robot {
 /// Tag a `#[component]`'s root primitive with its component instance so the
 /// robot walker can link element↔component (for the inspector's "select an
 /// element → call its methods"). Called UNCONDITIONALLY by the `#[component]`
-/// macro for `methods!`-bearing components — cfg-selected like
+/// macro for `#[method]`-bearing components — cfg-selected like
 /// [`robot::register_component`]: a transparent `Element::Component` wrapper
 /// when `robot` is on, an identity no-op (zero overhead, no wrapper) when off.
 #[cfg(feature = "robot")]
@@ -163,11 +163,20 @@ pub fn __component_root(child: Element, _instance: robot::ComponentInstanceId) -
 }
 
 /// Re-export of `serde_json` for use by the `#[component]` macro's
-/// `methods!` auto-registration codegen — proc macros emit absolute
+/// `#[method]` auto-registration codegen — proc macros emit absolute
 /// paths and we don't want every consuming crate to take a direct
 /// dep on `serde_json`.
 #[doc(hidden)]
 pub use serde_json as __serde_json;
+
+/// Build-probe glue for the `#[component]` macro's untracked-build-read
+/// diagnostic (see `reactive::maybe_warn_untracked_build_read`). Emitted
+/// at the top of every component body; no-op in release builds.
+#[doc(hidden)]
+pub use reactive::{__component_build_probe, ComponentBuildProbe};
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub use reactive::__take_untracked_build_read_warnings;
 
 /// Re-export of `wasm-split` (the runtime crate, published as
 /// `wasm-splitter` and aliased back via `package =`) so the `lazy!`
@@ -266,9 +275,10 @@ pub use reactive::{
     arena_stats, batch, cycle, inject, inject_or, install_drop_deferral, install_reactive_idle_hook,
     is_reactive_busy, memo, memo_with, on, on_cleanup, on_defer, provide, reducer,
     register_signal_js_notifier, signal_has_js_notifier, unregister_signal_js_notifier, untrack,
-    watch, with_inject, ArenaStats, Effect, Ref, Signal, Subscription, Trackable,
+    watch, with_inject, ArenaStats, Effect, ReadSignal, Ref, Signal, Subscription, Trackable,
+    WriteSignal,
 };
-/// Internal re-export for the `#[component]` / `methods!` codegen only —
+/// Internal re-export for the `#[component]` / `#[method]` codegen only —
 /// hidden from the authoring surface. See `reactive::__component_keepalive_effect`.
 #[doc(hidden)]
 pub use reactive::__component_keepalive_effect;
@@ -426,31 +436,46 @@ pub use mcp_catalog as __mcp;
 //                  builders, style attachment + theme cohort, and the
 //                  reactive-branching builders (when/switch/presence).
 //
-// The `signal!` and `children!` macros stay here — `#[macro_export]`
+// The `signal` fn and `children!` macro stay here — `#[macro_export]`
 // registers them at the crate root anyway, and keeping them next to
 // the `pub use` block makes the public surface a single grep target.
 
-/// Shorthand for `Signal::new(value)`. Equivalent in every way; just less
-/// typing at the call site.
+/// Creates a signal — the canonical creation form.
 ///
 /// ```ignore
-/// let count = signal!(0);
-/// // same as: let count = Signal::new(0);
+/// let count = signal(0);
+/// count.set(1);
 /// ```
+///
+/// A plain function, not a macro: signal creation needs no token
+/// manipulation (unlike `effect!`/`rx!`, which synthesize closures), so
+/// the fn form is the whole story. Equivalent to [`Signal::new`];
+/// scope adoption happens inside the constructor either way.
+///
 /// To watch a signal's live value in the Idealyst Inspector, mark it
 /// explicitly with [`robot::watch_signal`](crate::robot::watch_signal)
 /// (the value type must be `Debug`). Automatic watch-on-create was
 /// attempted but is impossible to do safely in stable Rust: rendering a
-/// value requires `Debug`, and forcing that on every `signal!` breaks
+/// value requires `Debug`, and forcing that on every signal breaks
 /// signals over non-`Debug` types (closures, handles, `Option<MediaStream>`,
 /// …) — and the "use Debug if present" trick is not inference-safe (it
-/// fails to compile for inference-deferred types like `signal!(None)`).
-#[macro_export]
-macro_rules! signal {
-    ($value:expr) => {
-        $crate::Signal::new($value)
-    };
+/// fails to compile for inference-deferred sites like `signal(None)`).
+pub fn signal<T: Clone + 'static>(value: T) -> Signal<T> {
+    Signal::new(value)
 }
+
+/// Leptos-parity alias: idealyst's unified [`Signal`] is what Leptos
+/// calls `RwSignal`, so ported code written as `RwSignal::new(v)`
+/// resolves unchanged. New idealyst code should write `signal(v)`.
+pub type RwSignal<T> = Signal<T>;
+
+// The `signal!` macro is gone: it carried no macro-only capability (it
+// expanded verbatim to `Signal::new`), so the plain `signal(value)`
+// function above replaced it outright. A `#[deprecated]` alias was tried
+// first, but `use runtime_core::signal;` imports every namespace under
+// that name — so the deprecation warning fired on the *import line* of
+// every file using the fn form. Removal is the only clean end state;
+// stragglers get "cannot find macro `signal`" and drop the `!`.
 
 /// Creates a **scope-owned** reactive effect that re-runs whenever a
 /// signal it read on its previous run changes. The `move` keyword is
@@ -465,7 +490,7 @@ macro_rules! signal {
 /// the returned [`Subscription`]; that is the form whose lifetime you own.
 ///
 /// ```ignore
-/// let count = signal!(0);
+/// let count = signal(0);
 /// effect!({
 ///     log("count is {}", count.get());
 /// });
@@ -491,31 +516,15 @@ macro_rules! effect {
     };
 }
 
-/// Shorthand for [`memo`](crate::memo) — a cached derived `Signal<T>`
-/// whose body recomputes when the signals it reads change, notifying
-/// subscribers only when the value actually differs (`T: PartialEq`).
-///
-/// Use it for derived state read in multiple places or expensive to
-/// recompute; the work runs once per dependency change, not once per
-/// read. For a cheap one-off derivation, a plain closure or [`rx!`] is
-/// lighter.
-///
-/// ```ignore
-/// let count = signal!(0);
-/// let doubled = memo!(count.get() * 2);
-/// // `doubled` is a Signal<i32>; reads stay cached until `count` changes.
-/// ```
-///
-/// The body is wrapped in `move ||`, so `Copy` signal handles are
-/// captured by value — same ergonomics as [`effect!`]. For a type
-/// without `PartialEq` (or a tolerance-based comparison), call
-/// [`memo_with`](crate::memo_with) directly.
-#[macro_export]
-macro_rules! memo {
-    ($body:expr) => {
-        $crate::memo(move || $body)
-    };
-}
+// The `memo!` macro is gone — the plain `memo(move || …)` function (in
+// `reactive.rs`, re-exported at the root) is the canonical form. The
+// macro only saved typing `move ||` around a closure the author writes
+// anyway; by the same standard that removed `signal!`, that isn't
+// enough token work to justify a second spelling. (`effect!` stays: it
+// wraps a bare BLOCK — statements, not a closure — which a fn can't
+// accept.) A deprecated alias was ruled out for the same reason as
+// `signal!`: `use runtime_core::memo;` imports both namespaces, so the
+// warning would fire on the import line of every fn-form user.
 
 /// Builds a `Vec<Element>` from a mixed-shape list of children.
 ///

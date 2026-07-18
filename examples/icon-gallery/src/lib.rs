@@ -159,10 +159,10 @@ fn render_cell(c: &Cell) -> Element {
 pub fn app() -> Element {
     install_idea_theme(light_theme());
 
-    let query: Signal<String> = signal!(String::new());
+    let query: Signal<String> = signal(String::new());
     // Source of truth for the virtualized grid. Seeded with the full set so
     // the first paint shows icons; the effect below keeps it in sync.
-    let cells: Signal<Vec<Cell>> = signal!(build_cells(""));
+    let cells: Signal<Vec<Cell>> = signal(build_cells(""));
 
     // Rebuild the cell list whenever the search text changes. `query.get()`
     // makes this effect re-run on every edit; `cells` isn't read here.

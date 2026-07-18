@@ -9,12 +9,13 @@
 //!
 //! Why one shared visitor instead of one `Visit` per rule: the three
 //! patterns key off disjoint node kinds (fn items, call exprs, struct
-//! exprs), so a single walk covers them with no redundant traversal — and
-//! crucially, `syn`'s default visitor does **not** descend into macro
-//! token streams, so anything inside `ui! { … }` / `signal!( … )` is
-//! invisible here. That's exactly right: these rules ask "what did the
-//! author write *outside* the macro," which only the un-expanded surface
-//! can answer.
+//! exprs, macro invocations), so a single walk covers them with no
+//! redundant traversal — and crucially, `syn`'s default visitor does
+//! **not** descend into macro token streams, so anything inside
+//! `ui! { … }` is invisible here. That's exactly right: these rules ask
+//! "what did the author write *outside* the macro," which only the
+//! un-expanded surface can answer. (Macro invocation *nodes* — name +
+//! bang — are still visible; that's how the removed `signal!` is caught.)
 
 use syn::visit::Visit;
 
@@ -24,6 +25,7 @@ use crate::diagnostic::RawDiag;
 mod component_case;
 mod prefer_macros;
 mod prefer_ui;
+mod snapshot_condition;
 
 /// Static metadata for one lint rule.
 pub struct RuleInfo {
@@ -43,7 +45,7 @@ pub fn all_rules() -> &'static [RuleInfo] {
         RuleInfo {
             id: prefer_macros::SIGNAL_RULE,
             default_level: Level::Warn,
-            summary: "use `signal!(…)` instead of calling `Signal::new(…)` directly",
+            summary: "use the `signal(…)` function — flags redundant `Signal::new(…)` and the removed `signal!` macro",
         },
         RuleInfo {
             id: prefer_macros::EFFECT_RULE,
@@ -53,7 +55,7 @@ pub fn all_rules() -> &'static [RuleInfo] {
         RuleInfo {
             id: prefer_macros::MEMO_RULE,
             default_level: Level::Warn,
-            summary: "use `memo!(…)` instead of calling the `memo(…)` function directly",
+            summary: "use the `memo(move || …)` function — flags the removed `memo!` macro",
         },
         RuleInfo {
             id: prefer_ui::RULE,
@@ -64,6 +66,11 @@ pub fn all_rules() -> &'static [RuleInfo] {
             id: component_case::RULE,
             default_level: Level::Error,
             summary: "`#[component]` functions must be PascalCase",
+        },
+        RuleInfo {
+            id: snapshot_condition::RULE,
+            default_level: Level::Warn,
+            summary: "a hoisted `.get()` snapshot used as a `ui!` condition — the branch silently never updates",
         },
     ]
 }
@@ -83,6 +90,7 @@ struct Linter {
 impl<'ast> Visit<'ast> for Linter {
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
         component_case::check_fn(node, &mut self.diags);
+        snapshot_condition::check_fn(node, &mut self.diags);
         syn::visit::visit_item_fn(self, node);
     }
 
@@ -95,6 +103,14 @@ impl<'ast> Visit<'ast> for Linter {
     fn visit_expr_struct(&mut self, node: &'ast syn::ExprStruct) {
         prefer_ui::check_struct(node, &mut self.diags);
         syn::visit::visit_expr_struct(self, node);
+    }
+
+    // Macro INVOCATIONS are visible AST nodes (their bodies aren't) —
+    // reached from every position (expr, stmt, item) via `visit_macro`.
+    // This is how a leftover `signal!(…)` call is flagged.
+    fn visit_macro(&mut self, node: &'ast syn::Macro) {
+        prefer_macros::check_macro(node, &mut self.diags);
+        syn::visit::visit_macro(self, node);
     }
 }
 

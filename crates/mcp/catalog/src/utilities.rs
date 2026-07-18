@@ -10,6 +10,44 @@ use crate::{ParamSpec, UtilityCategory, UtilityEntry};
 
 inventory::submit! {
     UtilityEntry {
+        name: "signal",
+        module_path: "runtime_core",
+        docs: "Create a reactive `Signal<T>` from an initial value — the unit of mutable state in a component. A plain function (the historical `signal!` macro was removed; drop the `!`). `T` is inferred. Read with `.get()` (subscribes the surrounding reactive scope), write with `.set(v)` / `.update(|v| …)`. Equivalent to `Signal::new(value)`; the fn form is canonical. Capability halves: `.split()` → `(ReadSignal, WriteSignal)`, `.read_only()`, `.write_only()` — same slot, but the type only permits reading / writing. Type a prop `ReadSignal<T>` when the component observes without mutating. See [[reactivity]].",
+        params: &[
+            ParamSpec {
+                name: "value",
+                type_str: "T",
+                type_short_name: "T",
+            },
+        ],
+        return_type: "Signal<T>",
+        return_type_short: "Signal",
+        category: UtilityCategory::Reactive,
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
+        name: "memo",
+        module_path: "runtime_core",
+        docs: "Cached derived signal: `memo(move || expr)` recomputes when a signal the closure reads changes, and notifies subscribers only when the value actually differs (`T: PartialEq`). A plain function (the historical `memo!` macro was removed — write the `move ||` yourself). Returns the READ half only (`ReadSignal<T>`): a memo is a pure derivation, so its output is not writable. Use for derived state read in several places or expensive to compute — the work runs once per dependency change, not once per read. For a cheap derivation, a plain closure or `rx!` is lighter; for a type without `PartialEq`, call `memo_with(eq, f)`. Body must be pure — a `.set()` inside the compute panics. See [[reactivity]].",
+        params: &[
+            ParamSpec {
+                name: "f",
+                type_str: "impl Fn() -> T",
+                type_short_name: "Fn",
+            },
+        ],
+        return_type: "ReadSignal<T>",
+        return_type_short: "ReadSignal",
+        category: UtilityCategory::Reactive,
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
         name: "platform",
         module_path: "runtime_core",
         docs: "Returns the current runtime platform (`Ios`, `Android`, `Web`, `MacOs`). Use to branch on backend for legitimate platform variance (different keyboard shortcuts, different copy). Per [[backend_owns_rendering]], do NOT use this to paper over rendering differences — those belong in the backend.",

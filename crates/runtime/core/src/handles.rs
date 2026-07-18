@@ -415,7 +415,7 @@ impl ViewHandle {
     /// ```ignore
     /// let body_ref: Ref<ViewHandle> = Ref::new();
     /// // ... mount view with `.bind(body_ref)` ...
-    /// let natural_height = signal!(0.0_f32);
+    /// let natural_height = signal(0.0_f32);
     /// let _sub = body_ref.with(|h| h.on_layout(move |_w, h| natural_height.set(h)));
     /// ```
     ///

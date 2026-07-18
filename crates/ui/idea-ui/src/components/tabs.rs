@@ -15,7 +15,7 @@
 //!    to lay out — including future navigator integrations.
 //!
 //! ```ignore
-//! let active = signal!(0_usize);
+//! let active = signal(0_usize);
 //! ui! {
 //!     Tabs(
 //!         tabs = vec![
@@ -113,7 +113,7 @@ pub struct TabsProps {
     /// The tabs, left-to-right. `Signal<Vec<Tab>>` — a **reactive list**: tabs
     /// added / removed / reordered reconcile by `Tab::id`, so a surviving tab
     /// keeps its component-local state (the strip updates without a full
-    /// rebuild). A fixed strip wraps a literal in `signal!(vec![...])`.
+    /// rebuild). A fixed strip wraps a literal in `signal(vec![...])`.
     pub tabs: Signal<Vec<Tab>>,
     /// The **active tab's `id`**. `Reactive<String>` — a `Signal<String>` the
     /// host owns, or a model-derived `rx!(...)` (e.g. mapping a document's

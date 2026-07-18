@@ -3,6 +3,12 @@ name = "runtime-macros"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# `ui!`/`jsx!` distinguish rustc from IDE proc-macro servers by whether
+# token spans carry real line/column info (`host_has_no_span_lines` in
+# ui.rs). Span locations stabilized in rustc 1.88; on older toolchains
+# every span is degenerate and the macro would wrongly emit its
+# analysis-only salvage shell into real builds. Fail loudly instead.
+rust-version = "1.88"
 
 [lib]
 proc-macro = true

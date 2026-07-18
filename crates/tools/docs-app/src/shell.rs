@@ -124,9 +124,9 @@ pub fn sidebar(slot: SlotProps, model: Rc<CatalogModel>) -> Element {
     let active_path = slot.active_path;
 
     // Search modal state.
-    let open = signal!(false);
-    let query = signal!(String::new());
-    let filter = signal!(Option::<Kind>::None);
+    let open = signal(false);
+    let query = signal(String::new());
+    let filter = signal(Option::<Kind>::None);
     let on_query: Rc<dyn Fn(String)> = Rc::new(move |s| query.set(s));
     let open_search: Rc<dyn Fn()> = Rc::new(move || open.set(true));
     let close_search: Rc<dyn Fn()> = Rc::new(move || open.set(false));
@@ -892,8 +892,8 @@ pub fn IconGallery(props: IconGalleryProps) -> Element {
     let set = icons::registry(&props.crate_name).unwrap_or(&[]);
     let count = props.count;
 
-    let query: runtime_core::Signal<String> = signal!(String::new());
-    let rows: runtime_core::Signal<Vec<icons::RowData>> = signal!(icons::build_rows(set, ""));
+    let query: runtime_core::Signal<String> = signal(String::new());
+    let rows: runtime_core::Signal<Vec<icons::RowData>> = signal(icons::build_rows(set, ""));
     // Anchored in this component's scope, so it re-runs on every edit —
     // which is also what keeps the virtualizer's own data-effect alive.
     effect!({

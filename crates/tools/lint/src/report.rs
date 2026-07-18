@@ -251,7 +251,7 @@ mod tests {
         let msg: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(msg["reason"], "compiler-message");
         assert_eq!(msg["message"]["level"], "warning");
-        assert_eq!(msg["message"]["code"]["code"], "idealyst::prefer-signal-macro");
+        assert_eq!(msg["message"]["code"]["code"], "idealyst::prefer-signal-fn");
         assert_eq!(msg["message"]["spans"][0]["is_primary"], true);
         assert_eq!(msg["message"]["spans"][0]["line_start"], 1);
         // Help text rides along as a child.
@@ -279,7 +279,7 @@ mod tests {
         let mut buf = Vec::new();
         human(&run, &mut buf, false).unwrap();
         let text = String::from_utf8(buf).unwrap();
-        assert!(text.contains("warning[prefer-signal-macro]"));
+        assert!(text.contains("warning[prefer-signal-fn]"));
         assert!(text.contains("src/app.rs:1:10"));
         assert!(text.contains("help:"));
         assert!(text.contains("1 warning"));

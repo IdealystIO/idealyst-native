@@ -24,7 +24,7 @@ use crate::common::counted_effect;
 /// N + 1 effect runs (one initial + N updates).
 #[test]
 fn single_source_fires_once_per_write() {
-    let s: Signal<i32> = signal!(0);
+    let s: Signal<i32> = signal(0);
     let (count, _e) = counted_effect(move || {
         let _ = s.get();
     });
@@ -40,7 +40,7 @@ fn single_source_fires_once_per_write() {
 /// once each.
 #[test]
 fn fan_out_one_to_many() {
-    let s: Signal<i32> = signal!(0);
+    let s: Signal<i32> = signal(0);
 
     let mut counters = Vec::new();
     let mut effects = Vec::new();
@@ -73,7 +73,7 @@ fn fan_out_one_to_many() {
 /// per update.
 #[test]
 fn fan_in_many_to_one() {
-    let signals: Vec<Signal<i32>> = (0..8).map(|_| signal!(0)).collect();
+    let signals: Vec<Signal<i32>> = (0..8).map(|_| signal(0)).collect();
     let sigs_for_effect = signals.clone();
     let (count, _e) = counted_effect(move || {
         for s in &sigs_for_effect {
@@ -111,9 +111,9 @@ fn fan_in_many_to_one() {
 /// double-fire.
 #[test]
 fn diamond_observer_fires_once_per_source_change() {
-    let source: Signal<i32> = signal!(0);
-    let mid_a: Signal<i32> = signal!(0);
-    let mid_b: Signal<i32> = signal!(0);
+    let source: Signal<i32> = signal(0);
+    let mid_a: Signal<i32> = signal(0);
+    let mid_b: Signal<i32> = signal(0);
 
     // mid_a = source * 2
     let (_ma_count, _e_a) = counted_effect(move || {
@@ -172,9 +172,9 @@ fn diamond_observer_fires_once_per_source_change() {
 /// trip here.
 #[test]
 fn diamond_under_batch_does_not_transitively_collapse() {
-    let source: Signal<i32> = signal!(0);
-    let mid_a: Signal<i32> = signal!(0);
-    let mid_b: Signal<i32> = signal!(0);
+    let source: Signal<i32> = signal(0);
+    let mid_a: Signal<i32> = signal(0);
+    let mid_b: Signal<i32> = signal(0);
 
     let (_ma_count, _e_a) = counted_effect(move || {
         let v = source.get();
@@ -206,9 +206,9 @@ fn diamond_under_batch_does_not_transitively_collapse() {
 /// the workaround if you do want a single observer fire.
 #[test]
 fn diamond_under_outer_batch_collapses_to_one_observer_fire() {
-    let source: Signal<i32> = signal!(0);
-    let mid_a: Signal<i32> = signal!(0);
-    let mid_b: Signal<i32> = signal!(0);
+    let source: Signal<i32> = signal(0);
+    let mid_a: Signal<i32> = signal(0);
+    let mid_b: Signal<i32> = signal(0);
 
     let (_ma_count, _e_a) = counted_effect(move || {
         let v = source.get();
@@ -249,10 +249,10 @@ fn diamond_under_outer_batch_collapses_to_one_observer_fire() {
 /// firing exactly once.
 #[test]
 fn chain_propagates_each_link_once() {
-    let a: Signal<i32> = signal!(0);
-    let b: Signal<i32> = signal!(0);
-    let c: Signal<i32> = signal!(0);
-    let d: Signal<i32> = signal!(0);
+    let a: Signal<i32> = signal(0);
+    let b: Signal<i32> = signal(0);
+    let c: Signal<i32> = signal(0);
+    let d: Signal<i32> = signal(0);
 
     let (a_count, _ea) = counted_effect(move || {
         let v = a.get();
@@ -295,9 +295,9 @@ fn chain_propagates_each_link_once() {
 /// no-longer-read signal.
 #[test]
 fn dynamic_dependencies_unsubscribe_from_unread_signals() {
-    let cond: Signal<bool> = signal!(true);
-    let a: Signal<i32> = signal!(0);
-    let b: Signal<i32> = signal!(0);
+    let cond: Signal<bool> = signal(true);
+    let a: Signal<i32> = signal(0);
+    let b: Signal<i32> = signal(0);
 
     let (count, _e) = counted_effect(move || {
         if cond.get() {
@@ -348,7 +348,7 @@ fn dynamic_dependencies_unsubscribe_from_unread_signals() {
 /// (or swaps the storage backing) doesn't trip a false positive.
 #[test]
 fn fan_out_fires_each_subscriber_exactly_once_in_any_order() {
-    let s: Signal<i32> = signal!(0);
+    let s: Signal<i32> = signal(0);
     let order: std::rc::Rc<std::cell::RefCell<Vec<u32>>> =
         std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
 
@@ -385,8 +385,8 @@ fn fan_out_fires_each_subscriber_exactly_once_in_any_order() {
 /// effect to it.
 #[test]
 fn untrack_skips_subscription() {
-    let tracked: Signal<i32> = signal!(0);
-    let untracked: Signal<i32> = signal!(0);
+    let tracked: Signal<i32> = signal(0);
+    let untracked: Signal<i32> = signal(0);
 
     let (count, _e) = counted_effect(move || {
         let _ = tracked.get();
@@ -411,7 +411,7 @@ fn untrack_skips_subscription() {
 /// notification pass).
 #[test]
 fn self_referential_effect_does_not_infinite_loop() {
-    let s: Signal<i32> = signal!(0);
+    let s: Signal<i32> = signal(0);
 
     let (count, _e) = counted_effect(move || {
         let v = s.get();

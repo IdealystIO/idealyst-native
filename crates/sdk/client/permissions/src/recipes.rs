@@ -27,7 +27,7 @@ recipe!(
         use ::runtime_core::{signal, text, ui};
 
         // Reactive label, seeded before the user has decided.
-        let status = signal!("Notifications: not requested".to_string());
+        let status = signal("Notifications: not requested".to_string());
 
         let on_click = {
             let status = status.clone();

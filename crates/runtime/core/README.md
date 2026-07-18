@@ -56,7 +56,7 @@ in app code.
 - **`robot`**. Enables the [`robot::`](./src/robot) module: the
   introspection registry that exposes every mounted primitive (`test_id`,
   label, kind, control handle) plus the component-method registry that
-  `#[component] methods!` populates. The `idealyst mcp` command
+  `#[component]` + `#[method]` populates. The `idealyst mcp` command
   ([`mcp-server`](../../mcp/server)) turns this into MCP tools agents can
   drive. Off by default; production builds shouldn't pay for the per-node
   registry overhead.

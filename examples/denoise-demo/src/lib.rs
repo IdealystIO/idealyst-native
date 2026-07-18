@@ -206,25 +206,25 @@ pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBack
 pub fn app() -> Element {
     install_idea_theme(light_theme());
 
-    let raw_level: Signal<f32> = signal!(0.0);
-    let denoised_level: Signal<f32> = signal!(0.0);
-    let status: Signal<String> = signal!("Preparing denoiser…".to_string());
-    let phase: Signal<Phase> = signal!(Phase::Idle);
-    let ready: Signal<bool> = signal!(false); // warm pipeline built?
+    let raw_level: Signal<f32> = signal(0.0);
+    let denoised_level: Signal<f32> = signal(0.0);
+    let status: Signal<String> = signal("Preparing denoiser…".to_string());
+    let phase: Signal<Phase> = signal(Phase::Idle);
+    let ready: Signal<bool> = signal(false); // warm pipeline built?
 
     // Filled when a clip is finalized; the A/B monitor's players read these.
-    let raw_url: Signal<String> = signal!(String::new());
-    let denoised_url: Signal<String> = signal!(String::new());
+    let raw_url: Signal<String> = signal(String::new());
+    let denoised_url: Signal<String> = signal(String::new());
     // Captured peak envelopes, snapshotted at Stop and drawn as waveforms.
-    let raw_wave: Signal<Vec<f32>> = signal!(Vec::new());
-    let den_wave: Signal<Vec<f32>> = signal!(Vec::new());
+    let raw_wave: Signal<Vec<f32>> = signal(Vec::new());
+    let den_wave: Signal<Vec<f32>> = signal(Vec::new());
 
     // A/B monitor state: which track is audible, playing, and where we are.
-    let ab: Signal<String> = signal!(SEG_DENOISED.to_string());
-    let playing: Signal<bool> = signal!(false);
-    let progress: Signal<f32> = signal!(0.0); // 0..1 playback position
-    let dur_secs: Signal<f32> = signal!(0.0);
-    let wave_w: Signal<f32> = signal!(0.0); // laid-out width of the waveform canvas, px
+    let ab: Signal<String> = signal(SEG_DENOISED.to_string());
+    let playing: Signal<bool> = signal(false);
+    let progress: Signal<f32> = signal(0.0); // 0..1 playback position
+    let dur_secs: Signal<f32> = signal(0.0);
+    let wave_w: Signal<f32> = signal(0.0); // laid-out width of the waveform canvas, px
     // Handles to the two synced players, filled when the monitor mounts.
     let raw_player: Ref<VideoHandle> = Ref::new();
     let den_player: Ref<VideoHandle> = Ref::new();

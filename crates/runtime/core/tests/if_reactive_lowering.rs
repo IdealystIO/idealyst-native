@@ -36,7 +36,7 @@ fn count_clear_children(events: &[Event]) -> usize {
 #[test]
 fn call_condition_hiding_a_signal_read_is_reactive() {
     let rt = TestRuntime::new();
-    let flag: Signal<bool> = signal!(true);
+    let flag: Signal<bool> = signal(true);
 
     // The `.get()` lives INSIDE `is_on`, so it is invisible at the `if` site —
     // `condition_is_reactive` (which scans the if-site tokens) returns false.

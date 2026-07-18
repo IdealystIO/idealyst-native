@@ -134,23 +134,31 @@ ui! {
 
 ## Methods — imperative handles
 
-When a parent needs to imperatively poke a child (`.focus()`, `.scroll_to_top()`, `.reset()`), declare a `methods!` block:
+When a parent needs to imperatively poke a child (`.focus()`, `.scroll_to_top()`, `.reset()`), mark nested fns with `#[method]`:
 
 ```rust
 #[component]
-pub fn Counter(props: &CounterProps) -> Bindable<CounterHandle> {
-    let value = props.value;
-    methods! {
-        /// Reset the counter to zero.
-        fn reset(&self) { value.set(0); }
-        /// Bump the counter by `n`.
-        fn bump_by(&self, n: i32) { value.update(|v| *v += n); }
-    }
+pub fn Counter() -> Element {
+    let value = signal(0);
+
+    /// Reset the counter to zero.
+    #[method]
+    fn reset() { value.set(0); }
+
+    /// Bump the counter by `n`.
+    #[method]
+    fn bump_by(n: i32) { value.update(|v| *v += n); }
+
     ui! { /* ... */ }
 }
+
+// Caller — the ordinary tag form binds via the auto-injected prop:
+let h: Ref<CounterHandle> = Ref::new();
+ui! { Counter(bind_to = h) }
+h.get().map(|c| c.bump_by(3));   // .get(), not .with() — methods write signals
 ```
 
-The macro generates a sibling `CounterHandle` type with the methods as accessors, and emits one [[MethodEntry]] per method into the MCP catalog. v1 limit: methods must return `()`.
+The macro generates a sibling `CounterHandle` type with the methods as accessors, auto-injects a `bind_to: Option<Ref<CounterHandle>>` prop, and emits one [[MethodEntry]] per method into the MCP catalog. No `pub`, no `&self` (state comes from the closure over the component body). Methods return `()` only — they are **commands**; expose reads as signals.
 
 ## Animations
 
@@ -172,7 +180,7 @@ For every `#[component]`:
 - Parameter list (names + pretty-printed types).
 - The `composes` graph — every `Foo` / `<Foo>` you reference inside `ui!`/`jsx!`.
 - Per-prop docs/types/constraints, when the props struct derives `IdealystSchema` — inlined into `params[].schema`.
-- Every [[MethodEntry]] from a `methods!` block.
+- Every [[MethodEntry]] from a `#[method]` fn.
 - Every [[AnimationEntry]] from `animated!(...)` calls.
 
 This metadata is what makes the catalog actionable for AI authoring. The more thoroughly you doc-comment your components, the better the catalog gets — without you having to maintain a separate docs site.

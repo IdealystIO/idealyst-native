@@ -55,8 +55,8 @@ pub fn page() -> Element {
                     muted = true,
                 )
                 CodeBlock(
-                    code = "let count = signal!(0);\n\
-                            let username = signal!(String::new());".to_string(),
+                    code = "let count = signal(0);\n\
+                            let username = signal(String::new());".to_string(),
                 )
             }
 

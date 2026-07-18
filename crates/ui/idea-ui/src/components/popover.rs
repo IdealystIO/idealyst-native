@@ -9,7 +9,7 @@
 //!
 //! ```ignore
 //! let trigger: Ref<ButtonHandle> = Ref::new();
-//! let open = signal!(false);
+//! let open = signal(false);
 //! ui! {
 //!     Pressable(
 //!         label = "Options".to_string(),

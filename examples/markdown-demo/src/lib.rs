@@ -79,7 +79,7 @@ pub fn app() -> Element {
     install_idea_theme(light_theme());
 
     // Single source of truth for the demo's light/dark state.
-    let dark = signal!(false);
+    let dark = signal(false);
 
     // Reactive region: re-evaluated whenever `dark` flips. Rebuilds the
     // themed page container + the Markdown with the matching MdTheme.

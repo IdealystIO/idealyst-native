@@ -45,12 +45,12 @@ docs! {
         code(rust, r##"
             use runtime_core::signal;
 
-            let count = signal!(0);
-            let name = signal!(String::from("Ada"));
-            let items = signal!(Vec::<Item>::new());
+            let count = signal(0);
+            let name = signal(String::from("Ada"));
+            let items = signal(Vec::<Item>::new());
         "##),
 
-        p(code("signal!(v)"), " is shorthand for ", code("Signal::new(v)"),
+        p(code("signal(v)"), " is shorthand for ", code("Signal::new(v)"),
           ". The value is stored in a thread-local arena; the ",
           code("Signal<T>"), " you hold back is a small Copy token (a couple \
            of u32s) that indexes into the arena. This is why you can pass \
@@ -163,7 +163,7 @@ docs! {
         code(rust, r##"
             use runtime_core::{effect, signal};
 
-            let count = signal!(0);
+            let count = signal(0);
             effect!({
                 println!("count is now {}", count.get());
             });
@@ -287,7 +287,7 @@ docs! {
         code(rust, r##"
             use runtime_core::{signal, memo};
 
-            let items = signal!(vec![1, 2, 3, 4, 5]);
+            let items = signal(vec![1, 2, 3, 4, 5]);
             let total = memo(move || items.get().iter().sum::<i32>());
 
             // Many readers — all subscribe to `total`, not to `items`.
@@ -323,8 +323,8 @@ docs! {
         code(rust, r##"
             use runtime_core::{signal, batch};
 
-            let first = signal!("Ada".to_string());
-            let last  = signal!("Lovelace".to_string());
+            let first = signal("Ada".to_string());
+            let last  = signal("Lovelace".to_string());
 
             // Without batch: each set fires effects independently.
             // With batch: both writes commit together, downstream
@@ -347,8 +347,8 @@ docs! {
         code(rust, r##"
             use runtime_core::{signal, on, on_defer};
 
-            let count = signal!(0);
-            let mood  = signal!("ok");
+            let count = signal(0);
+            let mood  = signal("ok");
 
             // on(deps, run) — fires immediately + on every dep change.
             on(count, move |c| println!("count: {}", c));
@@ -413,7 +413,7 @@ docs! {
         code(rust, r##"
             use runtime_core::{resource, signal};
 
-            let user_id = signal!(42u32);
+            let user_id = signal(42u32);
 
             let user = resource(user_id, |id, _cancel| async move {
                 fetch_user(id).await
@@ -572,8 +572,8 @@ docs! {
            shape manually with an effect that writes to a derived signal:"),
 
         code(rust, r##"
-            let count = signal!(0);
-            let doubled = signal!(0);
+            let count = signal(0);
+            let doubled = signal(0);
             effect!({ doubled.set(count.get() * 2) });
         "##),
 
@@ -724,7 +724,7 @@ docs! {
         code(rust, r##"
             #[component]
             pub fn app() -> Element {
-                let phase = signal!(0u8);
+                let phase = signal(0u8);
 
                 // Schedule a 3-beat timeline. Cleanups fire on
                 // page teardown (when Owner drops), not microseconds
@@ -851,9 +851,9 @@ docs! {
            new set; everything from the previous run is dropped."),
 
         code(rust, r##"
-            let mode = signal!("a");
-            let a_value = signal!(1);
-            let b_value = signal!(2);
+            let mode = signal("a");
+            let a_value = signal(1);
+            let b_value = signal(2);
 
             effect!({
                 if mode.get() == "a" {
@@ -911,7 +911,7 @@ docs! {
         p("The smallest reactive thing — a counter:"),
 
         code(rust, r##"
-            let count = signal!(0);
+            let count = signal(0);
             ui! {
                 text { format!("Count: {}", count.get()) }
                 button(label = "++", on_click = move || count.update(|n| *n += 1))
@@ -933,7 +933,7 @@ docs! {
 
             #[component]
             fn app() -> Element {
-                let count = signal!(0);
+                let count = signal(0);
                 ui! {
                     counter(count = count)
                     text { format!("Doubled: {}", count.get() * 2) }
@@ -965,8 +965,8 @@ docs! {
         p("Computed value used in two places:"),
 
         code(rust, r##"
-            let count = signal!(0);
-            let doubled = signal!(0);
+            let count = signal(0);
+            let doubled = signal(0);
             effect!({ doubled.set(count.get() * 2) });
 
             ui! {
@@ -1009,7 +1009,7 @@ docs! {
            runs at construction, the read inside is what tracks."),
 
         code(rust, r##"
-            let count = signal!(0);
+            let count = signal(0);
             let initial = count.get();    // 0, frozen
             ui! {
                 // Wrong: shows "Initial: 0" forever
@@ -1024,7 +1024,7 @@ docs! {
         p("Writing a signal from inside its own Effect:"),
 
         code(rust, r##"
-            let count = signal!(0);
+            let count = signal(0);
             effect!({
                 let v = count.get();
                 count.set(v + 1);    // re-entry: this run is skipped, no loop
@@ -1039,10 +1039,10 @@ docs! {
         p("Reading a signal whose scope has dropped:"),
 
         code(rust, r##"
-            let s = signal!(0);          // owned by current scope
+            let s = signal(0);          // owned by current scope
             let _ = std::thread::spawn(move || s.get());  // wrong: panic on other thread
 
-            // Inside ui! { for ... { let inner_signal = signal!(0); ... } }
+            // Inside ui! { for ... { let inner_signal = signal(0); ... } }
             // If you hold inner_signal past the iteration, .get() panics later.
         "##),
 

@@ -215,7 +215,7 @@ and toggles the `state disabled` styling block.
 A text field whose value is owned by the parent.
 
 ```rust
-let value = signal!(String::new());
+let value = signal(String::new());
 
 ui! {
     TextInput(
@@ -238,7 +238,7 @@ same thing — the constructor is named for what you'd call the
 control on screen.
 
 ```rust
-let enabled = signal!(true);
+let enabled = signal(true);
 
 ui! {
     Switch(
@@ -253,7 +253,7 @@ ui! {
 A numeric slider with min/max bounds and an optional step.
 
 ```rust
-let volume = signal!(50.0);
+let volume = signal(50.0);
 
 ui! {
     Slider(

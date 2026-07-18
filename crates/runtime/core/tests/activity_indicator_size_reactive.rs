@@ -21,7 +21,7 @@ use runtime_core::{signal, IntoElement, Signal};
 #[test]
 fn reactive_size_updates_in_place_without_rebuild() {
     let rt = TestRuntime::new();
-    let large: Signal<bool> = signal!(false);
+    let large: Signal<bool> = signal(false);
 
     let tree = activity_indicator()
         .size_reactive(move || {

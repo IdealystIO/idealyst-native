@@ -24,7 +24,7 @@ pub fn signals() -> Element {
             )
             CodePanel(src = r##"use runtime_core::{signal, Signal};
 
-let count = signal!(0);        // Signal<i32> — a Copy handle
+let count = signal(0);        // Signal<i32> — a Copy handle
 let n = count.get();           // read (subscribes the running effect)
 count.set(5);                  // write — notifies subscribers
 count.update(|v| *v += 1);     // in-place mutate, then notify"##.to_string())
@@ -79,7 +79,7 @@ pub fn effects() -> Element {
             )
             CodePanel(src = r##"use runtime_core::{signal, effect};
 
-let count = signal!(0);
+let count = signal(0);
 
 effect!({
     // reads inside the body subscribe automatically:
@@ -138,7 +138,7 @@ pub fn derived() -> Element {
             )
             CodePanel(src = r##"use runtime_core::{signal, memo};
 
-let count = signal!(0);
+let count = signal(0);
 
 let doubled = memo(move || count.get() * 2);  // Signal<i32>, recomputed on change
 let is_big  = memo(move || count.get() > 10); // only fires when the bool flips"##.to_string())
@@ -190,8 +190,8 @@ pub fn batching() -> Element {
             )
             CodePanel(src = r##"use runtime_core::{signal, batch};
 
-let first = signal!(0);
-let second = signal!(0);
+let first = signal(0);
+let second = signal(0);
 
 batch(|| {
     first.set(1);
@@ -207,7 +207,7 @@ batch(|| {
             )
             CodePanel(src = r##"use runtime_core::{signal, on};
 
-let query = signal!(String::new());
+let query = signal(String::new());
 
 let _e = on(query, move |current, previous| {
     // body reads are untracked; only `query` retriggers it

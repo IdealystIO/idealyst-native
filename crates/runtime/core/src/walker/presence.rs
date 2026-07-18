@@ -34,7 +34,7 @@ use crate::backend::Backend;
 use crate::handles::RefFill;
 use crate::element::Element;
 use crate::primitives;
-use crate::reactive::{self, untrack, Effect};
+use crate::reactive::{self, untrack_for_build, Effect};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -109,7 +109,7 @@ fn build_presence<B: Backend + 'static>(
             let built_node_inner = built_node.clone();
             let backend_inner = backend_for_effect.clone();
             let child_fn_call = || child_fn();
-            untrack(|| {
+            untrack_for_build(|| {
                 reactive::with_scope(&mut new_scope, || {
                     let prim = child_fn_call();
                     let node = super::build(&backend_inner, 0, prim);

@@ -260,8 +260,8 @@ fn status_table() -> Element {
 /// the selected row. The status text is wrapped in `rx!` so it re-renders when
 /// either signal changes (a bare `.get()` would read once and never update).
 fn clickable_row_table() -> Element {
-    let selected: Signal<String> = signal!("(none — click a row's text/background)".to_string());
-    let last_action: Signal<String> = signal!("(none — click a button or the edit icon)".to_string());
+    let selected: Signal<String> = signal("(none — click a row's text/background)".to_string());
+    let last_action: Signal<String> = signal("(none — click a button or the edit icon)".to_string());
 
     // Closure factories: each returns an `Rc<dyn Fn()>`. Signals are `Copy`
     // handles, so the factories capture them by value and can be called once

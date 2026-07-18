@@ -51,7 +51,7 @@ fn any_event_matches(events: &[Event], pred: impl Fn(&Event) -> bool) -> bool {
 #[test]
 fn switch_with_three_arms_mounts_the_matching_branch() {
     let rt = TestRuntime::new();
-    let mode: Signal<u32> = signal!(0u32);
+    let mode: Signal<u32> = signal(0u32);
 
     let tree = switch(
         move || mode.get(),
@@ -90,7 +90,7 @@ fn switch_with_three_arms_mounts_the_matching_branch() {
 #[test]
 fn switch_default_arm_fires_for_unmatched_discriminant() {
     let rt = TestRuntime::new();
-    let mode: Signal<u32> = signal!(99u32);
+    let mode: Signal<u32> = signal(99u32);
 
     let tree = switch(
         move || mode.get(),
@@ -113,7 +113,7 @@ fn switch_default_arm_fires_for_unmatched_discriminant() {
 #[test]
 fn switch_with_string_discriminant_routes_correctly() {
     let rt = TestRuntime::new();
-    let label: Signal<&'static str> = signal!("home");
+    let label: Signal<&'static str> = signal("home");
 
     let tree = switch(
         move || label.get(),
@@ -335,8 +335,8 @@ fn bound_view_with_reactive_style_still_mounts_and_applies() {
 #[test]
 fn nested_when_inside_switch_arm_rebuilds_cleanly_on_arm_swap() {
     let rt = TestRuntime::new();
-    let outer: Signal<u32> = signal!(0u32);
-    let inner: Signal<bool> = signal!(true);
+    let outer: Signal<u32> = signal(0u32);
+    let inner: Signal<bool> = signal(true);
 
     let tree = switch(
         move || outer.get(),
@@ -384,8 +384,8 @@ fn nested_when_inside_switch_arm_rebuilds_cleanly_on_arm_swap() {
 #[test]
 fn switching_back_to_arm_with_nested_when_rebuilds_inner() {
     let rt = TestRuntime::new();
-    let outer: Signal<u32> = signal!(0u32);
-    let inner: Signal<bool> = signal!(true);
+    let outer: Signal<u32> = signal(0u32);
+    let inner: Signal<bool> = signal(true);
 
     let tree = switch(
         move || outer.get(),

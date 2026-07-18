@@ -32,7 +32,7 @@ docs! {
 
             #[component]
             pub fn counter(props: &CounterProps) -> Element {
-                let count = signal!(props.initial);
+                let count = signal(props.initial);
 
                 ui! {
                     view {
@@ -120,7 +120,7 @@ docs! {
             [code("#[component]"),
              " — wraps a function as a component. Generates the invocation macro, \
               handles reactivity rewriting and hot reload. Covered on this page."],
-            [code("signal!(value)"), " — shorthand for ", code("Signal::new(value)"),
+            [code("signal(value)"), " — shorthand for ", code("Signal::new(value)"),
              ". Covered in Reactivity."],
             [code("effect!({ … })"),
              " — a reactive side effect owned by the surrounding component \
@@ -165,7 +165,7 @@ docs! {
 
             #[component]
             pub fn counter(props: &CounterProps) -> Bindable<CounterHandle> {
-                let value = signal!(props.initial);
+                let value = signal(props.initial);
 
                 methods! {
                     fn reset(&self) {
@@ -302,7 +302,7 @@ docs! {
         code(rust, r##"
             #[component]
             pub fn counter(props: &CounterProps) -> Element {
-                let count = signal!(props.initial);
+                let count = signal(props.initial);
 
                 ui! {
                     view {
@@ -321,7 +321,7 @@ docs! {
         code(rust, r##"
             #[component]
             pub fn counter(props: &CounterProps) -> Element {
-                let count = signal!(props.initial);
+                let count = signal(props.initial);
 
                 jsx! {
                     <View>
@@ -342,7 +342,7 @@ docs! {
 
             #[component]
             pub fn counter(props: &CounterProps) -> Element {
-                let count = signal!(props.initial);
+                let count = signal(props.initial);
 
                 view(vec![
                     text(move || format!("Count: {}", count.get())).into_element(),
@@ -463,7 +463,7 @@ docs! {
 
             #[component(default(initial = 0))]
             pub fn counter(props: &CounterProps) -> Bindable<CounterHandle> {
-                let value = signal!(props.initial);
+                let value = signal(props.initial);
 
                 methods! {
                     fn reset(&self) { value.set(0); }

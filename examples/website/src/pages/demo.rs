@@ -79,7 +79,7 @@ pub fn page() -> Element {
 // =============================================================================
 
 fn reactive_state() -> Element {
-    let count = signal!(0);
+    let count = signal(0);
     // `Signal<T>` is `Copy`, so each closure owns its own handle to the
     // same reactive cell \u{2014} no shadowing dance, no `.clone()`.
     let increment: Rc<dyn Fn()> = Rc::new(move || count.update(|n| *n += 1));
@@ -99,7 +99,7 @@ fn reactive_state() -> Element {
         ui! { Stack(gap = StackGap::Md, axis = StackAxis::Row) { buttons } },
     ];
 
-    let snippet = "let count = signal!(0);\n\
+    let snippet = "let count = signal(0);\n\
                    ui! {\n    \
                        text { text_fmt!(\"Count: {}\", bind!(count)) }\n    \
                        button(label = \"+\", on_click = move || count.update(|n| *n += 1))\n\
@@ -433,9 +433,9 @@ fn feedback() -> Element {
 }
 
 fn inputs() -> Element {
-    let value = signal!("hello".to_string());
+    let value = signal("hello".to_string());
     let on_change: Rc<dyn Fn(String)> = Rc::new(move |s| value.set(s));
-    let switch_value = signal!(false);
+    let switch_value = signal(false);
     let on_toggle: Rc<dyn Fn(bool)> = Rc::new(move |b| switch_value.set(b));
 
     let card_children: Vec<Element> = vec![

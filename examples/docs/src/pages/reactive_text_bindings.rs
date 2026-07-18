@@ -49,7 +49,7 @@ docs! {
             use runtime_core::{bind, text_fmt, signal, Signal};
 
             let id: u32 = 42;
-            let global: Signal<u32> = signal!(0);
+            let global: Signal<u32> = signal(0);
 
             text { text_fmt!("leaf {}: g={}", id, bind!(global)) }
         "##),

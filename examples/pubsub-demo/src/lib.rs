@@ -80,8 +80,8 @@ pub fn app() -> Element {
     install_idea_theme(light_theme());
     configure_server();
 
-    let name = signal!("guest".to_string());
-    let text = signal!(String::new());
+    let name = signal("guest".to_string());
+    let text = signal(String::new());
 
     let on_name: Rc<dyn Fn(String)> = {
         let name = name.clone();
@@ -115,7 +115,7 @@ pub fn app() -> Element {
     let feed: Element = {
         use runtime_core::{effect, IntoElement};
         let live = room_feed();
-        let log = signal!(Vec::<String>::new());
+        let log = signal(Vec::<String>::new());
         {
             let log = log.clone();
             effect!({

@@ -22,7 +22,7 @@
 fn main() {
     use runtime_core::{install_tokens, signal, view, Element};
 
-    let count = signal!(0_i32);
+    let count = signal(0_i32);
 
     let app = move || -> Element {
         // `install_tokens` is required before render even when no

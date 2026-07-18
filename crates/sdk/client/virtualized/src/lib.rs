@@ -125,13 +125,13 @@ mod tests {
 
     #[test]
     fn constructors_build_for_non_copy_data() {
-        let data: Signal<Vec<String>> = signal!(vec!["a".to_string(), "b".to_string()]);
+        let data: Signal<Vec<String>> = signal(vec!["a".to_string(), "b".to_string()]);
         let _l = list(data, |i, _| i as u64, fixed_size(40.0), render);
 
-        let data: Signal<Vec<String>> = signal!(vec!["a".to_string(), "b".to_string()]);
+        let data: Signal<Vec<String>> = signal(vec!["a".to_string(), "b".to_string()]);
         let _g = grid(data, |i, _| i as u64, fixed_size(40.0), render, 3).gap(8.0);
 
-        let data: Signal<Vec<String>> = signal!(vec!["a".to_string(), "b".to_string()]);
+        let data: Signal<Vec<String>> = signal(vec!["a".to_string(), "b".to_string()]);
         let _rg = responsive_grid(data, |i, _| i as u64, fixed_size(40.0), render, 160.0)
             .axis(Axis::Horizontal);
     }

@@ -791,8 +791,8 @@ recipe!(
         use ::runtime_core::{pressable, rx, signal, text, ui, IntoElement};
         use ::std::rc::Rc;
 
-        let value = signal!(String::new());
-        let visible = signal!(false);
+        let value = signal(String::new());
+        let visible = signal(false);
         let on_change: Rc<dyn Fn(String)> = Rc::new(move |v: String| value.set(v));
         let toggle: Rc<dyn Fn()> = Rc::new(move || visible.set(!visible.get()));
 

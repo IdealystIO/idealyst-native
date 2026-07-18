@@ -37,7 +37,7 @@
 //!
 //! ## What's intentionally excluded
 //!
-//! - Macros. The `methods!` block expansion is left for runtime-macros.
+//! - Macros. The `#[method]` fn expansion is left for runtime-macros.
 //!   Custom handles in this prototype are hand-written to prove the
 //!   underlying API supports them.
 //! - Backend integration. Element handles here use a trivial dispatch
@@ -347,7 +347,7 @@ mod tests {
 
     /// Models a "component" — owns its state, exposes a handle. The
     /// real `#[component]` macro will generate this shape from a
-    /// `methods!` block.
+    /// `#[method]` fns.
     fn mount_date_picker(r: Ref<DatePickerHandle>) -> (Rc<Cell<i32>>, Rc<Cell<bool>>) {
         // Component-local state. In a real component these are Signals.
         let value = Rc::new(Cell::new(0));

@@ -236,7 +236,7 @@ docs! {
         p("With a reactive variant axis:"),
 
         code(rust, r##"
-            let size = signal!(CardSize::Medium);
+            let size = signal(CardSize::Medium);
 
             ui! {
                 view(style = Card().size(size)) {

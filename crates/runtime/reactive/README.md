@@ -21,6 +21,6 @@ These crates exist as separate compilation units because:
 For the reactive model itself (when effects re-run, how scopes nest, the
 fine-grained-update contract), see `docs/reactivity.md`.
 
-For where `Ref<H>` is used in author code (`bind(ref)`, the `methods!`
+For where `Ref<H>` is used in author code (`bind(ref)`, the `#[method]`
 block inside `#[component]`, imperative method dispatch through `RefOps`),
 see `docs/ui-layer.md`.

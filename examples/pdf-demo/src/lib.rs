@@ -47,8 +47,8 @@ pub fn app() -> Element {
 
     // The document being shown. `Rc` so the reactive viewer can identity-compare
     // (re-interpret only on a genuinely new file). Starts with a built-in sample.
-    let doc: Signal<Option<Rc<Vec<u8>>>> = signal!(Some(Rc::new(sample_pdf())));
-    let status: Signal<String> = signal!("Showing the built-in sample.".to_string());
+    let doc: Signal<Option<Rc<Vec<u8>>>> = signal(Some(Rc::new(sample_pdf())));
+    let status: Signal<String> = signal("Showing the built-in sample.".to_string());
 
     let on_open = move || {
         status.set("Opening file picker…".to_string());

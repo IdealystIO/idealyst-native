@@ -39,7 +39,7 @@ fn switch_splices_active_arm_when_backend_supports_it() {
         supports_child_splice: true,
         ..Default::default()
     });
-    let mode: Signal<u32> = signal!(0u32);
+    let mode: Signal<u32> = signal(0u32);
     let tree: Element = ui! {
         view {
             match mode.get() {
@@ -84,7 +84,7 @@ fn switch_uses_anchor_when_splice_unsupported() {
     // create a reactive anchor. Guards that the splice gate actually branches
     // (so the test above is meaningful, not vacuously anchor-free).
     let rt = TestRuntime::new();
-    let mode: Signal<u32> = signal!(0u32);
+    let mode: Signal<u32> = signal(0u32);
     let tree: Element = ui! {
         view {
             match mode.get() {

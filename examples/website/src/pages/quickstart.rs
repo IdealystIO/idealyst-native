@@ -130,7 +130,7 @@ fn edit_and_reload() -> Element {
                    \n\
                    #[component]\n\
                    pub fn app() -> Element {\n    \
-                       let count = signal!(0);\n    \
+                       let count = signal(0);\n    \
                        ui! {\n        \
                            text { text_fmt!(\"Count: {}\", bind!(count)) }\n        \
                            button(\n            \

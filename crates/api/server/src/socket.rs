@@ -330,9 +330,9 @@ where
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    let incoming: runtime_core::Signal<Option<In>> = runtime_core::signal!(None);
-    let status: runtime_core::Signal<SocketStatus> = runtime_core::signal!(SocketStatus::Connecting);
-    let sender: runtime_core::Signal<Option<SocketSender<Out>>> = runtime_core::signal!(None);
+    let incoming: runtime_core::Signal<Option<In>> = runtime_core::signal(None);
+    let status: runtime_core::Signal<SocketStatus> = runtime_core::signal(SocketStatus::Connecting);
+    let sender: runtime_core::Signal<Option<SocketSender<Out>>> = runtime_core::signal(None);
 
     let coord: Rc<RefCell<CloseCoord<Out>>> = Rc::new(RefCell::new(CloseCoord {
         cancelled: false,
@@ -472,8 +472,8 @@ where
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    let incoming: runtime_core::Signal<Option<T>> = runtime_core::signal!(None);
-    let status: runtime_core::Signal<SseStatus> = runtime_core::signal!(SseStatus::Connecting);
+    let incoming: runtime_core::Signal<Option<T>> = runtime_core::signal(None);
+    let status: runtime_core::Signal<SseStatus> = runtime_core::signal(SseStatus::Connecting);
 
     let coord = Rc::new(RefCell::new(SseCloseCoord {
         cancelled: false,

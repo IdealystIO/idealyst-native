@@ -283,7 +283,7 @@ pub enum RokuCommand {
     // button presses execute `#[method]`-transpiled BrightScript on
     // the device to mutate signals — which fires bound texts/styles.
     /// Declare a signal in BS-side storage. `initial` is whatever
-    /// the framework's `signal!(...)` was constructed with at
+    /// the framework's `signal(...)` was constructed with at
     /// snapshot time. The BS runtime opens a slot for it and any
     /// subsequent `BindText` / `BindButton` can reference it by id.
     CreateSignal {

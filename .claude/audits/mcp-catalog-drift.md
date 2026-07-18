@@ -50,7 +50,7 @@ Five drift surfaces matter:
 ### Macro coverage
 
 - [ ] Inspect `crates/mcp/catalog/src/macros.rs`. For each `MacroEntry`, verify the macro actually exists: a `macro_rules! <name>` in `crates/runtime/core/src/lib.rs` (for `module_path: "runtime_core"`), or a `#[proc_macro]` / `#[proc_macro_attribute]` / `#[proc_macro_derive]` `pub fn <name>` in `crates/runtime/macros/src/lib.rs` (for `module_path: "runtime_macros"`).
-- [ ] Flag entries naming a macro that doesn't resolve — stale claims that mislead AI authors. (`memo` has both a `memo()` fn in `reactive.rs` AND a `memo!` macro in `lib.rs`; the macro entry is correct. A name with only a `fn` and no macro must NOT appear in this table.)
+- [ ] Flag entries naming a macro that doesn't resolve — stale claims that mislead AI authors. A name with only a `fn` and no macro must NOT appear in this table: `signal` and `memo` are plain fns now (their macros were removed) and live in `utilities.rs` under `UtilityCategory::Reactive` instead.
 - [ ] Flag *new* author-facing macros in those two files with no `MacroEntry` — especially reactive/markup/animation macros an author would type directly.
 - [ ] Spot-check the `expansion` field against the macro body: it should name the primitive the macro lowers to (e.g. `effect!` → `let _effect = Effect::new(move || { … });`). A drifted expansion is worse than an empty one.
 
@@ -74,7 +74,7 @@ Five drift surfaces matter:
 - [ ] Each reference's `name` should resolve to one of:
   - a primitive `name` or `pascal_name` (lower-cased) — e.g. `[[View]]`, `[[scroll_view]]`
   - a utility `name` (e.g. `[[platform]]`, `[[parse_color]]`)
-  - a macro `name` (bare, no `!` — e.g. `[[effect]]`, `[[signal]]`, `[[ui]]`, `[[component]]`)
+  - a macro `name` (bare, no `!` — e.g. `[[effect]]`, `[[ui]]`, `[[component]]`)
   - a state name (`[[hovered]]`, `[[pressed]]`, `[[focused]]`, `[[disabled]]`)
   - a guide slug (e.g. `[[getting-started]]`) optionally followed by `|display text`
   - a known repo memory entry (e.g. `[[backend_owns_rendering]]`, `[[ios_scrollview_bounds_origin]]`).

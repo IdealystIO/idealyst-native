@@ -26,7 +26,7 @@
 //!   continuous `elapsed` across rerenders, so time-driven
 //!   animation phases don't restart.
 //!
-//! - **Layer 2 (follow-up):** `keyed_signal!(key, init)` /
+//! - **Layer 2 (follow-up):** `keyed_signal(key, init)` /
 //!   `keyed_animated!(key, init)` etc. — author-supplied keys.
 //!   Reactive primitives stored in this registry survive
 //!   rerenders, including in-flight spring/tween state.
@@ -325,7 +325,7 @@ where
 /// Retrieve or initialise a session-persistent `Signal<T>` at
 /// `key`. Mirrors [`animated`] for reactive scalars. Useful for
 /// view-state signals (selected tab, scroll position, form
-/// values, etc.) where re-rendering a fresh `signal!(default)`
+/// values, etc.) where re-rendering a fresh `signal(default)`
 /// would visibly reset author state on every save.
 pub fn signal<T: 'static + Clone>(key: &'static str, initial: T) -> crate::reactive::Signal<T> {
     get_or_init(key, || crate::reactive::Signal::new(initial))

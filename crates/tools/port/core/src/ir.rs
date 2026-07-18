@@ -180,7 +180,7 @@ pub enum ReturnExpr {
 /// reactive primitive or an explicit hole.
 #[derive(Debug, Clone)]
 pub enum Reactive {
-    /// `let count = signal!(<init>);`
+    /// `let count = signal(<init>);`
     /// Lowered from `const [count, setCount] = useState(init)`.
     /// We track `setter` so the JSX/handler walker can rewrite
     /// `setCount(x)` to `count.set(x)`.

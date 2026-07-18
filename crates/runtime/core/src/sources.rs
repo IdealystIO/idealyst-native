@@ -245,7 +245,7 @@ impl IntoStyleSource for SignalClassSpec {
 /// ## Example
 ///
 /// ```ignore
-/// let active: Signal<u32> = signal!(0u32);
+/// let active: Signal<u32> = signal(0u32);
 ///
 /// View(style = signal_class(active, &[0, 1], |v| match v {
 ///     0 => MyRow().tone(Tone::Neutral),

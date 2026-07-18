@@ -165,7 +165,7 @@ to a closure** that reads the value. The same setter works for
 static values, enum values, and `Signal<T>`:
 
 ```rust
-let scale = signal!(1.0_f32);
+let scale = signal(1.0_f32);
 PerfRow().parity(PerfRowParity::Odd).override_padding(scale)
 ```
 

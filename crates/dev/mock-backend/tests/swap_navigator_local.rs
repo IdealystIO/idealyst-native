@@ -351,6 +351,42 @@ fn regression_deep_link_initial_cached_under_resolved_route() {
     }
 }
 
+/// Cold-start deep link on a PARAMETERIZED route: the walker's non-deferred
+/// initial mount used to mirror the registered PATTERN into `active_path`
+/// (literal `/user/:id`), because it reconstructed the path from the route
+/// entry instead of the concrete launch URL it had just matched. Any app
+/// echoing `active_path` into the browser URL then wrote `:id` into the
+/// address bar, and the next refresh failed param parsing and fell back to
+/// the initial route. The mirror must hold the concrete matched slice —
+/// exactly what in-app navigation (`params.to_path`) produces.
+#[test]
+fn regression_deep_link_active_path_is_concrete_url_not_pattern() {
+    install_buffering_scheduler();
+
+    let mut mock = MockBackend::new();
+    mock.register_navigator::<SwapPresentation, _>(|| Box::new(SwapHandler::<MockBackend>::new()));
+    let backend = Rc::new(RefCell::new(mock));
+
+    set_initial_path(Some("/user/123".to_string()));
+    let nav: Ref<SwapHandle> = Ref::new();
+    let (_owner, _on_select) = mount_swap_capturing_on_select(&backend, nav.clone());
+    runtime_core::drain_buffered_microtasks();
+
+    {
+        let b = backend.borrow();
+        assert!(b.contains_text("USER 123"), "deep link mounts the resolved screen:\n{}", b.dump());
+    }
+
+    let handle = nav.get().expect("handle filled");
+    let control = handle.inner().control().expect("control plane");
+    let (route, path, _, _) = control.nav_state_snapshot().expect("nav state attached");
+    assert_eq!(route, "user");
+    assert_eq!(
+        path, "/user/123",
+        "active_path mirrors the concrete launch URL, not the registered pattern"
+    );
+}
+
 /// `LazyDisposing` used to hold `mounted.borrow_mut()` (and the `active`
 /// borrow) across `release_screen`, which drops the screen scope and runs
 /// author `on_cleanup` synchronously — a cleanup that navigates re-entered

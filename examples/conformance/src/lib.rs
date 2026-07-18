@@ -79,12 +79,12 @@ pub fn app() -> Element {
     install_idea_theme(light_theme());
 
     let state = State {
-        count: signal!(0),
-        show_extra: signal!(false),
-        slider: signal!(0.0_f32),
-        name: signal!(String::new()),
-        modal_open: signal!(false),
-        confirmed: signal!(0),
+        count: signal(0),
+        show_extra: signal(false),
+        slider: signal(0.0_f32),
+        name: signal(String::new()),
+        modal_open: signal(false),
+        confirmed: signal(0),
     };
 
     let nav: Ref<StackHandle> = Ref::new();

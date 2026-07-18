@@ -175,7 +175,7 @@ whose response is a piece of state your app already manages.
 ```rust
 use runtime_core::{async_reducer, signal, AsyncReducer, AsyncStatus};
 
-let todos: Signal<Vec<Todo>> = signal!(Vec::new());
+let todos: Signal<Vec<Todo>> = signal(Vec::new());
 
 let create: AsyncReducer<CreateTodo, ServerError> = async_reducer(
     todos,                                                      // state

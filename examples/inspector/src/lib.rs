@@ -88,7 +88,7 @@ pub fn app() -> Element {
     install_idea_theme(light_theme());
 
     // The reactive mirror of the target's state, refreshed by the poll below.
-    let snapshot: Signal<Snapshot> = signal!(Snapshot::default());
+    let snapshot: Signal<Snapshot> = signal(Snapshot::default());
     let nav: Ref<StackHandle> = Ref::new();
 
     // UI-thread poll: copy the background client's latest snapshot into the
@@ -182,11 +182,11 @@ fn picker_page(nav: Ref<StackHandle>) -> Element {
 /// tab's panel. Selection / expand / filter state lives in signals here so
 /// it survives panel rebuilds and tab switches.
 fn inspector_page(snapshot: Signal<Snapshot>, nav: Ref<StackHandle>) -> Element {
-    let tab: Signal<usize> = signal!(0);
-    let sel_node: Signal<Option<u64>> = signal!(None);
-    let expanded: Signal<HashSet<u64>> = signal!(HashSet::new());
-    let log_filter: Signal<String> = signal!(String::new());
-    let invoke_arg: Signal<String> = signal!(String::new());
+    let tab: Signal<usize> = signal(0);
+    let sel_node: Signal<Option<u64>> = signal(None);
+    let expanded: Signal<HashSet<u64>> = signal(HashSet::new());
+    let log_filter: Signal<String> = signal(String::new());
+    let invoke_arg: Signal<String> = signal(String::new());
 
     let header = text(move || format::header(&snapshot.get())).into_element();
 

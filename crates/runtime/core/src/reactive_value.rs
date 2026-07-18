@@ -87,6 +87,19 @@ impl<T: Clone> Reactive<T> {
         }
     }
 
+    /// Read the current value **without subscribing**, with the snapshot
+    /// intent declared — the spelling for a component that deliberately
+    /// fixes a prop's value at build time (a structural choice that
+    /// shouldn't rebuild). Silences the dev-build hoisted-snapshot
+    /// diagnostic that a bare `.get()` on a `Dynamic` prop would trip
+    /// during build. See [`Signal::get_untracked`](crate::Signal::get_untracked).
+    pub fn get_untracked(&self) -> T {
+        match self {
+            Reactive::Static(v) => v.clone(),
+            Reactive::Dynamic(f) => crate::reactive::untrack(|| f()),
+        }
+    }
+
     /// Convert into a `Fn() -> T` closure for routing into any
     /// primitive constructor that accepts a reactive closure
     /// (`with_style`, animated bindings, …). `Static` becomes a
@@ -193,11 +206,19 @@ impl From<&str> for Reactive<String> {
     }
 }
 
-/// `Signal<T>` (or a `memo`, which is also a `Signal`) → reactive
-/// `Reactive<T>`. Reading it subscribes, so the component updates when
-/// the signal changes: `content = my_signal.into()`.
+/// `Signal<T>` → reactive `Reactive<T>`. Reading it subscribes, so the
+/// component updates when the signal changes: `content = my_signal.into()`.
 impl<T: Clone + 'static> From<Signal<T>> for Reactive<T> {
     fn from(sig: Signal<T>) -> Self {
+        Reactive::Dynamic(Rc::new(move || sig.get()))
+    }
+}
+
+/// `ReadSignal<T>` (including every `memo` output) → reactive
+/// `Reactive<T>` — the read half flows into props exactly like the
+/// unified handle.
+impl<T: Clone + 'static> From<crate::reactive::ReadSignal<T>> for Reactive<T> {
+    fn from(sig: crate::reactive::ReadSignal<T>) -> Self {
         Reactive::Dynamic(Rc::new(move || sig.get()))
     }
 }

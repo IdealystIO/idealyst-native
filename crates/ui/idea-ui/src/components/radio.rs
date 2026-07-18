@@ -4,7 +4,7 @@
 //!
 //! ```ignore
 //! // Controlled group — the common case.
-//! let plan = signal!("pro".to_string());
+//! let plan = signal("pro".to_string());
 //! ui! {
 //!     RadioGroup(
 //!         value = plan,

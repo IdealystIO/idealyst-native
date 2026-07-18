@@ -86,7 +86,7 @@ inserts the `move ||`, tracks dependencies by what the body reads (no deps
 array), and is owned by the surrounding scope — there is no handle to bind.
 
 ```rust
-let count = signal!(0);
+let count = signal(0);
 effect!({
     log::info!("count is {}", count.get());   // re-runs when count changes
 });
@@ -134,15 +134,24 @@ positional arguments. Don't grow positional helper signatures.
 Several of the rules above are machine-checkable, and the `idealyst lint`
 command checks them over your source:
 
-- `prefer-signal-macro` / `prefer-effect-macro` / `prefer-memo-macro` —
-  flags raw `Signal::new` / `Effect::new` / `memo(…)` where the
-  `signal!` / `effect!` / `memo!` macro is intended (the macro anchors the
-  handle to the owning scope; the raw call is the "my signal stopped
-  updating" footgun).
+- `prefer-signal-fn` / `prefer-memo-fn` / `prefer-effect-macro` —
+  flags drift from the canonical reactive surface: signal creation and
+  memoization are plain **functions** (`signal(value)`, `memo(move || …)`;
+  redundant `Signal::new` and the removed `signal!` / `memo!` macros all
+  get flagged), while `effect!` is a real macro — it wraps a bare block
+  in a `move` closure and expands to the scope-owned `Effect::scoped`
+  (the raw `Effect::new` is sealed — the "my signal stopped updating"
+  footgun).
 - `prefer-ui-macro` — flags elements built by hand (`builder::…`,
   `BuildElement::build`, `Element::View { … }`) instead of `ui!` / `jsx!`.
 - `component-pascal-case` — flags a `#[component]` fn that isn't
   PascalCase.
+- `snapshot-condition` — flags the hoisted-snapshot trap: a `let` whose
+  initializer does a bare `.get()` used later as a `ui!` `if` condition
+  (the branch silently never updates). Fix with `memo(move || …)`, inline
+  the `.get()`, or declare an intentional snapshot with
+  `.get_untracked()`. Debug builds also warn at runtime when this
+  happens.
 
 Every rule is individually configurable (`off` / `warn` / `error`) in
 `idealyst-lint.toml` and suppressible inline with

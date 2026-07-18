@@ -224,13 +224,13 @@ pub fn app() -> Element {
     install_idea_theme(light_theme());
     configure_server();
 
-    let name: Signal<String> = signal!(String::new());
-    let email: Signal<String> = signal!(String::new());
-    let message: Signal<String> = signal!(String::new());
+    let name: Signal<String> = signal(String::new());
+    let email: Signal<String> = signal(String::new());
+    let message: Signal<String> = signal(String::new());
 
     // Submit folds the server's confirmation id into a status signal; the
     // reducer's own lifecycle (loading/error) is projected separately below.
-    let status: Signal<String> = signal!("Fill in the form and submit.".to_string());
+    let status: Signal<String> = signal("Fill in the form and submit.".to_string());
     let submit: AsyncReducer<ContactSubmission, ServerError> = async_reducer(
         status,
         |input| async move { submit_contact(input).await },

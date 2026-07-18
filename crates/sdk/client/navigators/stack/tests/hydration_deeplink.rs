@@ -51,7 +51,7 @@ fn app_tree() -> runtime_core::Element {
             Screen::new(view(vec![text(HOME_MARKER).into()]))
         })
         .screen(CONTACT, |_| {
-            let sig = signal!(CONTACT_MARKER.to_string());
+            let sig = signal(CONTACT_MARKER.to_string());
             Screen::new(view(vec![text(rx!(sig.get())).into()]))
         })
         .into()

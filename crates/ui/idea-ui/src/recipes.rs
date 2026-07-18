@@ -102,7 +102,7 @@ recipe!(
         use ::runtime_core::{signal, ui};
         use ::std::rc::Rc;
 
-        let value = signal!("pear".to_string());
+        let value = signal("pear".to_string());
         let on_change: Rc<dyn Fn(String)> = Rc::new(move |v| value.set(v));
         ui! {
             Select(
@@ -130,7 +130,7 @@ recipe!(
         use ::runtime_core::{signal, ui};
         use ::std::rc::Rc;
 
-        let email = signal!(String::new());
+        let email = signal(String::new());
         let on_change: Rc<dyn Fn(String)> = Rc::new(move |v| email.set(v));
         ui! {
             Field(
@@ -154,7 +154,7 @@ recipe!(
         use ::runtime_core::{signal, ui};
         use ::std::rc::Rc;
 
-        let agreed = signal!(false);
+        let agreed = signal(false);
         let on_change: Rc<dyn Fn(bool)> = Rc::new(move |v| agreed.set(v));
         ui! {
             Checkbox(
@@ -177,7 +177,7 @@ recipe!(
         use ::runtime_core::{signal, ui};
         use ::std::rc::Rc;
 
-        let enabled = signal!(true);
+        let enabled = signal(true);
         let on_change: Rc<dyn Fn(bool)> = Rc::new(move |v| enabled.set(v));
         ui! {
             Switch(
@@ -241,7 +241,7 @@ recipe!(
         use ::runtime_core::{signal, ui};
         use ::std::rc::Rc;
 
-        let open = signal!(true);
+        let open = signal(true);
         let on_dismiss: Rc<dyn Fn()> = Rc::new(move || open.set(false));
         ui! {
             Modal(
@@ -268,8 +268,8 @@ recipe!(
         use ::runtime_core::{signal, ui};
         use ::std::rc::Rc;
 
-        let active = signal!("overview".to_string());
-        let tabs = signal!(vec![
+        let active = signal("overview".to_string());
+        let tabs = signal(vec![
             Tab::new("overview", "Overview"),
             Tab::new("activity", "Activity"),
             Tab::new("settings", "Settings"),
@@ -373,7 +373,7 @@ recipe!(
         use ::std::rc::Rc;
 
         let trigger: Ref<PressableHandle> = Ref::new();
-        let open = signal!(false);
+        let open = signal(false);
         let on_open: Rc<dyn Fn()> = Rc::new(move || open.set(true));
         // A single `close` callback, cloned at each use site — the
         // reactive `if open.get()` branch is an `Fn` closure, so any
@@ -640,7 +640,7 @@ recipe!(
         use ::runtime_core::{signal, ui};
         use ::std::rc::Rc;
 
-        let level = signal!(0.5f32);
+        let level = signal(0.5f32);
         let on_change: Rc<dyn Fn(f32)> = Rc::new(move |v| level.set(v));
         ui! {
             Slider(
@@ -784,7 +784,7 @@ recipe!(
         use ::runtime_core::{signal, ui};
         use ::std::rc::Rc;
 
-        let page = signal!(0_usize);
+        let page = signal(0_usize);
         let on_change: Rc<dyn Fn(usize)> = Rc::new(move |p| page.set(p));
         ui! {
             Pagination(page = page, total = 20_usize, on_change = on_change)
@@ -807,7 +807,7 @@ recipe!(
         use ::runtime_core::{signal, ui};
         use ::std::rc::Rc;
 
-        let open = signal!(false);
+        let open = signal(false);
         let on_change: Rc<dyn Fn(bool)> = Rc::new(move |v| open.set(v));
         ui! {
             Collapsible(title = "Advanced settings", value = open, on_change = on_change) {
@@ -831,7 +831,7 @@ recipe!(
         use crate::{AccordionExpand, AccordionItem, Accordion, Typography};
         use ::runtime_core::{signal, ui};
 
-        let open = signal!(vec![true, false, false]);
+        let open = signal(vec![true, false, false]);
         ui! {
             Accordion(
                 expand = AccordionExpand::Single,
@@ -870,7 +870,7 @@ recipe!(
         use ::runtime_core::{signal, ui};
         use ::std::rc::Rc;
 
-        let plan = signal!("pro".to_string());
+        let plan = signal("pro".to_string());
         let on_change: Rc<dyn Fn(String)> = Rc::new(move |v| plan.set(v));
         ui! {
             RadioGroup(
@@ -898,7 +898,7 @@ recipe!(
         use ::runtime_core::{signal, ui};
         use ::std::rc::Rc;
 
-        let selected = signal!(true);
+        let selected = signal(true);
         let on_select: Rc<dyn Fn()> = Rc::new(move || selected.set(true));
         ui! {
             Radio(
@@ -922,7 +922,7 @@ recipe!(
         use ::runtime_core::{signal, ui};
         use ::std::rc::Rc;
 
-        let bio = signal!(String::new());
+        let bio = signal(String::new());
         let on_change: Rc<dyn Fn(String)> = Rc::new(move |v| bio.set(v));
         ui! {
             Textarea(
@@ -955,7 +955,7 @@ recipe!(
         use ::std::rc::Rc;
 
         let trigger: Ref<PressableHandle> = Ref::new();
-        let open = signal!(false);
+        let open = signal(false);
         let on_open: Rc<dyn Fn()> = Rc::new(move || open.set(true));
         let close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
         ui! {
@@ -1080,7 +1080,7 @@ recipe!(
         use ::runtime_core::{signal, ui};
         use ::std::rc::Rc;
 
-        let dark = signal!(false);
+        let dark = signal(false);
         install_idea_theme_reactive(move || if dark.get() { dark_theme() } else { light_theme() });
 
         let toggle: Rc<dyn Fn()> = Rc::new(move || dark.set(!dark.get()));

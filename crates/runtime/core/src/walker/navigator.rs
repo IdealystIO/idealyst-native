@@ -484,14 +484,20 @@ pub(super) fn build<B: Backend + 'static>(
         // URL in the SDK handler layer (deferred mount).
         let (route, params) = primitives::navigator::peek_initial_path()
             .and_then(|path| {
-                resolve_entry_for_initial(&path).map(|(name, params, _rem)| {
-                    // Compose the matched screen's FULL hierarchical path
-                    // (base + this navigator's matched relative pattern) so
-                    // chrome reads the right route. The resolver gives us the
-                    // route name; reconstruct the relative path from its pattern.
-                    let rel = screens.get(name).map(|e| e.path).unwrap_or("");
+                resolve_entry_for_initial(&path).map(|(name, params, rem)| {
+                    // Mirror the matched screen's FULL hierarchical path so
+                    // chrome reads the right route — as the CONCRETE slice of
+                    // the launch URL the resolver consumed (peeked path minus
+                    // its unconsumed remainder), NOT a reconstruction from the
+                    // registered pattern. The pattern keeps `:param`
+                    // placeholders, so `/items/123` would mirror as the
+                    // literal `/items/:id`; an app echoing `active_path` into
+                    // the browser URL then persists the pattern, and the next
+                    // refresh fails param parsing. In-app navigation already
+                    // mirrors the concrete URL (Select/Push go through
+                    // `params.to_path`) — this keeps cold start consistent.
                     nav_state.active_route.set(name);
-                    nav_state.active_path.set(join_path(&my_base, rel));
+                    nav_state.active_path.set(primitives::navigator::consumed_prefix(&path, &rem));
                     (name, params)
                 })
             })

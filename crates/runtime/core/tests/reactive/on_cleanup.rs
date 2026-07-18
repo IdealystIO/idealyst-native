@@ -14,7 +14,7 @@ use runtime_core::{on_cleanup, signal, watch, Signal};
 /// Cleanup fires before the effect's next re-run.
 #[test]
 fn cleanup_fires_before_re_run() {
-    let trigger: Signal<i32> = signal!(0);
+    let trigger: Signal<i32> = signal(0);
     let trace: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
 
     let trace_for_effect = trace.clone();
@@ -70,7 +70,7 @@ fn cleanup_fires_on_effect_drop() {
 /// re-run, in LIFO order (last-registered first).
 #[test]
 fn multiple_cleanups_fire_in_lifo_order() {
-    let trigger: Signal<i32> = signal!(0);
+    let trigger: Signal<i32> = signal(0);
     let order: Rc<RefCell<Vec<u32>>> = Rc::new(RefCell::new(Vec::new()));
 
     let order_for_effect = order.clone();
@@ -101,7 +101,7 @@ fn multiple_cleanups_fire_in_lifo_order() {
 /// run before N+2 or on disposal.
 #[test]
 fn cleanup_does_not_double_fire() {
-    let trigger: Signal<i32> = signal!(0);
+    let trigger: Signal<i32> = signal(0);
     let counter: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
 
     let counter_for_effect = counter.clone();
@@ -134,7 +134,7 @@ fn cleanup_does_not_double_fire() {
 /// pins the standalone-handle behavior.
 #[test]
 fn nested_effect_outside_scope_drops_at_block_end() {
-    let parent_trigger: Signal<i32> = signal!(0);
+    let parent_trigger: Signal<i32> = signal(0);
     let nested_cleanups: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
 
     let nested_for_effect = nested_cleanups.clone();

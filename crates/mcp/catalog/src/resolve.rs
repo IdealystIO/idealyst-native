@@ -622,6 +622,7 @@ fn utility_category_from_str(s: &str) -> UtilityCategory {
         "theme" => UtilityCategory::Theme,
         "layout" => UtilityCategory::Layout,
         "math" => UtilityCategory::Math,
+        "reactive" => UtilityCategory::Reactive,
         _ => UtilityCategory::Platform,
     }
 }

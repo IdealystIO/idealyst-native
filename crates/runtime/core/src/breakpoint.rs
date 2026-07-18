@@ -51,7 +51,7 @@
 
 use std::cell::OnceCell;
 
-use crate::{memo, viewport_size, Signal, ViewportSize};
+use crate::{memo, viewport_size, ViewportSize};
 
 /// Categorical width bucket. Use this enum, not raw pixel
 /// comparisons, so the breakpoint definition lives in one place.
@@ -199,7 +199,7 @@ thread_local! {
     /// Memoized `Signal<Breakpoint>` derived from [`crate::viewport_size`].
     /// Lazily initialized on first `current_breakpoint()` call so apps
     /// that never read the hook don't pay for the memo effect.
-    static MEMO: OnceCell<Signal<Breakpoint>> = const { OnceCell::new() };
+    static MEMO: OnceCell<crate::reactive::ReadSignal<Breakpoint>> = const { OnceCell::new() };
 }
 
 /// Install a custom breakpoint table. Idempotent — first call wins.
@@ -235,7 +235,7 @@ pub fn breakpoints() -> Breakpoints {
 /// On platforms where the active backend doesn't push a viewport
 /// value (yet — see [`crate::viewport_size`] for the wired-up list),
 /// the signal stays at `Breakpoint::Xs` (width 0).
-pub fn current_breakpoint() -> Signal<Breakpoint> {
+pub fn current_breakpoint() -> crate::reactive::ReadSignal<Breakpoint> {
     MEMO.with(|cell| {
         *cell.get_or_init(|| {
             let table = breakpoints();

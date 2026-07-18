@@ -4,7 +4,7 @@
 //!
 //! ```ignore
 //! // Standalone Collapsible
-//! let open = signal!(false);
+//! let open = signal(false);
 //! ui! {
 //!     Collapsible(
 //!         title = "Advanced settings".into(),
@@ -19,7 +19,7 @@
 //! }
 //!
 //! // Accordion — single-open coordination
-//! let active = signal!(Some(0));
+//! let active = signal(Some(0));
 //! let on_change: Rc<dyn Fn(Option<usize>)> = Rc::new(move |v| active.set(v));
 //! ui! {
 //!     Accordion(
@@ -299,7 +299,7 @@ fn collapsible_body(
 /// regardless of the outer's max-height clamp.
 fn measured_body(value: Signal<bool>, duration_ms: u32, kids: Vec<Element>) -> Element {
     // Per-instance signals + handles.
-    let natural_height: Signal<f32> = signal!(0.0);
+    let natural_height: Signal<f32> = signal(0.0);
     let body_ref: Ref<ViewHandle> = Ref::new();
     let content_ref: Ref<ViewHandle> = Ref::new();
 
@@ -516,7 +516,7 @@ pub fn Accordion(props: AccordionProps) -> Element {
     let on_change = props.on_change;
     let n = props.items.len();
 
-    // Ensure `open` has the right length. Bare `signal!(vec![false; N])`
+    // Ensure `open` has the right length. Bare `signal(vec![false; N])`
     // is the canonical caller convention; this top-up handles the
     // default-empty case gracefully without panicking on out-of-bounds.
     let current_len = open_state.get().len();
@@ -532,7 +532,7 @@ pub fn Accordion(props: AccordionProps) -> Element {
         // open-vec entry, kept in sync via a one-way effect that
         // reads the vec and writes the per-item signal.
         let item_open: Signal<bool> =
-            signal!(open_state.get().get(idx).copied().unwrap_or(false));
+            signal(open_state.get().get(idx).copied().unwrap_or(false));
         // Scope-adopted: the Accordion's reactive scope owns this sync
         // effect and frees it on teardown (the handle drop is a no-op).
         // No `mem::forget` (a leak outside framework core).

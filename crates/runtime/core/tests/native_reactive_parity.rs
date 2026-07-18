@@ -60,7 +60,7 @@ fn regression_native_reactive_view_with_style_reapplies_on_signal() {
     let rt = TestRuntime::new();
     let on = sheet_with_bg("#aaa");
     let off = sheet_with_bg("#bbb");
-    let ranked: Signal<bool> = signal!(false);
+    let ranked: Signal<bool> = signal(false);
 
     let on_c = on.clone();
     let off_c = off.clone();
@@ -98,7 +98,7 @@ fn regression_native_reactive_pressable_with_style_reapplies_on_signal() {
     let rt = TestRuntime::new();
     let on = sheet_with_bg("#aaa");
     let off = sheet_with_bg("#bbb");
-    let selected: Signal<bool> = signal!(false);
+    let selected: Signal<bool> = signal(false);
 
     let on_c = on.clone();
     let off_c = off.clone();
@@ -142,7 +142,7 @@ fn pressable_with_reactive_style(
 #[test]
 fn regression_native_reactive_text_content_updates_on_signal() {
     let rt = TestRuntime::new();
-    let pos: Signal<Option<usize>> = signal!(None);
+    let pos: Signal<Option<usize>> = signal(None);
 
     let _owner = rt.render(
         text(move || match pos.get() {

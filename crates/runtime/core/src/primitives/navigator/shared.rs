@@ -742,6 +742,25 @@ pub fn match_prefix(path: &str, pattern: &str) -> Option<(HashMap<String, String
     Some((out, remainder))
 }
 
+/// The concrete prefix of `path` that a [`match_prefix`] resolution
+/// consumed: `path` minus the trailing `remainder` segments, normalized
+/// (leading slash, no empty segments; `/` when nothing was consumed).
+///
+/// Use this — not the registered pattern — when mirroring a matched URL
+/// into `active_path`: the pattern still contains `:param` placeholders,
+/// so reconstructing from it leaks a literal `:id` into the path mirror
+/// on parameterized deep links.
+pub fn consumed_prefix(path: &str, remainder: &str) -> String {
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let rem_count = remainder.split('/').filter(|s| !s.is_empty()).count();
+    let consumed = &segs[..segs.len().saturating_sub(rem_count)];
+    if consumed.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", consumed.join("/"))
+    }
+}
+
 /// Match `path` against `pattern` requiring a FULL match (no leftover
 /// segments). Returns `Some(map)` when segment counts agree and every
 /// literal segment matches case-sensitively; `:placeholder` segments
@@ -758,7 +777,7 @@ pub fn match_pattern(path: &str, pattern: &str) -> Option<HashMap<String, String
 
 #[cfg(test)]
 mod matcher_tests {
-    use super::{join_path, match_pattern, match_prefix};
+    use super::{consumed_prefix, join_path, match_pattern, match_prefix};
 
     #[test]
     fn join_path_composes_base_and_relative() {
@@ -805,6 +824,20 @@ mod matcher_tests {
         assert!(match_prefix("/encounters", "/encounters/:id").is_none());
         // Literal segment differs.
         assert!(match_prefix("/patients/abc", "/encounters/:id").is_none());
+    }
+
+    #[test]
+    fn consumed_prefix_is_concrete_not_pattern() {
+        // Parameterized full match: the whole concrete path was consumed.
+        let (_, rem) = match_prefix("/items/123", "/items/:id").expect("matches");
+        assert_eq!(consumed_prefix("/items/123", &rem), "/items/123");
+        // Partial match: the remainder's segments are stripped from the end.
+        let (_, rem) = match_prefix("/encounters/abc/notes", "/encounters/:id").expect("matches");
+        assert_eq!(consumed_prefix("/encounters/abc/notes", &rem), "/encounters/abc");
+        // Nothing consumed (index route at root): normalized to "/".
+        assert_eq!(consumed_prefix("/a/b", "/a/b"), "/");
+        // Slash tolerance in the input path.
+        assert_eq!(consumed_prefix("/items/123/", ""), "/items/123");
     }
 
     #[test]

@@ -14,7 +14,7 @@ use widgets::{title, TitleProps};
 
 #[component]
 pub fn app() -> Element {
-    let count: Signal<i32> = signal!(0_i32);
+    let count: Signal<i32> = signal(0_i32);
 
     ui! {
         Stack(padding = StackPadding::Lg, gap = StackGap::Md) {

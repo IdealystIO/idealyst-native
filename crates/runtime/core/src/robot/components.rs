@@ -1,6 +1,6 @@
 //! Component-method registry — companion to the element registry.
 //!
-//! When a `#[component]` body declares a `methods! { ... }` block, the
+//! When a `#[component]` body declares `#[method]` fns, the
 //! macro generates an imperative `Handle` (e.g. `CounterHandle { reset,
 //! bump_by }`) plus a registration call that lands a JSON-callable
 //! wrapper for each method here. The robot bridge exposes the registry
@@ -28,7 +28,7 @@ pub struct ComponentInstanceId(pub u32);
 /// One method exposed by a component. Built by the `#[component]`
 /// macro; consumed by `register_component`.
 pub struct Method {
-    /// Method name as written in `methods! { fn NAME(...) }`.
+    /// Method name as written on the `#[method] fn NAME(...)`.
     pub name: &'static str,
     /// Arguments in declaration order: `(name, rust_type_string)`.
     /// The type string is the source-form of the declared type

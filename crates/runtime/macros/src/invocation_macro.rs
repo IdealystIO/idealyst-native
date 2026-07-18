@@ -110,7 +110,7 @@ pub(crate) fn generate_build_impl(item_fn: &ItemFn, attr: &ComponentAttr) -> Tok
                 // Coerce via `IntoElement` so a component returning a richer
                 // type than bare `Element` still satisfies `-> Element`:
                 // identity for `Element`, `.primitive` for `Bound`/`Bindable`
-                // (a `methods!` component returns `Bindable<Handle>`). The tag
+                // (a legacy-props `#[method]` component returns `Bindable<Handle>`). The tag
                 // form drops the handle — use the fn-call form to `.bind` it.
                 ::runtime_core::IntoElement::into_element(#fn_name(#amp self))
             }

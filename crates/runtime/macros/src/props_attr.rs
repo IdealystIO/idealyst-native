@@ -47,7 +47,7 @@ const SKIP: &[&str] = &[
     // wrapping it in Reactive is never what's wanted; override with
     // `#[prop(reactive)]` in the rare case)
     // reactive sources (idempotent)
-    "Signal", "Reactive", "Rx", // imperative handles
+    "Signal", "ReadSignal", "WriteSignal", "Reactive", "Rx", // imperative handles
     "Ref", "Bound", "Bindable", "RefFill", "Action", // children / collections
     "Element", "ChildList", "Vec", "HashMap", "BTreeMap", "HashSet",
     // misc non-data
@@ -105,7 +105,8 @@ pub(crate) fn emit(item: TokenStream2) -> TokenStream2 {
 /// non-reactive-data shape. Syntactic (the macro has tokens, not resolved
 /// types) — the same heuristic class as `.get()`-sniffing; a type alias
 /// hiding a skip-shape slips through and is corrected with `#[prop(static)]`.
-fn should_wrap(ty: &Type) -> bool {
+/// Shared with `inline_props` so inline fn parameters wrap by the same rule.
+pub(crate) fn should_wrap(ty: &Type) -> bool {
     match ty {
         Type::Path(tp) => {
             let Some(seg) = tp.path.segments.last() else {
@@ -179,6 +180,22 @@ mod tests {
         assert!(out.contains("handle:Ref<H>"), "{out}");
         assert!(out.contains("live:Signal<i32>"), "{out}");
         assert!(!out.contains("Reactive"), "no data field to wrap: {out}");
+    }
+
+    #[test]
+    fn skips_read_and_write_signal_halves() {
+        // The capability halves are already reactive sources — wrapping
+        // one in `Reactive<…>` would be as meaningless as wrapping a
+        // `Signal` (and would break `.get()` in the component body).
+        let out = rendered(quote! {
+            struct P {
+                items: ReadSignal<Vec<Row>>,
+                report: WriteSignal<f32>,
+            }
+        });
+        assert!(out.contains("items:ReadSignal<Vec<Row>>"), "{out}");
+        assert!(out.contains("report:WriteSignal<f32>"), "{out}");
+        assert!(!out.contains("Reactive"), "halves must stay unwrapped: {out}");
     }
 
     #[test]

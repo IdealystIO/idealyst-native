@@ -492,7 +492,7 @@ primitive leave the trait default — which returns a no-op handle
 (backed by `Rc::new(())`). The author's `handle.focus()` call
 silently does nothing on that platform.
 
-User components declared with `#[component] + methods! { … }` get a
+User components declared with `#[component]` + `#[method]` fns get a
 parallel system: the macro generates a handle struct and the
 component's parent can drive it through `Ref<MyHandle>` the same way.
 

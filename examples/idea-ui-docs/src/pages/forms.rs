@@ -28,16 +28,16 @@ pub fn checkbox() -> Element {
     // A standing-on / standing-off pair for the States row plus a disabled
     // mock (idea-ui's Checkbox has no `disabled` prop, so we dim a static
     // checked box to show the intent).
-    let off = signal!(false);
+    let off = signal(false);
     let on_off: Rc<dyn Fn(bool)> = Rc::new(move |v| off.set(v));
-    let on = signal!(true);
+    let on = signal(true);
     let on_on: Rc<dyn Fn(bool)> = Rc::new(move |v| on.set(v));
 
-    let agree = signal!(false);
+    let agree = signal(false);
     let on_agree: Rc<dyn Fn(bool)> = Rc::new(move |v| agree.set(v));
-    let subscribe = signal!(true);
+    let subscribe = signal(true);
     let on_sub: Rc<dyn Fn(bool)> = Rc::new(move |v| subscribe.set(v));
-    let favorite = signal!(true);
+    let favorite = signal(true);
     let on_fav: Rc<dyn Fn(bool)> = Rc::new(move |v| favorite.set(v));
 
     body(vec![ui! {
@@ -66,7 +66,7 @@ pub fn checkbox() -> Element {
                     Checkbox(label = Some("Custom icon (star)".to_string()), value = favorite, on_change = on_fav, tone = tone::Warning, icon = Some(STAR))
                 }
             }
-            CodePanel(src = r##"let agree = signal!(false);
+            CodePanel(src = r##"let agree = signal(false);
 let on_agree: Rc<dyn Fn(bool)> = Rc::new(move |v| agree.set(v));
 
 ui! {
@@ -97,10 +97,10 @@ ui! {
 // =============================================================================
 
 pub fn radio() -> Element {
-    let plan = signal!("pro".to_string());
+    let plan = signal("pro".to_string());
     let on_plan: Rc<dyn Fn(String)> = Rc::new(move |id| plan.set(id));
 
-    let billing = signal!("monthly".to_string());
+    let billing = signal("monthly".to_string());
     let on_billing: Rc<dyn Fn(String)> = Rc::new(move |id| billing.set(id));
 
     let current = runtime_core::switch(
@@ -132,7 +132,7 @@ pub fn radio() -> Element {
                     current
                 }
             }
-            CodePanel(src = r##"let plan = signal!("pro".to_string());
+            CodePanel(src = r##"let plan = signal("pro".to_string());
 let on_plan: Rc<dyn Fn(String)> = Rc::new(move |id| plan.set(id));
 
 ui! {
@@ -190,23 +190,23 @@ ui! {
 // =============================================================================
 
 pub fn switch() -> Element {
-    let sm = signal!(true);
+    let sm = signal(true);
     let on_sm: Rc<dyn Fn(bool)> = Rc::new(move |v| sm.set(v));
-    let md = signal!(true);
+    let md = signal(true);
     let on_md: Rc<dyn Fn(bool)> = Rc::new(move |v| md.set(v));
-    let lg = signal!(false);
+    let lg = signal(false);
     let on_lg: Rc<dyn Fn(bool)> = Rc::new(move |v| lg.set(v));
 
-    let t_primary = signal!(true);
+    let t_primary = signal(true);
     let on_t_primary: Rc<dyn Fn(bool)> = Rc::new(move |v| t_primary.set(v));
-    let t_success = signal!(true);
+    let t_success = signal(true);
     let on_t_success: Rc<dyn Fn(bool)> = Rc::new(move |v| t_success.set(v));
-    let t_danger = signal!(true);
+    let t_danger = signal(true);
     let on_t_danger: Rc<dyn Fn(bool)> = Rc::new(move |v| t_danger.set(v));
 
-    let wifi = signal!(true);
+    let wifi = signal(true);
     let on_wifi: Rc<dyn Fn(bool)> = Rc::new(move |v| wifi.set(v));
-    let bluetooth = signal!(false);
+    let bluetooth = signal(false);
     let on_bt: Rc<dyn Fn(bool)> = Rc::new(move |v| bluetooth.set(v));
 
     body(vec![ui! {
@@ -267,12 +267,12 @@ pub fn switch() -> Element {
 // =============================================================================
 
 pub fn slider() -> Element {
-    let volume = signal!(0.5f32);
+    let volume = signal(0.5f32);
     let on_volume: Rc<dyn Fn(f32)> = Rc::new(move |v| volume.set(v));
 
-    let t_primary = signal!(0.4f32);
+    let t_primary = signal(0.4f32);
     let on_t_primary: Rc<dyn Fn(f32)> = Rc::new(move |v| t_primary.set(v));
-    let t_success = signal!(0.7f32);
+    let t_success = signal(0.7f32);
     let on_t_success: Rc<dyn Fn(f32)> = Rc::new(move |v| t_success.set(v));
 
     let readout = runtime_core::switch(
@@ -296,7 +296,7 @@ pub fn slider() -> Element {
                     Slider(value = volume, on_change = on_volume.clone(), tone = tone::Primary, leading_icon = Some(HEART), trailing_icon = Some(STAR))
                 }
             }
-            CodePanel(src = r##"let volume = signal!(0.5_f32);
+            CodePanel(src = r##"let volume = signal(0.5_f32);
 let on_volume: Rc<dyn Fn(f32)> = Rc::new(move |v| volume.set(v));
 
 ui! {
@@ -341,14 +341,14 @@ ui! {
 // =============================================================================
 
 pub fn field() -> Element {
-    let email = signal!(String::new());
+    let email = signal(String::new());
     let on_email: Rc<dyn Fn(String)> = Rc::new(move |s| email.set(s));
 
-    let query = signal!(String::new());
+    let query = signal(String::new());
     let on_query: Rc<dyn Fn(String)> = Rc::new(move |s| query.set(s));
 
     // Size demo — one shared value across the three densities.
-    let sized = signal!(String::new());
+    let sized = signal(String::new());
     let on_sized: Rc<dyn Fn(String)> = Rc::new(move |s| sized.set(s));
 
     // Password + visibility toggle. `secure` is now reactive, so there is NO
@@ -356,8 +356,8 @@ pub fn field() -> Element {
     // in-place secure-cell swap), the input is never rebuilt, and the typed
     // `pw` is never disturbed. Only the tiny eye icon swaps, in its own
     // reactive scope inside the trailing adornment.
-    let pw = signal!(String::new());
-    let visible = signal!(false);
+    let pw = signal(String::new());
+    let visible = signal(false);
     let on_pw: Rc<dyn Fn(String)> = Rc::new(move |s| pw.set(s));
     let pw_field = ui! {
         Field(
@@ -378,7 +378,7 @@ pub fn field() -> Element {
         )
     };
 
-    let validated = signal!(String::new());
+    let validated = signal(String::new());
     let on_validated: Rc<dyn Fn(String)> = Rc::new(move |s| validated.set(s));
     // Live validation: the Field flips to the Danger tone automatically when
     // `error` is Some.
@@ -402,7 +402,7 @@ pub fn field() -> Element {
                     help = Some("We'll never share your email.".to_string()),
                 )
             }
-            CodePanel(src = r##"let email = signal!("".to_string());
+            CodePanel(src = r##"let email = signal("".to_string());
 let on_email: Rc<dyn Fn(String)> = Rc::new(move |s| email.set(s));
 
 ui! {
@@ -429,7 +429,7 @@ ui! {
                     error = error,
                 )
             }
-            CodePanel(src = r##"let email = signal!("".to_string());
+            CodePanel(src = r##"let email = signal("".to_string());
 let error = rx!(if email.get().contains('@') { None } else { Some("Invalid email".into()) });
 
 ui! {
@@ -494,8 +494,8 @@ ui! {
             DemoSurface {
                 pw_field
             }
-            CodePanel(src = r##"let pw = signal!("".to_string());
-let visible = signal!(false);
+            CodePanel(src = r##"let pw = signal("".to_string());
+let visible = signal(false);
 
 ui! {
     Field(
@@ -537,10 +537,10 @@ ui! {
 // =============================================================================
 
 pub fn textarea() -> Element {
-    let bio = signal!(String::new());
+    let bio = signal(String::new());
     let on_bio: Rc<dyn Fn(String)> = Rc::new(move |s| bio.set(s));
 
-    let note = signal!(String::new());
+    let note = signal(String::new());
     let on_note: Rc<dyn Fn(String)> = Rc::new(move |s| note.set(s));
 
     // Live character count helper, derived from the bound value.
@@ -612,7 +612,7 @@ pub fn textarea() -> Element {
 // =============================================================================
 
 pub fn select() -> Element {
-    let value = signal!("pear".to_string());
+    let value = signal("pear".to_string());
     let on_change: Rc<dyn Fn(String)> = Rc::new(move |v| value.set(v));
 
     let current = runtime_core::switch(
@@ -679,10 +679,10 @@ pub fn select() -> Element {
 pub fn segmented_control() -> Element {
     // "With icons" — SegmentOption.label is a string, so prefix glyphs in the
     // label to convey the icon-and-text segmented picker shape.
-    let view = signal!("list".to_string());
+    let view = signal("list".to_string());
     let on_view: Rc<dyn Fn(String)> = Rc::new(move |v| view.set(v));
 
-    let theme = signal!("system".to_string());
+    let theme = signal("system".to_string());
     let on_theme: Rc<dyn Fn(String)> = Rc::new(move |v| theme.set(v));
 
     let current = runtime_core::switch(
@@ -713,7 +713,7 @@ pub fn segmented_control() -> Element {
                     current
                 }
             }
-            CodePanel(src = r##"let view = signal!("list".to_string());
+            CodePanel(src = r##"let view = signal("list".to_string());
 let on_change: Rc<dyn Fn(String)> = Rc::new(move |v| view.set(v));
 
 ui! {

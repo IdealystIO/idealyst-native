@@ -24,7 +24,7 @@
 //!   the dead `EffectId` from every `Signal` it had read.
 
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
 // FxHashMap/FxHashSet are SipHash-free HashMap/HashSet aliases using rustc's
 // FxHasher. Every collection here is keyed by an internal Signal/Effect integer
@@ -724,8 +724,8 @@ where
 /// see [`memo_with`].
 ///
 /// ```ignore
-/// let first = signal!("Jane".to_string());
-/// let last = signal!("Doe".to_string());
+/// let first = signal("Jane".to_string());
+/// let last = signal("Doe".to_string());
 /// let full = memo(move || format!("{} {}", first.get(), last.get()));
 ///
 /// // Anywhere a Signal<String> works:
@@ -797,8 +797,23 @@ where
 /// in several places or is expensive to compute — the work runs once
 /// per dependency change, not once per read. For a value without
 /// `PartialEq`, or a custom "close enough" comparison, use
-/// [`memo_with`]. The `memo!` macro is the terse call-site form.
-pub fn memo<T>(f: impl Fn() -> T + 'static) -> Signal<T>
+/// [`memo_with`]. For a cheap one-off derivation, a plain closure or
+/// `rx!` is lighter.
+///
+/// ```ignore
+/// let count = signal(0);
+/// let doubled = memo(move || count.get() * 2);
+/// // `doubled` is a Signal<i32>; reads stay cached until `count` changes.
+/// ```
+///
+/// This plain fn is the canonical form (the historical `memo!` macro was
+/// removed — the author already writes the closure, so there was no
+/// token work left to justify a macro; contrast `effect!`, which implies
+/// `move` over a bare block).
+///
+/// Returns the READ half only ([`ReadSignal`]): a memo is a pure
+/// derivation, so its output is not writable at the type level.
+pub fn memo<T>(f: impl Fn() -> T + 'static) -> ReadSignal<T>
 where
     T: Clone + PartialEq + 'static,
 {
@@ -809,7 +824,7 @@ where
 /// for types that don't impl `PartialEq` (e.g. when `T` contains a
 /// trait object) or when "equal enough to skip notification" doesn't
 /// match `PartialEq` (e.g. tolerance-based float comparison).
-pub fn memo_with<T, F, E>(eq: E, f: F) -> Signal<T>
+pub fn memo_with<T, F, E>(eq: E, f: F) -> ReadSignal<T>
 where
     T: Clone + 'static,
     F: Fn() -> T + 'static,
@@ -868,7 +883,12 @@ where
     // (the returned handle is `Copy` with no `Drop`).
     e.persist();
 
-    signal
+    // Hand out only the read half: a memo is a pure derivation, and a
+    // writable output invited a heisenbug — an author `.set()` "worked"
+    // until the next dependency change silently clobbered it. The
+    // internal `signal` binding above keeps the write capability for the
+    // derivation effect itself.
+    signal.read_only()
 }
 
 // =============================================================================
@@ -1016,10 +1036,149 @@ pub fn on_cleanup<F: FnOnce() + 'static>(f: F) {
 /// inside `f` will return their current value without subscribing the
 /// enclosing effect.
 pub fn untrack<R, F: FnOnce() -> R>(f: F) -> R {
+    // Bump the user-intent depth so the snapshot-read diagnostic stays
+    // quiet inside: `untrack` is the author (or a framework read path)
+    // explicitly declaring "no subscription wanted". The WALKER's
+    // build-region untrack (`untrack_for_build`) deliberately does NOT
+    // bump it — see that fn for why.
+    USER_UNTRACK_DEPTH.with(|d| d.set(d.get() + 1));
+    let prev = CURRENT.with(|c| c.borrow_mut().take());
+    let result = f();
+    CURRENT.with(|c| *c.borrow_mut() = prev);
+    USER_UNTRACK_DEPTH.with(|d| d.set(d.get() - 1));
+    result
+}
+
+/// Walker-internal variant of [`untrack`] for build regions (`when`/
+/// `switch`/`each`/`dynamic`/`presence` branch construction). Clears the
+/// tracking context like `untrack` but does NOT count as declared
+/// snapshot intent — component bodies rebuilt inside these regions must
+/// still trip the untracked-build-read diagnostic (the hoisted-snapshot
+/// trap is just as much a bug inside a `when` branch as at the root; a
+/// plain `untrack` here would have silenced it exactly there).
+pub(crate) fn untrack_for_build<R, F: FnOnce() -> R>(f: F) -> R {
     let prev = CURRENT.with(|c| c.borrow_mut().take());
     let result = f();
     CURRENT.with(|c| *c.borrow_mut() = prev);
     result
+}
+
+// =============================================================================
+// Untracked-build-read diagnostic (the hoisted-snapshot trap)
+// =============================================================================
+//
+// `let too_short = name.get().len() < 3;` at component-body level runs
+// once and freezes — but LOOKS reactive. The macros can't catch it (they
+// can't see types, and a snapshot is a legitimate idiom elsewhere), so
+// the runtime does, where types are resolved: `#[component]` brackets
+// every body with a build probe, and `Signal::get` warns when a read
+// happens (a) during a component build, (b) with no tracked consumer
+// (`CURRENT` empty, not in a memo compute), and (c) without declared
+// snapshot intent (`untrack` / `.get_untracked()`). Same mechanism as
+// MobX's `observableRequiresReaction` and Leptos's outside-tracking
+// warning. Debug builds only; release compiles to nothing.
+
+thread_local! {
+    /// Depth of user-intent [`untrack`] calls (also bumped by internal
+    /// read paths that use `untrack` — those are intentional untracked
+    /// reads too). Distinct from the walker's `untrack_for_build`.
+    static USER_UNTRACK_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+#[cfg(debug_assertions)]
+thread_local! {
+    /// Names of `#[component]` bodies currently executing (innermost
+    /// last). Pushed/popped by [`ComponentBuildProbe`].
+    static COMPONENT_BUILD_STACK: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
+    /// Dedup + test-observation record: (component name, signal id)
+    /// pairs already warned this thread.
+    static SNAPSHOT_WARNINGS: RefCell<(
+        std::collections::HashSet<(usize, u64)>,
+        Vec<(&'static str, u64)>,
+    )> = RefCell::new((std::collections::HashSet::new(), Vec::new()));
+}
+
+/// RAII marker for "a `#[component]` body is executing". Emitted by the
+/// `#[component]` macro at the top of every body; do not construct by
+/// hand.
+#[doc(hidden)]
+pub struct ComponentBuildProbe {
+    #[cfg(debug_assertions)]
+    _priv: (),
+}
+
+#[doc(hidden)]
+#[inline]
+pub fn __component_build_probe(name: &'static str) -> ComponentBuildProbe {
+    #[cfg(debug_assertions)]
+    {
+        COMPONENT_BUILD_STACK.with(|s| s.borrow_mut().push(name));
+        return ComponentBuildProbe { _priv: () };
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = name;
+        ComponentBuildProbe {}
+    }
+}
+
+impl Drop for ComponentBuildProbe {
+    fn drop(&mut self) {
+        #[cfg(debug_assertions)]
+        COMPONENT_BUILD_STACK.with(|s| {
+            s.borrow_mut().pop();
+        });
+    }
+}
+
+/// The diagnostic itself — called from `Signal::get` in debug builds.
+/// Warns once per (component, signal) pair.
+#[cfg(debug_assertions)]
+fn maybe_warn_untracked_build_read(signal_id: u64) {
+    // Tracked consumer running → this read subscribes; not a snapshot.
+    if CURRENT.with(|c| c.borrow().is_some()) {
+        return;
+    }
+    // Declared intent (user `untrack` / `.get_untracked()` / internal
+    // untracked read paths) or a memo compute (deps tracked by the memo's
+    // own effect) → quiet.
+    if USER_UNTRACK_DEPTH.with(|d| d.get()) > 0 || MEMO_COMPUTE_DEPTH.with(|d| d.get()) > 0 {
+        return;
+    }
+    let Some(component) = COMPONENT_BUILD_STACK.with(|s| s.borrow().last().copied()) else {
+        // Not inside a component build (event handler, app init, …) —
+        // an untracked read there is normal imperative code.
+        return;
+    };
+    let fresh = SNAPSHOT_WARNINGS.with(|w| {
+        let (seen, log) = &mut *w.borrow_mut();
+        if seen.insert((component.as_ptr() as usize, signal_id)) {
+            log.push((component, signal_id));
+            true
+        } else {
+            false
+        }
+    });
+    if fresh {
+        crate::log_warn!(
+            "[reactive] `.get()` during build of `{component}` outside any tracked \
+             context — this read is a one-time snapshot and will NEVER update \
+             (signal id {signal_id}). For a live derivation use `memo(move || …)` \
+             or read inside the binding closure; if the snapshot is intentional, \
+             use `.get_untracked()`."
+        );
+    }
+}
+
+/// Test/tooling hook: drain the warnings recorded so far on this thread.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub fn __take_untracked_build_read_warnings() -> Vec<(&'static str, u64)> {
+    SNAPSHOT_WARNINGS.with(|w| {
+        let (seen, log) = &mut *w.borrow_mut();
+        seen.clear();
+        std::mem::take(log)
+    })
 }
 
 /// Runs `f` with the active-scope stack temporarily emptied. Any
@@ -1178,8 +1337,23 @@ impl<T: Clone + 'static> Signal<T> {
         Self { id, gen, _phantom: PhantomData }
     }
 
+    /// Read the current value **without subscribing** — and, unlike a
+    /// bare `.get()` outside a tracked context, with the intent
+    /// DECLARED: this is the spelling for an intentional build-time
+    /// snapshot, and it silences the dev-build hoisted-snapshot
+    /// diagnostic. Leptos parity: same name, same semantics.
+    pub fn get_untracked(&self) -> T {
+        untrack(|| self.get())
+    }
+
     pub fn get(&self) -> T {
         let sid = self.id;
+        // Dev-build diagnostic: a `.get()` during a component build with
+        // no tracked consumer is a one-time snapshot — usually the
+        // hoisted-snapshot trap, occasionally intentional (then say
+        // `.get_untracked()`). Zero code in release builds.
+        #[cfg(debug_assertions)]
+        maybe_warn_untracked_build_read(sid.0 as u64);
         // Read the value first, generation-checked. `None` means the
         // signal's slot was freed (scope unmounted) — a stale read. We
         // deliberately do NOT record a subscription in that case (the
@@ -1430,6 +1604,142 @@ fn notify_js_subscriber(sid: SignalId) {
 /// associated signal's slot is freed (see `take_signals_batched`).
 /// Callers don't need to unregister manually unless they want to
 /// detach a notifier from a still-live signal.
+// =============================================================================
+// Read/write capability halves (ReadSignal / WriteSignal)
+// =============================================================================
+
+/// The read half of a [`Signal`] — same arena slot, same generational
+/// stale-safety, same `Copy` ergonomics, but the TYPE exposes only the
+/// tracked-read surface. Use it in a signature to prove the holder
+/// observes without mutating: a prop typed `ReadSignal<T>` cannot write
+/// the caller's state, and [`memo`] returns one so a derivation's output
+/// can't be injected over.
+///
+/// Obtained via [`Signal::read_only`] / [`Signal::split`] (or `.into()`).
+/// Deliberately a newtype with NO `Deref` to `Signal` — deref would hand
+/// the write half back and the capability split would be decorative.
+pub struct ReadSignal<T>(Signal<T>);
+
+/// The write half of a [`Signal`] — the mirror of [`ReadSignal`]: only
+/// the write surface, so a child handed a `WriteSignal<T>` can report
+/// values upward but can't read (and therefore can't accidentally
+/// subscribe itself). Obtained via [`Signal::write_only`] /
+/// [`Signal::split`].
+pub struct WriteSignal<T>(Signal<T>);
+
+// Manual Copy/Clone/Default mirroring `Signal`'s own impls — a derive
+// would add a spurious `T: Copy`/`T: Clone`/`T: Default` bound (the
+// handle is (id, gen); `T` is phantom).
+impl<T> Copy for ReadSignal<T> {}
+impl<T> Clone for ReadSignal<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T> Default for ReadSignal<T> {
+    fn default() -> Self {
+        ReadSignal(Signal::default())
+    }
+}
+impl<T> Copy for WriteSignal<T> {}
+impl<T> Clone for WriteSignal<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T> Default for WriteSignal<T> {
+    fn default() -> Self {
+        WriteSignal(Signal::default())
+    }
+}
+
+impl<T> ReadSignal<T> {
+    /// The underlying slot id — same value as the source signal's
+    /// [`Signal::id`], so id-keyed integrations (`text_fmt!` bindings,
+    /// robot watch) work with either handle.
+    pub fn id(&self) -> u64 {
+        self.0.id()
+    }
+}
+
+impl<T: Clone + 'static> ReadSignal<T> {
+    /// Tracked read — identical semantics to [`Signal::get`] (subscribes
+    /// the running effect, stale-slot panic rules unchanged).
+    pub fn get(&self) -> T {
+        self.0.get()
+    }
+
+    /// Untracked read with declared intent — see [`Signal::get_untracked`].
+    pub fn get_untracked(&self) -> T {
+        self.0.get_untracked()
+    }
+}
+
+impl<T> WriteSignal<T> {
+    /// The underlying slot id (see [`ReadSignal::id`]).
+    pub fn id(&self) -> u64 {
+        self.0.id()
+    }
+}
+
+impl<T: Clone + 'static> WriteSignal<T> {
+    /// Identical to [`Signal::set`] (including the stale-slot no-op).
+    pub fn set(&self, value: T) {
+        self.0.set(value);
+    }
+
+    /// Identical to [`Signal::update`].
+    pub fn update<F: FnOnce(&mut T)>(&self, f: F) {
+        self.0.update(f);
+    }
+}
+
+impl<T: PartialEq + 'static> WriteSignal<T> {
+    /// Identical to [`Signal::set_if_changed`].
+    pub fn set_if_changed(&self, value: T) {
+        self.0.set_if_changed(value);
+    }
+}
+
+impl<T: PartialEq + Clone + 'static> WriteSignal<T> {
+    /// Identical to [`Signal::update_if_changed`].
+    pub fn update_if_changed<F: FnOnce(&mut T)>(&self, f: F) {
+        self.0.update_if_changed(f);
+    }
+}
+
+impl<T> Signal<T> {
+    /// Split into read and write capability halves over the SAME slot —
+    /// the Leptos-transliterable form: `let (count, set_count) =
+    /// signal(0).split();`. The unified handle stays valid; the halves
+    /// are additional views, not a transfer.
+    pub fn split(self) -> (ReadSignal<T>, WriteSignal<T>) {
+        (ReadSignal(self), WriteSignal(self))
+    }
+
+    /// The read-only view of this signal (see [`ReadSignal`]).
+    pub fn read_only(self) -> ReadSignal<T> {
+        ReadSignal(self)
+    }
+
+    /// The write-only view of this signal (see [`WriteSignal`]).
+    pub fn write_only(self) -> WriteSignal<T> {
+        WriteSignal(self)
+    }
+}
+
+impl<T> From<Signal<T>> for ReadSignal<T> {
+    fn from(s: Signal<T>) -> Self {
+        ReadSignal(s)
+    }
+}
+
+impl<T> From<Signal<T>> for WriteSignal<T> {
+    fn from(s: Signal<T>) -> Self {
+        WriteSignal(s)
+    }
+}
+
 pub fn register_signal_js_notifier<F: Fn() + 'static>(signal_id_raw: u64, notifier: F) {
     ARENA.with(|a| {
         a.borrow_mut()
@@ -2009,7 +2319,7 @@ impl Effect {
     }
 }
 
-/// Internal entry point for the `methods!` codegen's component-registration
+/// Internal entry point for the `#[method]` codegen's component-registration
 /// keepalive — **not** an author API (the `#[component]` macro emits it).
 ///
 /// It exists because proc-macro output lands in user crates and can only

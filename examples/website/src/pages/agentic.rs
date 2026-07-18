@@ -16,7 +16,7 @@ pub fn page() -> Element {
     let toc = vec![
         TocEntry { handle: registry_ref, label: "The introspection registry" },
         TocEntry { handle: e2e_ref, label: "E2E test harnesses" },
-        TocEntry { handle: methods_ref, label: "methods! { ... }" },
+        TocEntry { handle: methods_ref, label: "#[method] fns" },
         TocEntry { handle: mcp_ref, label: "MCP server" },
         TocEntry { handle: build_ref, label: "Gated on a Cargo feature" },
     ];
@@ -78,34 +78,33 @@ fn e2e_tests() -> Element {
 }
 
 fn methods_macro() -> Element {
-    let snippet = "#[component]\npub fn Cart(props: &CartProps) -> Element {\n    \
-                       let items = signal!(Vec::<Item>::new());\n    \
+    let snippet = "#[component]\npub fn Cart() -> Element {\n    \
+                       let items = signal(Vec::<Item>::new());\n    \
                        \n    \
-                       methods! {\n        \
-                           fn add(item: Item) {\n            \
-                               items.update(|v| v.push(item));\n        \
-                           }\n        \
-                           fn clear() {\n            \
-                               items.set(Vec::new());\n        \
-                           }\n        \
-                           fn total() -> f64 {\n            \
-                               items.get().iter().map(|i| i.price).sum()\n        \
-                           }\n    \
+                       #[method]\n    \
+                       fn add(item: Item) {\n        \
+                           items.update(|v| v.push(item));\n    \
+                       }\n    \
+                       \n    \
+                       #[method]\n    \
+                       fn clear() {\n        \
+                           items.set(Vec::new());\n    \
                        }\n    \
                        \n    \
                        // ...the rest of the component\n\
                    }";
     let children: Vec<Element> = vec![
-        ui! { Typography(content = "`methods! { ... }`".to_string(), kind = idea_ui::typography_kind::H2) },
+        ui! { Typography(content = "`#[method]` fns".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
-            Typography(content = "Inside a `#[component]` body, a `methods! { ... }` block \
-                exposes named methods that the registry registers as JSON-callable. \
+            Typography(content = "Inside a `#[component]` body, nested fns marked `#[method]` \
+                become the component's imperative handle, registered as JSON-callable. \
+                Methods are commands (they return `()`); reads stay signals. \
                 External automation can invoke them by name without per-app glue.".to_string())
         },
         ui! { CodePanel(src = snippet) },
         ui! {
-            Typography(content = "The component's `cart.add(...)`, `cart.clear()`, and \
-                `cart.total()` are now callable from a Robot test, an IDE inspector, \
+            Typography(content = "The component's `cart.add(...)` and `cart.clear()` \
+                are now callable from a Robot test, an IDE inspector, \
                 or an LLM tool call \u{2014} same surface, three consumers.".to_string())
         },
     ];

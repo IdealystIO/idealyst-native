@@ -122,8 +122,8 @@ pub fn layout_with_toc(content: Element, entries: Vec<TocEntry>) -> Element {
     // longer publishes a scroll context). Drive `scroll_y` from the
     // page `scroll_view`'s `on_scroll` callback instead of reading
     // `ambient_scroll_context()`.
-    let scroll_y: Signal<f32> = signal!(0.0_f32);
-    let active_idx: Signal<Option<usize>> = signal!(None);
+    let scroll_y: Signal<f32> = signal(0.0_f32);
+    let active_idx: Signal<Option<usize>> = signal(None);
 
     // Geometry handles, all in WINDOW coordinates via
     // `ViewHandle::absolute_frame()`:

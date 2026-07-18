@@ -89,10 +89,47 @@ those events before the closures vanish.
 
 ## Components
 
+Props can be declared **inline** — as ordinary fn parameters — or as an
+explicit `#[props]` struct. Inline is the preferred form:
+
+```rust
+#[component]
+pub fn Badge(
+    /// Text shown inside the badge (hover docs at the call site).
+    label: String,
+    #[prop(default = 3)] count: i32,
+) -> Element {
+    // `label`/`count` arrive wrapped `Reactive<String>`/`Reactive<i32>`
+    // (same reactive-by-default rule as `#[props]` fields) — read with
+    // `.get()`. A call site can pass a literal, a `Signal`, or `rx!(…)`.
+    ui! {
+        text(move || format!("{} ({})", label.get(), count.get()))
+    }
+}
+```
+
+The macro generates `BadgeProps` from the parameter list — each data
+param `T` wrapped to `Reactive<T>`, with `Signal`/handler/`Ref`/
+`Vec<Element>` shapes left bare (the `#[props]` skip-list) — plus a
+`Default` impl carrying the `#[prop(default = …)]` values. Per-arg
+`#[prop(static)]` / `#[prop(reactive)]` override the wrap heuristic;
+`#[prop(optional)]` / `#[prop(into)]` are accepted no-ops (every prop is
+already optional, every value already coerced via `.into()`). A param
+named `children: Vec<Element>` receives the call site's `{ … }` block.
+Optional callbacks should use the `Option<Rc<dyn Fn()>>` shape (defaults
+to `None`); a bare `Rc<dyn Fn()>` param needs an explicit
+`#[prop(default = Rc::new(|| {}) as Rc<dyn Fn()>)]` since it has no
+`Default`.
+
+The explicit-struct form — one `props: &CounterProps` / `props:
+CounterProps` parameter referencing a hand-written `#[props]` struct —
+remains for components whose props need extra derives
+(`IdealystSchema`, doc-controls) or a hand-rolled `Default`:
+
 ```rust
 #[component]
 pub fn counter(props: &CounterProps) -> Element {
-    let count = signal!(0);
+    let count = signal(0);
     ui! {
         Button(label = "Inc", on_click = move || count.update(|n| *n += 1))
         Text { format!("Count: {}", count.get()) }
@@ -100,7 +137,8 @@ pub fn counter(props: &CounterProps) -> Element {
 }
 ```
 
-The `#[component]` attribute does three jobs:
+Both forms produce the identical dispatch contract; `ui!` cannot tell
+them apart. The `#[component]` attribute does three jobs:
 
 1. **Reactivity rewrite** — walks the function body and rewrites
    expressions that contain `.get()` (signal reads) into reactive
@@ -121,12 +159,17 @@ The `#[component]` attribute does three jobs:
    (A component's props must therefore be `Default`; omitted props take
    their default. `Ref`/`Signal` have non-allocating sentinel `Default`s
    so required handle props are supplied at the call site and overwrite
-   them.)
-3. **`methods!` block lifting** — if the body declares a `methods! {
-   fn ping(&self) { … } }` block, the macro generates a typed handle
-   struct (`CounterHandle` with a `ping()` method) plus the wiring so
-   `Ref<CounterHandle>` and `.bind(ref)` work on this component the
-   same way they work on primitives.
+   them. For inline props the macro generates the struct AND its
+   `Default` impl, folding the `#[prop(default = …)]` values in.)
+3. **`#[method]` fn lifting** — nested fns marked `#[method]` (no
+   `pub`, no `&self`, `()` returns only — commands, not queries) become
+   a typed handle struct (`CounterHandle` with a `ping()` method). The
+   macro auto-injects a `bind_to: Option<Ref<CounterHandle>>` prop and
+   fills it in-body, so the ordinary tag form binds:
+   `ui! { Counter(bind_to = h) }`, then `h.get().map(|c| c.ping())`
+   (`.get()`, not `.with()` — methods write signals). The legacy
+   explicit-props form instead returns `Bindable<CounterHandle>` for
+   fn-call `.bind()`.
 
 The author writes a function. The framework gets a Rust function (still
 callable normally), the `BuildElement` dispatch glue (used by the DSLs),
@@ -171,7 +214,7 @@ implemented `TextInputOps::focus` is a silent no-op rather than a
 build error — useful when you're filling in a new backend
 incrementally.
 
-User components declared with `#[component] + methods! { ... }` get
+User components declared with `#[component]` + `#[method]` fns get
 the same machinery: the macro generates a handle struct, and
 `#[component]`'s rewrite turns the function's return type into a
 `Bindable<MyHandle>` that supports `.bind(ref)` exactly like
@@ -407,7 +450,7 @@ If you want to:
 | --- | --- |
 | Add a new built-in primitive | New `Element` variant + walker arm in `runtime_core::lib`, plus a `create_*` / `update_*` method on `Backend` |
 | Add a new user-facing component | A `#[component] fn name(...) -> Element` in app code |
-| Add imperative methods on a component | A `methods! { fn foo(&self) { … } }` block inside the `#[component]` |
+| Add imperative methods on a component | `#[method] fn foo(…) { … }` nested fns inside the `#[component]` body |
 | Make a prop reactive | Wrap with a closure containing `.get()`; the constructor accepts `IntoTextSource` etc. or `Box<dyn Fn() -> T>` |
 | Add a new DSL | A new proc-macro that emits primitive / `name!` calls (see [`ui-layer.md` § DSLs](#dsls)) |
 | Add a new style property | A field on `StyleRules` + the matching `stylesheet!` grammar + a backend branch in `apply_style` |

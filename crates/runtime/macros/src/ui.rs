@@ -73,7 +73,7 @@
 //! pass through verbatim — we don't apply generalized `.into()` because
 //! of Rust inference fragility on non-literal types.
 
-use proc_macro2::{Span, Spacing, TokenStream as TokenStream2, TokenTree};
+use proc_macro2::{Delimiter, Span, Spacing, TokenStream as TokenStream2, TokenTree};
 use quote::{quote, ToTokens};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
@@ -545,7 +545,7 @@ enum Ctx {
     Single,
 }
 
-pub fn emit(ui: Ui) -> TokenStream2 {
+pub fn emit(ui: Ui, input: &TokenStream2) -> TokenStream2 {
     let body = match ui.elements.len() {
         0 => quote! { ::runtime_core::view(::std::vec::Vec::new()) },
         // Sole element: it is coerced to one `Element` below, so emit
@@ -563,7 +563,82 @@ pub fn emit(ui: Ui) -> TokenStream2 {
             }
         }
     };
-    quote! { ::runtime_core::IntoElement::into_element(#body) }
+    emit_shell(input, body)
+}
+
+/// Wrap an emission tail (the real build chain on the happy path, or the
+/// diagnostic + empty view on the recovery path) in the SHARED shell that
+/// carries the salvage closure.
+///
+/// Why the happy path carries a salvage copy at all: rust-analyzer's
+/// completion inside a macro call expands the buffer TWICE — once as
+/// written ("real") and once with a placeholder ident spliced at the
+/// cursor ("speculative") — and then resolves nodes of the speculative
+/// expansion against the real expansion's HIR **by text range**. That
+/// only works when the two expansions are textually aligned up to the
+/// cursor. A mid-typing state like a dangling `c.` above an existing
+/// statement token-glues into VALID code (`c.` + `c.reset()` ⇒
+/// `c.c.reset()`), so the real buffer takes the happy path while the
+/// speculative one hits recovery — two structurally unrelated expansions,
+/// and the receiver's range lands on an arbitrary expression of the real
+/// one (observed: dot-completion on a `CounterHandle` offering `Ref`
+/// methods, because the offset happened to cover `counter`). Emitting the
+/// SAME salvage closure, at the SAME offset, in BOTH paths restores the
+/// alignment for every (valid, mid-typing) buffer pair. Span line info
+/// can't help instead: rust-analyzer's proc-macro server reports 1:0 for
+/// every span (verified empirically), so the glue is undetectable at
+/// macro level.
+///
+/// The shell is emitted ONLY under an IDE-style expansion host (detected
+/// by [`host_has_no_span_lines`]): under real rustc the happy expansion
+/// is byte-identical to the pre-shell output. That keeps real builds
+/// clean three ways — no `unexpected_cfgs`-style lint games in consumer
+/// crates, no type-checking of the salvage copy (a `move` closure in the
+/// salvage would steal captures from the real chain and break VALID code
+/// with E0382), and no salvage noise in `cargo expand` or in the error
+/// output of genuinely broken builds. Flycheck runs rustc, so editor
+/// diagnostics never see the salvage either; rust-analyzer's own
+/// diagnostics don't include borrowck.
+///
+/// The diagnostic (recovery path) must come AFTER the closure: parse
+/// error messages differ between the real and speculative buffers, and a
+/// leading `compile_error!("…")` of a different length would shift every
+/// salvage offset — breaking the very alignment this shell exists for.
+pub(crate) fn emit_shell(input: &TokenStream2, rest: TokenStream2) -> TokenStream2 {
+    if !host_has_no_span_lines(input) {
+        return quote! { ::runtime_core::IntoElement::into_element(#rest) };
+    }
+    let salvaged = salvage_stmts(input.clone());
+    quote! {
+        ::runtime_core::IntoElement::into_element({
+            #[allow(unused, unreachable_code, clippy::all)]
+            let __ui_recover = || {
+                #( #salvaged )*
+            };
+            #rest
+        })
+    }
+}
+
+/// True when the expansion host provides no real span positions — the
+/// discriminator between rustc and IDE proc-macro servers. rust-analyzer's
+/// server reports a degenerate zero-width `1:0` (or `0:0`) for EVERY
+/// token span (verified empirically — which is also why a line-aware
+/// parse can't detect the `c.`-glues-with-next-line shape and this shell
+/// exists at all); under rustc ≥1.88 with proc-macro2's `span-locations`,
+/// real tokens carry real positions, and a multi-token input can never be
+/// all zero-width at column 0. proc-macro2's fallback spans (unit tests,
+/// non-rustc hosts) are degenerate the same way, so tests exercise the
+/// shell path. If rust-analyzer ever starts reporting real span lines,
+/// this returns false there and completion inside broken `ui!` bodies
+/// regresses to the bare-`compile_error!` baseline — revisit the gate
+/// (a `#[cfg(rust_analyzer)]` emission, which currently trips
+/// `unexpected_cfgs` in consumer crates, becomes the alternative).
+fn host_has_no_span_lines(input: &TokenStream2) -> bool {
+    input.clone().into_iter().all(|tt| {
+        let (s, e) = (tt.span().start(), tt.span().end());
+        s == e && s.line <= 1 && s.column == 0
+    })
 }
 
 /// Emit a *recovery* expansion for a `ui!`/`jsx!` body that failed to
@@ -571,41 +646,61 @@ pub fn emit(ui: Ui) -> TokenStream2 {
 ///
 /// 1. Re-emit the real `compile_error!` (with the parser's span) so the
 ///    build still fails with the correct diagnostic at the correct place.
-/// 2. Re-surface every complete sub-expression from the raw input in a
-///    dead-but-type-checked position, so rust-analyzer keeps full type
+/// 2. Re-surface as much of the raw input as possible in
+///    dead-but-type-checked positions, so rust-analyzer keeps full type
 ///    info (completion, hover, go-to-def) for the parts of the block that
 ///    *are* well-formed — i.e. everything except the token you're mid-way
 ///    through typing. Without this, a single in-progress expression turns
 ///    the entire `ui! { … }` into an opaque `compile_error!` and the IDE
 ///    goes dark for the whole block.
 ///
-/// The salvaged expressions live inside a never-called closure: they're
-/// borrow-checked but never executed, and `&(expr)` avoids moving out of
-/// the user's bindings. The whole thing still evaluates to an `Element`
-/// so the surrounding code type-checks as far as it can.
+/// Three salvage forms, matched to what completion needs per position:
 ///
-/// Everything emitted here is guaranteed-valid Rust syntax: `salvage`
-/// only keeps token runs that successfully parse as a `syn::Expr`. If it
-/// emitted unparseable tokens, rust-analyzer's own expansion of `ui!`
-/// would fail and we'd be worse off than the `compile_error!` baseline.
+/// - **Prop values** (`label = <expr>`): the RHS as a value expression —
+///   variable/method completion inside prop values.
+/// - **Component invocations** (`PascalTag(…)`): a STRUCT LITERAL over
+///   the tag (which aliases the props type) with every leading ident of
+///   the prop list as a `field: todo!()` entry — this is what makes
+///   rust-analyzer complete prop NAMES at `Counter(sta|)`, the single
+///   most common mid-typing state. See [`salvage_component_invocations`].
+/// - **Statement runs** (children blocks): iterated longest-valid-prefix
+///   expression salvage, so ONE broken child doesn't eat its siblings —
+///   bare exprs, half-typed tag names (value-position ident completion),
+///   primitive calls, and the conditions of `if`/`for`/`match` headers
+///   whose ui!-flavored bodies aren't valid Rust statements. See
+///   [`salvage_statement_run`].
+///
+/// The salvaged expressions live inside a never-called closure: they're
+/// analyzed but never executed, and `&(expr)` avoids moving out of
+/// the user's bindings. The whole thing still evaluates to an `Element`
+/// so the surrounding code type-checks as far as it can. The closure is
+/// emitted through [`emit_shell`] — shared with the HAPPY path — so the
+/// real and speculative expansions rust-analyzer compares stay textually
+/// aligned regardless of which path each buffer takes (see `emit_shell`
+/// for why that alignment is what makes completion resolve at all).
+///
+/// Everything emitted here is guaranteed-valid Rust syntax: salvage only
+/// keeps token runs that successfully parse as a `syn::Expr` (plus the
+/// synthesized struct literals, valid by construction). If it emitted
+/// unparseable tokens, rust-analyzer's own expansion of `ui!` would fail
+/// and we'd be worse off than the `compile_error!` baseline. Original
+/// token SPANS are preserved throughout (tokens are reused, never
+/// re-created) — that's what lets RA map completions back to the cursor.
 pub(crate) fn emit_recovery(input: TokenStream2, err: &syn::Error) -> TokenStream2 {
     let diag = err.to_compile_error();
-    let salvaged = salvage_exprs(input);
-    quote! {
-        ::runtime_core::IntoElement::into_element({
+    emit_shell(
+        &input,
+        quote! {
             #diag
-            #[allow(unused, unreachable_code, clippy::all)]
-            let __ui_recover = || {
-                #( let _ = &(#salvaged); )*
-            };
             ::runtime_core::view(::std::vec::Vec::new())
-        })
-    }
+        },
+    )
 }
 
-/// Walk a raw token stream and collect every complete prop-value /
-/// argument expression we can find, preserving spans. Used only by
-/// [`emit_recovery`].
+/// Walk a raw token stream and collect salvage STATEMENTS (most are
+/// `let _ = &(expr);` wrappers; `let` statements are preserved verbatim),
+/// preserving spans. Used by [`emit_shell`] for BOTH the happy and the
+/// recovery expansion.
 ///
 /// Strategy: within each token group, split on top-level commas. A
 /// segment shaped `ident = <tokens>` (a prop assignment — the lone `=`
@@ -616,10 +711,26 @@ pub(crate) fn emit_recovery(input: TokenStream2, err: &syn::Error) -> TokenStrea
 /// syntactically valid struct literal but semantically bogus (Card isn't
 /// a struct), and emitting it would inject spurious type errors that
 /// drown out the real completions.
-fn salvage_exprs(stream: TokenStream2) -> Vec<TokenStream2> {
+///
+/// PREFIX-STABILITY INVARIANT: because the happy and recovery paths both
+/// carry this salvage, and rust-analyzer resolves its speculative
+/// expansion against the real one BY TEXT RANGE, the salvage of two
+/// inputs that agree up to a position must agree in output up to that
+/// position. Every decomposition decision below is therefore made from
+/// the FRONT of the token run — never by whether some enclosing run
+/// happens to parse as a whole (which would let tokens after the cursor
+/// change output before it). That's why control-flow headers and bare
+/// calls decompose canonically even when the full expression is valid.
+fn salvage_stmts(stream: TokenStream2) -> Vec<TokenStream2> {
     let mut out = Vec::new();
     salvage_from_stream(stream, &mut out);
     out
+}
+
+/// Push an expression-shaped salvage as a `let _ = &(expr);` statement.
+/// `&(expr)` avoids moving out of the user's bindings.
+fn push_expr(out: &mut Vec<TokenStream2>, e: TokenStream2) {
+    out.push(quote! { let _ = &(#e); });
 }
 
 fn salvage_from_stream(stream: TokenStream2, out: &mut Vec<TokenStream2>) {
@@ -638,19 +749,352 @@ fn salvage_from_stream(stream: TokenStream2, out: &mut Vec<TokenStream2>) {
     }
 
     for seg in segments {
-        // Recurse into nested groups regardless — children blocks, call
-        // args, and reactive bodies all live one delimiter deeper.
-        for tt in &seg {
-            if let TokenTree::Group(g) = tt {
+        // Component invocations (`PascalTag ( … )`) get a STRUCT-LITERAL
+        // salvage so rust-analyzer offers prop-NAME completion at a
+        // half-typed prop — see [`salvage_component_invocations`].
+        salvage_component_invocations(&seg, out);
+        // A prop assignment: `ident = <rhs>`. Salvage the RHS only — the
+        // whole segment would parse as an assignment to an undefined
+        // name and inject noise. STRUCTURED salvage first: a closure /
+        // control-flow RHS whose brace body is what's broken keeps its
+        // BINDINGS via scaffolding — `on_click = move || { if let Some(c)
+        // = … { c.│ } }` must keep `c` bound, or dot-completion at the
+        // cursor degrades to unknown-receiver noise (the bug that made
+        // handle methods invisible until a prefix was typed).
+        if let Some(rhs) = prop_value_tokens(&seg) {
+            if let Some(composite) = try_scaffold(&rhs) {
+                push_expr(out, composite);
+            } else if let Some(expr_ts) = parse_expr_prefix(rhs.clone()) {
+                push_expr(out, expr_ts);
+            } else {
+                // Nothing parseable at this level — groups inside may
+                // still hold salvageable content.
+                for tt in &rhs {
+                    if let TokenTree::Group(g) = tt {
+                        salvage_from_stream(g.stream(), out);
+                    }
+                }
+            }
+            continue;
+        }
+        // Otherwise treat the segment as a STATEMENT RUN — ui! children
+        // are whitespace-separated, so one broken child must not eat its
+        // siblings. Owns ALL group recursion for its tokens: a scaffolded
+        // body must not ALSO be salvaged flat, or the bound copies get
+        // shadowed by unbound duplicates full of unresolved-name noise.
+        salvage_statement_run(seg, out);
+    }
+}
+
+/// Try to rebuild `HEAD { BODY }` where the BODY is what failed to
+/// parse: keep HEAD as REAL scaffolding — preserving pattern bindings
+/// (`if let Some(c) = …`, `for x in …`) and closure parameters
+/// (`move |e| …`) — around a recursively salvaged body. The candidate is
+/// validated by parsing the actual composite, so a header whose block
+/// isn't statement-shaped (`match` needs arms, a bogus head, …) returns
+/// `None` and falls back to coarser salvage.
+fn try_scaffold(toks: &[TokenTree]) -> Option<TokenStream2> {
+    let TokenTree::Group(g) = toks.last()? else {
+        return None;
+    };
+    if g.delimiter() != Delimiter::Brace || toks.len() < 2 {
+        return None;
+    }
+    let head: TokenStream2 = toks[..toks.len() - 1].iter().cloned().collect();
+    let mut inner: Vec<TokenStream2> = Vec::new();
+    salvage_from_stream(g.stream(), &mut inner);
+    let candidate = quote! {
+        #head {
+            #( #inner )*
+        }
+    };
+    syn::parse2::<Expr>(candidate.clone()).ok().map(|_| candidate)
+}
+
+/// Salvage a statement-shaped token run: repeatedly take the longest
+/// valid leading expression, emit it, and continue with the remainder;
+/// when no prefix parses, drop one leading token and keep going. Two
+/// head shapes are consumed WITHOUT expression salvage:
+///
+/// - `Ident { … }` (tag-with-children) — parses as a struct literal but
+///   is semantically bogus from a children block (`Card { … }` would
+///   type-check the wrong way); its braces were already recursed.
+/// - `PascalTag ( … )` — parses as a fn call to the component fn, whose
+///   arity/types won't match the prop list (noise); the struct-literal
+///   salvage from [`salvage_component_invocations`] is the useful
+///   surface for it.
+fn salvage_statement_run(mut toks: Vec<TokenTree>, out: &mut Vec<TokenStream2>) {
+    while !toks.is_empty() {
+        let head_pair_to_skip = match (toks.first(), toks.get(1)) {
+            (Some(TokenTree::Ident(_)), Some(TokenTree::Group(g)))
+                if g.delimiter() == Delimiter::Brace =>
+            {
+                true
+            }
+            (Some(TokenTree::Ident(i)), Some(TokenTree::Group(g)))
+                if g.delimiter() == Delimiter::Parenthesis && is_pascal(i) =>
+            {
+                true
+            }
+            _ => false,
+        };
+        if head_pair_to_skip {
+            // The pair itself isn't expression-salvaged, but its group
+            // still holds salvageable content (children / prop values).
+            if let Some(TokenTree::Group(g)) = toks.get(1) {
                 salvage_from_stream(g.stream(), out);
             }
+            toks.drain(..2);
+            continue;
         }
-        // A prop assignment: `ident = <rhs>`. Salvage the RHS.
-        if let Some(rhs) = prop_value_tokens(&seg) {
-            if let Some(expr_ts) = parse_expr_prefix(rhs) {
-                out.push(expr_ts);
+
+        // `let` statements: a whole, valid `let … ;` is preserved
+        // VERBATIM so the binding stays live for the statements after it
+        // — `let c = counter.get().unwrap(); c.│` needs `c` bound in the
+        // salvage copy or dot-completion has no receiver type. Decided
+        // entirely from the front (`let` … first top-level `;`), so it's
+        // prefix-stable. A broken/mid-typed `let` falls back to salvaging
+        // the `=`-RHS prefix (binding lost — acceptable, the buffer is
+        // already broken at exactly that statement).
+        if matches!(toks.first(), Some(TokenTree::Ident(i)) if i == "let") {
+            let semi = toks.iter().position(
+                |t| matches!(t, TokenTree::Punct(p) if p.as_char() == ';'),
+            );
+            if let Some(semi) = semi {
+                let stmt: TokenStream2 = toks[..=semi].iter().cloned().collect();
+                if syn::parse2::<syn::Block>(quote! { { #stmt } }).is_ok() {
+                    out.push(stmt);
+                    toks.drain(..=semi);
+                    continue;
+                }
+            }
+            let upto = semi.unwrap_or(toks.len());
+            if let Some(eq) = toks[..upto].iter().position(|t| {
+                matches!(t, TokenTree::Punct(p)
+                    if p.as_char() == '=' && p.spacing() == Spacing::Alone)
+            }) {
+                if let Some(ts) = parse_expr_prefix(toks[eq + 1..upto].to_vec()) {
+                    push_expr(out, ts);
+                }
+            }
+            let drain_to = if semi.is_some() { upto + 1 } else { upto };
+            toks.drain(..drain_to);
+            continue;
+        }
+
+        // Control-flow with a statement-shaped body scaffolds CANONICALLY
+        // — even when the whole expression is valid. If only the broken
+        // variant scaffolded, a buffer whose glued form parses (`c.` +
+        // `c.reset()` ⇒ `c.c.reset()`) would emit `if … { c.bump(10); }`
+        // whole while its speculative twin emits the scaffold, and the
+        // two expansions would diverge BEFORE the cursor (see
+        // [`emit_shell`] on why that kills completion). `match` is
+        // excluded: its arms aren't statements, so a scaffold body would
+        // flat-salvage the arms and strip their pattern bindings on
+        // VALID code; it keeps whole-expression salvage below.
+        if matches!(toks.first(), Some(TokenTree::Ident(i))
+            if i == "if" || i == "while" || i == "for")
+        {
+            if let Some(body_at) = toks.iter().position(|t| {
+                matches!(t, TokenTree::Group(g) if g.delimiter() == Delimiter::Brace)
+            }) {
+                if let Some(composite) = try_scaffold(&toks[..=body_at]) {
+                    push_expr(out, composite);
+                    toks.drain(..=body_at);
+                    continue;
+                }
+            }
+            // Header didn't scaffold (mid-typed condition, no body yet):
+            // fall through — the keyword-condition branch below salvages
+            // what it can.
+        }
+
+        // Bare call in statement position (`ident ( … )`, lowercase, not
+        // chained): decompose CANONICALLY into the callee name plus the
+        // salvage of its arguments, even when the whole call is valid —
+        // whether the interior parses must not change the output emitted
+        // before it (prefix stability again). Chained calls
+        // (`foo(x).bar()`) keep whole-expression salvage: decomposing
+        // would orphan the chain, and the front-token rule stays
+        // deterministic by peeking only at the token after the group.
+        if let (Some(TokenTree::Ident(head)), Some(TokenTree::Group(g))) =
+            (toks.first(), toks.get(1))
+        {
+            let chained = matches!(toks.get(2), Some(TokenTree::Punct(p))
+                if p.as_char() == '.' || p.as_char() == '?');
+            let keyword = matches!(
+                head.to_string().as_str(),
+                "if" | "while" | "for" | "match" | "move" | "return" | "break"
+            );
+            if g.delimiter() == Delimiter::Parenthesis
+                && !is_pascal(head)
+                && !keyword
+                && !chained
+            {
+                push_expr(out, head.to_token_stream());
+                salvage_from_stream(g.stream(), out);
+                toks.drain(..2);
+                continue;
             }
         }
+
+        let mut n = toks.len();
+        let mut consumed = 0;
+        while n > 0 {
+            let ts: TokenStream2 = toks[..n].iter().cloned().collect();
+            if let Ok(expr) = syn::parse2::<Expr>(ts) {
+                push_expr(out, expr.to_token_stream());
+                consumed = n;
+                break;
+            }
+            n -= 1;
+        }
+        if consumed > 0 {
+            toks.drain(..consumed);
+            continue;
+        }
+        // Nothing parseable starts here. STRUCTURED attempt first: if a
+        // brace group follows a header, rebuild `HEAD { salvaged-body }`
+        // so pattern bindings survive (`if let Some(c) = … { c.│ }`
+        // keeps `c` bound — the difference between real dot-completion
+        // and unknown-receiver noise at the cursor). Reached for
+        // non-keyword headers (statement-position closures etc.) — the
+        // control-flow keywords already tried this above.
+        if let Some(body_at) = toks.iter().position(|t| {
+            matches!(t, TokenTree::Group(g) if g.delimiter() == Delimiter::Brace)
+        }) {
+            if body_at > 0 {
+                if let Some(composite) = try_scaffold(&toks[..=body_at]) {
+                    push_expr(out, composite);
+                    toks.drain(..=body_at);
+                    continue;
+                }
+            }
+        }
+        // Scaffolding didn't apply (no header/brace, or a non-statement
+        // body like `match` arms). For control-flow headers, the
+        // condition is still salvageable Rust — pull it out so
+        // `if fro…` keeps completion, then step over the header. The
+        // body group is recursed flat before draining.
+        if let Some(TokenTree::Ident(kw)) = toks.first() {
+            let kw = kw.to_string();
+            if kw == "if" || kw == "while" || kw == "match" || kw == "for" {
+                let body_at = toks
+                    .iter()
+                    .position(|t| {
+                        matches!(t, TokenTree::Group(g) if g.delimiter() == Delimiter::Brace)
+                    })
+                    .unwrap_or(toks.len());
+                // `for pat in iter` — the expression is what follows
+                // `in`; for the others it's everything after the keyword.
+                // `if let PAT = expr` — a bare `let` expression is only
+                // valid inside `if`/`while`, so salvage the expr after
+                // `=` instead of the whole let (emitting `&(let …)` used
+                // to produce a bogus-position error squiggle right on
+                // the author's pattern).
+                let cond_from = if kw == "for" {
+                    toks[..body_at]
+                        .iter()
+                        .position(|t| matches!(t, TokenTree::Ident(i) if i == "in"))
+                        .map(|i| i + 1)
+                        .unwrap_or(1)
+                } else if matches!(toks.get(1), Some(TokenTree::Ident(i)) if i == "let") {
+                    toks[..body_at]
+                        .iter()
+                        .position(|t| {
+                            matches!(t, TokenTree::Punct(p)
+                                if p.as_char() == '=' && p.spacing() == Spacing::Alone)
+                        })
+                        .map(|i| i + 1)
+                        .unwrap_or(1)
+                } else {
+                    1
+                };
+                if cond_from < body_at {
+                    if let Some(ts) = parse_expr_prefix(toks[cond_from..body_at].to_vec()) {
+                        push_expr(out, ts);
+                    }
+                }
+                if let Some(TokenTree::Group(g)) = toks.get(body_at) {
+                    salvage_from_stream(g.stream(), out);
+                }
+                let drain_to = (body_at + 1).min(toks.len());
+                toks.drain(..drain_to);
+                continue;
+            }
+        }
+        // Mid-typed operator, stray punct, or an unrecognized head —
+        // step past it, salvaging a group's interior on the way.
+        if let TokenTree::Group(g) = &toks[0] {
+            salvage_from_stream(g.stream(), out);
+        }
+        toks.remove(0);
+    }
+}
+
+/// True when the ident starts uppercase — the `ui!` component-tag
+/// convention (primitives are lowercase-only).
+fn is_pascal(i: &proc_macro2::Ident) -> bool {
+    i.to_string().chars().next().is_some_and(|c| c.is_ascii_uppercase())
+}
+
+/// For every `PascalTag ( … )` pair in the segment, emit a struct-literal
+/// salvage:
+///
+/// ```ignore
+/// Counter { sta: ::core::todo!(), start: ::core::todo!(), ..Default::default() }
+/// ```
+///
+/// The tag doubles as the props type (`#[component]` emits `pub type Tag =
+/// TagProps`), so with the ORIGINAL ident spans preserved rust-analyzer
+/// treats the half-typed `sta` as a field name of the real props struct
+/// and completes `start` — the single most common mid-typing state.
+/// `todo!()` types as `!` and coerces to every field type, so the
+/// complete prop names add zero type-mismatch noise; only the half-typed
+/// name shows an unknown-field error, and that sits under the cursor
+/// where an error is expected anyway. `..Default::default()` is valid on
+/// every props struct (the `BuildElement: Default` contract).
+fn salvage_component_invocations(seg: &[TokenTree], out: &mut Vec<TokenStream2>) {
+    // PascalCase enum constructors that pattern/expression code uses
+    // constantly — `Some(c)` in an `if let` is NOT a component
+    // invocation, and emitting `Some { c: todo!() … }` would plant a
+    // type-error squiggle on the author's own pattern.
+    const NOT_COMPONENTS: &[&str] = &["Some", "Ok", "Err", "None"];
+    for pair in seg.windows(2) {
+        let (TokenTree::Ident(name), TokenTree::Group(g)) = (&pair[0], &pair[1]) else {
+            continue;
+        };
+        if g.delimiter() != Delimiter::Parenthesis || !is_pascal(name) {
+            continue;
+        }
+        if NOT_COMPONENTS.contains(&name.to_string().as_str()) {
+            continue;
+        }
+        // Leading ident of each top-level comma segment inside the parens
+        // — covers `sta`, `start = 3`, and `start =` alike.
+        let mut fields: Vec<proc_macro2::Ident> = Vec::new();
+        let mut at_start = true;
+        for tt in g.stream() {
+            match &tt {
+                TokenTree::Punct(p) if p.as_char() == ',' && p.spacing() == Spacing::Alone => {
+                    at_start = true;
+                }
+                TokenTree::Ident(i) if at_start => {
+                    fields.push(i.clone());
+                    at_start = false;
+                }
+                _ => at_start = false,
+            }
+        }
+        push_expr(
+            out,
+            quote! {
+                #name {
+                    #( #fields: ::core::todo!(), )*
+                    ..::core::default::Default::default()
+                }
+            },
+        );
     }
 }
 
@@ -2712,7 +3156,7 @@ fn try_emit_for_virtualizer(
             // references to this id so `bind!(method(i))` inside
             // the body dispatches with each row's actual index.
             let #row_ident: ::runtime_core::Signal<i32> =
-                ::runtime_core::signal!(0i32);
+                ::runtime_core::signal(0i32);
             let __row_index_id: ::std::option::Option<u64> =
                 ::std::option::Option::Some(::runtime_core::Signal::<i32>::id(&#row_ident));
             // Build the row template against the index-0 placeholder.
@@ -2746,7 +3190,7 @@ fn try_emit_for_virtualizer(
                     // `for i in count(sig) { … }` silently rendered blank
                     // rows on every runtime backend.
                     let #row_ident: ::runtime_core::Signal<i32> =
-                        ::runtime_core::signal!(__idx as i32);
+                        ::runtime_core::signal(__idx as i32);
                     ::runtime_core::IntoElement::into_element(#body_expr)
                 }),
             );
@@ -3058,10 +3502,12 @@ mod tests {
     use super::*;
 
     /// Parse a `ui!` body and emit it, returning the emitted token stream
-    /// as a string for substring assertions.
+    /// as a string for substring assertions. NOTE: the output includes the
+    /// `__ui_recover` salvage shell (same as a real expansion) — counted
+    /// assertions must account for the salvage copy of the input.
     fn parse_and_emit(input: TokenStream2) -> String {
-        let ui: Ui = syn::parse2(input).expect("parse ui");
-        emit(ui).to_string()
+        let ui: Ui = syn::parse2(input.clone()).expect("parse ui");
+        emit(ui, &input).to_string()
     }
 
     #[test]
@@ -3243,10 +3689,12 @@ mod tests {
         });
         // Both Counter calls appear, and the wrapping ChildList::append_to
         // ensures they flatten into Vec<Element>.
-        // Both children lower to their own Counter struct literal.
+        // Both children lower to their own Counter struct literal — twice
+        // each: once in the real build chain, once in the `__ui_recover`
+        // salvage shell every expansion now carries (see `emit_shell`).
         assert!(out.contains("(s) . into ()"), "got: {out}");
         assert!(out.contains("(t) . into ()"), "got: {out}");
-        assert_eq!(out.matches("Counter {").count(), 2, "got: {out}");
+        assert_eq!(out.matches("Counter {").count(), 4, "got: {out}");
     }
 
     // ---- error-recovery expansion ----
@@ -3312,5 +3760,284 @@ mod tests {
         let err = parse_err(input.clone());
         let s = emit_recovery(input, &err).to_string();
         assert!(s.contains("signal . get ()"), "nested complete prop should be salvaged: {s}");
+    }
+
+    #[test]
+    fn recovery_half_typed_prop_emits_struct_literal_for_name_completion() {
+        // THE most common mid-typing state: `Counter(sta` (auto-closed
+        // paren). The recovery must put `sta` in FIELD-NAME position of a
+        // `Counter { … }` struct literal — the tag aliases the props
+        // struct, so rust-analyzer completes `sta` → `start` there.
+        let input = quote! { Counter(sta) };
+        let err = parse_err(input.clone());
+        let s = emit_recovery(input, &err).to_string();
+        assert!(
+            s.contains("Counter { sta : :: core :: todo ! ()"),
+            "half-typed prop must land in struct-literal field position: {s}"
+        );
+        assert!(
+            s.contains(".. :: core :: default :: Default :: default ()"),
+            "struct literal must be completed by a Default base: {s}"
+        );
+    }
+
+    #[test]
+    fn recovery_struct_literal_includes_complete_and_partial_prop_names() {
+        // `Counter(start = 3, la` — the complete prop AND the half-typed
+        // one both become fields (todo!() coerces, so the complete name
+        // adds no type noise).
+        let input = quote! { Counter(start = 3, la) };
+        let err = parse_err(input.clone());
+        let s = emit_recovery(input, &err).to_string();
+        assert!(s.contains("start : :: core :: todo ! ()"), "{s}");
+        assert!(s.contains("la : :: core :: todo ! ()"), "{s}");
+    }
+
+    #[test]
+    fn recovery_salvages_bare_child_expressions_and_tags() {
+        // Bare expressions in child position (and a half-typed tag name)
+        // salvage as value-position expressions: `Cou` completes to the
+        // component fn, `count.get()` keeps hover/completion.
+        let input = quote! {
+            view() {
+                count.get()
+                Cou
+                broken .
+            }
+        };
+        let err = parse_err(input.clone());
+        let s = emit_recovery(input, &err).to_string();
+        assert!(s.contains("count . get ()"), "bare child expr salvaged: {s}");
+        assert!(s.contains("(Cou)"), "half-typed tag salvaged in value position: {s}");
+    }
+
+    #[test]
+    fn recovery_scaffolds_if_with_unparseable_body() {
+        // A broken sibling must not eat the `if` next to it. The body
+        // (`text { "x" }`) can't parse as a syn statement, so the whole
+        // if-expr can't salvage verbatim — instead the header is kept as
+        // SCAFFOLDING around a recursively salvaged body, so the
+        // condition stays analyzable in its real position.
+        let input = quote! {
+            view() {
+                if frozen { text { "x" } }
+                broken .
+            }
+        };
+        let err = parse_err(input.clone());
+        let s = emit_recovery(input, &err).to_string();
+        assert!(s.contains("if frozen {"), "if header scaffolded: {s}");
+        assert!(s.contains("\"x\""), "body content salvaged inside: {s}");
+    }
+
+    #[test]
+    fn recovery_preserves_if_let_bindings_inside_closure_props() {
+        // THE dot-completion case: mid-typing `c.` inside an `if let`
+        // inside an `on_click` closure inside `ui!`. The recovery must
+        // rebuild the closure AND the `if let` as scaffolding so `c`
+        // stays BOUND — otherwise rust-analyzer sees an unresolved
+        // receiver at the cursor and completion degrades to
+        // unknown-receiver trait noise (handle methods invisible until a
+        // prefix is typed).
+        let input = quote! {
+            view() {
+                button(label = "x", on_click = move || {
+                    if let Some(c) = counter.get() {
+                        c.bump(10);
+                        c.
+                    }
+                })
+            }
+        };
+        let err = parse_err(input.clone());
+        let ts = emit_recovery(input, &err);
+        let s = ts.to_string();
+        assert!(
+            s.contains("move || { let _ = & (if let Some (c) = counter . get ()"),
+            "closure + if-let scaffolding preserved: {s}"
+        );
+        assert!(s.contains("& (c . bump (10))"), "bound statement salvaged in place: {s}");
+        assert!(s.contains("& (c)"), "the cursor token survives, bound: {s}");
+        // No unbound duplicates: the statements exist ONLY inside the
+        // scaffold, so `c` resolves everywhere it appears.
+        assert_eq!(
+            s.matches("c . bump").count(),
+            1,
+            "no flat unbound duplicate of the body: {s}"
+        );
+        syn::parse2::<Expr>(ts).expect("recovery output must be a valid expression");
+    }
+
+    #[test]
+    fn recovery_preserves_let_statements_verbatim() {
+        // `let c = counter.get().unwrap(); c.│` — the whole valid `let`
+        // must survive VERBATIM in the salvage so `c` stays bound and
+        // dot-completion at the cursor has a receiver type. Wrapping it
+        // as `let _ = &(…)` (or dropping it) would orphan every statement
+        // after it.
+        let input = quote! {
+            view() {
+                button(label = "x", on_click = move || {
+                    let c = counter.get().unwrap();
+                    c.bump(1);
+                    c.
+                })
+            }
+        };
+        let err = parse_err(input.clone());
+        let s = emit_recovery(input, &err).to_string();
+        assert!(
+            s.contains("let c = counter . get () . unwrap () ;"),
+            "valid let preserved verbatim: {s}"
+        );
+        assert!(s.contains("& (c . bump (1))"), "later statement stays bound: {s}");
+        assert!(s.contains("& (c)"), "cursor token survives, bound: {s}");
+    }
+
+    #[test]
+    fn recovery_never_emits_bare_let_expressions() {
+        // `if let PAT = expr` with an unsalvageable body must NOT fall
+        // back to emitting `&(let PAT = expr)` — a let-expression is
+        // only valid inside if/while, and the bogus-position error used
+        // to squiggle the author's own pattern. The `=`-RHS is the safe
+        // salvage.
+        let input = quote! {
+            view() {
+                if let Some(c) = counter.get() { text { c } }
+                broken .
+            }
+        };
+        let err = parse_err(input.clone());
+        let s = emit_recovery(input, &err).to_string();
+        assert!(!s.contains("& (let"), "no bare let-expression salvage: {s}");
+    }
+
+    #[test]
+    fn recovery_lowercase_primitive_call_decomposes_canonically() {
+        // `text(conten` — lowercase tags are free FNS: the callee is
+        // salvaged as a bare path (fn-name completion/hover) and the
+        // arguments are salvaged from inside the group (`conten` keeps
+        // ident completion in value position). The call is NEVER emitted
+        // whole — whether its interior parses must not change the output
+        // emitted before it (the prefix-stability rule in
+        // [`salvage_stmts`]) — and never a struct literal (primitives
+        // aren't structs).
+        let input = quote! { text(conten) something . };
+        let err = parse_err(input.clone());
+        let s = emit_recovery(input, &err).to_string();
+        assert!(s.contains("& (text)"), "callee salvaged as a bare path: {s}");
+        assert!(s.contains("& (conten)"), "argument salvaged from the group: {s}");
+        assert!(!s.contains("text (conten)"), "call never emitted whole: {s}");
+        assert!(!s.contains("text {"), "no struct literal for lowercase tags: {s}");
+    }
+
+    #[test]
+    fn recovery_braced_tag_guard_still_holds() {
+        // `Card { … }` (tag with children) must NOT be salvaged as a
+        // struct literal — that parse is semantically bogus. Its children
+        // are still recursed individually.
+        let input = quote! {
+            Card { inner_value }
+            broken .
+        };
+        let err = parse_err(input.clone());
+        let s = emit_recovery(input, &err).to_string();
+        assert!(!s.contains("Card {"), "braced tag must not become a struct literal: {s}");
+        assert!(s.contains("inner_value"), "children still recursed: {s}");
+    }
+
+    #[test]
+    fn regression_happy_and_speculative_expansions_align_at_cursor() {
+        // THE mid-block glue case (user-hit): a dangling `c.` typed on a
+        // line ABOVE `c.reset();` token-glues into `c.c.reset()` — VALID
+        // Rust — so the buffer as written expands through the happy path,
+        // while rust-analyzer's speculative buffer (placeholder ident
+        // spliced at the cursor) fails to parse and expands through
+        // recovery. RA resolves speculative nodes against the real
+        // expansion's HIR by TEXT RANGE, so completion only works if the
+        // two expansions are textually identical up to the cursor. That
+        // is exactly what the shared `emit_shell` guarantees; this pins
+        // it: the common prefix of the two expansion strings must extend
+        // past the receiver of the half-typed member access.
+        let glued = quote! {
+            view() {
+                Counter(start = 3, bind_to = counter)
+                button(label = "x", on_click = move || {
+                    if let Some(c) = counter.get() {
+                        c.bump(10);
+                        c.c.reset();
+                    }
+                })
+            }
+        };
+        let speculative = quote! {
+            view() {
+                Counter(start = 3, bind_to = counter)
+                button(label = "x", on_click = move || {
+                    if let Some(c) = counter.get() {
+                        c.bump(10);
+                        c.intellijRulezz
+                        c.reset();
+                    }
+                })
+            }
+        };
+        let happy = {
+            let ui: Ui = syn::parse2(glued.clone()).expect("glued input is valid");
+            emit(ui, &glued).to_string()
+        };
+        let err = parse_err(speculative.clone());
+        let recovered = emit_recovery(speculative, &err).to_string();
+
+        let common: usize = happy
+            .bytes()
+            .zip(recovered.bytes())
+            .take_while(|(a, b)| a == b)
+            .count();
+        let receiver_at = recovered
+            .find("(c . intellijRulezz)")
+            .expect("speculative salvage must keep the half-typed access")
+            + "(c ".len();
+        assert!(
+            common >= receiver_at,
+            "expansions must align past the completion receiver \
+             (aligned {common} bytes, receiver at {receiver_at}):\n\
+             HAPPY: {happy}\nRECOVERED: {recovered}"
+        );
+        // And the receiver `c` must be BOUND in both copies — the happy
+        // shell salvages the whole glued statement, the recovery shell
+        // scaffolds the if-let around the split statements.
+        assert!(happy.contains("if let Some (c) = counter . get ()"));
+        assert!(recovered.contains("if let Some (c) = counter . get ()"));
+    }
+
+    #[test]
+    fn happy_path_carries_salvage_shell_under_ide_host() {
+        // The salvage copy in a VALID expansion must be present when the
+        // host has no real span info (IDE proc-macro servers; also
+        // proc-macro2 fallback spans, which is why this test sees it) —
+        // that's what keeps rust-analyzer's real/speculative expansions
+        // aligned. Under rustc (real spans) the shell is skipped
+        // entirely; `host_has_no_span_lines` documents why.
+        let out = parse_and_emit(quote! { text { "hello" } });
+        assert!(out.contains("__ui_recover"), "{out}");
+        // The real chain must still be there, after the shell.
+        assert!(out.contains(":: runtime_core :: text"), "{out}");
+    }
+
+    #[test]
+    fn recovery_new_salvage_forms_are_valid_expressions() {
+        // The invariant that makes recovery safe at all: output must
+        // parse, or rust-analyzer loses the whole block.
+        for input in [
+            quote! { Counter(sta) },
+            quote! { Counter(start = 3, la) },
+            quote! { view() { count.get() Cou broken . } },
+            quote! { view() { if frozen { text { "x" } } broken . } },
+        ] {
+            let err = parse_err(input.clone());
+            let ts = emit_recovery(input, &err);
+            syn::parse2::<Expr>(ts).expect("recovery output must be a valid expression");
+        }
     }
 }

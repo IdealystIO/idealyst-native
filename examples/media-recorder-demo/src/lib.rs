@@ -42,9 +42,9 @@ pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBack
 pub fn app() -> Element {
     install_idea_theme(light_theme());
 
-    let status: Signal<String> = signal!("Idle — press Record".to_string());
-    let recording: Signal<bool> = signal!(false);
-    let saved: Signal<String> = signal!(String::new());
+    let status: Signal<String> = signal("Idle — press Record".to_string());
+    let recording: Signal<bool> = signal(false);
+    let saved: Signal<String> = signal(String::new());
     let active: Rc<RefCell<Option<Active>>> = Rc::new(RefCell::new(None));
 
     let on_record = {

@@ -109,8 +109,8 @@ pub fn app() -> Element {
     install_idea_theme(light_theme());
     configure_server();
 
-    let email = signal!(String::new());
-    let status = signal!(String::new());
+    let email = signal(String::new());
+    let status = signal(String::new());
 
     let on_email: Rc<dyn Fn(String)> = {
         let email = email.clone();

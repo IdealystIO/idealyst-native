@@ -15,7 +15,7 @@ use runtime_core::{on, on_defer, signal, Signal};
 /// with `(initial, None)`, then `(new, Some(old))` per change.
 #[test]
 fn on_single_signal_fires_initial_plus_changes() {
-    let s: Signal<i32> = signal!(0);
+    let s: Signal<i32> = signal(0);
     let observed: Rc<Cell<Vec<(i32, Option<i32>)>>> = Rc::new(Cell::new(Vec::new()));
     let obs = observed.clone();
 
@@ -46,7 +46,7 @@ fn on_single_signal_fires_initial_plus_changes() {
 /// `on_defer(signal, callback)` skips the initial fire.
 #[test]
 fn on_defer_skips_initial_fires_on_change() {
-    let s: Signal<i32> = signal!(0);
+    let s: Signal<i32> = signal(0);
     let observed: Rc<Cell<Vec<i32>>> = Rc::new(Cell::new(Vec::new()));
     let obs = observed.clone();
 
@@ -69,8 +69,8 @@ fn on_defer_skips_initial_fires_on_change() {
 /// `on((a, b), callback)`: 2-tuple deps, callback sees `&(i32, i32)`.
 #[test]
 fn on_tuple_arity_2() {
-    let a: Signal<i32> = signal!(10);
-    let b: Signal<i32> = signal!(20);
+    let a: Signal<i32> = signal(10);
+    let b: Signal<i32> = signal(20);
     let observed: Rc<Cell<Vec<(i32, i32)>>> = Rc::new(Cell::new(Vec::new()));
     let obs = observed.clone();
 
@@ -92,9 +92,9 @@ fn on_tuple_arity_2() {
 
 #[test]
 fn on_tuple_arity_3() {
-    let a: Signal<i32> = signal!(1);
-    let b: Signal<i32> = signal!(2);
-    let c: Signal<i32> = signal!(3);
+    let a: Signal<i32> = signal(1);
+    let b: Signal<i32> = signal(2);
+    let c: Signal<i32> = signal(3);
     let count: Rc<Cell<usize>> = Rc::new(Cell::new(0));
     let ct = count.clone();
 
@@ -111,10 +111,10 @@ fn on_tuple_arity_3() {
 
 #[test]
 fn on_tuple_arity_4() {
-    let a: Signal<i32> = signal!(1);
-    let b: Signal<i32> = signal!(2);
-    let c: Signal<i32> = signal!(3);
-    let d: Signal<i32> = signal!(4);
+    let a: Signal<i32> = signal(1);
+    let b: Signal<i32> = signal(2);
+    let c: Signal<i32> = signal(3);
+    let d: Signal<i32> = signal(4);
     let count: Rc<Cell<usize>> = Rc::new(Cell::new(0));
     let ct = count.clone();
 
@@ -132,8 +132,8 @@ fn on_tuple_arity_4() {
 /// but read inside the callback is NOT subscribed.
 #[test]
 fn on_callback_reads_are_not_tracked() {
-    let dep: Signal<i32> = signal!(0);
-    let other: Signal<i32> = signal!(0);
+    let dep: Signal<i32> = signal(0);
+    let other: Signal<i32> = signal(0);
     let count: Rc<Cell<usize>> = Rc::new(Cell::new(0));
     let ct = count.clone();
 
@@ -153,7 +153,7 @@ fn on_callback_reads_are_not_tracked() {
 /// Dropping the returned Effect handle stops further fires.
 #[test]
 fn on_handle_drop_stops_firing() {
-    let s: Signal<i32> = signal!(0);
+    let s: Signal<i32> = signal(0);
     let count: Rc<Cell<usize>> = Rc::new(Cell::new(0));
     let ct = count.clone();
 
@@ -173,8 +173,8 @@ fn on_handle_drop_stops_firing() {
 
 #[test]
 fn on_defer_with_tuple_deps() {
-    let a: Signal<i32> = signal!(0);
-    let b: Signal<i32> = signal!(0);
+    let a: Signal<i32> = signal(0);
+    let b: Signal<i32> = signal(0);
     let count: Rc<Cell<usize>> = Rc::new(Cell::new(0));
     let ct = count.clone();
 

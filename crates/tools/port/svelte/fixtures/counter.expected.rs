@@ -11,7 +11,7 @@ pub struct CounterProps {
 
 #[component(default(initial = 0))]
 pub fn Counter(props: &CounterProps) -> Element {
-    let count = signal!(props.initial);
+    let count = signal(props.initial);
     effect!({
         todo!("port handler-body: $: reactive side-effect body — JS imperative code, AI pass needed — console.log('count:', count);");
     });

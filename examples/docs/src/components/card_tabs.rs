@@ -51,7 +51,7 @@ pub fn CardTabs(props: CardTabsProps) -> Element {
     // component's reactive scope, so it survives across re-renders
     // triggered by parent updates but tears down when the
     // component unmounts.
-    let active: Signal<usize> = signal!(0_usize);
+    let active: Signal<usize> = signal(0_usize);
 
     // Build the idea-ui `Tab` items (just labels) from the
     // user-supplied pairs. The labels are owned strings; clone

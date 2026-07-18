@@ -196,8 +196,8 @@ pub fn app() -> Element {
 
     let client = GraphqlClient::new(Rc::new(AppGraphql));
 
-    let title = signal!(String::new());
-    let author = signal!(String::new());
+    let title = signal(String::new());
+    let author = signal(String::new());
 
     // Typed query + mutation bound to this component scope.
     let books = use_query::<GetBooks>(&client, get_books::Variables);

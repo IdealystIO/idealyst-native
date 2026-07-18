@@ -5,7 +5,7 @@
 //! call site is:
 //!
 //! ```ignore
-//! let open = signal!(false);
+//! let open = signal(false);
 //! ui! {
 //!     Pressable(label = "Open".to_string(), on_click = move || open.set(true), intent = Primary.into_rc())
 //!     if open.get() {

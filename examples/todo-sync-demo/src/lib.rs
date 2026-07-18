@@ -372,11 +372,11 @@ pub fn app() -> Element {
     let engine = SyncEngine::with_kv(storage::platform_storage("todo-sync"), device_id());
     let transport = Rc::new(TodoTransport);
 
-    let loaded = signal!(false);
-    let online = signal!(true);
-    let new_title = signal!(String::new());
-    let status = signal!("starting…".to_string());
-    let role = signal!("connecting…".to_string());
+    let loaded = signal(false);
+    let online = signal(true);
+    let new_title = signal(String::new());
+    let status = signal("starting…".to_string());
+    let role = signal("connecting…".to_string());
     let part_cell: Rc<RefCell<Option<SharedPartition<Todo>>>> = Rc::new(RefCell::new(None));
 
     // Async bootstrap: open the multi-tab-coordinated partition (becomes

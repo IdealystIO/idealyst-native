@@ -17,7 +17,7 @@ pub struct CounterProps {
 
 #[component]
 pub fn counter(props: &CounterProps) -> Element {
-    let count = signal!(props.initial);
+    let count = signal(props.initial);
 
     ui! {
         View {
@@ -102,7 +102,7 @@ Five macros come with the framework. Each does one thing:
 | Macro | What it does | Where it's covered |
 | --- | --- | --- |
 | `#[component]` | Wraps a function as a component. Generates the invocation macro, handles reactivity rewriting and hot reload. | This page. |
-| `signal!(value)` | Shorthand for `Signal::new(value)`. | [Reactivity](#). |
+| `signal(value)` | Shorthand for `Signal::new(value)`. | [Reactivity](#). |
 | `ui! { … }` | The primary UI DSL. Lowers to plain runtime-core calls. | Below + the [UI DSL](#) page. |
 | `jsx! { … }` | A JSX-flavored variant of `ui!` with identical output. | Below. |
 | `stylesheet! { … }` | Declares a themed stylesheet. | [Styles](#). |
@@ -130,7 +130,7 @@ pub struct CounterProps {
 
 #[component]
 pub fn counter(props: &CounterProps) -> Bindable<CounterHandle> {
-    let value = signal!(props.initial);
+    let value = signal(props.initial);
 
     methods! {
         fn reset(&self) {
@@ -262,7 +262,7 @@ Here's the counter from above in three forms.
 ```rust
 #[component]
 pub fn counter(props: &CounterProps) -> Element {
-    let count = signal!(props.initial);
+    let count = signal(props.initial);
 
     ui! {
         View {
@@ -281,7 +281,7 @@ pub fn counter(props: &CounterProps) -> Element {
 ```rust
 #[component]
 pub fn counter(props: &CounterProps) -> Element {
-    let count = signal!(props.initial);
+    let count = signal(props.initial);
 
     jsx! {
         <View>
@@ -302,7 +302,7 @@ use runtime_core::{button, component, signal, text, view, IntoElement, Element};
 
 #[component]
 pub fn counter(props: &CounterProps) -> Element {
-    let count = signal!(props.initial);
+    let count = signal(props.initial);
 
     view(vec![
         text(move || format!("Count: {}", count.get())).into_element(),
@@ -416,7 +416,7 @@ pub struct CounterProps {
 
 #[component(default(initial = 0))]
 pub fn counter(props: &CounterProps) -> Bindable<CounterHandle> {
-    let value = signal!(props.initial);
+    let value = signal(props.initial);
 
     methods! {
         fn reset(&self) { value.set(0); }
@@ -436,7 +436,7 @@ What's happening here:
 
 - `#[component(default(initial = 0))]` registers the function as a
   component and declares a default for `initial`.
-- `signal!` allocates a reactive state slot.
+- `signal(…)` allocates a reactive state slot.
 - `methods!` declares `reset` and `bump_by` as imperative
   operations. The macro generates `CounterHandle` and rewrites the
   return type from `Element` to `Bindable<CounterHandle>`.

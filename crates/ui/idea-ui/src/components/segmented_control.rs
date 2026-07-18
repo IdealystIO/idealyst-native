@@ -7,7 +7,7 @@
 //! component.
 //!
 //! ```ignore
-//! let view = signal!("list".to_string());
+//! let view = signal("list".to_string());
 //! let on_change: Rc<dyn Fn(String)> = Rc::new(move |v| view.set(v));
 //! ui! {
 //!     SegmentedControl(
@@ -192,7 +192,7 @@ recipe!(
         use ::runtime_core::{signal, ui};
         use ::std::rc::Rc;
 
-        let view = signal!("list".to_string());
+        let view = signal("list".to_string());
         let on_change: Rc<dyn Fn(String)> = Rc::new(move |v| view.set(v));
         ui! {
             SegmentedControl(

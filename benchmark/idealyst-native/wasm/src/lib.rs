@@ -509,27 +509,27 @@ fn app(initial_rows: usize) -> Element {
     // Reactive row count + mode + hierarchy state. Stored in
     // thread_locals so the wasm-bindgen exports below can mutate
     // them from JS.
-    let count = signal!(initial_rows);
+    let count = signal(initial_rows);
     ROW_COUNT.with(|c| *c.borrow_mut() = Some(count));
-    let mode = signal!(0u32);
+    let mode = signal(0u32);
     MODE.with(|c| *c.borrow_mut() = Some(mode));
-    let tree_version = signal!(0u64);
+    let tree_version = signal(0u64);
     TREE_VERSION.with(|c| *c.borrow_mut() = Some(tree_version));
-    let global_counter = signal!(0u32);
+    let global_counter = signal(0u32);
     GLOBAL_COUNTER.with(|c| *c.borrow_mut() = Some(global_counter));
-    let branch_counter = signal!(0u32);
+    let branch_counter = signal(0u32);
     BRANCH_COUNTER.with(|c| *c.borrow_mut() = Some(branch_counter));
 
     // Granular + reactive-style suite signals. Sized to 0 at boot —
     // each suite's `setup_*` call fills the per-row signal vectors and
     // bumps the count signal so the matching Switch arm builds.
-    let counter_count = signal!(0usize);
+    let counter_count = signal(0usize);
     COUNTER_COUNT.with(|c| *c.borrow_mut() = Some(counter_count));
-    let rstyle_count = signal!(0usize);
+    let rstyle_count = signal(0usize);
     RSTYLE_COUNT.with(|c| *c.borrow_mut() = Some(rstyle_count));
-    let shared_color = signal!(0u32);
+    let shared_color = signal(0u32);
     SHARED_COLOR.with(|c| *c.borrow_mut() = Some(shared_color));
-    let sclass_count = signal!(0usize);
+    let sclass_count = signal(0usize);
     SCLASS_COUNT.with(|c| *c.borrow_mut() = Some(sclass_count));
 
     // Register the two hierarchy-bench signals with the web

@@ -186,7 +186,7 @@ pub fn progress() -> Element {
                     Prop { name: "size",          ty: "ControlSize",    desc: "Sm / Md / Lg bar thickness. Default: Md." },
                 ])
                 CodePanel(src = r##"// Live determinate bar driven by a signal
-let pct = signal!(0.0f32);
+let pct = signal(0.0f32);
 ui! { Progress(value = pct, tone = tone::Primary) }
 
 // Indeterminate (loading, unknown duration)
@@ -265,7 +265,7 @@ Stack(axis = StackAxis::Row, gap = StackGap::Xs) {
 
 pub fn tag() -> Element {
     // A removable tag with a live close callback for the "Removable" demo.
-    let removed = signal!(false);
+    let removed = signal(false);
     let on_remove: Rc<dyn Fn()> = Rc::new(move || removed.set(true));
 
     body(vec![
@@ -317,7 +317,7 @@ pub fn tag() -> Element {
                     Prop { name: "variant",   ty: "VariantRef",           desc: "Filled / Soft / Outlined. Default: Soft." },
                     Prop { name: "on_remove", ty: "Option<Rc<dyn Fn()>>", desc: "When Some, a close (×) button renders to the right of the label." },
                 ])
-                CodePanel(src = r##"let langs = signal!(vec!["Rust".to_string(), "Go".to_string()]);
+                CodePanel(src = r##"let langs = signal(vec!["Rust".to_string(), "Go".to_string()]);
 
 ui! {
     Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
@@ -345,9 +345,9 @@ ui! {
 pub fn chip() -> Element {
     // Filter row: each chip is controlled — the host owns the selected flag
     // and flips it in `on_select`. Independent signals = multi-select.
-    let rust = signal!(true);
-    let go = signal!(false);
-    let swift = signal!(false);
+    let rust = signal(true);
+    let go = signal(false);
+    let swift = signal(false);
 
     let toggle_rust: Rc<dyn Fn()> = Rc::new(move || rust.set(!rust.get()));
     let toggle_go: Rc<dyn Fn()> = Rc::new(move || go.set(!go.get()));

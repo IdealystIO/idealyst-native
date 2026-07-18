@@ -26,7 +26,7 @@ pub struct Message {
 
 #[component]
 pub fn inbox() -> Element {
-    let messages: Signal<Vec<Message>> = signal!(load_messages());
+    let messages: Signal<Vec<Message>> = signal(load_messages());
 
     ui! {
         flat_list(
@@ -212,7 +212,7 @@ through its native virtualization machinery without you knowing.
 `data` is a signal, so the list is reactive end-to-end:
 
 ```rust
-let messages = signal!(load_messages());
+let messages = signal(load_messages());
 
 // Add an item:
 messages.update(|v| v.push(new_message));
@@ -247,7 +247,7 @@ A few specifics:
 ### Simple list of strings
 
 ```rust
-let names = signal!(vec!["Ada".to_string(), "Linus".to_string()]);
+let names = signal(vec!["Ada".to_string(), "Linus".to_string()]);
 
 ui! {
     flat_list(

@@ -1,0 +1,36 @@
+{
+    "name": "vscode-idealyst",
+    "displayName": "Idealyst",
+    "description": "Tag and prop completion inside ui!/jsx! blocks, driven by the live idealyst catalog (components, primitives, docs).",
+    "version": "0.1.0",
+    "publisher": "idealyst",
+    "license": "MIT OR Apache-2.0",
+    "engines": {
+        "vscode": "^1.75.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "main": "./extension.js",
+    "activationEvents": [
+        "onLanguage:rust"
+    ],
+    "contributes": {
+        "configuration": {
+            "title": "Idealyst",
+            "properties": {
+                "idealyst.cli": {
+                    "type": "string",
+                    "default": "idealyst",
+                    "description": "Path to the idealyst CLI binary (used to run `catalog-json`). Point this at a checkout's target/debug/idealyst to use an unreleased CLI."
+                }
+            }
+        },
+        "commands": [
+            {
+                "command": "idealyst.refreshCatalog",
+                "title": "Idealyst: Refresh Catalog"
+            }
+        ]
+    }
+}

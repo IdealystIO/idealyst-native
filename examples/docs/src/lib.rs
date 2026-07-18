@@ -78,7 +78,7 @@ pub fn app() -> Element {
 
     // Theme flag the sidebar's dark-mode toggle drives. Owned at
     // the root so it survives across screen pushes.
-    let is_dark: Signal<bool> = signal!(false);
+    let is_dark: Signal<bool> = signal(false);
     let drawer: Ref<DrawerHandle> = Ref::new();
 
     // Builder-pattern form so the typed `Bound<DrawerHandle>` flows

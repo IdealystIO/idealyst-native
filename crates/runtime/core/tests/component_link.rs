@@ -1,4 +1,4 @@
-//! Walker linkage: a `#[component]` with `methods!` wraps its root in
+//! Walker linkage: a `#[component]` with `#[method]` fns wraps its root in
 //! `Element::Component`; the walker must unwrap it and record
 //! element↔component so the inspector can resolve a selected element to the
 //! component whose methods it can invoke. Gated on `robot` (the variant +

@@ -113,7 +113,7 @@ struct PageCache {
 /// ```no_run
 /// use std::rc::Rc;
 /// # use runtime_core::{signal, Signal};
-/// let bytes: Signal<Option<Rc<Vec<u8>>>> = signal!(None);
+/// let bytes: Signal<Option<Rc<Vec<u8>>>> = signal(None);
 /// let viewer = pdf::PdfReactive(move || bytes.get(), 0, 520.0, 680.0);
 /// // later, from a file picker: bytes.set(Some(Rc::new(file_bytes)));
 /// ```

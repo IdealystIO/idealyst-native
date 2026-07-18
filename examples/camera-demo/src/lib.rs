@@ -74,10 +74,10 @@ fn average_color(frame: &VideoFrame) -> u32 {
 pub fn app() -> Element {
     install_idea_theme(light_theme());
 
-    let dims: Signal<u32> = signal!(0);
-    let frames: Signal<u32> = signal!(0);
-    let status: Signal<String> = signal!("Idle — press Start camera".to_string());
-    let started: Signal<bool> = signal!(false);
+    let dims: Signal<u32> = signal(0);
+    let frames: Signal<u32> = signal(0);
+    let status: Signal<String> = signal("Idle — press Start camera".to_string());
+    let started: Signal<bool> = signal(false);
 
     // Pump the atomic bridge into the UI once per frame. Change guards keep a
     // steady scene from re-rendering text or re-setting the background every

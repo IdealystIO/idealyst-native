@@ -19,7 +19,7 @@ pub enum PrimitiveClass {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mechanical {
-    /// `ref(x)` → `signal!(x)`. The lowering pass rewrites `.value`
+    /// `ref(x)` → `signal(x)`. The lowering pass rewrites `.value`
     /// reads to `.get()` and `.value = v` assigns to `.set(v)`.
     Ref,
     /// `computed(fn)` → derived signal. Same MVP shape as Solid's

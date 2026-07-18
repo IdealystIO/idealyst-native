@@ -107,8 +107,8 @@ async fn report_drop(files: Vec<PickedFile>, status: Signal<String>, info: Signa
 pub fn app() -> Element {
     install_idea_theme(light_theme());
 
-    let status: Signal<String> = signal!("Drag files onto the zone".to_string());
-    let info: Signal<String> = signal!(String::new());
+    let status: Signal<String> = signal("Drag files onto the zone".to_string());
+    let info: Signal<String> = signal(String::new());
 
     // One drop zone for the screen. `on_drop` hands us the same lazy
     // `PickedFile` handles a picker would; `active()` drives the highlight.

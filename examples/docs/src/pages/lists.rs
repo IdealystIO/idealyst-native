@@ -40,7 +40,7 @@ docs! {
 
             #[component]
             pub fn inbox() -> Element {
-                let messages: Signal<Vec<Message>> = signal!(load_messages());
+                let messages: Signal<Vec<Message>> = signal(load_messages());
 
                 ui! {
                     flat_list(
@@ -212,7 +212,7 @@ docs! {
         p(code("data"), " is a signal, so the list is reactive end-to-end:"),
 
         code(rust, r##"
-            let messages = signal!(load_messages());
+            let messages = signal(load_messages());
 
             // Add an item:
             messages.update(|v| v.push(new_message));
@@ -240,7 +240,7 @@ docs! {
 
     section(heading = "Simple list of strings") {
         code(rust, r##"
-            let names = signal!(vec!["Ada".to_string(), "Linus".to_string()]);
+            let names = signal(vec!["Ada".to_string(), "Linus".to_string()]);
 
             ui! {
                 flat_list(

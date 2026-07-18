@@ -50,7 +50,7 @@ fn text_input_on_key_down_registers_and_fires() {
     let fired: Rc<RefCell<Vec<KeyEvent>>> = Rc::new(RefCell::new(Vec::new()));
     let fired_clone = fired.clone();
 
-    let value: Signal<String> = signal!(String::new());
+    let value: Signal<String> = signal(String::new());
     let on_change = move |_: String| {};
     let on_key_down = move |ev: &KeyEvent| {
         fired_clone.borrow_mut().push(ev.clone());
@@ -100,14 +100,14 @@ fn text_input_on_key_down_registers_and_fires() {
 fn text_input_secure_flag_threads_to_backend() {
     // Default: not secure.
     let rt = TestRuntime::new();
-    let value: Signal<String> = signal!(String::new());
+    let value: Signal<String> = signal(String::new());
     let _owner = rt.render(text_input(value, |_: String| {}).into());
     rt.backend()
         .assert_any(|e| matches!(e, Event::CreateTextInput { secure: false, .. }));
 
     // Opted in via the builder.
     let rt2 = TestRuntime::new();
-    let value2: Signal<String> = signal!(String::new());
+    let value2: Signal<String> = signal(String::new());
     let _owner2 = rt2.render(text_input(value2, |_: String| {}).secure(true).into());
     rt2.backend()
         .assert_any(|e| matches!(e, Event::CreateTextInput { secure: true, .. }));
@@ -119,7 +119,7 @@ fn text_input_secure_flag_threads_to_backend() {
 #[test]
 fn text_area_on_key_down_prevent_default_propagates() {
     let rt = TestRuntime::new();
-    let value: Signal<String> = signal!(String::new());
+    let value: Signal<String> = signal(String::new());
     let on_change = move |_: String| {};
     let on_key_down = |_: &KeyEvent| KeyOutcome::PreventDefault;
 
@@ -153,7 +153,7 @@ fn text_area_on_key_down_prevent_default_propagates() {
 #[test]
 fn text_area_defaults_to_wrap() {
     let rt = TestRuntime::new();
-    let value: Signal<String> = signal!(String::new());
+    let value: Signal<String> = signal(String::new());
     let _owner = rt.render(text_area(value, |_: String| {}).into());
     rt.backend()
         .assert_any(|e| matches!(e, Event::CreateTextArea { wrap: true, .. }));
@@ -166,7 +166,7 @@ fn text_area_defaults_to_wrap() {
 #[test]
 fn text_area_code_mode_disables_wrap() {
     let rt = TestRuntime::new();
-    let value: Signal<String> = signal!(String::new());
+    let value: Signal<String> = signal(String::new());
     let _owner = rt.render(text_area(value, |_: String| {}).code_mode().into());
     rt.backend()
         .assert_any(|e| matches!(e, Event::CreateTextArea { wrap: false, .. }));
@@ -178,7 +178,7 @@ fn text_area_code_mode_disables_wrap() {
 #[test]
 fn no_on_key_down_means_no_handler_registered() {
     let rt = TestRuntime::new();
-    let value: Signal<String> = signal!(String::new());
+    let value: Signal<String> = signal(String::new());
     let on_change = move |_: String| {};
 
     let _owner = rt.render(text_input(value, on_change).into());

@@ -65,7 +65,7 @@ fn count_text(events: &[Event], needle: &str) -> usize {
 #[test]
 fn reactive_match_over_call_scrutinee_rerenders_on_signal_change() {
     let rt = TestRuntime::new();
-    let state: Signal<i32> = signal!(0i32);
+    let state: Signal<i32> = signal(0i32);
 
     let tree: Element = ui! {
         view {
@@ -108,7 +108,7 @@ fn reactive_match_over_call_scrutinee_rerenders_on_signal_change() {
 #[test]
 fn reactive_if_chain_over_call_scrutinee_matches_match_behavior() {
     let rt = TestRuntime::new();
-    let state: Signal<i32> = signal!(0i32);
+    let state: Signal<i32> = signal(0i32);
 
     let tree: Element = ui! {
         view {
@@ -152,7 +152,7 @@ fn is_detail(count: i32) -> bool {
 #[test]
 fn reactive_match_call_scrutinee_with_guarded_arm_rerenders() {
     let rt = TestRuntime::new();
-    let state: Signal<i32> = signal!(0i32);
+    let state: Signal<i32> = signal(0i32);
 
     let tree: Element = ui! {
         view {
@@ -215,8 +215,8 @@ fn pick(a: bool, b: bool) -> u8 {
 fn b5_flat_match_default_arm_clones_noncopy_capture_and_rerenders() {
     let rt = TestRuntime::new();
     let app = AppB5 { inner: std::rc::Rc::new(7) };
-    let a: Signal<bool> = signal!(true);
-    let b: Signal<bool> = signal!(false);
+    let a: Signal<bool> = signal(true);
+    let b: Signal<bool> = signal(false);
 
     // The deepest arm MOVES no capture — it CLONES `app` per invocation,
     // which compiles because the single `switch` dispatcher owns `app`.

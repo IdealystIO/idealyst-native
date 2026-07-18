@@ -55,7 +55,7 @@ pub fn install(backend: &mut MacosBackend, spec: MenuBarSpec) {
 ///
 /// # Example
 /// ```ignore
-/// let is_dirty = signal!(false);
+/// let is_dirty = signal(false);
 /// menu::install_reactive(backend, move || MenuBarSpec {
 ///     menus: vec![
 ///         Menu::new("File").items(vec![

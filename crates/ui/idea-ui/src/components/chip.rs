@@ -7,7 +7,7 @@
 //! block for filter rows, choice chips, and multi-select toggles.
 //!
 //! ```ignore
-//! let on = signal!(false);
+//! let on = signal(false);
 //! let on_select: Rc<dyn Fn()> = Rc::new(move || on.set(!on.get()));
 //! ui! {
 //!     Chip(
@@ -174,7 +174,7 @@ recipe!(
         use ::runtime_core::{signal, ui};
         use ::std::rc::Rc;
 
-        let on = signal!(false);
+        let on = signal(false);
         let on_select: Rc<dyn Fn()> = Rc::new(move || on.set(!on.get()));
         ui! {
             Chip(

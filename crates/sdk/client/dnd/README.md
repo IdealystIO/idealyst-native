@@ -61,7 +61,7 @@ struct ChipData { label: &'static str }
 fn board() -> Element {
     // One context for the whole board; payload is the chip.
     let ctx: DragContext<ChipData> = DragContext::new();
-    let bin_slot: Signal<Option<ChipData>> = signal!(None);
+    let bin_slot: Signal<Option<ChipData>> = signal(None);
 
     view(vec![
         chip(&ctx, ChipData { label: "Coral" }),

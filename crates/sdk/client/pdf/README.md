@@ -81,7 +81,7 @@ so updating the signal it reads swaps the page with no remount:
 
 ```rust
 use std::rc::Rc;
-let doc: Signal<Option<Rc<Vec<u8>>>> = signal!(None);
+let doc: Signal<Option<Rc<Vec<u8>>>> = signal(None);
 let viewer = pdf::PdfReactive(move || doc.get(), /*page*/ 0, /*w*/ 520.0, /*h*/ 680.0);
 // from a file picker: doc.set(Some(Rc::new(file_bytes)));
 ```

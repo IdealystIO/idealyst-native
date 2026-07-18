@@ -177,7 +177,7 @@ fn DynamicList(props: &DynamicListProps) -> Element {
         // Each new row carries its OWN `count` signal, allocated inline.
         // (Creating a signal inside `update` is fine — `update` doesn't
         // hold the arena borrow across its closure.)
-        items.update(|l| l.push(Row { id, label: format!("Item {}", id), count: signal!(0) }));
+        items.update(|l| l.push(Row { id, label: format!("Item {}", id), count: signal(0) }));
     };
     let clear = move || items.set(Vec::new());
 
@@ -273,7 +273,7 @@ fn EphemeralRow(props: &EphemeralRowProps) -> Element {
     // Allocated in the render scope. With keyed reconciliation this row's
     // scope is kept across an Add (its key is unchanged), so `count`
     // survives — no need to hoist it into the data like `ItemRow` does.
-    let count = signal!(0);
+    let count = signal(0);
     let inc = move || count.update(|n| *n += 1);
     let remove_label = label.clone();
     let remove = move || labels.update(|l| l.retain(|x| x != &remove_label));
@@ -341,7 +341,7 @@ pub fn app() -> Element {
     //   false → branches render their empty `view {}` (regression check that
     //           an absent branch leaves siblings undisturbed).
     const VISIBLE: bool = true;
-    let visible: Signal<bool> = signal!(VISIBLE);
+    let visible: Signal<bool> = signal(VISIBLE);
 
     // Absolute branch: a 120x120 red box pinned bottom-right. This is the
     // exact shape that collapsed a `create_reactive_anchor` wrapper to 0x0

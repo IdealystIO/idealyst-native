@@ -74,7 +74,7 @@ pub fn app() -> Element {
     // App-level theme-toggle state — lives here (not inside a
     // per-screen scope) so flipping dark mode persists across
     // navigation. Captured by the sidebar builder closure below.
-    let is_dark: Signal<bool> = signal!(false);
+    let is_dark: Signal<bool> = signal(false);
 
     // Keep the document `<body>` background in sync with the active
     // theme's `color-background` token. The framework owns `#app`

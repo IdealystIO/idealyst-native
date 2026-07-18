@@ -13,7 +13,7 @@ use super::debug::time_backend_create;
 use super::style::attach_style;
 use crate::backend::Backend;
 use crate::element::Element;
-use crate::reactive::{self, untrack, Effect};
+use crate::reactive::{self, untrack_for_build, Effect};
 use crate::scheduling::schedule_microtask;
 use crate::sources::StyleSource;
 use std::cell::RefCell;
@@ -140,7 +140,7 @@ fn build_when_closure<B: Backend + 'static>(
         // walker's `create_*` adopt the anchor's SSR children; under
         // a normal mount they build fresh and we `insert` below.
         let mut new_scope = Box::new(reactive::Scope::new());
-        untrack(|| {
+        untrack_for_build(|| {
             // Re-establish the ambient nav context for the duration of the
             // subtree build so links built inside capture the restored
             // navigator. Drops at the end of this closure.
@@ -243,7 +243,7 @@ pub(super) fn build_when_spliced<B: Backend + 'static>(
         // at the region's stable base index. `untrack` keeps inner setup
         // reads from subscribing to THIS outer effect.
         let mut new_scope = Box::new(reactive::Scope::new());
-        untrack(|| {
+        untrack_for_build(|| {
             let _nav_restore = nav_ctx.enter();
             reactive::with_scope(&mut new_scope, || {
                 let branch = if active { then() } else { otherwise() };
@@ -342,7 +342,7 @@ pub(super) fn build_switch_spliced<B: Backend + 'static>(
         *branch_scope_for_effect.borrow_mut() = None;
 
         let mut new_scope = Box::new(reactive::Scope::new());
-        untrack(|| {
+        untrack_for_build(|| {
             let _nav_restore = nav_ctx.enter();
             reactive::with_scope(&mut new_scope, || {
                 // Empty `arms` (the typed `switch()` shape) → always `default()`,
@@ -525,7 +525,7 @@ fn build_switch_closure<B: Backend + 'static>(
     if backend.borrow().is_hydrating() {
         let new_key = (compute)();
         let mut new_scope = Box::new(reactive::Scope::new());
-        untrack(|| {
+        untrack_for_build(|| {
             reactive::with_scope(&mut new_scope, || {
                 let branch = arms
                     .iter()
@@ -619,7 +619,7 @@ fn build_switch_closure<B: Backend + 'static>(
             #[cfg(feature = "debug-stats")]
             let _t_build = crate::debug::now_micros();
             let mut new_scope = Box::new(reactive::Scope::new());
-            untrack(|| {
+            untrack_for_build(|| {
                 // Re-establish the ambient nav context for the subtree
                 // build (the screen's guards are long gone by the time
                 // this deferred microtask fires).

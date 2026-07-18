@@ -292,13 +292,13 @@ impl NavigatorHandler<AndroidBackend> for AndroidDrawerHandler {
                             depth: nav_state.depth,
                             can_go_back: nav_state.can_go_back,
                             is_open: is_open_cap,
-                            leading_intent: runtime_core::signal!(
+                            leading_intent: runtime_core::signal(
                                 LeadingIntent::OpenDrawer
                             ),
-                            trailing_intent: runtime_core::signal!(
+                            trailing_intent: runtime_core::signal(
                                 TrailingIntent::None
                             ),
-                            screen_title: runtime_core::signal!(String::new()),
+                            screen_title: runtime_core::signal(String::new()),
                             on_select,
                             open_drawer,
                             close_drawer,

@@ -34,7 +34,7 @@ use super::debug::time_backend_create;
 use super::style::attach_style;
 use crate::backend::Backend;
 use crate::element::{EachKey, EachSnapshot, Element};
-use crate::reactive::{self, untrack, Effect};
+use crate::reactive::{self, untrack_for_build, Effect};
 use crate::sources::StyleSource;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -73,7 +73,7 @@ fn build_entry<B: Backend + 'static>(
 ) -> Entry<B> {
     let mut scope = Box::new(reactive::Scope::new());
     let mut nodes: Vec<B::Node> = Vec::new();
-    untrack(|| {
+    untrack_for_build(|| {
         reactive::with_scope(&mut scope, || {
             for elem in build() {
                 nodes.push(super::build(backend, slot, elem));
@@ -262,7 +262,7 @@ pub(super) fn build<B: Backend + 'static>(
             *list_scope.borrow_mut() = None;
             backend_for_effect.borrow_mut().clear_children(&anchor_for_effect);
             let mut new_scope = Box::new(reactive::Scope::new());
-            untrack(|| {
+            untrack_for_build(|| {
                 // Re-establish the ambient nav context for the rebuild.
                 let _nav_restore = nav_ctx_fallback.enter();
                 reactive::with_scope(&mut new_scope, || {

@@ -28,7 +28,7 @@
 //!
 //! ```ignore
 //! let av = AnimatedValue::new(initial);
-//! let signal: Signal<f32> = signal!(initial);
+//! let signal: Signal<f32> = signal(initial);
 //! bind_av_to_signal(&av, signal);
 //! // reactive style closure reads `signal.get()`
 //! ```
@@ -150,7 +150,7 @@ fn decay_drag_card() -> Element {
     // Snapshot of `translate` at gesture start. Pan deltas are
     // relative to Began; we add to the cached rest offset so a
     // mid-decay drag picks up where the decay is *right now*.
-    let drag_start: Signal<f32> = signal!(0.0);
+    let drag_start: Signal<f32> = signal(0.0);
 
     let drag_av = translate.clone();
     let start = drag_start;
@@ -836,9 +836,9 @@ fn particle_sim_section() -> Element {
     }
 
     // Toolbar state.
-    let mode: Signal<Mode> = signal!(Mode::Throw);
-    let restitution: Signal<f32> = signal!(0.96);
-    let air_drag: Signal<f32> = signal!(0.0);
+    let mode: Signal<Mode> = signal(Mode::Throw);
+    let restitution: Signal<f32> = signal(0.96);
+    let air_drag: Signal<f32> = signal(0.0);
 
     // Wire slider values into the sim's runtime parameters via a
     // scope-owned effect — reads both signals and copies them into the

@@ -26,7 +26,7 @@ use runtime_core::{signal, text_input, IntoElement};
 #[test]
 fn on_blur_keep_threads_to_backend() {
     let rt = TestRuntime::new();
-    let q = signal!(String::new());
+    let q = signal(String::new());
     let _owner =
         rt.render(text_input(q, |_| {}).on_blur(|| BlurOutcome::Keep).into_element());
 
@@ -41,7 +41,7 @@ fn on_blur_keep_threads_to_backend() {
 #[test]
 fn on_blur_allow_threads_to_backend() {
     let rt = TestRuntime::new();
-    let q = signal!(String::new());
+    let q = signal(String::new());
     let _owner =
         rt.render(text_input(q, |_| {}).on_blur(|| BlurOutcome::Allow).into_element());
 
@@ -58,7 +58,7 @@ fn on_blur_allow_threads_to_backend() {
 #[test]
 fn no_on_blur_registers_no_handler() {
     let rt = TestRuntime::new();
-    let q = signal!(String::new());
+    let q = signal(String::new());
     let _owner = rt.render(text_input(q, |_| {}).into_element());
 
     let core = rt.backend().inspector();

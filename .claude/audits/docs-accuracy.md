@@ -62,9 +62,9 @@ at the doc location, not the framework location.
       the framework + UI crates to confirm it exists with the spelling
       the doc uses. Renames count as findings.
 - [ ] **Function / macro names** — for every code-sample function call
-      (`signal!`, `ui!`, `component!`, `Signal::new`, `count.update`,
+      (`signal`, `ui!`, `component!`, `Signal::new`, `count.update`,
       `count.get`, `on_cleanup`, etc.), confirm the symbol exists. Macro
-      arms used in the docs (e.g. `signal!(value)`) must match a real
+      arms used in the docs (e.g. `signal(value)`) must match a real
       macro arm in `framework/macros`.
 - [ ] **Element prop names** — DSL examples like
       `Button(label = ..., on_click = ...)` or

@@ -7,7 +7,7 @@ problem, one complete solution you can read top-to-bottom.
 The conceptual pages (Reactivity, Styles, Navigation, …) teach the
 framework's vocabulary. The cookbook teaches what to build *with*
 it. The two reference each other but stay in their lanes:
-conceptual pages explain `signal!` and `flat_list`, the recipes
+conceptual pages explain `signal` and `flat_list`, the recipes
 *use* them to build a search-filtered list with debounced input.
 
 ## What goes in the cookbook
@@ -125,7 +125,7 @@ use crate::theme::{MyTheme};  // your app's theme; see Styles
 pub fn app() -> Element {
     install_theme(MyTheme::light());
 
-    let is_dark = signal!(false);
+    let is_dark = signal(false);
 
     ui! {
         ScrollView {
@@ -205,7 +205,7 @@ once the `docs!` macro lands.)*
 **Persist the choice.** Wrap the signal write in an Effect that
 syncs to local storage on web (via `web_sys::Storage`) or to
 `UserDefaults`/`SharedPreferences` on native. Read the persisted
-value at app start and pass it to `signal!`.
+value at app start and pass it to `signal(…)`.
 
 **Follow the OS.** Read `Backend::color_scheme()` at startup to
 seed the signal, then listen for OS-level appearance changes.

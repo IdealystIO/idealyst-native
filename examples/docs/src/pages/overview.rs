@@ -345,11 +345,11 @@ docs! {
     },
 
     section(heading = "Signals") {
-        p("A signal holds a value. You make one with ", code("signal!(initial)"),
+        p("A signal holds a value. You make one with ", code("signal(initial)"),
           ", read it with ", code(".get()"), ", and change it with ",
           code(".set(new)"), " or ", code(".update(|v| ...)"), "."),
         code(rust, r##"
-            let count = signal!(0);
+            let count = signal(0);
             count.set(5);
             count.update(|n| *n += 1);
         "##),

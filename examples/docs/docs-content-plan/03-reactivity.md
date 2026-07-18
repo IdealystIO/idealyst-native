@@ -23,12 +23,12 @@ underneath.
 ```rust
 use runtime_core::signal;
 
-let count = signal!(0);
-let name = signal!(String::from("Ada"));
-let items = signal!(Vec::<Item>::new());
+let count = signal(0);
+let name = signal(String::from("Ada"));
+let items = signal(Vec::<Item>::new());
 ```
 
-`signal!(v)` is shorthand for `Signal::new(v)`. The value is stored
+`signal(v)` is shorthand for `Signal::new(v)`. The value is stored
 in a thread-local arena; the `Signal<T>` you hold back is a small
 Copy token (a couple of u32s) that indexes into the arena. This is
 why you can pass signals into closures and child components without
@@ -133,7 +133,7 @@ tree, use `watch(|| ...)` and hold the returned `Subscription`.)
 ```rust
 use runtime_core::{effect, signal};
 
-let count = signal!(0);
+let count = signal(0);
 effect!({
     println!("count is now {}", count.get());
 });
@@ -251,8 +251,8 @@ computed value used in two places — you can compose the same shape
 manually with an effect that writes to a derived signal:
 
 ```rust
-let count = signal!(0);
-let doubled = signal!(0);
+let count = signal(0);
+let doubled = signal(0);
 effect!({ doubled.set(count.get() * 2) });
 ```
 
@@ -392,9 +392,9 @@ scratch. Whatever signals the body reads on this run become the
 new set; everything from the previous run is dropped.
 
 ```rust
-let mode = signal!("a");
-let a_value = signal!(1);
-let b_value = signal!(2);
+let mode = signal("a");
+let a_value = signal(1);
+let b_value = signal(2);
 
 effect!({
     if mode.get() == "a" {
@@ -449,7 +449,7 @@ code:
 The smallest reactive thing:
 
 ```rust
-let count = signal!(0);
+let count = signal(0);
 ui! {
     Text { format!("Count: {}", count.get()) }
     Button(label = "++", on_click = move || count.update(|n| *n += 1))
@@ -473,7 +473,7 @@ fn counter(count: Signal<i32>) -> Element {
 
 #[component]
 fn app() -> Element {
-    let count = signal!(0);
+    let count = signal(0);
     ui! {
         counter(count = count)
         Text { format!("Doubled: {}", count.get() * 2) }
@@ -505,8 +505,8 @@ ui! {
 ### Computed value used in two places
 
 ```rust
-let count = signal!(0);
-let doubled = signal!(0);
+let count = signal(0);
+let doubled = signal(0);
 effect!({ doubled.set(count.get() * 2) });
 
 ui! {
@@ -551,7 +551,7 @@ Same root cause: the closure runs at construction, the read inside
 is what tracks.
 
 ```rust
-let count = signal!(0);
+let count = signal(0);
 let initial = count.get();    // 0, frozen
 ui! {
     // Wrong: shows "Initial: 0" forever
@@ -566,7 +566,7 @@ context. If you want a frozen value, that's already what you have
 ### Writing a signal from inside its own Effect
 
 ```rust
-let count = signal!(0);
+let count = signal(0);
 effect!({
     let v = count.get();
     count.set(v + 1);    // re-entry: this run is skipped, no loop
@@ -581,10 +581,10 @@ is suppressed.
 ### Reading a signal whose scope has dropped
 
 ```rust
-let s = signal!(0);          // owned by current scope
+let s = signal(0);          // owned by current scope
 let _ = std::thread::spawn(move || s.get());  // wrong: panic on other thread
 
-// Inside ui! { for ... { let inner_signal = signal!(0); ... } }
+// Inside ui! { for ... { let inner_signal = signal(0); ... } }
 // If you hold inner_signal past the iteration, .get() panics later.
 ```
 

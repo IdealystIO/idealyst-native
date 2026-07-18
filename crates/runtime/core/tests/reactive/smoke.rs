@@ -13,7 +13,7 @@ use crate::common::{counted_effect, counted_memo};
 
 #[test]
 fn signal_get_set_roundtrip() {
-    let s = signal!(0);
+    let s = signal(0);
     assert_eq!(s.get(), 0);
     s.set(7);
     assert_eq!(s.get(), 7);
@@ -21,7 +21,7 @@ fn signal_get_set_roundtrip() {
 
 #[test]
 fn effect_fires_initial_and_on_change() {
-    let s: Signal<i32> = signal!(0);
+    let s: Signal<i32> = signal(0);
     let (counter, _e) = counted_effect(move || {
         let _ = s.get();
     });
@@ -44,7 +44,7 @@ fn effect_fires_initial_and_on_change() {
 /// sense rather than imposed globally.
 #[test]
 fn signal_set_always_refires_even_with_same_value() {
-    let s: Signal<i32> = signal!(42);
+    let s: Signal<i32> = signal(42);
     let (counter, _e) = counted_effect(move || {
         let _ = s.get();
     });
@@ -67,7 +67,7 @@ fn signal_set_always_refires_even_with_same_value() {
 /// happens only when a tracked dependency changes.
 #[test]
 fn memo_fires_twice_on_creation_then_cached_for_reads() {
-    let s: Signal<i32> = signal!(0);
+    let s: Signal<i32> = signal(0);
     let (mcount, m) = counted_memo(move || s.get() * 2);
 
     assert_eq!(mcount.get(), 2, "memo fires twice on creation");
@@ -91,7 +91,7 @@ fn memo_fires_twice_on_creation_then_cached_for_reads() {
 /// optimization callers depend on.
 #[test]
 fn memo_skips_propagation_when_output_unchanged() {
-    let s: Signal<i32> = signal!(0);
+    let s: Signal<i32> = signal(0);
     let (mcount, m) = counted_memo(move || s.get() / 10); // 0..9 all map to 0
     let (downstream_count, _e) = counted_effect(move || {
         let _ = m.get();

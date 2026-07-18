@@ -29,6 +29,7 @@ mod doc_check;
 // is only called under `strict-naming` — suppress dead-code when off.
 #[cfg_attr(not(feature = "strict-naming"), allow(dead_code))]
 mod naming_check;
+mod inline_props;
 mod invocation_macro;
 mod jsx;
 mod lazy;
@@ -72,6 +73,8 @@ use syn::ItemFn;
 #[proc_macro_derive(IdealystSchema, attributes(schema))]
 pub fn derive_idealyst_schema(input: TokenStream) -> TokenStream {
     let parsed = parse_macro_input!(input as syn::DeriveInput);
+    // `mut` is exercised only by the feature-gated `extend`s below.
+    #[allow(unused_mut)]
     let mut out = proc_macro2::TokenStream::new();
     // `strict-docs`: one `compile_error!` per undocumented prop/variant.
     #[cfg(feature = "strict-docs")]
@@ -184,7 +187,7 @@ pub fn ui(input: TokenStream) -> TokenStream {
     // in a dead-but-typed position so the IDE stays useful while typing.
     let input: proc_macro2::TokenStream = input.into();
     match syn::parse2::<ui::Ui>(input.clone()) {
-        Ok(parsed) => ui::emit(parsed).into(),
+        Ok(parsed) => ui::emit(parsed, &input).into(),
         Err(err) => ui::emit_recovery(input, &err).into(),
     }
 }
@@ -211,7 +214,7 @@ pub fn jsx(input: TokenStream) -> TokenStream {
     // (it walks raw tokens), so `jsx!` reuses `ui::emit_recovery`.
     let input: proc_macro2::TokenStream = input.into();
     match syn::parse2::<jsx::Jsx>(input.clone()) {
-        Ok(parsed) => jsx::emit(parsed).into(),
+        Ok(parsed) => jsx::emit(parsed, &input).into(),
         Err(err) => ui::emit_recovery(input, &err).into(),
     }
 }
@@ -252,9 +255,32 @@ pub fn text_fmt(input: TokenStream) -> TokenStream {
 /// This replaced the old per-component `macro_rules!` — see
 /// [`invocation_macro`].
 ///
+/// Props can be declared two ways:
+///
+/// **Inline** (preferred) — ordinary fn parameters; the macro generates
+/// the props struct, wrapping each data param `T` → `Reactive<T>` with
+/// the same rules as `#[props]` (so the body sees `Reactive<String>` for
+/// a `label: String` param — call `.get()`). Per-arg `#[prop(...)]`
+/// accepts `default = expr`, `static`, `reactive` (plus `optional` /
+/// `into` as parity no-ops), and doc comments on a param become the
+/// prop's hover docs. See [`inline_props`].
+///
+/// ```ignore
+/// #[component]
+/// fn Badge(label: String, #[prop(default = 3)] count: i32) -> Element {
+///     ui! { text(move || format!("{} ({})", label.get(), count.get())) }
+/// }
+/// ```
+///
+/// **Explicit struct** — a single `props: &NameProps` / `props: NameProps`
+/// parameter referencing a hand-written (usually `#[props]`) struct. Used
+/// when the struct needs extra derives (`IdealystSchema`, doc-controls) or
+/// a hand-rolled `Default`.
+///
 /// Optional attribute arguments:
 /// - `default(field = expr, …)` — declare per-field defaults the
-///   invocation macro fills in when the caller omits them.
+///   invocation macro fills in when the caller omits them (explicit-struct
+///   form only; inline props use `#[prop(default = …)]`).
 /// - `children` — mark this component as a container (informational; the
 ///   invocation macro is unchanged).
 /// `#[props]` — reactive-by-default props struct. Rewrites each scalar-data
@@ -301,6 +327,54 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
     let strict_naming_err = naming_check::require_component_pascal_case(&item_fn);
     #[cfg(not(feature = "strict-naming"))]
     let strict_naming_err = proc_macro2::TokenStream::new();
+    // `#[method]` fns present? Inject the `bind_to: Option<Ref<{Handle}>>`
+    // prop BEFORE inline-props expansion so it becomes a real field on the
+    // generated props struct — this is what lets the ordinary tag form
+    // (`ui! { Counter(bind_to = h) }`) bind a component's method handle.
+    // The legacy explicit-props form can't take an injected field (the
+    // struct is author-written); it keeps the `Bindable`-return binding.
+    let mut bind_to_injected = false;
+    if methods_block::has_method_fns(&item_fn)
+        && !inline_props::is_legacy_props_sig(&item_fn.sig)
+        && item_fn.sig.generics.params.is_empty()
+    {
+        let already_declared = item_fn.sig.inputs.iter().any(|a| {
+            matches!(a, syn::FnArg::Typed(pt)
+                if matches!(&*pt.pat, syn::Pat::Ident(pi) if pi.ident == "bind_to"))
+        });
+        if already_declared {
+            return syn::Error::new_spanned(
+                &item_fn.sig.ident,
+                "components with `#[method]` fns receive an auto-injected `bind_to` \
+                 prop for their handle; rename your own `bind_to` parameter",
+            )
+            .to_compile_error()
+            .into();
+        }
+        let handle = methods_block::derive_handle_name(&item_fn.sig.ident);
+        let doc = format!(
+            "Fills with this component's [`{handle}`] at build — bind the imperative \
+             methods: `ui! {{ Tag(bind_to = my_ref) }}`, then invoke via \
+             `my_ref.get()` (not `.with()` — methods write signals)."
+        );
+        let param: syn::FnArg = syn::parse_quote! {
+            #[doc = #doc]
+            bind_to: ::core::option::Option<::runtime_core::Ref<#handle>>
+        };
+        item_fn.sig.inputs.push(param);
+        bind_to_injected = true;
+    }
+
+    // Inline-props shape (Leptos-style fn parameters): generates the props
+    // struct + dispatch glue and rewrites the signature in place (param
+    // types wrapped `Reactive<T>`, `#[prop]`/doc attrs stripped). Must run
+    // BEFORE the body rewrites so `reactivity::rewrite` sees the final
+    // parameter list, and before re-emission so rustc never sees the param
+    // attrs. `None` → classic explicit-props path, unchanged.
+    let inline_glue = match inline_props::try_expand(&mut item_fn, &attr) {
+        Ok(g) => g,
+        Err(e) => return e.to_compile_error().into(),
+    };
     // Components read as PascalCase at the `ui!` call site. Authors who
     // also name the fn itself PascalCase — the "true `fn` component"
     // style — would otherwise trip Rust's `non_snake_case` lint. Inject
@@ -308,14 +382,29 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
     // can be PascalCase without a manual allow. No-op for the
     // conventional snake_case component fn.
     item_fn.attrs.push(syn::parse_quote!(#[allow(non_snake_case)]));
-    // Look for a `methods!` block inside the body and lift it out into
+    // Look for `#[method]` fns inside the body and lift it out into
     // a generated handle struct + Bindable wiring. The fn's body and
-    // return type are rewritten in place when methods! is present.
-    let (methods_extra, method_infos) = match methods_block::extract_and_rewrite(&mut item_fn) {
+    // return type are rewritten in place when #[method] fns are present.
+    let (methods_extra, method_infos) = match methods_block::extract_and_rewrite(&mut item_fn, bind_to_injected) {
         Ok((extra, infos)) => (extra, infos),
         Err(e) => return e.to_compile_error().into(),
     };
     reactivity::rewrite(&mut item_fn);
+
+    // Bracket the body with a build probe so the runtime knows "a
+    // component body is executing" — that's what powers the dev-build
+    // untracked-build-read diagnostic (the hoisted-snapshot trap:
+    // `let ok = x.get()…;` at body level looks reactive but froze).
+    // The probe fn is `#[inline]` and compiles to nothing in release
+    // builds; RAII pop covers early returns.
+    {
+        let name_lit = item_fn.sig.ident.to_string();
+        let probe: syn::Stmt = syn::parse_quote! {
+            let __idealyst_build_probe =
+                ::runtime_core::__component_build_probe(#name_lit);
+        };
+        item_fn.block.stmts.insert(0, probe);
+    }
 
     // When the `debug-stats` feature is on (forwarded from
     // `runtime-core/debug-stats`), wrap the rewritten body with
@@ -325,7 +414,12 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
     #[cfg(feature = "debug-stats")]
     wrap_component_body_for_debug(&mut item_fn);
 
-    let invocation = invocation_macro::generate_build_impl(&item_fn, &attr);
+    // Inline mode brings its own dispatch glue (struct + Default +
+    // BuildElement); the legacy path derives it from the props-struct sig.
+    let invocation = match inline_glue {
+        Some(glue) => glue,
+        None => invocation_macro::generate_build_impl(&item_fn, &attr),
+    };
 
     // When the `catalog` feature is on, emit an inventory submission so the
     // component is discoverable through `mcp-catalog`'s catalog. The
@@ -362,7 +456,7 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
     // runtime swaps the function pointer the outer fn calls. When
     // the feature is off, `item_fn` is emitted unchanged. The
     // wrapper is the LAST transform so it sees the fully-rewritten
-    // body (reactivity, methods!, debug-stats).
+    // body (reactivity, #[method] lifting, debug-stats).
     #[cfg(feature = "hot-reload")]
     let item_fn = split_for_hot_reload(item_fn);
     #[cfg(not(feature = "hot-reload"))]

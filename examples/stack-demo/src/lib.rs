@@ -63,7 +63,7 @@ pub fn app() -> Element {
     // root scope, not a per-screen one. Push/pop only releases per-
     // screen scopes; the Counter screen will see whichever value the
     // counter held when it last unmounted.
-    let count: Signal<i32> = signal!(0);
+    let count: Signal<i32> = signal(0);
 
     let builder = Navigator::new(&HOME)
         .screen(HOME, move |_| Screen::new(home_page(nav)).title("Home"))

@@ -374,7 +374,7 @@ pub fn ElementsPanel(props: ElementsPanelProps) -> Element {
     let ElementsPanelProps { snapshot, selected, expanded, invoke_arg } = props;
 
     // Visible rows — recompute on tree / expand change.
-    let rows: Signal<Vec<Value>> = memo(move || {
+    let rows: runtime_core::ReadSignal<Vec<Value>> = memo(move || {
         let snap = snapshot.get();
         let exp = expanded.get();
         // element_id → component name, so a component root gets a synthetic

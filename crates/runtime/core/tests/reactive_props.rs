@@ -23,7 +23,7 @@ use common::{Event, TestRuntime};
 #[test]
 fn signal_backed_reactive_content_updates_text_in_place() {
     let rt = TestRuntime::new();
-    let name: Signal<String> = signal!("Ada".to_string());
+    let name: Signal<String> = signal("Ada".to_string());
 
     // `content = name` lowers (via the invocation macro's `.into()`) to
     // `Reactive::from(name)` → `Reactive::Dynamic`. Build it directly
@@ -62,7 +62,7 @@ fn signal_backed_reactive_content_updates_text_in_place() {
 #[test]
 fn rx_computed_reactive_content_updates_in_place() {
     let rt = TestRuntime::new();
-    let count: Signal<i32> = signal!(0);
+    let count: Signal<i32> = signal(0);
 
     let content: Reactive<String> = runtime_core::rx!(format!("clicked {}×", count.get()));
     let _owner = rt.render(text(content).into());
@@ -98,7 +98,7 @@ fn rx_computed_reactive_content_updates_in_place() {
 #[test]
 fn static_reactive_content_is_not_reactive() {
     let rt = TestRuntime::new();
-    let unrelated: Signal<i32> = signal!(0);
+    let unrelated: Signal<i32> = signal(0);
 
     // `content = "hi".to_string()` → `Reactive::Static`.
     let content: Reactive<String> = "hi".to_string().into();

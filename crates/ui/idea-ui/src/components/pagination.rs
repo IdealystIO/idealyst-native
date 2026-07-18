@@ -1,7 +1,7 @@
 //! `Pagination` — a windowed page selector (‹ 1 … 4 5 6 … 20 ›).
 //!
 //! ```ignore
-//! let page = signal!(1usize);
+//! let page = signal(1usize);
 //! ui! {
 //!     Pagination(
 //!         page = page,

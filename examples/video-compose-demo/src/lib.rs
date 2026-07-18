@@ -79,12 +79,12 @@ fn preview(stream: Signal<Option<MediaStream>>) -> Element {
 pub fn app() -> Element {
     install_idea_theme(light_theme());
 
-    let input_sig: Signal<Option<MediaStream>> = signal!(None);
-    let output_sig: Signal<Option<MediaStream>> = signal!(None);
-    let status: Signal<String> = signal!("Idle — press Start camera".to_string());
-    let started: Signal<bool> = signal!(false);
+    let input_sig: Signal<Option<MediaStream>> = signal(None);
+    let output_sig: Signal<Option<MediaStream>> = signal(None);
+    let status: Signal<String> = signal("Idle — press Start camera".to_string());
+    let started: Signal<bool> = signal(false);
     // Reactive watermark opacity — the pipeline re-reads it every composited frame.
-    let opacity: Signal<f32> = signal!(1.0);
+    let opacity: Signal<f32> = signal(1.0);
 
     let status_text = text(move || status.get()).into_element();
 

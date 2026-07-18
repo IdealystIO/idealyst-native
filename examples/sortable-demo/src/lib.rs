@@ -113,9 +113,9 @@ pub fn app() -> Element {
 fn SortableList() -> Element {
     let sort = Sort {
         ctx: DragContext::new(),
-        order: signal!(ITEMS.iter().map(|i| i.id).collect::<Vec<_>>()),
-        dragging: signal!(None),
-        over: signal!(None),
+        order: signal(ITEMS.iter().map(|i| i.id).collect::<Vec<_>>()),
+        dragging: signal(None),
+        over: signal(None),
     };
 
     // The list container is the positioned ancestor for the absolutely-placed

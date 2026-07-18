@@ -8,7 +8,7 @@
 //!
 //! #[component(default(initial = 0))]
 //! pub fn Counter(props: &CounterProps) -> Element {
-//!     let count = signal!(props.initial);
+//!     let count = signal(props.initial);
 //!     effect!({
 //!         todo!("port handler-body: console.log('count:', count)");
 //!     });
@@ -168,7 +168,7 @@ fn emit_reactive(out: &mut String, r: &Reactive) {
             // `setter` is intentionally unused at emission time —
             // the lowering pass already rewrote setter calls in
             // any handler/effect bodies before we got here.
-            out.push_str(&format!("    let {} = signal!({});\n", name, init));
+            out.push_str(&format!("    let {} = signal({});\n", name, init));
         }
         Reactive::Effect { body, deps } => {
             // `effect!` is the framework macro form — handles

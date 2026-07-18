@@ -97,6 +97,10 @@ features = [
     "console",
     "CssRule",
     "CssRuleList",
+    # `CssMediaRule` is only consumed by the breakpoint-overlay cascade-order
+    # regression test (identifying a class's `@media` overlay in the CSSOM),
+    # but web-sys features aren't test-scoped.
+    "CssMediaRule",
     "CssStyleDeclaration",
     "CssStyleRule",
     "CssStyleSheet",

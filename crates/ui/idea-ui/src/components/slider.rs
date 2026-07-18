@@ -5,7 +5,7 @@
 //! `Signal<f32>` and updates it in `on_change`.
 //!
 //! ```ignore
-//! let volume = signal!(0.5_f32);
+//! let volume = signal(0.5_f32);
 //! ui! {
 //!     Slider(
 //!         value = volume,

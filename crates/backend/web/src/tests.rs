@@ -1088,7 +1088,7 @@ fn install_for_text_bindings() -> std::rc::Rc<std::cell::RefCell<WebBackend>> {
 #[wasm_bindgen_test]
 fn regression_text_fmt_signal_set_updates_dom_via_js_binding() {
     let backend = install_for_text_bindings();
-    let count: runtime_core::Signal<u32> = runtime_core::signal!(0u32);
+    let count: runtime_core::Signal<u32> = runtime_core::signal(0u32);
 
     // Mount through the public `render` entry point so we exercise
     // the walker's JS-binding path (the same path real apps take).
@@ -1151,7 +1151,7 @@ fn regression_text_fmt_signal_set_updates_dom_via_js_binding() {
 #[wasm_bindgen_test]
 fn regression_text_fmt_existing_js_notifier_not_clobbered() {
     let backend = install_for_text_bindings();
-    let s: runtime_core::Signal<u32> = runtime_core::signal!(0u32);
+    let s: runtime_core::Signal<u32> = runtime_core::signal(0u32);
 
     // Pre-install a counter notifier that ALSO calls into the JS
     // dispatcher (so the text binding still works downstream). The
@@ -1210,7 +1210,7 @@ fn regression_text_fmt_existing_js_notifier_not_clobbered() {
 #[wasm_bindgen_test]
 fn regression_text_fmt_two_bindings_one_signal() {
     let backend = install_for_text_bindings();
-    let s: runtime_core::Signal<u32> = runtime_core::signal!(0u32);
+    let s: runtime_core::Signal<u32> = runtime_core::signal(0u32);
 
     // Render two Text leaves under one View — same signal feeds
     // both via independent `text_fmt!` calls.
@@ -2369,4 +2369,146 @@ fn web_on_error_fires_on_img_error_event() {
     let ev = web_sys::Event::new("error").unwrap();
     img.dispatch_event(&ev).unwrap();
     assert_eq!(fired.get(), 1, "on_error fires once on the error event");
+}
+
+// ---------------------------------------------------------------------------
+// Breakpoint overlay survives class re-mint in cascade order
+// ---------------------------------------------------------------------------
+
+/// REGRESSION TEST.
+///
+/// A dynamic class's base rule and its `@media (min-width: …)` overlay
+/// have EQUAL specificity (same class selector); the overlay only wins
+/// because it sits later in the sheet (mobile-first source order). When
+/// the last node using the class is unstyled (a `switch`-keyed subtree
+/// rebuild on a `resource` refetch is the real-world trigger), the
+/// class's slots are freed base-first into `free_rule_indices`; the
+/// per-rule LIFO recycle in `insert_rule_raw` then handed the re-minted
+/// base rule the overlay's (higher) slot and the overlay the base's
+/// (lower) slot — physically inverting the pair. From then on the base
+/// rule won at EVERY viewport width and the desktop layout silently
+/// degraded to the mobile one until a full page reload.
+///
+/// The fix (`insert_rule_group`) draws the group's recycled slots up
+/// front and assigns them in ascending order, so the base always lands
+/// physically before its overlays. This test releases + re-mints the
+/// same styled content and asserts the physical CSSOM order.
+#[wasm_bindgen_test]
+fn regression_breakpoint_overlay_survives_class_remint_in_cascade_order() {
+    use runtime_core::{Breakpoint, Length, StyleRules, Tokenized};
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+
+    let make_base = || {
+        Rc::new(StyleRules {
+            flex_basis: Some(Tokenized::Literal(Length::Percent(100.0))),
+            ..Default::default()
+        })
+    };
+    let make_overlay = || {
+        Rc::new(StyleRules {
+            flex_basis: Some(Tokenized::Literal(Length::Px(360.0))),
+            ..Default::default()
+        })
+    };
+
+    // Locate the physical CSSOM positions of the class's base style
+    // rule and its @media overlay rule.
+    let find_positions = |backend: &mut WebBackend, class: &str| -> (u32, u32) {
+        let sheet = backend.sheet();
+        let rules = sheet.css_rules().expect("css_rules");
+        let selector = format!(".{class}");
+        let mut base_pos = None;
+        let mut media_pos = None;
+        for i in 0..rules.length() {
+            let Some(r) = rules.get(i) else { continue };
+            if let Some(style_rule) = r.dyn_ref::<web_sys::CssStyleRule>() {
+                if style_rule.selector_text() == selector {
+                    base_pos = Some(i);
+                }
+            } else if r.dyn_ref::<web_sys::CssMediaRule>().is_some()
+                && r.css_text().contains(class)
+            {
+                media_pos = Some(i);
+            }
+        }
+        (
+            base_pos.expect("base class rule must be in the sheet"),
+            media_pos.expect("@media overlay rule must be in the sheet"),
+        )
+    };
+
+    use runtime_core::Backend;
+
+    // Initial mint on node 1: appended in source order, base < media.
+    let element1 = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&element1).unwrap();
+    let node1: web_sys::Node = element1.unchecked_into();
+    backend.apply_styled_variants(
+        &node1,
+        &make_base(),
+        &[],
+        &[(Breakpoint::Lg, make_overlay())],
+        &[],
+    );
+    let id1 = backend.node_id(&node1);
+    let class = backend
+        .dynamic
+        .get(&id1)
+        .expect("node 1 must hold a dynamic slot")
+        .shared
+        .class_name
+        .clone();
+    let (base_before, media_before) = find_positions(&mut backend, &class);
+    assert!(
+        base_before < media_before,
+        "sanity: initial mint must emit base ({base_before}) before @media ({media_before})",
+    );
+
+    // Release: last user gone → both slots freed (base-first). This is
+    // what a switch-keyed subtree teardown does through
+    // `on_node_unstyled`.
+    backend.drop_dynamic_slot(id1);
+
+    // Re-mint the SAME content on a fresh node — the resolution cache
+    // hands the walker fresh Rcs after a rebuild, so use fresh Rcs
+    // here too. Pre-fix, the LIFO recycle inverted the pair.
+    let element2 = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&element2).unwrap();
+    let node2: web_sys::Node = element2.unchecked_into();
+    backend.apply_styled_variants(
+        &node2,
+        &make_base(),
+        &[],
+        &[(Breakpoint::Lg, make_overlay())],
+        &[],
+    );
+    let id2 = backend.node_id(&node2);
+    let reminted = backend
+        .dynamic
+        .get(&id2)
+        .expect("node 2 must hold a dynamic slot")
+        .shared
+        .class_name
+        .clone();
+    assert_eq!(reminted, class, "same content must re-mint the same class");
+
+    let (base_after, media_after) = find_positions(&mut backend, &class);
+    assert!(
+        base_after < media_after,
+        "re-minted base rule (index {base_after}) must stay physically BEFORE its @media \
+         overlay (index {media_after}); inverted order makes the base win at every viewport \
+         width and the breakpoint layout silently stops applying",
+    );
+
+    // The re-mint must have recycled the freed slots, not appended —
+    // otherwise churn-heavy subtrees grow the sheet without bound.
+    assert_eq!(
+        (base_after, media_after),
+        (base_before, media_before),
+        "re-mint must reuse the freed slots at their original indices",
+    );
 }

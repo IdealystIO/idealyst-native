@@ -25,7 +25,7 @@ use syn::ItemFn;
 /// than failing the user's build. The user's real `ui!` expansion
 /// surfaces any genuine syntax error.
 ///
-/// `methods` carries the parsed `methods!` block (or empty when the
+/// `methods` carries the parsed `#[method]` fns (or empty when the
 /// component declares none) — each method becomes one
 /// `MethodEntry` submission tagged with this component as parent.
 /// Animations declared via `animated!(...)` inside the body are

@@ -305,12 +305,12 @@ docs! {
     }
 
     section(heading = "Signals") {
-        p("Make a signal with ", code("signal!(initial)"), ". Read with ",
+        p("Make a signal with ", code("signal(initial)"), ". Read with ",
           code(".get()"), " and write with ", code(".set(...)"),
           " or ", code(".update(|v| ...)"), "."),
 
         code(rust) = r#"
-            let count = signal!(0);
+            let count = signal(0);
             count.set(5);                  // replace
             count.update(|n| *n += 1);     // mutate in place
         "#,
@@ -455,7 +455,7 @@ pub fn page() -> Element {
 
                 Section(heading = "Signals".to_string()) {
                     Body(/* spans → rendered with code-styling */)
-                    CodeBlock(language = "rust".to_string(), source = "let count = signal!(0);\n...".to_string())
+                    CodeBlock(language = "rust".to_string(), source = "let count = signal(0);\n...".to_string())
                     Body(...)
                 }
 
@@ -497,12 +497,12 @@ pub static PAGE_META: PageMeta = PageMeta {
             blocks: &[
                 BlockMeta::Paragraph(&[
                     Span::Text("Make a signal with "),
-                    Span::Code("signal!(initial)"),
+                    Span::Code("signal(initial)"),
                     Span::Text(". Read with "),
                     Span::Code(".get()"),
                     /* ... */
                 ]),
-                BlockMeta::Code { language: "rust", source: "let count = signal!(0);\n..." },
+                BlockMeta::Code { language: "rust", source: "let count = signal(0);\n..." },
                 /* ... */
             ],
         },

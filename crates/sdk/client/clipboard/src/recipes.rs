@@ -23,7 +23,7 @@ recipe!(
         use ::runtime_core::{signal, text, ui};
 
         // The text shown after the copy + read-back round trip.
-        let pasted = signal!(String::new());
+        let pasted = signal(String::new());
 
         // The button's press handler. A bare `Fn()` closure is an
         // `IntoAction`, so it drops straight into `on_click`. `Signal` is

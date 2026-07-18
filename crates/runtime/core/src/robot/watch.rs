@@ -16,7 +16,7 @@
 //! Rust — rendering a value needs `Debug`, forcing that on every signal
 //! breaks the many signals over non-`Debug` types, and the "use Debug if
 //! present" specialization trick isn't inference-safe (it fails to
-//! compile for inference-deferred types like `signal!(None)`).
+//! compile for inference-deferred types like `signal(None)`).
 //!
 //! # Generational safety
 //!
@@ -39,7 +39,6 @@ use std::rc::Rc;
 
 use serde_json::Value;
 
-use crate::reactive::Signal;
 
 struct WatchEntry {
     name: String,
@@ -69,7 +68,13 @@ thread_local! {
 ///
 /// Calling twice on the same slot replaces the prior entry. No-op in
 /// non-`robot` builds (the whole module is gated).
-pub fn watch_signal<T: Clone + Debug + 'static>(name: impl Into<String>, signal: Signal<T>) {
+pub fn watch_signal<T: Clone + Debug + 'static>(
+    name: impl Into<String>,
+    signal: impl Into<crate::reactive::ReadSignal<T>>,
+) {
+    // Watching only READS — accept either the unified handle or the read
+    // half (so a `memo` output is watchable directly).
+    let signal = signal.into();
     let reader: Rc<dyn Fn() -> Value> = Rc::new(move || {
         // Untracked: querying must never subscribe a scope. Liveness is
         // checked by the read path before this runs, so `get()` won't
@@ -198,7 +203,7 @@ pub(crate) fn clear() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reactive::{with_scope, Scope};
+    use crate::reactive::{with_scope, Scope, Signal};
 
     #[test]
     fn watch_then_read_returns_live_debug_value() {

@@ -77,7 +77,7 @@ fn why_fast() -> Element {
 }
 
 fn fine_grained() -> Element {
-    let example = "let count = signal!(0);\n\
+    let example = "let count = signal(0);\n\
                    \n\
                    ui! {\n    \
                        view {\n        \

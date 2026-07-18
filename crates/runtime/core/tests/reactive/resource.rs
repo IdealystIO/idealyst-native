@@ -20,7 +20,7 @@ use runtime_core::{resource, signal, Signal};
 /// Synchronous fetcher → immediate success state.
 #[test]
 fn resource_with_sync_ok_fetcher() {
-    let trigger: Signal<i32> = signal!(0);
+    let trigger: Signal<i32> = signal(0);
     let r = resource(trigger, |_id: i32, _cancel| async move { Ok::<&str, &str>("hello") });
 
     let s = r.state();
@@ -32,7 +32,7 @@ fn resource_with_sync_ok_fetcher() {
 /// Synchronous fetcher → error state.
 #[test]
 fn resource_with_sync_err_fetcher() {
-    let trigger: Signal<i32> = signal!(0);
+    let trigger: Signal<i32> = signal(0);
     let r = resource(trigger, |_id: i32, _cancel| async move { Err::<&str, &str>("boom") });
 
     let s = r.state();
@@ -44,7 +44,7 @@ fn resource_with_sync_err_fetcher() {
 /// Dep change re-runs the fetcher with the new input.
 #[test]
 fn resource_refetches_on_dep_change() {
-    let id: Signal<i32> = signal!(1);
+    let id: Signal<i32> = signal(1);
     let r = resource(id, |id: i32, _cancel| async move { Ok::<String, &str>(format!("user-{id}")) });
 
     assert_eq!(r.data(), Some("user-1".to_string()));
@@ -64,7 +64,7 @@ fn resource_refetch_method() {
     let call_count: Rc<Cell<usize>> = Rc::new(Cell::new(0));
     let count_for_fetcher = call_count.clone();
 
-    let id: Signal<i32> = signal!(0);
+    let id: Signal<i32> = signal(0);
     let r = resource(id, move |_id: i32, _cancel| {
         let c = count_for_fetcher.clone();
         async move {
@@ -88,7 +88,7 @@ fn resource_refetch_method() {
 /// Accessor methods agree with the snapshot returned by `state()`.
 #[test]
 fn accessors_match_state_snapshot() {
-    let id: Signal<i32> = signal!(0);
+    let id: Signal<i32> = signal(0);
     let r = resource(id, |_: i32, _cancel| async move { Ok::<i32, &str>(42) });
 
     let s = r.state();
@@ -101,7 +101,7 @@ fn accessors_match_state_snapshot() {
 /// enum. Field access shape is what the docs promise.
 #[test]
 fn resource_state_struct_shape() {
-    let id: Signal<i32> = signal!(0);
+    let id: Signal<i32> = signal(0);
     let r = resource(id, |_: i32, _cancel| async move { Ok::<i32, &str>(42) });
 
     let s = r.state();
@@ -117,7 +117,7 @@ fn resource_state_struct_shape() {
 fn resource_data_reads_are_tracked() {
     use std::cell::Cell;
     use std::rc::Rc;
-    let id: Signal<i32> = signal!(1);
+    let id: Signal<i32> = signal(1);
     let r = resource(id, |id: i32, _cancel| async move { Ok::<i32, &str>(id * 10) });
 
     let observed: Rc<Cell<Option<i32>>> = Rc::new(Cell::new(None));

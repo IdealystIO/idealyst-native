@@ -26,8 +26,8 @@ use runtime_core::{arena_stats, rx, signal, text_input, IntoElement, Signal};
 #[test]
 fn reactive_secure_toggles_in_place_without_rebuild() {
     let rt = TestRuntime::new();
-    let value = signal!(String::new());
-    let visible: Signal<bool> = signal!(false);
+    let value = signal(String::new());
+    let visible: Signal<bool> = signal(false);
 
     // `secure = !visible`: masked while hidden, revealed while visible.
     let tree = text_input(value, |_| {})
@@ -75,7 +75,7 @@ fn reactive_secure_toggles_in_place_without_rebuild() {
 #[test]
 fn static_secure_installs_no_toggle_effect() {
     let rt = TestRuntime::new();
-    let value = signal!(String::new());
+    let value = signal(String::new());
     // A bare `bool` is a `Static` mask: threaded to create, but no effect.
     let _owner = rt.render(text_input(value, |_| {}).secure(true).into_element());
 
@@ -97,8 +97,8 @@ fn static_secure_installs_no_toggle_effect() {
 #[test]
 fn reactive_placeholder_updates_in_place_without_rebuild() {
     let rt = TestRuntime::new();
-    let value = signal!(String::new());
-    let hint: Signal<bool> = signal!(false);
+    let value = signal(String::new());
+    let hint: Signal<bool> = signal(false);
 
     let tree = text_input(value, |_| {})
         .placeholder_reactive(rx!(if hint.get() {
@@ -135,8 +135,8 @@ fn reactive_placeholder_updates_in_place_without_rebuild() {
 #[test]
 fn reactive_secure_effect_is_freed_on_owner_drop() {
     let rt = TestRuntime::new();
-    let value = signal!(String::new());
-    let visible: Signal<bool> = signal!(false);
+    let value = signal(String::new());
+    let visible: Signal<bool> = signal(false);
 
     let effects_baseline = arena_stats().effects_in_use;
 

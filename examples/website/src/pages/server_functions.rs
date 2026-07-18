@@ -311,7 +311,7 @@ fn cancellation() -> Element {
 }
 
 fn reactive_integration() -> Element {
-    let snippet = "let todos: Signal<Vec<Todo>> = signal!(Vec::new());\n\
+    let snippet = "let todos: Signal<Vec<Todo>> = signal(Vec::new());\n\
                    \n\
                    // load on mount, refresh on dep change\n\
                    let refresh = async_reducer(\n    \

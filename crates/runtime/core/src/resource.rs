@@ -240,7 +240,7 @@ impl<T: Clone + 'static, E: Clone + 'static> Resource<T, E> {
 /// child components.
 ///
 /// ```ignore
-/// let query = signal!(String::new());
+/// let query = signal(String::new());
 ///
 /// let results = resource(query, |q, cancel| async move {
 ///     if q.is_empty() {

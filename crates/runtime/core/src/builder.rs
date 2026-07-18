@@ -830,7 +830,7 @@ where
 /// signal; can also be called directly:
 ///
 /// ```ignore
-/// let items: Signal<Vec<Row>> = signal!(vec![]);
+/// let items: Signal<Vec<Row>> = signal(vec![]);
 /// each_keyed(move || {
 ///     items.get().into_iter().map(|row| {
 ///         let id = row.id;
@@ -844,7 +844,7 @@ where
 ///
 /// ```no_run
 /// use runtime_core::{signal, ui, Element, Signal};
-/// let items: Signal<Vec<i32>> = signal!(vec![1, 2, 3]);
+/// let items: Signal<Vec<i32>> = signal(vec![1, 2, 3]);
 /// let _tree: Element = ui! {
 ///     view {
 ///         for n in items, key = *n {
@@ -859,7 +859,7 @@ where
 ///
 /// ```compile_fail
 /// use runtime_core::{signal, ui, Element, Signal};
-/// let items: Signal<Vec<i32>> = signal!(vec![1, 2, 3]);
+/// let items: Signal<Vec<i32>> = signal(vec![1, 2, 3]);
 /// let _tree: Element = ui! {
 ///     view {
 ///         for n in items {
@@ -1038,6 +1038,44 @@ where
     }
 }
 
+// Same reactive lowering for the read half — `for row in some_memo,
+// key = …` must work identically (memo returns `ReadSignal`). Keyless
+// stays a compile error via the same `ReactiveListKeyed` gate.
+impl<C, Item> ReactiveForEach<Item> for crate::ReadSignal<C>
+where
+    C: Clone + IntoIterator<Item = Item> + 'static,
+    Item: 'static,
+{
+    fn __idealyst_for_each<F>(self, _f: F) -> Vec<Element>
+    where
+        Self: ReactiveListKeyed,
+        F: Fn(Item) -> Vec<Element> + 'static,
+    {
+        unreachable!("keyless reactive for-each is gated by ReactiveListKeyed")
+    }
+
+    fn __idealyst_for_each_keyed<K, KF, F>(self, key_fn: KF, build_fn: F) -> Vec<Element>
+    where
+        K: Eq + Hash + 'static,
+        KF: Fn(&Item) -> K + 'static,
+        F: Fn(Item) -> Vec<Element> + 'static,
+    {
+        let sig = self;
+        let key_fn = Rc::new(key_fn);
+        let build_fn = Rc::new(build_fn);
+        vec![each_keyed(move || {
+            let mut out: Vec<(EachKey, EachRowBuild)> = Vec::new();
+            for item in sig.get() {
+                let key = EachKey::new(key_fn(&item));
+                let build_fn = build_fn.clone();
+                let build: EachRowBuild = Box::new(move || build_fn(item));
+                out.push((key, build));
+            }
+            out
+        })]
+    }
+}
+
 // =============================================================================
 // if dispatch — type-driven reactive-vs-static conditionals.
 // =============================================================================
@@ -1131,6 +1169,23 @@ impl ReactiveCond for crate::Signal<bool> {
         T: Fn() -> Vec<Element> + 'static,
         E: Fn() -> Vec<Element> + 'static,
     {
+        let sig = self;
+        vec![when(
+            move || sig.get(),
+            move || one_or_view(then()),
+            move || one_or_view(else_()),
+        )]
+    }
+}
+
+impl ReactiveCond for crate::ReadSignal<bool> {
+    fn __idealyst_if<T, E>(self, then: T, else_: E) -> Vec<Element>
+    where
+        T: Fn() -> Vec<Element> + 'static,
+        E: Fn() -> Vec<Element> + 'static,
+    {
+        // Same lowering as `Signal<bool>` — `memo` returns the read half,
+        // so `if some_memo { … }` inside `ui!` lands here.
         let sig = self;
         vec![when(
             move || sig.get(),

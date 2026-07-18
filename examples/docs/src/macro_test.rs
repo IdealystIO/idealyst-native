@@ -50,10 +50,10 @@ mod reactivity {
         },
 
         section(heading = "Signals") {
-            p("Make a signal with ", code("signal!(initial)"), ". Read with ",
+            p("Make a signal with ", code("signal(initial)"), ". Read with ",
               code(".get()"), " and write with ", code(".set(v)"), "."),
             code(rust, r#"
-                let count = signal!(0);
+                let count = signal(0);
                 count.set(5);
                 count.update(|n| *n += 1);
             "#),
@@ -147,7 +147,7 @@ fn paragraph_with_mixed_spans() {
     if let BlockMeta::Paragraph(spans) = block {
         assert_eq!(spans.len(), 7);
         assert!(matches!(spans[0], Span::text(t) if t.contains("Make a signal")));
-        assert!(matches!(spans[1], Span::Code("signal!(initial)")));
+        assert!(matches!(spans[1], Span::Code("signal(initial)")));
         assert!(matches!(spans[2], Span::text(_)));
         assert!(matches!(spans[3], Span::Code(".get()")));
         assert!(matches!(spans[4], Span::text(_)));
@@ -165,7 +165,7 @@ fn code_block() {
     let block = &signals.blocks[1];
     if let BlockMeta::Code { language, source } = block {
         assert_eq!(*language, "rust");
-        assert!(source.contains("let count = signal!(0);"));
+        assert!(source.contains("let count = signal(0);"));
         // Indentation has been trimmed.
         assert!(!source.starts_with("                "));
     } else {
