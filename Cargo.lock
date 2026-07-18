@@ -272,21 +272,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "animation-test"
-version = "0.0.1"
-dependencies = [
- "backend-web",
- "console_error_panic_hook",
- "dev-client",
- "idea-ui",
- "js-sys",
- "lol_alloc",
- "runtime-core",
- "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2496,15 +2481,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "container-demo"
-version = "0.0.1"
-dependencies = [
- "dev-server",
- "idea-ui",
- "runtime-core",
-]
-
-[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3707,13 +3683,6 @@ checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
 dependencies = [
  "event-listener",
  "pin-project-lite",
-]
-
-[[package]]
-name = "external-export-demo"
-version = "0.0.1"
-dependencies = [
- "runtime-core",
 ]
 
 [[package]]
@@ -5297,16 +5266,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "818356c5132c1fede50f837ca96afbe78ff42413047f4abb886217845e1b6c8c"
 dependencies = [
  "typenum",
-]
-
-[[package]]
-name = "hydration-demo"
-version = "0.0.1"
-dependencies = [
- "backend-ssr",
- "dev-server",
- "idea-ui",
- "runtime-core",
 ]
 
 [[package]]
@@ -6946,15 +6905,6 @@ dependencies = [
  "swap-navigator",
  "tab-navigator",
  "wire",
-]
-
-[[package]]
-name = "modal-demo"
-version = "0.0.1"
-dependencies = [
- "dev-server",
- "idea-ui",
- "runtime-core",
 ]
 
 [[package]]
@@ -8746,15 +8696,6 @@ name = "reactive-arena"
 version = "0.0.1"
 
 [[package]]
-name = "reactive-loops"
-version = "0.0.1"
-dependencies = [
- "dev-server",
- "idea-ui",
- "runtime-core",
-]
-
-[[package]]
 name = "reactive-refs"
 version = "0.0.1"
 
@@ -9550,20 +9491,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "screenshot-demo"
-version = "0.0.1"
-dependencies = [
- "backend-android-mobile",
- "backend-ios-mobile",
- "backend-macos",
- "backend-terminal",
- "backend-web",
- "dev-server",
- "idea-ui",
- "runtime-core",
-]
-
-[[package]]
 name = "sct"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10336,21 +10263,6 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
-
-[[package]]
-name = "stack-demo"
-version = "0.0.1"
-dependencies = [
- "backend-android-mobile",
- "backend-ios-mobile",
- "backend-macos",
- "backend-terminal",
- "backend-web",
- "dev-server",
- "idea-ui",
- "runtime-core",
- "stack-navigator",
-]
 
 [[package]]
 name = "stack-demo-v2"

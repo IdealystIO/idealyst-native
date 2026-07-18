@@ -47,8 +47,8 @@ pub fn all() -> Element {
 /// A plain file-local helper, NOT a `#[component]`: the parity anchor must be a
 /// `&'static str` `test_id`, and passing a `&'static str` through a component
 /// prop drops the value (the dispatch only carries owned types like `String`,
-/// so the anchor would default to `""` and register no id). A local binding —
-/// the same shape `examples/container-demo` uses — registers correctly.
+/// so the anchor would default to `""` and register no id). A local binding
+/// registers correctly.
 fn section((group, e): (&'static str, &'static Entry)) -> Element {
     let anchor: &'static str = e.route.name();
     let label = format!("{group} · {}", e.name);

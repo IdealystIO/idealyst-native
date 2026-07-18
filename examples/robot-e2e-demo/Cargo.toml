@@ -23,7 +23,7 @@ robot = ["runtime-core/robot"]
 
 # `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
 # (build-runtime-server). Pulls `dev-server` so the recorder backend is
-# available. Mirrors `screenshot-demo`.
+# available.
 sidecar = ["dep:dev-server"]
 
 [dependencies]

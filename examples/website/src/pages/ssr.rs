@@ -167,9 +167,8 @@ fn status() -> Element {
             )
             Typography(
                 content = "In-place hydration (the DOM-adoption path above) is a working \
-                    prototype rather than a turnkey production feature \u{2014} the demo lives in \
-                    `examples/hydration-demo` and proves DOM adoption plus viewport-determinism \
-                    end to end. Expect the ergonomics around wiring it into a scaffolded project \
+                    prototype rather than a turnkey production feature \u{2014} DOM adoption plus \
+                    viewport-determinism are proven end to end. Expect the ergonomics around wiring it into a scaffolded project \
                     to keep firming up.".to_string(),
             )
             link(route = &CODE_SPLITTING_ROUTE, params = ()) {

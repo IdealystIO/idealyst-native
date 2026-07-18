@@ -330,7 +330,7 @@ fn TodoList(props: &TodoListProps) -> Element {
             // Key by the row's full content, not just its id. A keyed
             // `for` builds each item once and does NOT re-render it when its
             // data changes (per-row dynamic state is meant to live in
-            // signals, à la reactive-loops). Our row data lives in the sync
+            // signals). Our row data lives in the sync
             // cache, so we make the key change whenever the entry changes —
             // the row rebuilds on a done-toggle or a Pending→Synced badge
             // flip. Cheap for a small list.

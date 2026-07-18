@@ -163,7 +163,7 @@ fn bin(ctx: &DragContext<ChipData>, label: &'static str, slot: Signal<Option<Chi
 }
 
 // ---------------------------------------------------------------------------
-// Styles (imperative `StyleRules` — same helper shape animation-test uses)
+// Styles (imperative `StyleRules` helpers)
 // ---------------------------------------------------------------------------
 
 fn px(v: f32) -> Tokenized<Length> {

@@ -118,8 +118,7 @@ fn screen(count: Signal<i32>, show_secret: Signal<bool>, name: Signal<String>) -
     // Reactive labels via the builder form (`text(closure).test_id(...)`):
     // unambiguous, and the registry recomputes them on read so the E2E
     // assertions see live values. Assembled into a `Vec<Element>` (then
-    // splatted into one `Stack`) to keep the `ui!` body unambiguous — same
-    // pattern as `screenshot-demo`.
+    // splatted into one `Stack`) to keep the `ui!` body unambiguous.
     let counter_label = text(move || format!("Counter: {}", count.get()))
         .test_id("counter")
         .into_element();

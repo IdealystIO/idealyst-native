@@ -419,8 +419,6 @@ adjust crate names." Once you're in either, the workflow is the same.
 
 Other examples worth knowing about:
 
-- [`examples/animation-test`](examples/animation-test): exercises the
-  animation system (springs, decay, gestures).
 - [`examples/fiddle`](examples/fiddle): sandbox for quick framework
   experiments.
 - [`examples/idea-ui-docs`](examples/idea-ui-docs): the live docs site for

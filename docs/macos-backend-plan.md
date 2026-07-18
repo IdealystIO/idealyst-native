@@ -465,7 +465,7 @@ backdrop dismisses on click outside content.
 - CVDisplayLink-based render loop (replace NSTimer fallback).
 - `install_render_loop()` analogue under `async-driver` feature.
 
-**Done when:** the animation-test example runs at 60 fps on a
+**Done when:** the animation demos run at 60 fps on a
 Retina display with `debug-stats` confirming the per-frame phase
 budget is in line with the iOS / web baselines.
 

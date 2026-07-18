@@ -9,8 +9,8 @@
 //! before running the closure, then restores it. These tests pin that:
 //! they panic against the pre-fix code and pass after.
 //!
-//! Real-world trigger: the `reactive-loops` demo's "Add item" handler
-//! pushes a `Row { count: signal(0) }` inside `items.update(|l| …)`.
+//! Real-world trigger: a reactive-list "Add item" handler that pushes a
+//! `Row { count: signal(0) }` inside `items.update(|l| …)`.
 
 use runtime_core::{signal, Signal};
 
@@ -55,7 +55,7 @@ fn read_other_signal_inside_update_closure() {
 }
 
 /// Several rows, each pushed with its own freshly-allocated signal inside
-/// successive `update` calls — the `reactive-loops` "Add item" loop.
+/// successive `update` calls — the reactive-list "Add item" loop.
 #[test]
 fn repeated_add_with_nested_signal() {
     let items: Signal<Vec<Signal<i32>>> = signal(Vec::new());

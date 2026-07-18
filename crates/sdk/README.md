@@ -189,7 +189,7 @@ JNI/Obj-C symbol resolution that the compiler can't check. So a green
 
 | Crate | Tests | Native verification |
 | --- | --- | --- |
-| `stack-navigator` | 🧪 unit · 🔌 recording + SSR snapshot | 🟢 iOS/macOS/Android/web run in `stack-demo` + the docs site |
+| `stack-navigator` | 🧪 unit · 🔌 recording + SSR snapshot | 🟢 iOS/macOS/Android/web run in `stack-demo-v2` + the docs site |
 | `tab-navigator` | 🧪 unit · 🔌 recording + SSR snapshot | 🟢 run in examples |
 | `drawer-navigator` | 🧪 unit · 🔌 recording + SSR snapshot | 🟢 run across the website + examples |
 | `navigators/helpers/{android,ios,web}` | — none (internal) | exercised transitively via the three navigators |
