@@ -17,8 +17,9 @@ The rule behind every change: **a macro must do real token work to earn its
 `!`**. `signal!` expanded verbatim to `Signal::new` and `memo!` only inserted
 `move ||` around a closure you write anyway — so both became plain functions.
 `effect!` stays a macro (it wraps a bare *block* in a `move` closure, which a
-function cannot accept), as do `rx!` / `text_fmt!` / `bind!` (expression
-capture). On top of that, signal handles can now be **narrowed by type**:
+function cannot accept), as does `rx!` (expression capture). `text_fmt!` and
+`bind!` are gone too — reactive text interpolation moved into the text
+literal itself (see "Text f-strings" below), which subsumed both. On top of that, signal handles can now be **narrowed by type**:
 `.split()` / `.read_only()` / `.write_only()` produce zero-cost
 `ReadSignal<T>` / `WriteSignal<T>` views over the same slot, and `memo`
 returns `ReadSignal<T>` so a derivation's output is unwritable at compile
@@ -99,7 +100,7 @@ change silently clobbered it. 0.3 closes that hole at the type level.
 What this means for existing code:
 
 - **Reads are unchanged.** `.get()`, reading inside `effect!`/closures,
-  `text_fmt!`/`bind!`, `ui!` conditions (`if my_memo { … }`) and keyed loops
+  f-string text slots, `ui!` conditions (`if my_memo { … }`) and keyed loops
   (`for row in my_memo, key = …`) all work identically on `ReadSignal`.
 - **Prop passing is unchanged.** A memo output flows into a `Reactive<T>`
   prop exactly as before (`From<ReadSignal<T>> for Reactive<T>` exists).
@@ -215,6 +216,56 @@ table (`list_utilities` / `describe_utility`, category `reactive`).
 Agents and tooling that hard-code the macro list should query utilities for
 signal creation and memoization.
 
+## Text f-strings (replaces `text_fmt!` / `bind!`)
+
+String literals in text position now interpolate `{name}` placeholders
+like Rust's own `format!` inline args — and the slots are live or
+static by the value's TYPE (the text analog of `if is_high`):
+
+```rust
+// 0.2 — closure form
+text(move || format!("count: {}   doubled: {}", count.get(), doubled.get()))
+// 0.2 — web-optimized binding form
+text { text_fmt!("count: {}", bind!(count)) }
+
+// 0.3 — one form, optimized automatically
+text { "count: {count}   doubled: {doubled}" }
+```
+
+Signals and memo outputs interpolate live and produce the same
+`TextSource::JsBinding` fast path `text_fmt!` did (web updates without a
+wasm round-trip; Effect fallback elsewhere); `Display` values bake in
+statically; `Reactive<T>` props work either way. Format specs pass
+through (`{r:.2}` — a capability `text_fmt!` never had); `{{` escapes.
+Existing literals are safe: interpolation only activates when a literal
+contains a valid `{ident}` placeholder — brace-containing prose and
+`{{`-escaped strings keep their exact 0.2 meaning, and positional
+`{}`/`{0}` or `{x:?}` mixed into an interpolating literal are compile
+errors (use the closure form for those).
+
+**BREAKING: `text_fmt!` and `bind!` are removed** (same doctrine as
+`signal!`/`memo!` — the sentinel marked reactivity that the type system
+already knows). Migration is mechanical:
+
+```rust
+// before
+text { text_fmt!("leaf {}: g={}", id, bind!(global)) }
+// after — name the args inline; classification is by type
+text { "leaf {id}: g={global}" }
+
+// non-ident args need a let first:
+// before: text { text_fmt!("row: c={}", bind!(sigs[i])) }
+let sig = sigs[i];
+// after
+text { "row: c={sig}" }
+
+// prop positions (label = text_fmt!(…)) with only captured values:
+// use plain format!; with signals: rx!(format!(…)) or pass the signal.
+```
+
+The `prefer-text-fstring` lint flags leftover invocations with the
+rewrite; `JsBindingSpec` remains public for hand-constructed bindings.
+
 ## New: editor & tooling (all additive)
 
 Nothing here requires migration; it's what 0.3 adds to the editing
@@ -260,7 +311,7 @@ experience.
 
 ## Not changed
 
-- `effect!`, `rx!`, `text_fmt!`, `bind!`, `children!`, `node_ref!`,
+- `effect!`, `rx!`, `children!`, `node_ref!`,
   `animated!`, `stylesheet!`, `ui!` / `jsx!` — unchanged (the recovery
   work above changes only what the IDE sees on BROKEN input; valid-input
   expansion is byte-identical).

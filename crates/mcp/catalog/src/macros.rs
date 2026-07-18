@@ -43,23 +43,18 @@ inventory::submit! {
         invocation: "rx!(expr)",
         kind: MacroKind::Reactive,
         module_path: "runtime_core",
-        docs: "Wrap an expression in a `Reactive` derived value — recomputes when the signals it reads change. Used to pass computed, auto-updating values into props (`content = rx!(format!(\"clicked {}×\", count.get()))`). For text specifically, `text_fmt!` is usually terser. See [[reactivity]].",
+        docs: "Wrap an expression in a `Reactive` derived value — recomputes when the signals it reads change. Used to pass computed, auto-updating values into props (`content = rx!(format!(\"clicked {}×\", count.get()))`). For text specifically, an f-string literal (`text { \"count: {count}\" }`) is usually terser. See [[reactivity]].",
         expansion: "Reactive::derive(move || expr)",
         _seal: (),
     }
 }
 
-inventory::submit! {
-    MacroEntry {
-        name: "bind",
-        invocation: "bind!(signal)",
-        kind: MacroKind::Reactive,
-        module_path: "runtime_core",
-        docs: "Marks a signal read inside a `text_fmt!` template so that interpolation slot re-renders when the signal changes. A template marker, not a standalone value — only meaningful as an argument to `text_fmt!` (`text_fmt!(\"g={}\", bind!(global))`). See [[reactivity]].",
-        expansion: "",
-        _seal: (),
-    }
-}
+// `bind!` and `text_fmt!` are NOT here — both were removed in 0.3.
+// Reactive text interpolation is now a TYPE-driven f-string on the
+// text literal itself (`text { "count: {count}" }` — signal slots
+// live, `Display` values baked), so neither the sentinel nor the
+// template macro earns its tokens. See the `text` primitive docs and
+// [[reactivity]].
 
 // `memo` is NOT here either — like `signal!`, the `memo!` macro was
 // removed (it only inserted `move ||` around a closure the author writes
@@ -67,7 +62,7 @@ inventory::submit! {
 // `utilities.rs` under `UtilityCategory::Reactive`.
 
 // ---------------------------------------------------------------------
-// Markup — element-tree construction (ui!/jsx!/text_fmt!/lazy! are
+// Markup — element-tree construction (ui!/jsx!/lazy! are
 // runtime_macros proc-macros; node_ref!/children! are runtime_core)
 // ---------------------------------------------------------------------
 
@@ -91,18 +86,6 @@ inventory::submit! {
         module_path: "runtime_macros",
         docs: "Angle-bracket peer of `ui!` — same dispatch, same `BuildElement` semantics, JSX-familiar syntax. Pick `ui!` or `jsx!` per file and stay in it; don't mix the two (or hand-built `Element`) in one component without a reason. See [[component-hygiene]].",
         expansion: "",
-        _seal: (),
-    }
-}
-
-inventory::submit! {
-    MacroEntry {
-        name: "text_fmt",
-        invocation: "text_fmt!(\"fmt {}\", arg, bind!(sig))",
-        kind: MacroKind::Markup,
-        module_path: "runtime_macros",
-        docs: "Reactive `format!`-style text node. Plain args are interpolated once; args wrapped in `bind!(…)` subscribe so that slot re-renders when the signal changes. Terser than `text(rx!(format!(...)))` for the common formatted-text case. See [[reactivity]].",
-        expansion: "a reactive text(...) node bound to the bind!()'d signals",
         _seal: (),
     }
 }

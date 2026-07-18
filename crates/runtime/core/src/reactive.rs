@@ -1308,7 +1308,7 @@ impl<T> Default for Signal<T> {
 
 impl<T> Signal<T> {
     /// Stable identifier for this signal's arena slot. Used by the
-    /// `bind!` macro and the Roku backend to wire reactive bindings:
+    /// f-string text slots and the Roku backend to wire reactive bindings:
     /// the macro captures `signal.id()` at expansion-call time so the
     /// `RokuBackend` can emit `BindText { signal_ids: [..], .. }`
     /// commands referencing this exact signal.
@@ -1655,7 +1655,7 @@ impl<T> Default for WriteSignal<T> {
 
 impl<T> ReadSignal<T> {
     /// The underlying slot id — same value as the source signal's
-    /// [`Signal::id`], so id-keyed integrations (`text_fmt!` bindings,
+    /// [`Signal::id`], so id-keyed integrations (f-string text bindings,
     /// robot watch) work with either handle.
     pub fn id(&self) -> u64 {
         self.0.id()

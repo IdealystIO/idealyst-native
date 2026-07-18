@@ -543,6 +543,14 @@ fn emit_text(props: &[&Prop], children: Option<&[JsxNode]>) -> TokenStream2 {
         match kids.len() {
             0 => quote! { ::runtime_core::text("") },
             1 => {
+                // F-string literal child (`<text>"count: {count}"</text>`)
+                // — same typed-slot interpolation as `ui!` (peer macros,
+                // same text semantics; see `ui::try_emit_fstring`).
+                if let JsxNode::Expr(e) = &kids[0] {
+                    if let Some(src) = crate::ui::try_emit_fstring(e) {
+                        return quote! { ::runtime_core::text(#src) };
+                    }
+                }
                 let e = emit_node(&kids[0]);
                 quote! { ::runtime_core::text(#e) }
             }
@@ -558,6 +566,11 @@ fn emit_text(props: &[&Prop], children: Option<&[JsxNode]>) -> TokenStream2 {
             }
         }
     } else if let Some(p) = props.iter().find(|p| p.name == "content") {
+        if let PropValue::Str(lit) = &p.value {
+            if let Some(src) = crate::ui::try_emit_fstring_lit(lit) {
+                return quote! { ::runtime_core::text(#src) };
+            }
+        }
         let v = emit_attr_value_raw(&p.value);
         quote! { ::runtime_core::text(#v) }
     } else {
@@ -797,6 +810,18 @@ mod tests {
         let out = parse_and_emit(quote! { <text>{"hello"}</text> });
         assert!(out.contains(":: runtime_core :: text"));
         assert!(out.contains("\"hello\""));
+    }
+
+    #[test]
+    fn text_fstring_child_interpolates_like_ui() {
+        // Peer-macro parity: `<text>{"count: {count}"}</text>` gets the
+        // same typed-slot f-string lowering as `ui!`'s text literal.
+        let out = parse_and_emit(quote! { <text>{"count: {count}"}</text> });
+        assert!(out.contains("__idealyst_text_from_parts"), "got: {out}");
+        assert!(out.contains("(count) . __idealyst_text_slot"), "got: {out}");
+        // Placeholder-free literals stay verbatim.
+        let out = parse_and_emit(quote! { <text>{"plain { prose"}</text> });
+        assert!(!out.contains("__idealyst_text_from_parts"), "got: {out}");
     }
 
     #[test]

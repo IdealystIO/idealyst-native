@@ -350,7 +350,7 @@ pub enum RokuCommand {
     /// the row closure's `i` parameter was bound to. Per clone, the
     /// runtime mints a fresh synthetic signal, sets it to the row's
     /// index, and remaps the template's `signal_ids` references so
-    /// any `bind!(method(i))` inside the row dispatches with the
+    /// any structured `method(i)` binding inside the row dispatches with the
     /// right per-row value.
     BindRepeat {
         anchor_id: NodeId,

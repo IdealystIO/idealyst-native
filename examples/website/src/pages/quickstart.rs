@@ -126,13 +126,13 @@ fn run_native() -> Element {
 }
 
 fn edit_and_reload() -> Element {
-    let snippet = "use runtime_core::{bind, component, signal, text_fmt, ui, Element};\n\
+    let snippet = "use runtime_core::{component, signal, ui, Element};\n\
                    \n\
                    #[component]\n\
                    pub fn app() -> Element {\n    \
                        let count = signal(0);\n    \
                        ui! {\n        \
-                           text { text_fmt!(\"Count: {}\", bind!(count)) }\n        \
+                           text { \"Count: {count}\" }\n        \
                            button(\n            \
                                label = \"Increment\",\n            \
                                on_click = move || count.update(|n| *n += 1),\n        \

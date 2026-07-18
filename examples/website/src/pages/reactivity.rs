@@ -66,7 +66,7 @@ fn signals() -> Element {
                    \n\
                    // Inside `ui!`, signals participate automatically:\n\
                    ui! {\n    \
-                       text { text_fmt!(\"Count: {}\", bind!(count)) }\n    \
+                       text { \"Count: {count}\" }\n    \
                        button(label = \"+1\", on_click = move || count.update(|n| *n += 1))\n\
                    }";
     ui! {
@@ -74,8 +74,8 @@ fn signals() -> Element {
             Typography(content = "Signals".to_string(), kind = idea_ui::typography_kind::H2)
             Typography(content = "`Signal<T>` is the reactive cell. Read with `.get()`, \
                 write with `.set(v)` or `.update(|v| …)`. A read inside a reactive scope — a \
-                component body, a style closure, an `effect!`, a `text_fmt!` arg marked with \
-                `bind!` — registers the surrounding scope as a dependent. The next write \
+                component body, a style closure, an `effect!`, an f-string text slot \
+                (`\"Count: {count}\"`) — registers the surrounding scope as a dependent. The next write \
                 fires every dependent once.".to_string())
             CodePanel(src = snippet)
             Typography(content = "`Signal<T>` is `Copy`, so every closure that needs the \
@@ -93,7 +93,7 @@ fn derived() -> Element {
                    let doubled = derived(move || count.get() * 2);\n\
                    \n\
                    // Reads of `doubled` track `count` transitively:\n\
-                   ui! { text { text_fmt!(\"Doubled: {}\", bind!(doubled)) } }";
+                   ui! { text { \"Doubled: {doubled}\" } }";
     ui! {
         Stack(gap = StackGap::Md) {
             Typography(content = "Derived values".to_string(), kind = idea_ui::typography_kind::H2)
@@ -230,7 +230,7 @@ fn pitfalls() -> Element {
             Typography(content = "1. Reading a signal with `.get()` OUTSIDE a reactive \
                 scope gives you the current value once, with no subscription — fine when \
                 that's what you want, surprising when you expected reactivity. Inside a \
-                scope (a `ui!` closure, an `effect!`, a `text_fmt!` arg), `.get()` registers \
+                scope (a `ui!` closure, an `effect!`, a reactive text binding), `.get()` registers \
                 a dependency.".to_string())
             Typography(content = "2. A bare `.set()` re-runs every dependent immediately. \
                 When you're updating several signals at once and don't want N intermediate \

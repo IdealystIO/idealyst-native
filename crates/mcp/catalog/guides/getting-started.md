@@ -40,7 +40,7 @@ That's it. No `main` function in your crate — the per-platform host (web/iOS/A
 
 1. **[[primitives|Primitives]]** — the leaf nodes of `ui!`: [[View]], [[Text]], [[Button]], [[ScrollView]], etc. These map to native widgets on every backend.
 2. **[[components|Components]]** — your own reusable units, declared with `#[component]`. Compose them inside `ui!` just like primitives.
-3. **[[reactivity|Reactivity]]** — `Signal<T>` values, `bind!`, and the closure-form reactive bindings inside `ui!`.
+3. **[[reactivity|Reactivity]]** — `Signal<T>` values, f-string text slots, and the closure-form reactive bindings inside `ui!`.
 
 Beyond the UI core, capabilities like networking, persistence, and a full component library live in **opt-in SDK crates** you add as you need them — see **[[sdks|SDKs & opt-in crates]]** for the index (and **[[server-functions]]** for the `#[server]` RPC layer). `net` makes HTTP requests, `storage`/`credentials` persist data, `idea-ui` provides ready-made components.
 

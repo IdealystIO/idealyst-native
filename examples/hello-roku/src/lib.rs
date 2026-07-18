@@ -3,8 +3,8 @@
 //! Single `app()` function covering the Phase 2 reactivity surface:
 //!
 //! - **Reactiveness**: a `count` signal threads through four
-//!   reactive `Text` labels via `bind!`. Each label has its own
-//!   `#[method]` transformer.
+//!   reactive `Text` labels via structured bindings. Each label has
+//!   its own `#[method]` transformer.
 //! - **if/else inside `#[method]`**: `parity_label`.
 //! - **`match` inside `#[method]`**: `status_label` — literal arms
 //!   + a `_` fallback. Transpiler lowers to chained
@@ -405,8 +405,8 @@ pub fn items_count(v: Vec<i32>) -> usize {
 }
 
 /// Per-row content derived from the same `Signal<Vec<i32>>`:
-/// looks up `v[i]` and returns the integer. The bind! inside
-/// the row template subscribes to BOTH `items` and the row-index
+/// looks up `v[i]` and returns the integer. The structured binding
+/// in the row template subscribes to BOTH `items` and the row-index
 /// signal, so mutating `items` (replacing the whole Vec via
 /// `items.set(...)`) re-fires every row with the new data.
 #[method]

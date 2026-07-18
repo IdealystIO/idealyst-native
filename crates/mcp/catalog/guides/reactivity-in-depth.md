@@ -60,7 +60,7 @@ unified `Signal<T>` stays the right type for genuinely two-way props
 ### `rx!` — an inline reactive prop value
 
 `rx!(expr)` wraps a computed expression as a live `Reactive<T>` (it expands to
-`Reactive::derive(move || expr)`). It's the reactive-prop analog of `bind!`:
+`Reactive::derive(move || expr)`). It's the reactive-prop analog of an f-string text slot:
 reach for it when a component's `Reactive<T>` prop should track a *computed*
 expression rather than a bare signal (a bare `Signal` is already live via
 `IntoProp`, no `rx!` needed).
@@ -210,7 +210,7 @@ intended.
   value out, close the `with`, then `set` after.
 - **`.get()` outside a reactive context is a one-shot read.** It returns the
   current value and subscribes nothing. Subscription only happens inside an
-  effect / `ui!` closure / `text_fmt!` / `rx!` body.
+  effect / `ui!` closure / f-string slot / `rx!` body.
 - **The hoisted-snapshot trap.** The commonest form of the previous point,
   and it *looks* reactive:
 
@@ -234,8 +234,9 @@ intended.
 - **A mutual write-loop panics, it doesn't hang.** A > B > A cascade trips the
   `MAX_EFFECT_DEPTH` (256) guard with a recognizable backtrace instead of a
   stack overflow.
-- **`bind!` is a `text_fmt!`-only sentinel.** Using it anywhere else is a
-  `compile_error!`. For a live prop value outside `text_fmt!`, use `rx!`.
+- **Reactive text interpolation is an f-string literal** (`text { "count:
+  {count}" }`) — slots are live by TYPE. For a live prop value, use `rx!` or
+  pass the signal itself.
 - **On wasm, don't self-rewake a task in a poll loop.** A future that
   `wake_by_ref()`s itself and returns `Pending` spins the single-threaded event
   loop so DOM events never fire (the tab freezes). Park the task and wake it

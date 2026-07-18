@@ -1042,28 +1042,28 @@ fn benchmark_node_id_ffi_cost() {
 }
 
 // ---------------------------------------------------------------------------
-// text_fmt! reactive text — regression tests for the JS-binding fast path
+// f-string reactive text — regression tests for the JS-binding fast path
 // ---------------------------------------------------------------------------
 //
-// The bug: `text_fmt!("Count: {}", bind!(count))` produced a
-// `TextSource::JsBinding(JsBindingSpec)`. The walker took the JS-
-// binding fast path on web. The web backend's
+// The original bug (hit via the since-removed `text_fmt!` macro; the
+// f-string lowering emits the same `TextSource::JsBinding(JsBindingSpec)`):
+// the walker took the JS-binding fast path on web, and the web backend's
 // `register_reactive_text_binding` registered the binding on the JS
 // side but never registered a `signal_js_notifier` for the signal
 // ids. When `count.set/update` fired, `Signal::set` called
 // `notify_js_subscriber(sid)`, the lookup found no notifier, and the
 // text never updated.
 //
-// Fix: per-signal `stringifiers` now flow from the `text_fmt!` macro
-// through `JsBindingSpec` to the web backend's
-// `register_reactive_text_binding`, which auto-installs per-signal
-// JS notifiers at bind time (only if one isn't already installed —
-// preserves notifiers a class binding may have set up first).
+// Fix: per-signal `stringifiers` flow through `JsBindingSpec` to the
+// web backend's `register_reactive_text_binding`, which auto-installs
+// per-signal JS notifiers at bind time (only if one isn't already
+// installed — preserves notifiers a class binding may have set up
+// first).
 //
 // These three tests exercise the wasm-side DOM mutation path that
-// the host-side `text_fmt_regression.rs` tests can't reach.
+// the host-side `tests/fstring_text.rs` tests can't reach.
 
-/// Bootstrapping shared by every text_fmt regression below. Mounts
+/// Bootstrapping shared by every text-binding regression below. Mounts
 /// `#app`, builds a `WebBackend`, wraps it in `Rc<RefCell>`, and
 /// installs the text batcher (which sets `WEB_BACKEND_HANDLE` so
 /// `supports_js_text_bindings()` returns true). Returns the handle
@@ -1080,13 +1080,13 @@ fn install_for_text_bindings() -> std::rc::Rc<std::cell::RefCell<WebBackend>> {
 }
 
 /// REGRESSION — `signal.set(...)` must reach the DOM through the
-/// JS-binding fast path. Mount a `text_fmt!("{}", bind!(count))`
+/// JS-binding fast path. Mount a `text { "{count}" }` f-string
 /// text node, walk + commit. The initial nodeValue is "0". After
 /// `count.set(42)`, the nodeValue must be "42". Before the fix the
 /// second assertion fails — no signal_js_notifier is installed at
 /// bind time, so `Signal::set` has nothing to call.
 #[wasm_bindgen_test]
-fn regression_text_fmt_signal_set_updates_dom_via_js_binding() {
+fn regression_fstring_signal_set_updates_dom_via_js_binding() {
     let backend = install_for_text_bindings();
     let count: runtime_core::Signal<u32> = runtime_core::signal(0u32);
 
@@ -1094,7 +1094,7 @@ fn regression_text_fmt_signal_set_updates_dom_via_js_binding() {
     // the walker's JS-binding path (the same path real apps take).
     let _owner = runtime_core::render(
         backend.clone(),
-        runtime_core::text(runtime_core::text_fmt!("{}", bind!(count))).into(),
+        runtime_core::ui! { text { "{count}" } },
     );
 
     // Find the only text node we created. `#app` has exactly one
@@ -1119,7 +1119,7 @@ fn regression_text_fmt_signal_set_updates_dom_via_js_binding() {
     let doc = web_sys::window().unwrap().document().unwrap();
     let app: web_sys::Node = doc.get_element_by_id("app").unwrap().unchecked_into();
     let text_node = find_first_text_node(&app)
-        .expect("text_fmt! must produce a real Text node under #app");
+        .expect("the f-string binding must produce a real Text node under #app");
 
     assert_eq!(
         text_node.node_value().as_deref(),
@@ -1149,7 +1149,7 @@ fn regression_text_fmt_signal_set_updates_dom_via_js_binding() {
 /// `signal_has_js_notifier` and skip signals that already have one —
 /// otherwise the class binding's teardown / dispatch path goes dark.
 #[wasm_bindgen_test]
-fn regression_text_fmt_existing_js_notifier_not_clobbered() {
+fn regression_fstring_existing_js_notifier_not_clobbered() {
     let backend = install_for_text_bindings();
     let s: runtime_core::Signal<u32> = runtime_core::signal(0u32);
 
@@ -1176,7 +1176,7 @@ fn regression_text_fmt_existing_js_notifier_not_clobbered() {
     // notifier already exists" branch must trigger here.
     let _owner = runtime_core::render(
         backend.clone(),
-        runtime_core::text(runtime_core::text_fmt!("{}", bind!(s))).into(),
+        runtime_core::ui! { text { "{s}" } },
     );
 
     // Fire the signal. The CUSTOM notifier must run — not get
@@ -1208,18 +1208,18 @@ fn regression_text_fmt_existing_js_notifier_not_clobbered() {
 /// JS-side dispatcher doesn't track multiple subscribers per signal
 /// (pre-existing bug we don't want to regress).
 #[wasm_bindgen_test]
-fn regression_text_fmt_two_bindings_one_signal() {
+fn regression_fstring_two_bindings_one_signal() {
     let backend = install_for_text_bindings();
     let s: runtime_core::Signal<u32> = runtime_core::signal(0u32);
 
     // Render two Text leaves under one View — same signal feeds
-    // both via independent `text_fmt!` calls.
-    use runtime_core::{text, view};
+    // both via independent f-string bindings.
+    use runtime_core::view;
     let _owner = runtime_core::render(
         backend.clone(),
         view(vec![
-            text(runtime_core::text_fmt!("a={}", bind!(s))).into(),
-            text(runtime_core::text_fmt!("a={}", bind!(s))).into(),
+            runtime_core::ui! { text { "a={s}" } },
+            runtime_core::ui! { text { "a={s}" } },
         ])
         .into(),
     );

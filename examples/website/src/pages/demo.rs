@@ -13,7 +13,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use runtime_core::animation::{AnimProp, AnimatedValue, SpringTo, TweenTo};
-use runtime_core::{node_ref, signal, text_fmt, ui, Element, Ref, ViewHandle};
+use runtime_core::{node_ref, signal, ui, Element, Ref, ViewHandle};
 use idea_ui::{
     Alert, Badge, Button, Card, Divider, Field, Stack, Switch, Tag, Typography, StackAxis, StackGap,
 };
@@ -91,17 +91,17 @@ fn reactive_state() -> Element {
         ui! { Button(label = "Reset".to_string(), on_click = reset, tone = idea_ui::tone::Neutral, variant = idea_ui::variant::Ghost) },
         ui! { Button(label = "+".to_string(), on_click = increment, tone = idea_ui::tone::Primary, variant = idea_ui::variant::Filled) },
     ];
-    // `text_fmt!` builds a reactive `TextSource`; `bind!(signal)` marks
-    // the arg the framework subscribes to. The text node re-resolves on
-    // every write \u{2014} no surrounding tree rebuild.
+    // The `{count}` f-string slot is live because `count` is a signal
+    // (slots classify by TYPE). The text node re-resolves on every
+    // write \u{2014} no surrounding tree rebuild.
     let preview: Vec<Element> = vec![
-        ui! { text { text_fmt!("Count: {}", bind!(count)) } },
+        ui! { text { "Count: {count}" } },
         ui! { Stack(gap = StackGap::Md, axis = StackAxis::Row) { buttons } },
     ];
 
     let snippet = "let count = signal(0);\n\
                    ui! {\n    \
-                       text { text_fmt!(\"Count: {}\", bind!(count)) }\n    \
+                       text { \"Count: {count}\" }\n    \
                        button(label = \"+\", on_click = move || count.update(|n| *n += 1))\n\
                    }";
 

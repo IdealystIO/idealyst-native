@@ -30,7 +30,7 @@
 //! - `content = rx!(format!("{}", c.get()))` → `Reactive::Dynamic`.
 //!
 //! `rx!(expr)` is the explicit opt-in for an inline computed value —
-//! the reactive-prop analog of `bind!` for `text_fmt!`. You opt IN
+//! an explicit, visible reactive boundary. You opt IN
 //! with one token rather than the framework guessing from a substring.
 //!
 //! ## The `IntoProp<T>` coercion shim
@@ -183,7 +183,7 @@ impl<T: std::fmt::Debug> std::fmt::Debug for Reactive<T> {
 //
 // Non-string-literal dynamic values opt in explicitly at the call site
 // (`sig.into()` / `rx!(...)`), keeping reactivity visible — the
-// type-driven counterpart to `bind!` for `text_fmt!`.
+// type-driven, explicit reactive-value constructor.
 
 /// Bare value → `Reactive::Static`. The blanket covers `String`,
 /// `bool`, `i32`, theme refs, … — anything used as a static prop.

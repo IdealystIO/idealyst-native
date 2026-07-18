@@ -69,8 +69,12 @@ scope.
 - **A mutual write-loop panics (depth 256), not hangs** — look for A→B→A.
 - **Frozen wasm tab** → a future self-rewaking (`wake_by_ref` + `Pending`) spins
   the single-thread event loop. Park the task; wake from the event.
-- **`bind!` only works inside `text_fmt!`** — anywhere else is a compile error;
-  use `rx!` for a live value elsewhere.
+- **`text_fmt!` and `bind!` were REMOVED in 0.3** — reactive text is an
+  f-string literal: `text { "count: {count}" }` — a signal slot is live by
+  TYPE (a `Display` value bakes in), no closure/`.get()`/sentinel needed, and
+  signal slots get the web JS-binding fast path automatically. Positional or
+  Debug formatting → `text { move || format!(…) }`; live prop values → `rx!`.
+  The `prefer-text-fstring` lint flags leftovers.
 - **`.get()` outside a reactive context** is a one-shot read that subscribes
   nothing. Commonest form is the **hoisted-snapshot trap**: `let ok =
   x.get()…;` at component-body level then `if ok { … }` in `ui!` — `ok` is a

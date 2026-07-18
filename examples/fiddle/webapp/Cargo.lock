@@ -36,15 +36,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
 
 [[package]]
+name = "async-once-cell"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4288f83726785267c6f2ef073a3d83dc3f9b81464e9f99898240cced85fce35a"
+
+[[package]]
 name = "backend-android-core"
 version = "0.0.1"
 dependencies = [
  "android_logger",
- "framework-core",
  "jni",
  "log",
  "ndk-sys",
  "raw-window-handle",
+ "runtime-core",
 ]
 
 [[package]]
@@ -53,48 +59,80 @@ version = "0.0.1"
 dependencies = [
  "android_logger",
  "backend-android-core",
- "framework-core",
+ "inventory",
  "jni",
  "log",
- "native-layout",
+ "ndk-context",
  "ndk-sys",
  "raw-window-handle",
+ "runtime-core",
+ "runtime-layout",
+]
+
+[[package]]
+name = "backend-apple-core"
+version = "0.0.1"
+dependencies = [
+ "block2",
+ "objc2",
+ "objc2-foundation",
+ "runtime-core",
 ]
 
 [[package]]
 name = "backend-ios-core"
 version = "0.0.1"
 dependencies = [
+ "backend-apple-core",
  "block2",
- "framework-core",
- "native-layout",
  "objc2",
  "objc2-foundation",
  "objc2-ui-kit",
  "raw-window-handle",
+ "runtime-core",
+ "runtime-layout",
 ]
 
 [[package]]
 name = "backend-ios-mobile"
 version = "0.0.1"
 dependencies = [
+ "backend-apple-core",
  "backend-ios-core",
  "block2",
- "framework-core",
- "native-layout",
+ "inventory",
  "objc2",
  "objc2-foundation",
  "objc2-ui-kit",
  "raw-window-handle",
+ "runtime-core",
+ "runtime-layout",
+]
+
+[[package]]
+name = "backend-macos"
+version = "0.0.1"
+dependencies = [
+ "backend-apple-core",
+ "block2",
+ "inventory",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "raw-window-handle",
+ "runtime-core",
+ "runtime-layout",
 ]
 
 [[package]]
 name = "backend-web"
 version = "0.0.1"
 dependencies = [
- "framework-core",
+ "css",
+ "inventory",
  "js-sys",
  "raw-window-handle",
+ "runtime-core",
  "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -102,10 +140,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "base16"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d27c3610c36aee21ce8ac510e6224498de4228ad772a171ed65643a24693a5a8"
+
+[[package]]
 name = "bitflags"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
+
+[[package]]
+name = "block-buffer"
+version = "0.10.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
+dependencies = [
+ "generic-array",
+]
 
 [[package]]
 name = "block2"
@@ -141,6 +194,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
+name = "codeblock"
+version = "0.0.1"
+dependencies = [
+ "backend-android-mobile",
+ "backend-ios-core",
+ "backend-ios-mobile",
+ "backend-macos",
+ "backend-web",
+ "inventory",
+ "jni",
+ "log",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-ui-kit",
+ "runtime-core",
+ "serde_json",
+]
+
+[[package]]
 name = "combine"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -161,6 +234,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "cpufeatures"
+version = "0.2.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "crypto-common"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
+dependencies = [
+ "generic-array",
+ "typenum",
+]
+
+[[package]]
+name = "css"
+version = "0.0.1"
+dependencies = [
+ "runtime-core",
+]
+
+[[package]]
+name = "digest"
+version = "0.10.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
+dependencies = [
+ "block-buffer",
+ "crypto-common",
+]
+
+[[package]]
 name = "env_logger"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -175,37 +284,16 @@ name = "fiddle-webapp"
 version = "0.0.1"
 dependencies = [
  "backend-web",
+ "codeblock",
  "console_error_panic_hook",
- "framework-core",
- "idea-codeblock",
  "idea-ui",
  "js-sys",
  "lol_alloc",
+ "runtime-core",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
  "webview",
-]
-
-[[package]]
-name = "framework-core"
-version = "0.0.1"
-dependencies = [
- "framework-macros",
- "log",
- "pollster",
- "raw-window-handle",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "framework-macros"
-version = "0.0.1"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]
@@ -233,26 +321,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "generic-array"
+version = "0.14.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
+dependencies = [
+ "typenum",
+ "version_check",
+]
+
+[[package]]
 name = "grid"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36119f3a540b086b4e436bb2b588cf98a68863470e0e880f4d0842f112a3183a"
 
 [[package]]
-name = "idea-codeblock"
+name = "idea-theme"
 version = "0.0.1"
 dependencies = [
- "backend-web",
- "framework-core",
- "wasm-bindgen",
- "web-sys",
+ "runtime-core",
 ]
 
 [[package]]
 name = "idea-ui"
 version = "0.0.1"
 dependencies = [
- "framework-core",
+ "idea-theme",
+ "runtime-core",
+ "table",
+]
+
+[[package]]
+name = "inventory"
+version = "0.3.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4f0c30c76f2f4ccee3fe55a2435f691ca00c0e4bd87abe4f4a851b1d4dac39b"
+dependencies = [
+ "rustversion",
 ]
 
 [[package]]
@@ -354,12 +460,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
-name = "native-layout"
-version = "0.0.1"
-dependencies = [
- "framework-core",
- "taffy",
-]
+name = "ndk-context"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27b02d87554356db9e9a873add8782d4ea6e3e58ea071a9adb9a2e8ddb884a8b"
 
 [[package]]
 name = "ndk-sys"
@@ -644,6 +748,45 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
+name = "runtime-core"
+version = "0.0.1"
+dependencies = [
+ "bitflags",
+ "log",
+ "pollster",
+ "raw-window-handle",
+ "runtime-macros",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "wasm-splitter",
+]
+
+[[package]]
+name = "runtime-layout"
+version = "0.0.1"
+dependencies = [
+ "runtime-core",
+ "taffy",
+]
+
+[[package]]
+name = "runtime-macros"
+version = "0.0.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "sha2",
+ "syn",
+]
+
+[[package]]
+name = "rustc-hash"
+version = "2.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
+
+[[package]]
 name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -708,6 +851,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
+]
+
+[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -743,6 +897,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "table"
+version = "0.0.1"
+dependencies = [
+ "backend-web",
+ "inventory",
+ "runtime-core",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "taffy"
 version = "0.7.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -773,6 +938,12 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "typenum"
+version = "1.20.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "unicode-ident"
@@ -852,6 +1023,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-split-macro"
+version = "0.0.1"
+dependencies = [
+ "base16",
+ "digest",
+ "proc-macro2",
+ "quote",
+ "sha2",
+ "syn",
+]
+
+[[package]]
+name = "wasm-splitter"
+version = "0.0.1"
+dependencies = [
+ "async-once-cell",
+ "wasm-split-macro",
+]
+
+[[package]]
 name = "web-sys"
 version = "0.3.98"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -869,12 +1060,13 @@ dependencies = [
  "backend-android-mobile",
  "backend-ios-mobile",
  "backend-web",
- "framework-core",
+ "inventory",
  "jni",
  "js-sys",
  "objc2",
  "objc2-foundation",
  "objc2-ui-kit",
+ "runtime-core",
  "wasm-bindgen",
  "web-sys",
 ]

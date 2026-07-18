@@ -23,16 +23,21 @@ Inside `ui!`, signals participate in reactivity automatically:
 ```rust
 ui! {
     view {
-        text(text_fmt!("Count: {}", bind!(count)))
+        text { "Count: {count}" }
         button("+1", move || count.update(|v| *v += 1))
     }
 }
 ```
 
-The `bind!(count)` form tells `text_fmt!` to track changes; the `button`'s
-on-click is a regular closure that captures the signal. (Reactive text can also
-be written as a closure — `text(move || format!("Count: {}", count.get()))` —
-which is the general form; `text_fmt!` is the opt-in web-optimized binding.)
+`{count}` interpolates live because `count` is a *signal* — f-string slots
+classify by the value's type (a plain `Display` value would bake in
+statically), and signal slots get the web backend's optimized binding
+automatically. The `button`'s on-click is a regular closure that captures the
+signal. Reactive text can also be written as a closure —
+`text(move || format!("Count: {}", count.get()))` — the general form for
+positional/Debug formatting or arbitrary expressions. (The 0.2-era
+`text_fmt!`/`bind!` macros were removed in 0.3 — f-strings produce the same
+optimized binding without the sentinel.)
 
 ## Effects
 
@@ -75,7 +80,7 @@ Use `animate_at!` to schedule animations at a specific offset, or `timeline!` fo
 
 ## Three pitfalls
 
-1. **Don't `.get()` outside an effect** unless you want the current value once. Inside a reactive context (closure inside `ui!`, `effect!`, `text_fmt!`), `.get()` registers a dependency.
+1. **Don't `.get()` outside an effect** unless you want the current value once. Inside a reactive context (closure inside `ui!`, `effect!`, an f-string slot), `.get()` registers a dependency.
 2. **The hoisted-snapshot trap** — pitfall 1 in disguise, and the easiest bug to ship:
 
    ```rust

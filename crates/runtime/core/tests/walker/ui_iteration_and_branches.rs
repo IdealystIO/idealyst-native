@@ -613,6 +613,53 @@ fn reactive_if_bare_signal_bool_reevaluates() {
     assert_eq!(count_text(&rt.events(), "del"), 1, "marker returns when the list grows again");
 }
 
+/// User-reported (idealyst-test smoke app): `if is_high { … } else { … }`
+/// where `is_high = memo(move || count.get() >= 5)` — the bare-memo
+/// condition WITH an else branch, alongside a static `if` sibling and a
+/// reactive text. Every prior test covered the else-less form; this pins
+/// the full shape: initial else-branch render, swap to then-branch when
+/// the memo flips, swap back, and the static sibling untouched throughout.
+#[test]
+fn regression_reactive_if_else_on_memo_swaps_both_ways() {
+    let rt = TestRuntime::new();
+    let count = signal(3);
+    let is_high: ReadSignal<bool> = memo(move || count.get() >= 5);
+    let frozen = false;
+    let tree: Element = ui! {
+        view {
+            text(move || format!("count: {}", count.get()))
+            if is_high {
+                text { "High!".to_string() }
+            } else {
+                text { "Keep clicking".to_string() }
+            }
+            if frozen {
+                text { "never".to_string() }
+            }
+        }
+    };
+    let _owner = rt.render(tree);
+    assert_eq!(count_text(&rt.events(), "Keep clicking"), 1, "else branch renders initially");
+    assert_eq!(count_text(&rt.events(), "High!"), 0);
+    assert_eq!(count_text(&rt.events(), "never"), 0, "static false branch absent");
+
+    // Cross the threshold → then-branch replaces the else-branch.
+    rt.backend_mut().clear_events();
+    count.set(7);
+    assert_eq!(count_text(&rt.events(), "High!"), 1, "then branch built on flip: {:?}", rt.events());
+    assert!(
+        rt.events().iter().any(|e| matches!(e, Event::ClearChildren { .. })),
+        "else branch torn down on flip: {:?}",
+        rt.events()
+    );
+
+    // Drop back below → else-branch returns.
+    rt.backend_mut().clear_events();
+    count.set(0);
+    assert_eq!(count_text(&rt.events(), "Keep clicking"), 1, "else branch rebuilt: {:?}", rt.events());
+    assert_eq!(count_text(&rt.events(), "High!"), 0);
+}
+
 /// The Tier-1 idiom: a VISIBLE `.get()` read on a reactive bool
 /// (`if del_visible.get()`) is reactive too — the macro detects the inline
 /// `.get()` syntactically and wraps it (its *type* is plain `bool`, so the

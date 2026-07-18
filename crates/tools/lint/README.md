@@ -1,6 +1,6 @@
 # `lint` — the idealyst source linter
 
-Flags three idiom-drift patterns in idealyst projects, over the project's
+Flags idiom-drift patterns in idealyst projects, over the project's
 **un-expanded** Rust source:
 
 | Rule | Default | Flags | Use instead |
@@ -8,6 +8,7 @@ Flags three idiom-drift patterns in idealyst projects, over the project's
 | `prefer-signal-fn` | warn | `Signal::new(v)`, removed `signal!(v)` | `signal(v)` |
 | `prefer-effect-macro` | warn | `Effect::new(\|\| …)` | `effect! { … }` |
 | `prefer-memo-fn` | warn | removed `memo!(…)` | `memo(move \|\| …)` |
+| `prefer-text-fstring` | warn | removed `text_fmt!(…)` / `bind!(…)` | `text { "count: {count}" }` |
 | `prefer-ui-macro` | warn | `builder::view(…)`, `BuildElement::build(…)`, `Element::View { … }` | `ui! { … }` / `jsx! { … }` |
 | `component-pascal-case` | error | `#[component] fn icon_button` | `#[component] fn IconButton` |
 | `snapshot-condition` | warn | hoisted `let ok = x.get()…;` used as a `ui!` `if` condition | `memo(move \|\| …)`, inline the `.get()`, or `.get_untracked()` if intentional |

@@ -159,7 +159,7 @@ impl VisitMut for TextRewriter {
 ///   `'static` (a component takes props by reference; `props.value` must be
 ///   cloned in, not borrowed) — but do NOT add a wrapper closure; the author's
 ///   closure IS the boundary. `IntoTextSource for Fn() -> String` routes it.
-/// - **Macro arg** (`text(rx!(…))`, `text(text_fmt!(…))`): reactive by TYPE —
+/// - **Macro arg** (`text(rx!(…))`): reactive by TYPE —
 ///   left untouched.
 /// - **Bare value that reads a signal** (`text(count.get())`): auto-wrapped in
 ///   0.0.1, silently static now — replaced with a `compile_error!` pointing at
@@ -194,7 +194,7 @@ fn rewrite_text_arg(call: &mut ExprCall, param_idents: &[String]) -> Option<Expr
             ::std::compile_error!(
                 "0.1.0: reactive text must be a closure — write `text(move || …)` \
                  instead of `text(…sig.get()…)`. A bare `.get()` in text is now static; \
-                 `rx!(…)` / `text_fmt!(…)` values stay reactive by type."
+                 `rx!(…)` values stay reactive by type."
             )
         }),
         _ => None,

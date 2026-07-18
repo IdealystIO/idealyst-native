@@ -992,7 +992,7 @@ impl Backend for RokuBackend {
         // the same id are dropped — the value lives in the BS-side
         // arena once it's been seeded; later mutations come from
         // button actions on the device, not from the framework's
-        // snapshot. Without dedup, every `bind!` that names the
+        // snapshot. Without dedup, every structured binding that names the
         // same signal would emit a redundant CreateSignal and reset
         // it back to its initial each time.
         if self.created_signals.insert(signal_id) {

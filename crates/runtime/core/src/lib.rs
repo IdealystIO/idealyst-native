@@ -216,8 +216,9 @@ pub use identity::{
 pub use element::{EachKey, EachRowBuild, EachSnapshot, Element};
 pub use reactive_value::Reactive;
 pub use sources::{
-    signal_class, IntoStyleSource, IntoTextSource, JsBindingSpec, SignalClassSpec, StyleSource,
-    TextSource,
+    signal_class, IntoStyleSource, IntoTextSource, JsBindingSpec, ReactiveTextSlot,
+    SignalClassSpec, StaticTextSlot, StyleSource, TextSlot, TextSlotPart, TextSource,
+    __idealyst_text_from_parts,
 };
 pub use touch::{
     active_touch_claim, pointer_modifiers, set_active_touch_claim, set_pointer_modifiers,
@@ -341,7 +342,7 @@ pub use text_defaults::{
 };
 
 pub use runtime_macros::{
-    component, doc_scope, jsx, lazy, props, recipe, stylesheet, text_fmt, ui,
+    component, doc_scope, jsx, lazy, props, recipe, stylesheet, ui,
 };
 
 /// `#[idealyst_tool]` and `#[derive(IdealystSchema)]` — the
@@ -357,33 +358,13 @@ pub use runtime_macros::{
 /// (inert when off). A bare `pub use` of a macro has no binary cost.
 pub use runtime_macros::{idealyst_tool, IdealystSchema};
 
-/// Sentinel macro: marks a `text_fmt!` argument as a reactive
-/// signal (rather than a captured value). Has no behavior on its
-/// own — `text_fmt!` recognizes the `bind!(...)` token pattern
-/// inside its argument list at macro-expansion time and treats the
-/// inner expression as a `Signal<T>`. Calling `bind!` outside
-/// `text_fmt!` errors at compile time.
-///
-/// ```ignore
-/// // `id` captured, `global` subscribed:
-/// text_fmt!("leaf {}: g={}", id, bind!(global))
-/// ```
-#[macro_export]
-macro_rules! bind {
-    ($e:expr) => {
-        ::std::compile_error!("`bind!` is a sentinel for `text_fmt!` args only — \
-                               using it outside `text_fmt!(...)` has no effect")
-    };
-}
-
 /// Wraps an expression as a reactive prop value
 /// ([`Reactive::Dynamic`](crate::Reactive)). Use it to pass an inline
 /// computed value to a component's `Reactive<T>` prop so it stays
 /// live: signals the expression reads become dependencies and the
 /// component re-renders that prop when they change.
 ///
-/// It's the reactive-prop analog of [`bind!`] for `text_fmt!` — an
-/// explicit, type-driven opt-in (no `.get()` substring scanning).
+/// An explicit, type-driven opt-in (no `.get()` substring scanning).
 /// Bare signals don't need it (`content = my_signal` is already
 /// reactive via `IntoProp`); reach for `rx!` when the value is a
 /// computed expression over one or more signals.

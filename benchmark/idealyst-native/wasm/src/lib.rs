@@ -453,34 +453,18 @@ fn gen_tree_shape(seed: u32, target_leaves: usize, max_depth: Option<u32>) -> Tr
 /// subscribes to `branch`. Other leaves only subscribe to
 /// `global`.
 fn build_leaf(id: u32, target_id: u32, global: Signal<u32>, branch: Signal<u32>) -> Element {
-    // `text_fmt!("template", args...)` constructs a
-    // `TextSource::JsBinding`: per-fire fan-out happens entirely
-    // on the backend side (web → JS reactive layer). Args in
-    // `bind!(...)` are signals (subscribed to + interpolated per
-    // fire); bare args are captured at construction time and
-    // formatted into the template's static parts.
-    // `text_fmt!` now produces a `TextSource` value (NOT a wrapped
-    // `text(...)` builder), so it drops naturally into the
-    // primitive constructor — same shape as `text(String)` for a
-    // static label. Was previously emitted as a raw expression
-    // block + `.into_element()` because the macro wrapped the
-    // whole component construction; the cleanup of that macro
-    // collapsed both arms here.
-    let source = if id == target_id {
-        runtime_core::text_fmt!(
-            "leaf {}: g={} b={}",
-            id,
-            runtime_core::bind!(global),
-            runtime_core::bind!(branch),
-        )
+    // F-string text constructs a `TextSource::JsBinding`: per-fire
+    // fan-out happens entirely on the backend side (web → JS reactive
+    // layer). Slots classify by TYPE — `global`/`branch` are signals
+    // (subscribed to + interpolated per fire); `id` is a plain u32,
+    // captured at construction time and formatted into the template's
+    // static parts. Same lowering the removed `text_fmt!` macro
+    // produced, so the bench measures the identical fast path.
+    if id == target_id {
+        runtime_core::ui! { text { "leaf {id}: g={global} b={branch}" } }
     } else {
-        runtime_core::text_fmt!(
-            "leaf {}: g={}",
-            id,
-            runtime_core::bind!(global),
-        )
-    };
-    runtime_core::text(source).into_element()
+        runtime_core::ui! { text { "leaf {id}: g={global}" } }
+    }
 }
 
 /// Recursively turn a NodeSpec into a Element tree. Branches
@@ -589,7 +573,7 @@ fn app(initial_rows: usize) -> Element {
                             }
                             2u32 => {
                                 // Granular suite — N rows, each binding its own
-                                // counter signal via `text_fmt!` + `bind!`. The
+                                // counter signal via an f-string slot. The
                                 // JS-side text bridge handles per-binding fan-out
                                 // so a `bump_counter(i, v)` becomes one JS-side
                                 // notifier call, not a fresh Rust Effect per row.
@@ -604,22 +588,19 @@ fn app(initial_rows: usize) -> Element {
                                             } else {
                                                 PerfRowParity::Odd
                                             })) {
-                                                // `bind!(sigs[i])` subscribes via
+                                                // The `{sig}` slot subscribes via
                                                 // the JS-side binding registry, so
                                                 // each counter update fans out
                                                 // through a single notifier — not
-                                                // a Rust Effect per row. The
-                                                // `text_fmt!` macro produces a
-                                                // `TextSource` value that drops
-                                                // straight into `text { … }`'s
-                                                // body — same shape as a static
-                                                // `text { format!(…) }`.
-                                                text {
-                                                    runtime_core::text_fmt!(
-                                                        "row {}: c={}",
-                                                        i,
-                                                        runtime_core::bind!(sigs[i]),
-                                                    )
+                                                // a Rust Effect per row. F-string
+                                                // slots take IDENTS, so the
+                                                // indexed signal binds to a local
+                                                // first (block-expr child).
+                                                {
+                                                    let sig = sigs[i];
+                                                    runtime_core::ui! {
+                                                        text { "row {i}: c={sig}" }
+                                                    }
                                                 }
                                             }
                                         }

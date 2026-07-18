@@ -345,11 +345,11 @@ pub struct MacroEntry {
 /// catalog JSON and the `list_macros` filter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MacroKind {
-    /// State + reactivity: `effect!`, `rx!`, `bind!`. (Signal creation
+    /// State + reactivity: `effect!`, `rx!`. (Signal creation
     /// and memoization are the plain `signal(…)` / `memo(…)` functions —
     /// [`UtilityEntry`]s, not macros.)
     Reactive,
-    /// Element-tree construction: `ui!`, `jsx!`, `text_fmt!`, `lazy!`,
+    /// Element-tree construction: `ui!`, `jsx!`, `lazy!`,
     /// `node_ref!`, `children!`.
     Markup,
     /// Motion: `animated!`, `animate_at!`, `timeline!`.

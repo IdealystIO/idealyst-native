@@ -58,6 +58,11 @@ pub fn all_rules() -> &'static [RuleInfo] {
             summary: "use the `memo(move || …)` function — flags the removed `memo!` macro",
         },
         RuleInfo {
+            id: prefer_macros::TEXT_FSTRING_RULE,
+            default_level: Level::Warn,
+            summary: "interpolate in the text literal (`text { \"count: {count}\" }`) — flags the removed `text_fmt!` / `bind!` macros",
+        },
+        RuleInfo {
             id: prefer_ui::RULE,
             default_level: Level::Warn,
             summary: "build elements with the `ui!` / `jsx!` macro, not by hand",

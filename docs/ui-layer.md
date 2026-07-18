@@ -100,10 +100,12 @@ pub fn Badge(
     #[prop(default = 3)] count: i32,
 ) -> Element {
     // `label`/`count` arrive wrapped `Reactive<String>`/`Reactive<i32>`
-    // (same reactive-by-default rule as `#[props]` fields) — read with
-    // `.get()`. A call site can pass a literal, a `Signal`, or `rx!(…)`.
+    // (same reactive-by-default rule as `#[props]` fields). A call site
+    // can pass a literal, a `Signal`, or `rx!(…)`. In text, interpolate
+    // them directly — an f-string slot is live or static by the value's
+    // TYPE (see "Text f-strings" below).
     ui! {
-        text(move || format!("{} ({})", label.get(), count.get()))
+        text { "{label} ({count})" }
     }
 }
 ```
@@ -301,6 +303,42 @@ The DSLs lower `match scrutinee { ... }` to `switch(...)` when the
 scrutinee contains `.get()`. The arms then become the branches and
 the framework's switch primitive handles the rebuild-on-key-change
 logic.
+
+### Text f-strings
+
+A string literal in text position interpolates `{name}` placeholders,
+the way Rust's own `format!` treats inline named arguments:
+
+```rust
+let count = signal(0);
+let doubled = memo(move || count.get() * 2);
+
+ui! {
+    text { "count: {count}   doubled: {doubled:.1}" }
+}
+```
+
+Each slot classifies by the interpolated value's **type** — the text
+analog of `if is_high`'s `StaticCond`/`ReactiveCond` dispatch:
+
+- a `Display` value bakes in **statically** (zero reactive machinery);
+- a `Signal<T>` / `ReadSignal<T>` (memo output) becomes a **live
+  slot** — no closure, no `.get()`. Signal slots build a pre-decomposed
+  template binding (`TextSource::JsBinding`), so the web backend's
+  JS-side fast path applies; other backends fall back to the Effect
+  path;
+- a `Reactive<T>` prop interpolates too: a static prop bakes in, a
+  live one keeps the text live (via the Effect path — a `Dynamic`
+  prop has no signal id for the template binding).
+
+Format specs pass through (`{ratio:.2}`, widths, fill); `{{`/`}}`
+escape literal braces. The rules are prose-first: a literal with **no**
+valid `{ident}` placeholder never changes meaning (braces render
+verbatim — `"use { here"` is fine), while a literal that *does*
+interpolate treats malformed braces as compile errors. Positional
+`{}`/`{0}` and Debug `{x:?}` are not supported in text f-strings —
+reach for `text { move || format!(…) }` for those (the closure form is
+the general escape hatch and remains fully supported).
 
 ### Why this matters for extensibility
 

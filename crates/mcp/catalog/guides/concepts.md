@@ -28,8 +28,11 @@ pub struct GreetingProps {
 
 #[component]
 pub fn Greeting(props: &GreetingProps) -> Element {
+    let name = props.name.clone();
     ui! {
-        text(text_fmt!("Hello, {}!", props.name))
+        // `{name}` interpolates by TYPE: a static prop bakes in, a
+        // reactive one keeps the text live.
+        text { "Hello, {name}!" }
     }
 }
 

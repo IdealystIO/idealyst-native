@@ -213,6 +213,24 @@ mod tests {
     }
 
     #[test]
+    fn flags_removed_text_fmt_macro_invocation() {
+        let diags = lint(r#"fn f() { let t = text_fmt!("c={}", 1); }"#);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].rule, "prefer-text-fstring");
+        assert!(diags[0].message.contains("removed"), "{}", diags[0].message);
+        assert!(diags[0].help.as_deref().unwrap_or("").contains("{count}"), "{diags:?}");
+    }
+
+    #[test]
+    fn flags_removed_bind_macro_invocation() {
+        // `bind!` outside a macro body is a visible invocation node —
+        // exactly the leftover shape a 0.2 → 0.3 migration produces.
+        let diags = lint("fn f() { let b = bind!(count); }");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].rule, "prefer-text-fstring");
+    }
+
+    #[test]
     fn flags_builder_call() {
         let diags = lint("fn f() { builder::view(vec![]); }");
         assert_eq!(diags.len(), 1);

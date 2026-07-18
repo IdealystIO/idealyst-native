@@ -24,7 +24,7 @@ fn split_halves_share_the_slot() {
     assert_eq!(s.get(), 5);
     s.set(9);
     assert_eq!(read.get(), 9);
-    // Same slot id end to end (what text_fmt!/robot key on).
+    // Same slot id end to end (what f-string text bindings/robot key on).
     assert_eq!(s.id(), read.id());
     assert_eq!(s.id(), write.id());
 }

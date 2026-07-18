@@ -26,10 +26,12 @@ pub fn Counter(#[prop(default = 0)] start: i32) -> Element {
 
     ui! {
         view() {
-            // Reactive text is a CLOSURE — the type is what makes it live.
-            // A bare `text(count.get())` would be a stale snapshot (and is
-            // a compile error, by design).
-            text(move || format!("Count: {}", count.get()))
+            // Reactive text: `{count}` is live because `count` is a
+            // SIGNAL — f-string slots classify by type, like every other
+            // reactivity decision. (A bare `text(count.get())` would be a
+            // stale snapshot, and is a compile error by design; the
+            // closure form `text(move || format!(…))` also works.)
+            text { "Count: {count}" }
             button(label = "Increment", on_click = move || count.update(|n| *n += 1))
         }
     }

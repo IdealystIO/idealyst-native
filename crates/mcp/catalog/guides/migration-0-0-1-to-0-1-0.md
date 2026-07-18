@@ -151,9 +151,9 @@ reactive child (§3):
   patches the text in place when a signal it reads changes.
 - `text { "literal" }`, `text { some_value }`, `text { format!("…") }` (no live
   read) — a **value** content is static, built once.
-- `text { rx!(…) }`, `text { text_fmt!(…) }`, `text { my_reactive_string }` —
+- `text { rx!(…) }`, `text { my_reactive_string }` —
   reactive **by type**: the value's type (`Reactive<String>` / a `Signal<String>`
-  handle / a `text_fmt!` `TextSource::JsBinding`) carries the liveness; `ui!`
+  handle / a `TextSource::JsBinding` value) carries the liveness; `ui!`
   passes it straight through to `IntoTextSource`.
 
 A **bare signal read** in text (`text { count.get() }`, `text { format!("{}",
@@ -185,7 +185,10 @@ A **direct** `text(…)`/`button(…)` call inside a `#[component]` (outside `ui
 still has its parameter-rooted paths auto-cloned into the closure — write
 `text(move || props.x.get())` and the macro makes the closure `'static`.
 
-**`text_fmt!` / `bind!` are RETAINED** — *not* removed. They are not vestigial
+**`text_fmt!` / `bind!` were RETAINED at 0.1.0** (removed later in 0.3, where
+typed f-string text literals — `text { "count: {count}" }` — produce the same
+`TextSource::JsBinding` with no sentinel; see the 0.2→0.3 migration guide).
+The 0.1.0-era rationale, kept for the record: they are not vestigial
 sugar: `text_fmt!` compiles a `TextSource::JsBinding` (template parts + signal ids
 + per-signal stringifiers) that the **web backend updates on the JS side without a
 wasm round-trip** — a real hot-text performance path the benchmarks use — and
@@ -247,7 +250,7 @@ Status: **landed** (branch `feat/0.1.0-reactivity`).
       → author with a closure child `{ move || if … }`.
 - [ ] Convert any **bare reactive text** the compiler flags (`text { count.get() }`
       → `text { move || count.get() }`). The footgun guard makes every such site a
-      loud compile error — no silent freezes to hunt. `text_fmt!`/`bind!`/`rx!`
+      loud compile error — no silent freezes to hunt. Value-typed reactive forms
       are unchanged (reactive by type).
 - [ ] Watch for **compile errors** where a now-reactive `if`/`text` closure
       captures a non-`Clone`/borrowed value and needs `Clone`/`'static` — loud,

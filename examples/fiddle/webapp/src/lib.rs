@@ -32,7 +32,7 @@ use std::rc::Rc;
 use runtime_core::primitives::text_area::{text_area, TextAreaHandle};
 use runtime_core::stylesheet;
 use runtime_core::{
-    button, signal, switch, text, text_fmt, ui, AlignItems, Color, FlexDirection,
+    button, signal, switch, text, ui, AlignItems, Color, FlexDirection,
     FontWeight, JustifyContent, KeyEvent, KeyOutcome, Length, Overflow, Position, Element, Ref,
     Signal,
 };
@@ -520,7 +520,7 @@ fn render_tree_node(
             .padding_left(row_indent(depth));
         let mut nodes: Vec<Element> = vec![ui! {
             button(
-                label = text_fmt!("{}{}", chevron, name),
+                label = format!("{chevron}{name}"),
                 on_click = move || {
                     let path = path_for_click.clone();
                     expanded_signal.update(|set| {

@@ -28,6 +28,7 @@ use crate::rules::{last_segment, nth_from_end};
 pub(crate) const SIGNAL_RULE: &str = "prefer-signal-fn";
 pub(crate) const EFFECT_RULE: &str = "prefer-effect-macro";
 pub(crate) const MEMO_RULE: &str = "prefer-memo-fn";
+pub(crate) const TEXT_FSTRING_RULE: &str = "prefer-text-fstring";
 
 pub(crate) fn check_call(call: &syn::ExprCall, out: &mut Vec<RawDiag>) {
     let syn::Expr::Path(path_expr) = &*call.func else {
@@ -104,6 +105,35 @@ pub(crate) fn check_macro(mac: &syn::Macro, out: &mut Vec<RawDiag>) {
                 .with_help(
                     "write the closure yourself — `memo(move || …)` is the plain-fn form \
                      (the macro only inserted the `move ||`)",
+                ),
+            );
+        }
+        Some("text_fmt") => {
+            out.push(
+                RawDiag::new(
+                    TEXT_FSTRING_RULE,
+                    "the `text_fmt!` macro was removed",
+                    mac.path.span(),
+                )
+                .with_help(
+                    "interpolate in the text literal itself — `text { \"count: {count}\" }`. \
+                     Slots are live or static by the value's TYPE (signals subscribe, \
+                     `Display` values bake in) and signal slots produce the same optimized \
+                     web binding `text_fmt!` did. For positional/Debug formatting use \
+                     `text { move || format!(…) }`.",
+                ),
+            );
+        }
+        Some("bind") => {
+            out.push(
+                RawDiag::new(
+                    TEXT_FSTRING_RULE,
+                    "the `bind!` sentinel was removed with `text_fmt!`",
+                    mac.path.span(),
+                )
+                .with_help(
+                    "name the signal in a text f-string instead — `text { \"g={global}\" }` \
+                     subscribes because `global` is a signal (reactivity by type, no marker)",
                 ),
             );
         }

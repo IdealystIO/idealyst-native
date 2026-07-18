@@ -73,12 +73,12 @@ inventory::submit! {
     PrimitiveEntry {
         name: "text",
         pascal_name: "Text",
-        docs: "Renders a string. Pass `\"literal\"` for static content or a closure / `text_fmt!(...)` for reactive content. Backends use native text widgets (`UILabel`, `TextView`, `<span>`, `NSTextField`).",
+        docs: "Renders a string. A literal interpolates `{name}` placeholders f-string-style — signal slots are LIVE by type, `Display` values bake in (`text { \"count: {count}\" }`); a closure is reactive (`text { move || … }`); plain literals are static. Backends use native text widgets (`UILabel`, `TextView`, `<span>`, `NSTextField`).",
         props: &[
             PropFieldSpec {
                 name: "source",
                 type_str: "TextSource",
-                doc: "Static string or reactive closure. `text_fmt!` is the sugared form for reactive interpolation.",
+                doc: "Static string, f-string literal (`\"count: {count}\"` — slots live-or-static by type), or reactive closure (`move || format!(…)` for positional/Debug formatting).",
                 constraint: "",
             },
             COMMON_STYLE_FIELD,

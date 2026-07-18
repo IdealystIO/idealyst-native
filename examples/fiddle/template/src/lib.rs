@@ -200,7 +200,7 @@ pub use web_mode::start;
 pub mod __rt {
     // Framework primitives + builders the snippet hits constantly.
     pub use runtime_core::{
-        bind, button, component, pressable, signal, switch, text, text_fmt, ui, view, when,
+        button, component, pressable, signal, switch, text, ui, view, when,
         AlignItems, Color, ColorScheme, Easing, Effect, FlexDirection, FontWeight,
         JustifyContent, Length, Overflow, Position, Element, Ref, Signal, StyleRules,
         StyleSheet,

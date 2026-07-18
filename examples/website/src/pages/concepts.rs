@@ -100,9 +100,9 @@ fn primitives() -> Element {
 fn reactivity() -> Element {
     let snippet = "let count = signal(0);\n\
                    \n\
-                   // `text_fmt!` builds a reactive text source. `bind!(signal)`\n\
-                   // marks the args the framework subscribes to:\n\
-                   ui! { text { text_fmt!(\"Count: {}\", bind!(count)) } }\n\
+                   // An f-string text literal: `{count}` is a live slot\n\
+                   // because `count` is a signal (slots classify by type):\n\
+                   ui! { text { \"Count: {count}\" } }\n\
                    \n\
                    // Update fires every subscribed dependent and nothing else:\n\
                    count.update(|n| *n += 1);";

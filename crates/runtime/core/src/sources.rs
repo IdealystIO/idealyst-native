@@ -35,8 +35,9 @@ pub enum TextSource {
     /// would carry — it gets invoked through the legacy Effect path
     /// on backends that DON'T support JS bindings (default-impl
     /// `Backend::supports_js_text_bindings` returns `false`). The
-    /// variant author writes the binding once via [`crate::text_fmt!`]
-    /// or by constructing `JsBindingSpec` directly, and the
+    /// variant author writes the binding once via a text f-string
+    /// (`text { "count: {count}" }`) or by constructing
+    /// `JsBindingSpec` directly, and the
     /// framework picks the fast or fallback path based on the
     /// active backend's capabilities.
     JsBinding(JsBindingSpec),
@@ -118,14 +119,232 @@ where
     }
 }
 
-/// Identity passthrough so macro-generated `TextSource` values (e.g.
-/// from `bind!`) can be used at the same call sites that accept
-/// `&str` / `String` / closures. Without this, `Text { bind!(..) }`
-/// would fail to type-check because the `IntoTextSource` blanket
-/// `Fn()` impl above doesn't cover a fully-constructed `TextSource`.
+/// Identity passthrough so fully-constructed `TextSource` values (an
+/// f-string lowering's `__idealyst_text_from_parts` result, a manual
+/// `JsBindingSpec`) can be used at the same call sites that accept
+/// `&str` / `String` / closures — the blanket `Fn()` impl above doesn't
+/// cover them.
 impl IntoTextSource for TextSource {
     fn into_text_source(self) -> TextSource {
         self
+    }
+}
+
+// =============================================================================
+// F-string text: typed interpolation slots
+// =============================================================================
+//
+// `ui!`/`jsx!` lower a text literal containing `{name}` placeholders
+// (`text { "count: {count}" }`) to a parts list — literal fragments plus
+// one [`TextSlot`] per placeholder — assembled by
+// [`__idealyst_text_from_parts`]. What makes a slot live is the interpolated
+// value's TYPE, resolved through the `StaticTextSlot` / `ReactiveTextSlot`
+// method dispatch (same doctrine and same mechanism as `if is_high` via
+// `StaticCond`/`ReactiveCond`): a `Display` value bakes in statically, a
+// signal becomes a live slot. The assembly picks the best `TextSource`
+// the slots allow — all-static → `Static`; signal slots (with ids) →
+// `JsBinding` (web fast path, Effect fallback elsewhere); any opaque
+// computed slot (e.g. a `Reactive<T>` prop, which has no signal id) →
+// `Bound` closure via the Effect path.
+
+/// One interpolation slot of an f-string text literal.
+#[doc(hidden)]
+pub enum TextSlot {
+    /// Value formatted once at build time.
+    Static(String),
+    /// Signal-backed slot: carries the signal id so JsBinding-capable
+    /// backends can fan out without entering Rust per fire.
+    Live {
+        id: u64,
+        initial: String,
+        /// UNTRACKED read+format — used as the per-signal stringifier
+        /// (JS-notifier path; reactivity flows through the dispatcher,
+        /// not a Rust subscription).
+        stringify: Rc<dyn Fn() -> String>,
+        /// TRACKED read+format — used inside the Effect fallback
+        /// closure, where the read must subscribe.
+        read: Rc<dyn Fn() -> String>,
+    },
+    /// Reactive but with no signal id (`Reactive::Dynamic` props):
+    /// forces the whole text down the `Bound`/Effect path. TRACKED.
+    Computed(Rc<dyn Fn() -> String>),
+}
+
+/// A piece of the f-string: a literal fragment or an interpolation slot.
+#[doc(hidden)]
+pub enum TextSlotPart {
+    Lit(&'static str),
+    Slot(TextSlot),
+}
+
+/// Assemble f-string pieces into the most capable `TextSource` the
+/// slots allow. See the module section comment above for the tiering.
+#[doc(hidden)]
+pub fn __idealyst_text_from_parts(parts: Vec<TextSlotPart>) -> TextSource {
+    let any_computed = parts
+        .iter()
+        .any(|p| matches!(p, TextSlotPart::Slot(TextSlot::Computed(_))));
+    let any_live = parts
+        .iter()
+        .any(|p| matches!(p, TextSlotPart::Slot(TextSlot::Live { .. })));
+
+    if !any_computed && !any_live {
+        let mut s = String::new();
+        for p in &parts {
+            match p {
+                TextSlotPart::Lit(l) => s.push_str(l),
+                TextSlotPart::Slot(TextSlot::Static(v)) => s.push_str(v),
+                _ => unreachable!(),
+            }
+        }
+        return TextSource::Static(s);
+    }
+
+    if any_computed {
+        // Opaque slot present — Effect path for the whole text. Tracked
+        // reads inside the closure subscribe it to every live input.
+        let readers: Vec<Rc<dyn Fn() -> String>> = parts
+            .into_iter()
+            .map(|p| -> Rc<dyn Fn() -> String> {
+                match p {
+                    TextSlotPart::Lit(l) => Rc::new(move || l.to_string()),
+                    TextSlotPart::Slot(TextSlot::Static(v)) => Rc::new(move || v.clone()),
+                    TextSlotPart::Slot(TextSlot::Live { read, .. }) => read,
+                    TextSlotPart::Slot(TextSlot::Computed(read)) => read,
+                }
+            })
+            .collect();
+        return TextSource::Bound(crate::derive::IntoDerived::<String>::into_derived(
+            move || {
+                let mut s = String::new();
+                for r in &readers {
+                    s.push_str(&r());
+                }
+                s
+            },
+        ));
+    }
+
+    // Live slots only: build the pre-decomposed JsBinding — static text
+    // folded into template parts around each signal slot (see
+    // [`JsBindingSpec`] for the field contract).
+    let mut template_parts: Vec<String> = vec![String::new()];
+    let mut signal_ids: Vec<u64> = Vec::new();
+    let mut initial_values: Vec<String> = Vec::new();
+    let mut stringifiers: Vec<Rc<dyn Fn() -> String>> = Vec::new();
+    let mut readers: Vec<Rc<dyn Fn() -> String>> = Vec::new();
+    for p in parts {
+        match p {
+            TextSlotPart::Lit(l) => template_parts.last_mut().unwrap().push_str(l),
+            TextSlotPart::Slot(TextSlot::Static(v)) => {
+                template_parts.last_mut().unwrap().push_str(&v)
+            }
+            TextSlotPart::Slot(TextSlot::Live { id, initial, stringify, read }) => {
+                signal_ids.push(id);
+                initial_values.push(initial);
+                stringifiers.push(stringify);
+                readers.push(read);
+                template_parts.push(String::new());
+            }
+            TextSlotPart::Slot(TextSlot::Computed(_)) => unreachable!(),
+        }
+    }
+    let fallback_parts = template_parts.clone();
+    TextSource::JsBinding(JsBindingSpec {
+        signal_ids,
+        template_parts,
+        initial_values,
+        compute_fallback: Rc::new(move || {
+            let mut s = String::new();
+            for (i, part) in fallback_parts.iter().enumerate() {
+                s.push_str(part);
+                if let Some(r) = readers.get(i) {
+                    s.push_str(&r());
+                }
+            }
+            s
+        }),
+        stringifiers,
+    })
+}
+
+/// Static half of the f-string slot dispatch: any `Display` value bakes
+/// in at build time. Method-resolution dispatch (both traits in scope,
+/// the receiver's type picks the impl) — the same pattern as
+/// `StaticCond`/`ReactiveCond` for `if`. Signal types don't implement
+/// `Display`, so the blanket never overlaps [`ReactiveTextSlot`].
+#[doc(hidden)]
+pub trait StaticTextSlot {
+    fn __idealyst_text_slot(&self, f: impl Fn(&dyn std::fmt::Display) -> String) -> TextSlot;
+}
+
+impl<T: std::fmt::Display> StaticTextSlot for T {
+    fn __idealyst_text_slot(&self, f: impl Fn(&dyn std::fmt::Display) -> String) -> TextSlot {
+        TextSlot::Static(f(self))
+    }
+}
+
+/// Reactive half of the f-string slot dispatch — signal-typed values
+/// become live slots. `&self` receiver (signal handles are `Copy`;
+/// `Reactive` clones) so interpolating never consumes the author's
+/// binding.
+#[doc(hidden)]
+pub trait ReactiveTextSlot {
+    fn __idealyst_text_slot(
+        &self,
+        f: impl Fn(&dyn std::fmt::Display) -> String + 'static,
+    ) -> TextSlot;
+}
+
+impl<T: std::fmt::Display + Clone + 'static> ReactiveTextSlot for crate::Signal<T> {
+    fn __idealyst_text_slot(
+        &self,
+        f: impl Fn(&dyn std::fmt::Display) -> String + 'static,
+    ) -> TextSlot {
+        let sig = *self;
+        let f = Rc::new(f);
+        let fs = f.clone();
+        TextSlot::Live {
+            id: sig.id(),
+            initial: crate::untrack(|| f(&sig.get())),
+            stringify: Rc::new(move || crate::untrack(|| fs(&sig.get()))),
+            read: Rc::new(move || f(&sig.get())),
+        }
+    }
+}
+
+impl<T: std::fmt::Display + Clone + 'static> ReactiveTextSlot for crate::ReadSignal<T> {
+    fn __idealyst_text_slot(
+        &self,
+        f: impl Fn(&dyn std::fmt::Display) -> String + 'static,
+    ) -> TextSlot {
+        let sig = *self;
+        let f = Rc::new(f);
+        let fs = f.clone();
+        TextSlot::Live {
+            id: sig.id(),
+            initial: crate::untrack(|| f(&sig.get())),
+            stringify: Rc::new(move || crate::untrack(|| fs(&sig.get()))),
+            read: Rc::new(move || f(&sig.get())),
+        }
+    }
+}
+
+/// `Reactive<T>` props interpolate too: a `Static` prop bakes in, a
+/// `Dynamic` one (no signal id available) becomes a `Computed` slot,
+/// which routes the whole text through the Effect path.
+impl<T: std::fmt::Display + Clone + 'static> ReactiveTextSlot for crate::Reactive<T> {
+    fn __idealyst_text_slot(
+        &self,
+        f: impl Fn(&dyn std::fmt::Display) -> String + 'static,
+    ) -> TextSlot {
+        match self {
+            crate::Reactive::Static(v) => TextSlot::Static(f(v)),
+            dynamic => {
+                let r = dynamic.clone();
+                TextSlot::Computed(Rc::new(move || f(&r.get())))
+            }
+        }
     }
 }
 

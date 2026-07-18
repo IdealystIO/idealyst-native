@@ -320,16 +320,16 @@ pub enum DocConcept {
     /// normal `Bound` Effect path. Authoritative explainer:
     /// `reactive-text-bindings` page.
     JsBinding,
-    /// The `text_fmt!("template", args..)` proc macro. Sugar for
-    /// constructing a `TextSource::JsBinding` from a format-style
-    /// template + a mix of captured exprs and `bind!(signal)`
-    /// args.
-    TextFmtMacro,
-    /// The `bind!(expr)` sentinel — marks a `text_fmt!` arg as a
-    /// reactive signal. Has no behavior outside `text_fmt!`; the
-    /// proc macro recognizes it at expansion time. Calling
-    /// `bind!` standalone errors with `compile_error!`.
-    BindSentinel,
+    /// F-string text (`text { "count: {count}" }`) — a string
+    /// literal in text position interpolates `{name}` placeholders;
+    /// signal slots lower to a `TextSource::JsBinding`, plain
+    /// `Display` values bake into the template's static parts.
+    FStringText,
+    /// The `StaticTextSlot`/`ReactiveTextSlot` method dispatch —
+    /// how an f-string slot decides live-vs-static from the
+    /// interpolated value's TYPE (the text analog of the
+    /// `StaticCond`/`ReactiveCond` dispatch behind `if`).
+    TextSlotDispatch,
     /// `WebBackend::register_signal_for_js(sid, stringifier)` —
     /// the one-call-per-signal setup that wires a signal's writes
     /// to the JS-side reactive layer via the framework's
@@ -588,8 +588,8 @@ impl DocConcept {
             DocConcept::Context => "Context",
 
             DocConcept::JsBinding => "TextSource::JsBinding",
-            DocConcept::TextFmtMacro => "text_fmt!",
-            DocConcept::BindSentinel => "bind!",
+            DocConcept::FStringText => "f-string text",
+            DocConcept::TextSlotDispatch => "text slot dispatch",
             DocConcept::RegisterSignalForJs => "register_signal_for_js",
 
             DocConcept::Component => "Component",
@@ -718,8 +718,8 @@ impl DocConcept {
             DocConcept::Context => "context",
 
             DocConcept::JsBinding => "js-binding",
-            DocConcept::TextFmtMacro => "text-fmt-macro",
-            DocConcept::BindSentinel => "bind-sentinel",
+            DocConcept::FStringText => "fstring-text",
+            DocConcept::TextSlotDispatch => "text-slot-dispatch",
             DocConcept::RegisterSignalForJs => "register-signal-for-js",
 
             DocConcept::Component => "component",

@@ -723,7 +723,7 @@ pub(crate) fn emit_recovery(input: TokenStream2, err: &syn::Error) -> TokenStrea
 /// calls decompose canonically even when the full expression is valid.
 fn salvage_stmts(stream: TokenStream2) -> Vec<TokenStream2> {
     let mut out = Vec::new();
-    salvage_from_stream(stream, &mut out);
+    salvage_from_stream(stream, &mut out, SalvageCtx::Children);
     out
 }
 
@@ -733,7 +733,24 @@ fn push_expr(out: &mut Vec<TokenStream2>, e: TokenStream2) {
     out.push(quote! { let _ = &(#e); });
 }
 
-fn salvage_from_stream(stream: TokenStream2, out: &mut Vec<TokenStream2>) {
+/// Which grammatical position a token run being salvaged sits in. The
+/// `ui!` grammar gives `Pascal ( … )` two meanings by position: in CHILD
+/// position it is a component tag (struct-literal salvage → prop-NAME
+/// completion), but inside a prop value or handler body it is ordinary
+/// Rust — a tuple-struct/enum-variant CONSTRUCTOR call (`P2(w, h)`,
+/// `Dir::North(steps)`), and struct-literal-salvaging those plants
+/// `E0560 no such field` squiggles from rust-analyzer's pull diagnostics
+/// on VALID code (user-hit via the always-on happy shell). So the
+/// struct-literal salvage fires only in `Children` context.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SalvageCtx {
+    /// Direct children of a tag body — `Pascal(…)` is a component tag.
+    Children,
+    /// Prop values, call arguments, handler bodies — plain Rust.
+    Value,
+}
+
+fn salvage_from_stream(stream: TokenStream2, out: &mut Vec<TokenStream2>, ctx: SalvageCtx) {
     let mut segment: Vec<TokenTree> = Vec::new();
     let mut segments: Vec<Vec<TokenTree>> = Vec::new();
     for tt in stream {
@@ -751,8 +768,12 @@ fn salvage_from_stream(stream: TokenStream2, out: &mut Vec<TokenStream2>) {
     for seg in segments {
         // Component invocations (`PascalTag ( … )`) get a STRUCT-LITERAL
         // salvage so rust-analyzer offers prop-NAME completion at a
-        // half-typed prop — see [`salvage_component_invocations`].
-        salvage_component_invocations(&seg, out);
+        // half-typed prop — see [`salvage_component_invocations`]. Only
+        // in CHILD position, where the grammar says a Pascal call IS a
+        // tag (see [`SalvageCtx`]).
+        if ctx == SalvageCtx::Children {
+            salvage_component_invocations(&seg, out);
+        }
         // A prop assignment: `ident = <rhs>`. Salvage the RHS only — the
         // whole segment would parse as an assignment to an undefined
         // name and inject noise. STRUCTURED salvage first: a closure /
@@ -762,7 +783,7 @@ fn salvage_from_stream(stream: TokenStream2, out: &mut Vec<TokenStream2>) {
         // cursor degrades to unknown-receiver noise (the bug that made
         // handle methods invisible until a prefix was typed).
         if let Some(rhs) = prop_value_tokens(&seg) {
-            if let Some(composite) = try_scaffold(&rhs) {
+            if let Some(composite) = try_scaffold(&rhs, SalvageCtx::Value) {
                 push_expr(out, composite);
             } else if let Some(expr_ts) = parse_expr_prefix(rhs.clone()) {
                 push_expr(out, expr_ts);
@@ -771,7 +792,7 @@ fn salvage_from_stream(stream: TokenStream2, out: &mut Vec<TokenStream2>) {
                 // still hold salvageable content.
                 for tt in &rhs {
                     if let TokenTree::Group(g) = tt {
-                        salvage_from_stream(g.stream(), out);
+                        salvage_from_stream(g.stream(), out, SalvageCtx::Value);
                     }
                 }
             }
@@ -782,7 +803,7 @@ fn salvage_from_stream(stream: TokenStream2, out: &mut Vec<TokenStream2>) {
         // siblings. Owns ALL group recursion for its tokens: a scaffolded
         // body must not ALSO be salvaged flat, or the bound copies get
         // shadowed by unbound duplicates full of unresolved-name noise.
-        salvage_statement_run(seg, out);
+        salvage_statement_run(seg, out, ctx);
     }
 }
 
@@ -793,7 +814,7 @@ fn salvage_from_stream(stream: TokenStream2, out: &mut Vec<TokenStream2>) {
 /// validated by parsing the actual composite, so a header whose block
 /// isn't statement-shaped (`match` needs arms, a bogus head, …) returns
 /// `None` and falls back to coarser salvage.
-fn try_scaffold(toks: &[TokenTree]) -> Option<TokenStream2> {
+fn try_scaffold(toks: &[TokenTree], ctx: SalvageCtx) -> Option<TokenStream2> {
     let TokenTree::Group(g) = toks.last()? else {
         return None;
     };
@@ -802,13 +823,132 @@ fn try_scaffold(toks: &[TokenTree]) -> Option<TokenStream2> {
     }
     let head: TokenStream2 = toks[..toks.len() - 1].iter().cloned().collect();
     let mut inner: Vec<TokenStream2> = Vec::new();
-    salvage_from_stream(g.stream(), &mut inner);
+    salvage_from_stream(g.stream(), &mut inner, ctx);
     let candidate = quote! {
         #head {
             #( #inner )*
         }
     };
     syn::parse2::<Expr>(candidate.clone()).ok().map(|_| candidate)
+}
+
+/// Scaffold a plain `if`/`for` through the SAME type dispatch the real
+/// `ui!` lowering uses, so the salvage accepts exactly what the DSL
+/// accepts (see the call site in [`salvage_statement_run`] for the full
+/// rationale — the plain-Rust form E0308-squiggles valid reactive
+/// conditions under rust-analyzer). Returns the number of consumed
+/// tokens on success; `None` (nothing emitted) when the construct is too
+/// broken to scaffold this way.
+///
+/// For `if`, the whole `else if …`/`else` chain is consumed: the else
+/// branch becomes the dispatch's second closure, with a chained
+/// `else if` salvaged recursively inside it.
+fn salvage_dispatch_construct(
+    kw: &str,
+    toks: &[TokenTree],
+    out: &mut Vec<TokenStream2>,
+    ctx: SalvageCtx,
+) -> Option<usize> {
+    let body_at = toks.iter().position(
+        |t| matches!(t, TokenTree::Group(g) if g.delimiter() == Delimiter::Brace),
+    )?;
+    let TokenTree::Group(body) = &toks[body_at] else {
+        return None;
+    };
+
+    if kw == "for" {
+        let in_pos = toks[..body_at]
+            .iter()
+            .position(|t| matches!(t, TokenTree::Ident(i) if i == "in"))?;
+        if in_pos < 1 || in_pos + 1 >= body_at {
+            return None;
+        }
+        let pat: TokenStream2 = toks[1..in_pos].iter().cloned().collect();
+        let iter: TokenStream2 = toks[in_pos + 1..body_at].iter().cloned().collect();
+        let mut body_stmts: Vec<TokenStream2> = Vec::new();
+        salvage_from_stream(body.stream(), &mut body_stmts, ctx);
+        let candidate = quote! {
+            {
+                #[allow(unused_imports)]
+                use ::runtime_core::{StaticForEach as _, ReactiveForEach as _};
+                (#iter).__idealyst_for_each(move |#pat| {
+                    #( #body_stmts )*
+                    ::std::vec::Vec::new()
+                })
+            }
+        };
+        return syn::parse2::<Expr>(candidate.clone()).ok().map(|_| {
+            push_expr(out, candidate);
+            body_at + 1
+        });
+    }
+
+    // `if` — a nonempty condition is required.
+    if body_at < 2 {
+        return None;
+    }
+    let cond: TokenStream2 = toks[1..body_at].iter().cloned().collect();
+    let mut then_stmts: Vec<TokenStream2> = Vec::new();
+    salvage_from_stream(body.stream(), &mut then_stmts, ctx);
+
+    let mut consumed = body_at + 1;
+    let mut else_stmts: Vec<TokenStream2> = Vec::new();
+    if matches!(toks.get(consumed), Some(TokenTree::Ident(i)) if i == "else") {
+        match (toks.get(consumed + 1), toks.get(consumed + 2)) {
+            (Some(TokenTree::Group(g)), _) if g.delimiter() == Delimiter::Brace => {
+                salvage_from_stream(g.stream(), &mut else_stmts, ctx);
+                consumed += 2;
+            }
+            (Some(TokenTree::Ident(i)), _) if i == "if" => {
+                let end = if_chain_extent(toks, consumed + 1);
+                salvage_statement_run(toks[consumed + 1..end].to_vec(), &mut else_stmts, ctx);
+                consumed = end;
+            }
+            _ => {}
+        }
+    }
+    let candidate = quote! {
+        {
+            #[allow(unused_imports)]
+            use ::runtime_core::{StaticCond as _, ReactiveCond as _};
+            (#cond).__idealyst_if(
+                move || { #( #then_stmts )* ::std::vec::Vec::new() },
+                move || { #( #else_stmts )* ::std::vec::Vec::new() },
+            )
+        }
+    };
+    syn::parse2::<Expr>(candidate.clone()).ok().map(|_| {
+        push_expr(out, candidate);
+        consumed
+    })
+}
+
+/// Index just past an `if … { … } (else if … { … })* (else { … })?`
+/// chain whose `if` sits at `start`. Bodies are single brace-group
+/// tokens, so the scan can't be confused by nested constructs.
+fn if_chain_extent(toks: &[TokenTree], start: usize) -> usize {
+    let mut pos = start;
+    loop {
+        let Some(b) = toks[pos..].iter().position(
+            |t| matches!(t, TokenTree::Group(g) if g.delimiter() == Delimiter::Brace),
+        ) else {
+            return toks.len();
+        };
+        pos += b + 1;
+        match (toks.get(pos), toks.get(pos + 1)) {
+            (Some(TokenTree::Ident(e)), Some(TokenTree::Group(g)))
+                if e == "else" && g.delimiter() == Delimiter::Brace =>
+            {
+                return pos + 2;
+            }
+            (Some(TokenTree::Ident(e)), Some(TokenTree::Ident(i)))
+                if e == "else" && i == "if" =>
+            {
+                pos += 2;
+            }
+            _ => return pos,
+        }
+    }
 }
 
 /// Salvage a statement-shaped token run: repeatedly take the longest
@@ -823,7 +963,7 @@ fn try_scaffold(toks: &[TokenTree]) -> Option<TokenStream2> {
 ///   arity/types won't match the prop list (noise); the struct-literal
 ///   salvage from [`salvage_component_invocations`] is the useful
 ///   surface for it.
-fn salvage_statement_run(mut toks: Vec<TokenTree>, out: &mut Vec<TokenStream2>) {
+fn salvage_statement_run(mut toks: Vec<TokenTree>, out: &mut Vec<TokenStream2>, ctx: SalvageCtx) {
     while !toks.is_empty() {
         let head_pair_to_skip = match (toks.first(), toks.get(1)) {
             (Some(TokenTree::Ident(_)), Some(TokenTree::Group(g)))
@@ -840,9 +980,16 @@ fn salvage_statement_run(mut toks: Vec<TokenTree>, out: &mut Vec<TokenStream2>) 
         };
         if head_pair_to_skip {
             // The pair itself isn't expression-salvaged, but its group
-            // still holds salvageable content (children / prop values).
+            // still holds salvageable content: a BRACE group is a tag's
+            // children block (Children ctx), a PAREN group is its prop
+            // list (Value ctx — Pascal calls inside are constructors).
             if let Some(TokenTree::Group(g)) = toks.get(1) {
-                salvage_from_stream(g.stream(), out);
+                let inner_ctx = if g.delimiter() == Delimiter::Brace {
+                    SalvageCtx::Children
+                } else {
+                    SalvageCtx::Value
+                };
+                salvage_from_stream(g.stream(), out, inner_ctx);
             }
             toks.drain(..2);
             continue;
@@ -892,21 +1039,45 @@ fn salvage_statement_run(mut toks: Vec<TokenTree>, out: &mut Vec<TokenStream2>) 
         // excluded: its arms aren't statements, so a scaffold body would
         // flat-salvage the arms and strip their pattern bindings on
         // VALID code; it keeps whole-expression salvage below.
-        if matches!(toks.first(), Some(TokenTree::Ident(i))
-            if i == "if" || i == "while" || i == "for")
-        {
-            if let Some(body_at) = toks.iter().position(|t| {
-                matches!(t, TokenTree::Group(g) if g.delimiter() == Delimiter::Brace)
-            }) {
-                if let Some(composite) = try_scaffold(&toks[..=body_at]) {
-                    push_expr(out, composite);
-                    toks.drain(..=body_at);
+        //
+        // WHICH scaffold form depends on the construct:
+        // - Plain `if`/`for` go through the SAME type dispatch the real
+        //   lowering uses (`__idealyst_if` / `__idealyst_for_each`), NOT
+        //   a plain Rust `if`/`for` — `ui!` legally accepts a
+        //   `ReadSignal<bool>` condition and a `Signal<Vec<_>>` iterable,
+        //   which a plain `if`/`for` rejects, and rust-analyzer surfaces
+        //   that as an E0308 squiggle ON VALID CODE via its pull-model
+        //   diagnostics (user-hit: `if is_high` where
+        //   `is_high = memo(…)`). The dispatch accepts exactly what the
+        //   DSL accepts, so the salvage typechecks iff the real code
+        //   does; it also keeps `for`-loop items TYPED for either world.
+        // - `if let`/`while let`/`while` keep the plain-Rust scaffold:
+        //   their conditions are plain Rust in valid code (a `let`
+        //   pattern must already match its RHS type; `while` has no
+        //   reactive form), and the `let` forms need the real construct
+        //   to keep their pattern BINDINGS live.
+        if let Some(TokenTree::Ident(kw)) = toks.first() {
+            let kw = kw.to_string();
+            let let_form =
+                matches!(toks.get(1), Some(TokenTree::Ident(i)) if i == "let");
+            if (kw == "if" || kw == "for") && !let_form {
+                if let Some(consumed) = salvage_dispatch_construct(&kw, &toks, out, ctx) {
+                    toks.drain(..consumed);
                     continue;
                 }
+                // Mid-typed condition / no body yet: fall through to the
+                // keyword-condition branch below.
+            } else if kw == "if" || kw == "while" {
+                if let Some(body_at) = toks.iter().position(|t| {
+                    matches!(t, TokenTree::Group(g) if g.delimiter() == Delimiter::Brace)
+                }) {
+                    if let Some(composite) = try_scaffold(&toks[..=body_at], ctx) {
+                        push_expr(out, composite);
+                        toks.drain(..=body_at);
+                        continue;
+                    }
+                }
             }
-            // Header didn't scaffold (mid-typed condition, no body yet):
-            // fall through — the keyword-condition branch below salvages
-            // what it can.
         }
 
         // Bare call in statement position (`ident ( … )`, lowercase, not
@@ -932,10 +1103,26 @@ fn salvage_statement_run(mut toks: Vec<TokenTree>, out: &mut Vec<TokenStream2>) 
                 && !chained
             {
                 push_expr(out, head.to_token_stream());
-                salvage_from_stream(g.stream(), out);
+                salvage_from_stream(g.stream(), out, SalvageCtx::Value);
                 toks.drain(..2);
                 continue;
             }
+        }
+
+        // A LEADING brace group is descended, never block-expr-salvaged
+        // whole: `{ for x in rows { … } }` parses as a block expression,
+        // and swallowing it would re-emit DSL-flavored contents as plain
+        // Rust (the exact type-error class the dispatch scaffolds above
+        // exist to prevent) — and break prefix stability, since whether
+        // the block parses depends on its interior.
+        if matches!(toks.first(), Some(TokenTree::Group(g))
+            if g.delimiter() == Delimiter::Brace)
+        {
+            if let TokenTree::Group(g) = &toks[0] {
+                salvage_from_stream(g.stream(), out, ctx);
+            }
+            toks.remove(0);
+            continue;
         }
 
         let mut n = toks.len();
@@ -964,7 +1151,7 @@ fn salvage_statement_run(mut toks: Vec<TokenTree>, out: &mut Vec<TokenStream2>) 
             matches!(t, TokenTree::Group(g) if g.delimiter() == Delimiter::Brace)
         }) {
             if body_at > 0 {
-                if let Some(composite) = try_scaffold(&toks[..=body_at]) {
+                if let Some(composite) = try_scaffold(&toks[..=body_at], ctx) {
                     push_expr(out, composite);
                     toks.drain(..=body_at);
                     continue;
@@ -1016,7 +1203,7 @@ fn salvage_statement_run(mut toks: Vec<TokenTree>, out: &mut Vec<TokenStream2>) 
                     }
                 }
                 if let Some(TokenTree::Group(g)) = toks.get(body_at) {
-                    salvage_from_stream(g.stream(), out);
+                    salvage_from_stream(g.stream(), out, ctx);
                 }
                 let drain_to = (body_at + 1).min(toks.len());
                 toks.drain(..drain_to);
@@ -1026,7 +1213,7 @@ fn salvage_statement_run(mut toks: Vec<TokenTree>, out: &mut Vec<TokenStream2>) 
         // Mid-typed operator, stray punct, or an unrecognized head —
         // step past it, salvaging a group's interior on the way.
         if let TokenTree::Group(g) = &toks[0] {
-            salvage_from_stream(g.stream(), out);
+            salvage_from_stream(g.stream(), out, ctx);
         }
         toks.remove(0);
     }
@@ -1304,6 +1491,174 @@ fn emit_component(
     }
 }
 
+/// One piece of an f-string text literal: a literal fragment or a
+/// `{name}` / `{name:spec}` interpolation slot.
+enum FPiece {
+    Lit(String),
+    Slot {
+        name: String,
+        /// The `format!` template applied to the slot value —
+        /// `"{}"` for a bare `{name}`, `"{:spec}"` when a spec was given.
+        fmt: String,
+    },
+}
+
+/// Parse a text-position string literal as an f-string.
+///
+/// - `Ok(None)` — the literal contains NO valid `{ident}` placeholder:
+///   it is prose and stays verbatim, whatever braces it contains. This
+///   is the compatibility rule: interpolation only activates on clear
+///   intent (`"use { to open"` and legacy `"{{"`-escaped strings never
+///   change meaning).
+/// - `Ok(Some(pieces))` — at least one valid placeholder; `{{`/`}}`
+///   unescape, and every other brace use must be well-formed.
+/// - `Err(msg)` — the literal HAS a valid placeholder but also a brace
+///   error (positional `{}`/`{0}`, `{:?}` Debug spec, unmatched brace,
+///   non-identifier) — loud, because intent is clearly interpolation.
+fn parse_fstring(value: &str) -> Result<Option<Vec<FPiece>>, String> {
+    let mut pieces: Vec<FPiece> = vec![FPiece::Lit(String::new())];
+    let mut first_err: Option<String> = None;
+    let mut slots = 0usize;
+    let mut push_ch = |pieces: &mut Vec<FPiece>, c: char| match pieces.last_mut() {
+        Some(FPiece::Lit(s)) => s.push(c),
+        _ => pieces.push(FPiece::Lit(c.to_string())),
+    };
+    let mut chars = value.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '{' => {
+                if chars.peek() == Some(&'{') {
+                    chars.next();
+                    push_ch(&mut pieces, '{');
+                    continue;
+                }
+                let mut inner = String::new();
+                let mut closed = false;
+                for ic in chars.by_ref() {
+                    if ic == '}' {
+                        closed = true;
+                        break;
+                    }
+                    inner.push(ic);
+                }
+                if !closed {
+                    if first_err.is_none() {
+                        first_err =
+                            Some("unmatched `{` — escape a literal brace as `{{`".to_string());
+                    }
+                    continue;
+                }
+                let (name, spec) = match inner.split_once(':') {
+                    Some((n, s)) => (n, Some(s)),
+                    None => (inner.as_str(), None),
+                };
+                let ident_ok = !name.is_empty()
+                    && name.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
+                    && name.chars().all(|c| c.is_alphanumeric() || c == '_');
+                if !ident_ok {
+                    if first_err.is_none() {
+                        first_err = Some(format!(
+                            "`{{{inner}}}` — text f-strings take NAMED placeholders only \
+                             (`{{count}}`, `{{count:.2}}`). For positional args or \
+                             expressions use `text {{ move || format!(…) }}`."
+                        ));
+                    }
+                    continue;
+                }
+                // A valid IDENT signals interpolation intent even when the
+                // spec is unsupported — count it BEFORE the spec check so
+                // `"{count:?}"` errors loudly instead of silently
+                // rendering verbatim (only ident-less braces get the
+                // prose tolerance).
+                slots += 1;
+                if let Some(s) = spec {
+                    if s.contains('?') {
+                        if first_err.is_none() {
+                            first_err = Some(format!(
+                                "`{{{inner}}}` — Debug formatting (`:?`) isn't available in \
+                                 text f-strings (slots format via Display); use \
+                                 `text {{ move || format!(…) }}`."
+                            ));
+                        }
+                        continue;
+                    }
+                }
+                let fmt = match spec {
+                    Some(s) => format!("{{:{s}}}"),
+                    None => "{}".to_string(),
+                };
+                pieces.push(FPiece::Slot { name: name.to_string(), fmt });
+                pieces.push(FPiece::Lit(String::new()));
+            }
+            '}' => {
+                if chars.peek() == Some(&'}') {
+                    chars.next();
+                }
+                // A lone `}` in prose is tolerated verbatim (only an
+                // f-string with slots unescapes, and a stray `}` there
+                // renders as itself — matching `}}`).
+                push_ch(&mut pieces, '}');
+            }
+            other => push_ch(&mut pieces, other),
+        }
+    }
+    if slots == 0 {
+        return Ok(None);
+    }
+    if let Some(e) = first_err {
+        return Err(e);
+    }
+    Ok(Some(pieces))
+}
+
+/// If `expr` is a text-position string literal with `{name}`
+/// placeholders, emit the typed-slot interpolation (`TextSlotPart` list →
+/// `__idealyst_text_from_parts`). Returns `None` for non-literals and
+/// placeholder-free literals (caller falls through to the existing
+/// paths). See `parse_fstring` for the exact literal semantics and
+/// `runtime_core::sources` for the slot/type dispatch.
+pub(crate) fn try_emit_fstring(expr: &Expr) -> Option<TokenStream2> {
+    let Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(lit), .. }) = expr else {
+        return None;
+    };
+    try_emit_fstring_lit(lit)
+}
+
+/// Literal-direct form of [`try_emit_fstring`] — `jsx!` prop values
+/// carry bare `LitStr`s rather than `Expr`s.
+pub(crate) fn try_emit_fstring_lit(lit: &syn::LitStr) -> Option<TokenStream2> {
+    let pieces = match parse_fstring(&lit.value()) {
+        Ok(Some(p)) => p,
+        Ok(None) => return None,
+        Err(msg) => {
+            let msg = format!("text f-string error: {msg}");
+            return Some(quote::quote_spanned! { lit.span() => ::std::compile_error!(#msg) });
+        }
+    };
+    let parts = pieces.iter().filter_map(|p| match p {
+        FPiece::Lit(s) if s.is_empty() => None,
+        FPiece::Lit(s) => Some(quote! { ::runtime_core::TextSlotPart::Lit(#s) }),
+        FPiece::Slot { name, fmt } => {
+            // The ident carries the LITERAL's span — errors on an
+            // unresolved `{name}` point at the string (stable Rust has
+            // no sub-literal spans).
+            let ident = proc_macro2::Ident::new(name, lit.span());
+            Some(quote! {
+                ::runtime_core::TextSlotPart::Slot({
+                    #[allow(unused_imports)]
+                    use ::runtime_core::{StaticTextSlot as _, ReactiveTextSlot as _};
+                    (#ident).__idealyst_text_slot(
+                        move |__v: &dyn ::std::fmt::Display| ::std::format!(#fmt, __v),
+                    )
+                })
+            })
+        }
+    });
+    Some(quote! {
+        ::runtime_core::__idealyst_text_from_parts(::std::vec![ #( #parts ),* ])
+    })
+}
+
 fn emit_text(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     // Text takes its content from either a `content` prop or a
     // children block. Children win when both are present.
@@ -1317,7 +1672,7 @@ fn emit_text(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     //      inputs, initial, compute })` — generator backends
     //      (Roku) read the structure; runtime backends use
     //      `compute`. This is the path that used to require
-    //      `bind!(...)` around the call.
+    //      a structured-binding wrapper around the call.
     //
     //   2. **Reactive closure** when the body doesn't match (1)
     //      but contains `.get()` somewhere — the body is wrapped
@@ -1353,11 +1708,19 @@ fn emit_text(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
                         ::runtime_core::text(move || ::std::string::ToString::to_string(&{ #body }))
                     };
                 }
+                // Path (2b): F-STRING — a literal child with `{name}`
+                // placeholders interpolates, slots live-or-static by
+                // TYPE. Placeholder-free literals fall through to the
+                // static path untouched (see `parse_fstring`).
+                if let Some(src) = try_emit_fstring(expr) {
+                    return quote! { ::runtime_core::text(#src) };
+                }
             }
         }
     }
 
-    // Path (2) via the `content` prop: `text(content = move || …)`.
+    // Path (2) via the `content` prop: `text(content = move || …)`,
+    // f-strings included.
     if children.is_none() {
         if let Some(p) = props.iter().find(|p| p.name == "content") {
             if let Expr::Closure(closure) = &p.value {
@@ -1365,6 +1728,9 @@ fn emit_text(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
                 return quote! {
                     ::runtime_core::text(move || ::std::string::ToString::to_string(&{ #body }))
                 };
+            }
+            if let Some(src) = try_emit_fstring(&p.value) {
+                return quote! { ::runtime_core::text(#src) };
             }
         }
     }
@@ -1379,7 +1745,7 @@ fn emit_text(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     // closure form. This guard reads no reactivity into anything — it turns one
     // specific silent mistake into a compile error; the reactive/static decision
     // is still the content's TYPE (closure vs value). Exempt: a closure child
-    // (handled above; reactive) and a MACRO child/prop (`rx!(…)`, `text_fmt!(…)`)
+    // (handled above; reactive) and a MACRO child/prop (`rx!(…)`)
     // whose VALUE type already carries reactivity (`Reactive<String>` /
     // `TextSource::JsBinding`). The rare false positive — a no-arg `.get()` that
     // is NOT a signal (`Cell`/`OnceCell::get()`) in bare text — is resolved by
@@ -1390,7 +1756,7 @@ fn emit_text(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
                 "0.1.0: reactive text must be a closure. Write \
                  `text { move || … }` (e.g. `text { move || format!(\"{}\", sig.get()) }`) \
                  instead of `text { …sig.get()… }` — a bare `.get()` in text is now static. \
-                 `rx!(…)` / `text_fmt!(…)` values stay reactive by type."
+                 `rx!(…)` values stay reactive by type."
             )
         };
     }
@@ -1417,7 +1783,7 @@ fn emit_text(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     };
 
     // Path (3): static — a literal, a build-time `format!()`, a bare value, or a
-    // reactive-BY-TYPE value (`rx!`, `text_fmt!`, a `Reactive<String>` /
+    // reactive-BY-TYPE value (`rx!`, a `Reactive<String>` /
     // `Signal<String>` handle) that `IntoTextSource` routes on its own.
     quote! { ::runtime_core::text(#content) }
 }
@@ -3153,7 +3519,7 @@ fn try_emit_for_virtualizer(
             // Allocate the per-row index signal at snapshot time
             // (initial value 0). The device-side runtime mints a
             // fresh synthetic signal per cloned row and remaps
-            // references to this id so `bind!(method(i))` inside
+            // references to this id so a structured `method(i)` binding inside
             // the body dispatches with each row's actual index.
             let #row_ident: ::runtime_core::Signal<i32> =
                 ::runtime_core::signal(0i32);
@@ -3631,9 +3997,14 @@ mod tests {
                 text { "off" }
             }
         });
-        // Plain if, not when() — `.get()` is required to opt into reactivity.
+        // No eager `when()` in the emission: a bare-path condition goes
+        // through the type-driven `__idealyst_if` dispatch, and reactivity
+        // is decided by the condition's TYPE (`bool` → StaticCond → plain
+        // branch; a signal type → ReactiveCond → reactive `when` at
+        // runtime). This test predates the dispatch and used to assert a
+        // literal `if some_bool` — stale since path-4 landed.
         assert!(!out.contains(":: runtime_core :: when"));
-        assert!(out.contains("if some_bool"));
+        assert!(out.contains("(some_bool) . __idealyst_if"));
     }
 
     #[test]
@@ -3815,9 +4186,12 @@ mod tests {
     fn recovery_scaffolds_if_with_unparseable_body() {
         // A broken sibling must not eat the `if` next to it. The body
         // (`text { "x" }`) can't parse as a syn statement, so the whole
-        // if-expr can't salvage verbatim — instead the header is kept as
-        // SCAFFOLDING around a recursively salvaged body, so the
-        // condition stays analyzable in its real position.
+        // if-expr can't salvage verbatim — instead the construct is
+        // scaffolded through the `__idealyst_if` TYPE DISPATCH (not a
+        // plain Rust `if`: `ui!` accepts a `ReadSignal<bool>` condition,
+        // which a plain `if` would E0308-squiggle on valid code), with
+        // the condition analyzable in receiver position and the body
+        // salvaged inside the then-closure.
         let input = quote! {
             view() {
                 if frozen { text { "x" } }
@@ -3826,8 +4200,161 @@ mod tests {
         };
         let err = parse_err(input.clone());
         let s = emit_recovery(input, &err).to_string();
-        assert!(s.contains("if frozen {"), "if header scaffolded: {s}");
+        assert!(
+            s.contains("(frozen) . __idealyst_if"),
+            "if scaffolded via type dispatch: {s}"
+        );
         assert!(s.contains("\"x\""), "body content salvaged inside: {s}");
+        assert!(!s.contains("if frozen"), "no plain-Rust if in the salvage: {s}");
+    }
+
+    #[test]
+    fn regression_salvage_reactive_if_else_types_via_dispatch() {
+        // User-hit (idealyst-test app): `if is_high { … } else { … }`
+        // where `is_high: ReadSignal<bool>` — valid DSL, but the salvage
+        // shell used to re-emit it as a plain Rust `if`, and
+        // rust-analyzer's pull-model diagnostics squiggled the user's
+        // valid code with `E0308: expected bool, found ReadSignal<bool>`.
+        // The salvage must route the condition through `__idealyst_if`
+        // (StaticCond for bool / ReactiveCond for signal types) so it
+        // typechecks exactly when the real lowering does. Both branches'
+        // content must survive inside the dispatch closures.
+        let out = parse_and_emit(quote! {
+            view() {
+                if is_high {
+                    text { "High!" }
+                } else {
+                    text { "Keep clicking" }
+                }
+                if frozen {
+                    text { "never" }
+                }
+            }
+        });
+        assert!(
+            out.contains("(is_high) . __idealyst_if"),
+            "reactive-capable dispatch in the salvage: {out}"
+        );
+        assert!(out.contains("(frozen) . __idealyst_if"), "{out}");
+        assert!(!out.contains("if is_high"), "no plain-Rust if on the condition: {out}");
+        assert!(out.contains("\"High!\""), "{out}");
+        assert!(out.contains("\"Keep clicking\""), "else branch salvaged into the dispatch: {out}");
+    }
+
+    #[test]
+    fn regression_salvage_constructor_calls_not_struct_literaled() {
+        // User-facing squiggle class (caught by the pull-diagnostics
+        // audit): `P2(w, h)` / `Dir::North(steps)` inside a HANDLER are
+        // tuple-struct/enum-variant constructor calls, not component
+        // tags — struct-literal-salvaging them planted `E0560 no such
+        // field` on valid code. Position decides (see `SalvageCtx`):
+        // prop values and handler bodies never struct-literal-salvage,
+        // while a Pascal call in CHILD position still does (that's the
+        // prop-name completion path).
+        let out = parse_and_emit(quote! {
+            view() {
+                Counter(start = 3)
+                button(label = "x", on_click = move || {
+                    consume(P2(w, h), Dir::North(steps));
+                })
+            }
+        });
+        assert!(!out.contains("P2 {"), "constructor call must stay a call: {out}");
+        assert!(!out.contains("North {"), "variant call must stay a call: {out}");
+        assert!(out.contains("P2 (w , h)"), "constructor salvaged as an expression: {out}");
+        // Child-position tag still gets the struct-literal salvage (the
+        // real chain emits `Counter { start: (3).into(), … }`; the salvage
+        // copy adds the todo!() form — assert the salvage-specific shape).
+        assert!(
+            out.contains("Counter { start : :: core :: todo ! ()"),
+            "child-position tag keeps prop-name completion: {out}"
+        );
+    }
+
+    #[test]
+    fn regression_salvage_for_loop_types_via_dispatch() {
+        // Same class as the reactive-if bug: `for x in rows { … }` where
+        // `rows: Signal<Vec<_>>` is valid DSL but not a valid plain Rust
+        // for-loop. The salvage scaffolds it through
+        // `__idealyst_for_each`, which also keeps `x` TYPED (closure
+        // param inferred through the same traits the real lowering uses)
+        // for completion inside the body.
+        let out = parse_and_emit(quote! {
+            view() {
+                for x in rows {
+                    text { x }
+                }
+            }
+        });
+        assert!(
+            out.contains("(rows) . __idealyst_for_each (move | x |"),
+            "for-loop salvaged via dispatch with the pattern as closure param: {out}"
+        );
+        assert!(!out.contains("for x in rows"), "no plain-Rust for in the salvage: {out}");
+    }
+
+    // ---- f-string text interpolation ----
+
+    #[test]
+    fn fstring_text_lowers_to_typed_slots() {
+        let out = parse_and_emit(quote! { text { "count: {count}   doubled: {doubled}" } });
+        assert!(out.contains("__idealyst_text_from_parts"), "{out}");
+        assert!(out.contains("TextSlotPart :: Lit (\"count: \")"), "{out}");
+        assert!(out.contains("(count) . __idealyst_text_slot"), "{out}");
+        assert!(out.contains("(doubled) . __idealyst_text_slot"), "{out}");
+        // Slot classification is by TYPE via the trait pair, not by any
+        // token heuristic — both traits must be in scope at the slot.
+        assert!(out.contains("StaticTextSlot as _"), "{out}");
+        assert!(out.contains("ReactiveTextSlot as _"), "{out}");
+    }
+
+    #[test]
+    fn fstring_format_spec_passes_through() {
+        let out = parse_and_emit(quote! { text { "ratio: {ratio:.2}" } });
+        assert!(out.contains("format ! (\"{:.2}\""), "spec forwarded to format!: {out}");
+    }
+
+    #[test]
+    fn fstring_escapes_unescape_only_when_interpolating() {
+        // With a slot present, `{{`/`}}` unescape…
+        let out = parse_and_emit(quote! { text { "{{x}} = {count}" } });
+        assert!(out.contains("TextSlotPart :: Lit (\"{x} = \")"), "{out}");
+        // …but a placeholder-free literal stays VERBATIM, braces and all
+        // (prose tolerance — no silent meaning change for existing text).
+        let out = parse_and_emit(quote! { text { "use {{ and }} freely" } });
+        assert!(!out.contains("__idealyst_text_from_parts"), "{out}");
+        assert!(out.contains("\"use {{ and }} freely\""), "{out}");
+        // Same for an unterminated `{` with no valid placeholder.
+        let out = parse_and_emit(quote! { text { "open { brace prose" } });
+        assert!(!out.contains("__idealyst_text_from_parts"), "{out}");
+        assert!(!out.contains("compile_error"), "{out}");
+    }
+
+    #[test]
+    fn fstring_positional_placeholder_is_error_when_interpolating() {
+        // `{}` next to a real `{count}` slot = clearly meant as a format
+        // string → loud error (positional needs the closure form).
+        let out = parse_and_emit(quote! { text { "{} of {count}" } });
+        assert!(out.contains("compile_error"), "{out}");
+        // A lone `{}` with no named slot is prose-tolerated verbatim.
+        let out = parse_and_emit(quote! { text { "{} items" } });
+        assert!(!out.contains("compile_error"), "{out}");
+        assert!(out.contains("\"{} items\""), "{out}");
+    }
+
+    #[test]
+    fn fstring_debug_spec_is_error_even_alone() {
+        // A valid ident with an unsupported spec signals interpolation
+        // intent — must error, not silently render "{count:?}".
+        let out = parse_and_emit(quote! { text { "{count:?}" } });
+        assert!(out.contains("compile_error"), "{out}");
+    }
+
+    #[test]
+    fn fstring_content_prop_interpolates_too() {
+        let out = parse_and_emit(quote! { text(content = "hi {name}") });
+        assert!(out.contains("__idealyst_text_from_parts"), "{out}");
+        assert!(out.contains("(name) . __idealyst_text_slot"), "{out}");
     }
 
     #[test]

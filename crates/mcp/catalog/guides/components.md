@@ -15,7 +15,7 @@ leaf, owned `Props` for a container). See [[idiomatic-components]] for the full
 authoring shape; here's the smallest form:
 
 ```rust
-use runtime_core::{component, ui, Element, IdealystSchema, text_fmt};
+use runtime_core::{component, ui, Element, IdealystSchema};
 
 #[derive(Default, IdealystSchema)]
 pub struct GreetingProps {
@@ -25,8 +25,9 @@ pub struct GreetingProps {
 
 #[component]
 pub fn Greeting(props: &GreetingProps) -> Element {
+    let name = props.name.clone();
     ui! {
-        text(text_fmt!("Hello, {}!", props.name))
+        text { "Hello, {name}!" }
     }
 }
 ```
