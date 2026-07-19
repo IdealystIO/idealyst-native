@@ -86,8 +86,15 @@ fn dispatch_via_promise(f: Box<dyn FnOnce() + 'static>) {
 
 /// Register this backend's scheduler with `runtime-core`. Idempotent —
 /// first install wins.
+///
+/// Also installs the browser URL provider for the navigator substrate's
+/// URL sync (pushState/popstate mirroring + cold-start deep-link seed)
+/// — piggybacked here because every web host already calls
+/// `install_scheduler()` at startup, so outlet-model navigators get URL
+/// routing with zero extra host wiring. Idempotent + headless-safe.
 pub fn install_scheduler() {
     runtime_core::scheduling::install_scheduler(Box::new(WebScheduler));
+    crate::url_provider::install_url_provider();
 }
 
 struct WebScheduler;

@@ -137,7 +137,7 @@ pub mod kinds {
 /// [`register_asset`](crate::Backend::register_asset) implementation
 /// decides what to do with each variant — fetch over the network,
 /// register with the OS, hand to a GPU uploader, etc.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub enum AssetSource {
     /// Bytes are baked into the binary via `include_bytes!`. The
     /// backend can use them directly. Appropriate for small assets
@@ -171,6 +171,37 @@ pub enum AssetSource {
     /// Raw URL. Backend fetches at runtime. Escape hatch for
     /// CDN-hosted or user-supplied assets.
     Remote { url: &'static str },
+}
+
+/// Manual Debug: print byte payloads as a LENGTH, never the raw
+/// bytes. The derived impl rendered every embedded byte as decimal
+/// text — for a `face!` font that's megabytes of formatting per
+/// `{:?}`, which turned any diagnostic that touched a style's
+/// `font_family` into a 100ms+ stall (the iOS `layout_affecting_key`
+/// Debug-formatted `FontFamily` per `apply_style` and paid ~184ms on
+/// every navigation) and made logs unreadable.
+impl std::fmt::Debug for AssetSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AssetSource::Embedded { bytes, extension } => f
+                .debug_struct("Embedded")
+                .field("bytes", &format_args!("<{} bytes>", bytes.len()))
+                .field("extension", extension)
+                .finish(),
+            AssetSource::Bundled { path } => {
+                f.debug_struct("Bundled").field("path", path).finish()
+            }
+            AssetSource::BundledEmbedded { path, bytes, extension } => f
+                .debug_struct("BundledEmbedded")
+                .field("path", path)
+                .field("bytes", &format_args!("<{} bytes>", bytes.len()))
+                .field("extension", extension)
+                .finish(),
+            AssetSource::Remote { url } => {
+                f.debug_struct("Remote").field("url", url).finish()
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

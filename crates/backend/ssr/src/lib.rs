@@ -29,7 +29,7 @@ use std::rc::Rc;
 #[cfg(feature = "serve")]
 mod serve;
 #[cfg(feature = "serve")]
-pub use serve::{serve, ServeConfig};
+pub use serve::{resolve_bundle_module, serve, ServeConfig};
 
 /// A stashed navigator handler, keyed by its container node's pointer id.
 type NavHandler = Rc<RefCell<Box<dyn NavigatorHandler<SsrBackend>>>>;

@@ -1,15 +1,16 @@
-//! REGRESSION: `idea-ui-docs` — a full `DrawerNavigator` app — must
-//! render on the wgpu (GPU) backend via the backend-neutral primitive
-//! `chrome` navigator handler, registered through the new
-//! `RegisterNavigator` trait impl on `WgpuBackend`.
+//! REGRESSION: `idea-ui-docs` — a full `SwapNavigator` + AppShell app —
+//! must render on the wgpu (GPU) backend via the swap SDK's ONE
+//! backend-neutral navigator handler, registered through the
+//! `RegisterNavigator` trait impl on `WgpuBackend`
+//! (`swap_navigator::register_generic`).
 //!
 //! Before the trait impl + `Screenshotter::with_color_scheme_and_skin`
 //! existed, there was no way to host a navigator app on the GPU backend:
 //! `create_navigator` would hit the "External/Navigator not registered"
-//! panic (no wgpu drawer handler), and the only headless skin reported an
-//! empty platform identity (mobile branch, no desktop chrome). This test
-//! mounts the real app under a `NativeSkin(MacOs)` desktop identity and
-//! asserts it rasterizes a non-trivial frame.
+//! panic (no wgpu navigator handler), and the only headless skin reported
+//! an empty platform identity (mobile branch, no desktop chrome). This
+//! test mounts the real app under a `NativeSkin(MacOs)` desktop identity
+//! and asserts it rasterizes a non-trivial frame.
 //!
 //! Captures to `$CARGO_TARGET_TMPDIR/idea-ui-docs-gpu.png` for eyeballing.
 
@@ -22,7 +23,7 @@ use runtime_core::{ColorScheme, Platform};
 #[test]
 fn idea_ui_docs_renders_on_wgpu_backend() {
     // Desktop logical size — wide enough for idea-ui-docs to pin its
-    // sidebar (`install_navigator_pin_width(900.0)`).
+    // AppShell sidebar (`install_breakpoints` sets `lg_min: 900.0`).
     let (w, h) = (1280u32, 832u32);
 
     let skin = Rc::new(NativeSkin::new(Platform::MacOs));
@@ -42,16 +43,16 @@ fn idea_ui_docs_renders_on_wgpu_backend() {
         }
     };
 
-    // The make-or-break step: register the DrawerNavigator's
-    // backend-neutral desktop handler on the wgpu backend through the
-    // generic `RegisterNavigator` path. This is the behavior the trait
-    // impl unlocks — without it this call would not compile, and a mounted
-    // navigator would panic at `create_navigator`.
+    // The make-or-break step: register the SwapNavigator's backend-neutral
+    // handler on the wgpu backend through the generic `RegisterNavigator`
+    // path. This is the behavior the trait impl unlocks — without it this
+    // call would not compile, and a mounted navigator would panic at
+    // `create_navigator`.
     // `&mut *…` derefs the `RefMut` to a concrete `&mut WgpuBackend`; the
-    // generic `register_native<B: RegisterNavigator>` infers `B` and won't
+    // generic `register_generic<B: RegisterNavigator>` infers `B` and won't
     // peel the `RefMut` for us.
     let backend = shot.backend();
-    drawer_navigator::register_native(&mut *backend.borrow_mut());
+    swap_navigator::register_generic(&mut *backend.borrow_mut());
 
     // Mount the real app and rasterize a frame. A panic here (e.g. an
     // unregistered External/Navigator leaf) fails the test.
@@ -77,12 +78,12 @@ fn idea_ui_docs_renders_on_wgpu_backend() {
     // if it's clearly off the near-white background (min channel < 200),
     // which catches text and colored chrome.
     //
-    // This is what distinguishes the `desktop` handler (StyleRules layout)
-    // from the CSS-only `chrome` handler on a non-CSS backend: with the
-    // latter the navigator collapsed to a single full-width column and the
-    // body was pushed below the fold, so the right band at sidebar height
-    // was empty background. Here, both bands must carry ink in the same
-    // vertical region (the hero/catalog band, y∈[140,360]).
+    // The AppShell pins its sidebar via the `__bp_lg` breakpoint overlay
+    // (real StyleRules, resolved from the live viewport width on non-CSS
+    // backends). If the overlay failed to apply, the panel would sit
+    // translated off-canvas and the content full-bleed — the left band at
+    // sidebar height would be empty background. Both bands must carry ink
+    // in the same vertical region (the hero/catalog band, y∈[140,360]).
     let ink_in = |x0: u32, x1: u32, y0: u32, y1: u32| -> usize {
         let mut n = 0;
         for y in y0..y1 {

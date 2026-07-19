@@ -62,6 +62,14 @@ fn reactive_icon_data_effect_is_freed_on_owner_drop() {
     let rt = TestRuntime::new();
     let toggled: Signal<bool> = signal(false);
 
+    // Warm the THREAD-LIFETIME reactive globals before taking the
+    // baseline: the theme-cohort driver (installed eagerly at mount)
+    // touches `current_breakpoint()`, whose cached memo occupies one
+    // unscoped effect slot for the rest of the thread — by design, not
+    // a leak. Without the warm-up this test's exact-balance assertion
+    // would count that one-time global against the icon effect.
+    let _ = runtime_core::current_breakpoint().get();
+
     let effects_baseline = arena_stats().effects_in_use;
 
     let tree = icon(GLYPH_A)

@@ -13,9 +13,11 @@ license.workspace = true
 #
 # Single-node throughout: web emits one `<pre>` with child `<span>`s;
 # Android renders one `RustCodeBlock` (HorizontalScrollView + TextView
-# + SpannableString); iOS renders one UIScrollView wrapping a UILabel
-# with NSAttributedString. Per-target `register` functions live in
-# `lib.rs` behind `#[cfg(...)]`.
+# + SpannableString); iOS renders one UIScrollView wrapping an
+# inset-honoring label with NSAttributedString; macOS mirrors iOS with
+# NSScrollView + NSTextField. Per-target `register` functions live in
+# `lib.rs` behind `#[cfg(...)]`. Padding is author-driven (see the
+# lib.rs module doc) — handlers bake none in.
 
 [dependencies]
 runtime-core = { workspace = true }

@@ -47,6 +47,16 @@ pub use view::FlippedView;
 // MacosBackend
 // =========================================================================
 
+/// Registry entry for an external content-measured scroller (see the
+/// `external_content_measures` field). `content` is the text label inside
+/// the scroller's documentView container; `insets` is the live
+/// (top, right, bottom, left) padding cell shared with the node's
+/// measure_fn.
+struct ExternalScrollerEntry {
+    content: Retained<NSView>,
+    insets: std::rc::Rc<std::cell::Cell<(f32, f32, f32, f32)>>,
+}
+
 pub struct MacosBackend {
     mtm: MainThreadMarker,
     host_root: Option<Retained<NSView>>,
@@ -119,6 +129,18 @@ pub struct MacosBackend {
     /// current sRGB stop colors so `AnimProp::GradientStopColor(idx)`
     /// can rewrite a single stop without rebuilding the sublayer.
     pub(crate) gradient_states: HashMap<usize, gradient::GradientState>,
+    /// External single-axis scrollers (SDK leaves like `codeblock`) keyed by
+    /// scroll-view pointer. `apply_style` diverts the author's `padding_*`
+    /// on these nodes to the content's offset inside the scroller's
+    /// documentView container — the padding scrolls WITH the content, so
+    /// text sits inset at rest and reaches the node's own edge mid-scroll
+    /// (web's `<pre> { padding }` observable model). Taffy padding would
+    /// instead inset + clip the scroll viewport itself. The measure_fn
+    /// reads the same live inset cell so the box accounts for the padding
+    /// exactly once. Populated by
+    /// [`Self::install_external_content_measure`]; cleaned in
+    /// `release_external`.
+    external_content_measures: HashMap<usize, ExternalScrollerEntry>,
     /// Decoded `NSImage` cache keyed by `AssetId`. Populated by
     /// `register_asset` for `AssetTag::Image`; queried by
     /// `create_image` / `update_image_src` when the framework hands
@@ -584,6 +606,7 @@ impl MacosBackend {
             app_key_monitor: None,
             animated_states: HashMap::new(),
             gradient_states: HashMap::new(),
+            external_content_measures: HashMap::new(),
             image_cache: HashMap::new(),
             external_handlers: runtime_core::ExternalRegistry::new(),
             virtualizer_instances: HashMap::new(),
@@ -653,17 +676,24 @@ impl MacosBackend {
     /// 0×0 in a flex column and the primitive renders blank. Mirrors
     /// `IosBackend::install_external_content_measure`.
     ///
-    /// `pad` (points) is added on each axis to match a `contentInset` the
-    /// handler draws inside the scroll view.
+    /// Also registers `node` as an external scroller so `apply_style`
+    /// diverts the author's `padding_*` to the content's offset inside the
+    /// scroller's documentView container (see the
+    /// `external_content_measures` field doc); the measure reads the same
+    /// live inset cell, so the padding is accounted for exactly once.
     pub fn install_external_content_measure(
         &mut self,
         node: &NSView,
         content: &NSView,
-        pad: f32,
     ) {
         let layout = self.layout_for_view(node);
         let content: Retained<NSView> =
             unsafe { Retained::retain(content as *const NSView as *mut NSView).unwrap() };
+        let insets = std::rc::Rc::new(std::cell::Cell::new((0f32, 0f32, 0f32, 0f32)));
+        self.external_content_measures.insert(
+            node as *const NSView as usize,
+            ExternalScrollerEntry { content: content.clone(), insets: insets.clone() },
+        );
         self.layout.set_measure_fn(
             layout,
             std::rc::Rc::new(move |known_dimensions, available_space| {
@@ -681,8 +711,11 @@ impl MacosBackend {
                     };
                     unsafe { msg_send![cell, cellSizeForBounds: huge] }
                 };
-                let content_w = (fit.width as f32).max(0.0).ceil() + pad * 2.0;
-                let content_h = (fit.height as f32).max(0.0).ceil() + pad * 2.0;
+                // (top, right, bottom, left) — author padding diverted by
+                // `apply_style`; scrolls with the content inside the doc view.
+                let (it, ir, ib, il) = insets.get();
+                let content_w = (fit.width as f32).max(0.0).ceil() + il + ir;
+                let content_h = (fit.height as f32).max(0.0).ceil() + it + ib;
                 let avail_w = match available_space.width {
                     // Definite: fill the offered width (content wider scrolls).
                     runtime_layout::AvailableSpace::Definite(w) => Some(w),
@@ -707,6 +740,62 @@ impl MacosBackend {
                 }
             }),
         );
+    }
+
+    /// Reposition an external scroller's content inside its documentView
+    /// container to the style's `padding_*`, and refresh the inset cell its
+    /// measure_fn reads. Returns `true` when the insets actually changed
+    /// (the caller then forces a re-measure). Non-flipped container: the y
+    /// origin measures from the BOTTOM, so the vertical offset is the
+    /// bottom inset. See the `external_content_measures` field doc.
+    fn sync_external_scroller_padding(
+        &mut self,
+        view_key: usize,
+        style: &StyleRules,
+    ) -> bool {
+        let Some(entry) = self.external_content_measures.get(&view_key) else {
+            return false;
+        };
+        let Some(next) = external_scroller_insets_change(style, entry.insets.get())
+        else {
+            return false;
+        };
+        entry.insets.set(next);
+        // The measure_fn's output changed (it adds these insets), but the
+        // Taffy style this node received was padding-STRIPPED and may be
+        // byte-identical — so Taffy's measure cache must be invalidated
+        // explicitly, mirroring the Label text-measure-signature path.
+        if let Some((_, layout_node)) = self.view_to_layout.get(&view_key) {
+            let layout_node = *layout_node;
+            self.layout.mark_dirty(layout_node);
+        }
+        let (top, right, bottom, left) = next;
+        unsafe {
+            let content = &*entry.content;
+            let content_frame: CGRect = msg_send![content, frame];
+            let new_frame = CGRect {
+                origin: objc2_foundation::CGPoint {
+                    x: left as f64,
+                    y: bottom as f64,
+                },
+                size: content_frame.size,
+            };
+            let _: () = msg_send![content, setFrame: new_frame];
+            // The container documentView wraps content + insets; the scroll
+            // view's contentSize follows its frame.
+            let container: *mut NSView = msg_send![content, superview];
+            if !container.is_null() {
+                let container_frame = CGRect {
+                    origin: objc2_foundation::CGPoint { x: 0.0, y: 0.0 },
+                    size: CGSize {
+                        width: content_frame.size.width + (left + right) as f64,
+                        height: content_frame.size.height + (top + bottom) as f64,
+                    },
+                };
+                let _: () = msg_send![&*container, setFrame: container_frame];
+            }
+        }
+        true
     }
 
     /// `MainThreadMarker` accessor for third-party SDK extension code
@@ -791,6 +880,10 @@ impl MacosBackend {
         // A fresh view at this pointer must not inherit a freed view's cached
         // frame, or the apply-frames pass could wrongly skip framing it.
         self.last_applied_frame.remove(&key);
+        // Same recycling hazard for the external-scroller registry: a
+        // recycled pointer that used to be a content-measured scroller must
+        // not divert the new view's padding to a dead label.
+        self.external_content_measures.remove(&key);
         self.view_to_layout.insert(key, (retained, node));
         node
     }
@@ -1670,6 +1763,92 @@ fn overflow_masks_to_bounds(style: &StyleRules) -> Option<bool> {
         .overflow
         .as_ref()
         .map(|o| matches!(o, runtime_core::Overflow::Hidden))
+}
+
+/// Pure half of [`MacosBackend::sync_external_scroller_padding`]: resolve the
+/// author's `padding_*` to `(top, right, bottom, left)` px and decide whether
+/// the scroller's insets changed. Returns `None` when unchanged so the caller
+/// skips the AppKit reframe + re-measure. Unset padding resolves to 0 — the
+/// framework imposes no default inset on external scrollers; the whole inset
+/// is author-driven (see the `external_content_measures` field doc).
+/// Host-testable — the reframe half needs a live main-thread NSView.
+fn external_scroller_insets_change(
+    style: &StyleRules,
+    current: (f32, f32, f32, f32),
+) -> Option<(f32, f32, f32, f32)> {
+    let resolve = |t: &Option<runtime_core::Tokenized<runtime_core::Length>>| {
+        t.as_ref()
+            .map(|tok| length_to_px(&tok.resolve()) as f32)
+            .unwrap_or(0.0)
+    };
+    let next = (
+        resolve(&style.padding_top),
+        resolve(&style.padding_right),
+        resolve(&style.padding_bottom),
+        resolve(&style.padding_left),
+    );
+    (next != current).then_some(next)
+}
+
+#[cfg(test)]
+mod external_scroller_padding_tests {
+    use super::external_scroller_insets_change;
+    use runtime_core::{Length, StyleRules, Tokenized};
+
+    // Regression: external scrollers (the `codeblock` SDK leaf) used to bake a
+    // 20pt inset in the handler AND receive the author's panel padding via
+    // Taffy — doubling the visible padding and clipping scrolled text 20pt
+    // before the block's edge. The padding is now author-driven end to end:
+    // `apply_style` diverts `padding_*` on a registered external scroller to
+    // the content's offset inside the documentView (web's `<pre> { padding }`
+    // model). These tests pin the resolve + change-detection half; the NSView
+    // reframe half needs a live main thread and is exercised by running the
+    // website example (Cross-platform page code panels).
+
+    fn padded(t: f32, r: f32, b: f32, l: f32) -> StyleRules {
+        StyleRules {
+            padding_top: Some(Tokenized::Literal(Length::Px(t))),
+            padding_right: Some(Tokenized::Literal(Length::Px(r))),
+            padding_bottom: Some(Tokenized::Literal(Length::Px(b))),
+            padding_left: Some(Tokenized::Literal(Length::Px(l))),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn author_padding_resolves_per_side_top_right_bottom_left() {
+        let change = external_scroller_insets_change(&padded(1.0, 2.0, 3.0, 4.0), (0.0, 0.0, 0.0, 0.0));
+        assert_eq!(change, Some((1.0, 2.0, 3.0, 4.0)));
+    }
+
+    #[test]
+    fn unset_padding_means_zero_inset_not_a_baked_default() {
+        // A style with NO padding must yield zero insets — the old 20pt
+        // handler constant must never resurface as an implicit default.
+        let change = external_scroller_insets_change(&StyleRules::default(), (20.0, 20.0, 20.0, 20.0));
+        assert_eq!(change, Some((0.0, 0.0, 0.0, 0.0)));
+    }
+
+    #[test]
+    fn unchanged_insets_skip_the_reframe() {
+        // Style re-applies with identical padding (theme cohort re-fires)
+        // must not reframe/re-measure — that would schedule a layout pass
+        // on every theme toggle for every code block on the page.
+        assert_eq!(external_scroller_insets_change(&padded(20.0, 20.0, 20.0, 20.0), (20.0, 20.0, 20.0, 20.0)), None);
+        assert_eq!(external_scroller_insets_change(&StyleRules::default(), (0.0, 0.0, 0.0, 0.0)), None);
+    }
+
+    #[test]
+    fn token_padding_resolves_through_fallback() {
+        // Mobile-style resolution: no variable system installed, so a
+        // token resolves to its fallback value.
+        let style = StyleRules {
+            padding_left: Some(Tokenized::token("spacing-lg", Length::Px(16.0))),
+            ..Default::default()
+        };
+        let change = external_scroller_insets_change(&style, (0.0, 0.0, 0.0, 0.0));
+        assert_eq!(change, Some((0.0, 0.0, 0.0, 16.0)));
+    }
 }
 
 #[cfg(test)]
@@ -4496,8 +4675,10 @@ impl Backend for MacosBackend {
         // actually moved any LAYOUT geometry (vs. a paint-only restyle like
         // a `:hover` color swap); we use it below to skip a needless layout
         // pass. `false` when the node has no Taffy node yet.
+        let view_key = view as *const NSView as usize;
+        let is_external_scroller = self.external_content_measures.contains_key(&view_key);
         let layout_changed = if let Some(layout_node) = self.layout_of(view) {
-            if is_text_area_container(view) {
+            if is_text_area_container(view) || is_external_scroller {
                 // A `text_area`'s padding is realized as the inner text view's
                 // `textContainerInset` (see the editable arm below), so it must
                 // NOT also be Taffy padding — otherwise it's counted TWICE: Taffy
@@ -4507,6 +4688,11 @@ impl Backend for MacosBackend {
                 // ends up too tall with extra space at the bottom. Zero the Taffy
                 // padding so the measure sees the full box width and the height is
                 // `content + one padding`.
+                //
+                // External content-measured scrollers (SDK leaves like
+                // `codeblock`) strip for the same reason: their padding is
+                // realized as the content's offset inside the documentView
+                // (applied below), which the measure_fn already folds in.
                 let mut s = (**style).clone();
                 s.padding_top = None;
                 s.padding_right = None;
@@ -4523,6 +4709,16 @@ impl Backend for MacosBackend {
         // line-height / padding) changed — those aren't in the Taffy `Style`,
         // so `layout_changed` can't see them.
         let mut measure_changed = false;
+
+        // External content-measured scroller: realize the author's
+        // `padding_*` (stripped from Taffy above) as the content's offset
+        // inside the documentView container, and update the inset cell the
+        // node's measure_fn reads. The padding then scrolls WITH the
+        // content — text sits inset at rest and reaches the node's own edge
+        // mid-scroll, matching web's `<pre> { padding }`.
+        if is_external_scroller {
+            measure_changed |= self.sync_external_scroller_padding(view_key, style);
+        }
 
         // Per-node-type text styling. Labels and text views need
         // font/color/alignment applied directly to the AppKit
@@ -4930,6 +5126,47 @@ impl Backend for MacosBackend {
         })
     }
 
+    // Programmatic scroll read/write for `Element::ScrollView` nodes — the
+    // robot `set_scroll` action's backend half (the pan analogue e2e drives
+    // use where no scriptable input exists; converges with iOS's
+    // `contentOffset` pair per CLAUDE.md §7). AppKit's unit of scroll state
+    // is the clip view's bounds origin: `scrollToPoint:` on the clip view is
+    // the programmatic scroll primitive, and `reflectScrolledClipView:`
+    // resyncs the scroller knobs. The documentView is a flipped
+    // `ScrollDocumentView`, so `y` grows downward — same coordinate meaning
+    // as iOS/web scroll offsets. Non-scroll nodes read (0,0) / ignore writes,
+    // matching the trait defaults.
+    fn node_scroll(&self, node: &Self::Node) -> (f32, f32) {
+        let view = node.as_view();
+        if !is_scroll_view(view) {
+            return (0.0, 0.0);
+        }
+        unsafe {
+            let clip: *mut NSView = msg_send![view, contentView];
+            if clip.is_null() {
+                return (0.0, 0.0);
+            }
+            let bounds: CGRect = msg_send![&*clip, bounds];
+            (bounds.origin.x as f32, bounds.origin.y as f32)
+        }
+    }
+
+    fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {
+        let view = node.as_view();
+        if !is_scroll_view(view) {
+            return;
+        }
+        unsafe {
+            let clip: *mut NSView = msg_send![view, contentView];
+            if clip.is_null() {
+                return;
+            }
+            let point = objc2_foundation::CGPoint { x: x as f64, y: y as f64 };
+            let _: () = msg_send![&*clip, scrollToPoint: point];
+            let _: () = msg_send![view, reflectScrolledClipView: &*clip];
+        }
+    }
+
     fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
         handles::make_text_handle(node)
     }
@@ -5331,6 +5568,9 @@ impl Backend for MacosBackend {
         if self.detached_window_roots.contains_key(&node.view_key()) {
             self.release_private_layer_window(node);
         }
+        // Drop the external-scroller padding-divert registration (and its
+        // retained content view) for content-measured leaves like `codeblock`.
+        self.external_content_measures.remove(&node.view_key());
     }
 
     fn finish(&mut self, root: Self::Node) {

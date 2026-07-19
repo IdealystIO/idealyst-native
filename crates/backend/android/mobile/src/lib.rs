@@ -71,6 +71,13 @@ mod sticky_compute;
 /// host. The JNI-driven insert path that consumes it lives in `imp`.
 mod layout_policy;
 
+/// Pure animate-vs-snap decision + interpolator mapping for static
+/// `transform:` changes with `transitions { transform: … }` (the
+/// AppShell drawer slide). Un-gated like `sticky_compute` so the
+/// regression tests run on the host; the `ViewPropertyAnimator` JNI
+/// half lives in `imp/style.rs`.
+mod transform_transition_policy;
+
 #[cfg(not(target_os = "android"))]
 mod stub;
 

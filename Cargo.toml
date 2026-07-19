@@ -18,7 +18,6 @@ members = [
     "crates/backend/ios/mobile",
     "crates/backend/ios/rs-shell",
     "crates/backend/ios/tv",
-    "crates/backend/ios-stack",
     "crates/backend/android/core",
     "crates/backend/android/mobile",
     "crates/backend/android/tv",
@@ -41,6 +40,7 @@ members = [
     "crates/gpu-backend/host/web",
     "crates/gpu-backend/host/ios-mobile",
     "crates/gpu-backend/host/android-mobile",
+    "crates/gpu-backend/host/macos-desktop",
     "crates/gpu-backend/host/wgpu",
     "crates/gpu-backend/host/appkit",
     "crates/gpu-backend/host/terminal",
@@ -166,12 +166,8 @@ members = [
     # Grouped under navigators/: the three SDK features (stack/tab/
     # drawer) plus the shared per-platform machinery in helpers/ that
     # all three depend on.
-    "crates/sdk/client/navigators/stack",
-    "crates/sdk/client/navigators/tab",
     "crates/sdk/client/navigators/swap",
-    "crates/sdk/client/navigators/stack-v2",
-    "crates/sdk/client/navigators/drawer",
-    "crates/sdk/client/navigators/helpers/web",
+    "crates/sdk/client/navigators/stack",
     "crates/sdk/client/navigators/helpers/ios",
     "crates/sdk/client/navigators/helpers/android",
 
@@ -236,7 +232,7 @@ members = [
     "crates/sdk/client/media-writer/examples/media-recorder-demo",
     "crates/sdk/client/menu/examples/menu-demo",
     "crates/sdk/client/microphone/examples/mic-demo",
-    "crates/sdk/client/navigators/stack-v2/examples/stack-demo-v2",
+    "crates/sdk/client/navigators/stack/examples/stack-demo",
     "crates/sdk/client/navigators/swap/examples/swap-demo",
     "crates/sdk/client/pdf/examples/pdf-demo",
     "crates/sdk/client/screen-recorder/examples/screen-recorder-demo",
@@ -353,7 +349,6 @@ backend-ios-core = { path = "crates/backend/ios/core" }
 backend-ios-mobile = { path = "crates/backend/ios/mobile" }
 backend-ios-rs-shell = { path = "crates/backend/ios/rs-shell" }
 backend-ios-tv = { path = "crates/backend/ios/tv" }
-backend-ios-stack = { path = "crates/backend/ios-stack" }
 backend-android-core = { path = "crates/backend/android/core" }
 backend-android-mobile = { path = "crates/backend/android/mobile" }
 backend-android-tv = { path = "crates/backend/android/tv" }
@@ -376,6 +371,7 @@ host-winit = { path = "crates/gpu-backend/host/winit" }
 host-web = { path = "crates/gpu-backend/host/web" }
 host-ios-mobile = { path = "crates/gpu-backend/host/ios-mobile" }
 host-android-mobile = { path = "crates/gpu-backend/host/android-mobile" }
+host-macos-desktop = { path = "crates/gpu-backend/host/macos-desktop" }
 host-wgpu = { path = "crates/gpu-backend/host/wgpu" }
 host-appkit = { path = "crates/gpu-backend/host/appkit" }
 host-terminal = { path = "crates/gpu-backend/host/terminal" }
@@ -454,12 +450,8 @@ jobs-macros = { path = "crates/sdk/server/jobs/macros" }
 pubsub = { path = "crates/sdk/server/pubsub" }
 email = { path = "crates/sdk/server/email" }
 idealyst-config = { path = "crates/sdk/server/config" }
-stack-navigator = { path = "crates/sdk/client/navigators/stack" }
-tab-navigator = { path = "crates/sdk/client/navigators/tab" }
 swap-navigator = { path = "crates/sdk/client/navigators/swap" }
-stack-navigator-v2 = { path = "crates/sdk/client/navigators/stack-v2" }
-drawer-navigator = { path = "crates/sdk/client/navigators/drawer" }
-web-navigator-helpers = { path = "crates/sdk/client/navigators/helpers/web" }
+stack-navigator = { path = "crates/sdk/client/navigators/stack" }
 android-navigator-helpers = { path = "crates/sdk/client/navigators/helpers/android" }
 ios-navigator-helpers = { path = "crates/sdk/client/navigators/helpers/ios" }
 

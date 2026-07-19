@@ -96,6 +96,15 @@ objc2-app-kit = { version = "0.2", features = [
     "NSGraphicsContext",
     "NSTrackingArea",
     "NSCursor",
+    # `NSCollectionViewItem` (virtualizer cells): the type lives in the
+    # NSCollectionView module and is additionally cfg-gated on its
+    # superclass chain, NSViewController + NSResponder.
+    "NSCollectionView",
+    "NSViewController",
+    # `NSCollectionViewFlowLayout` type (subclassed by the virtualizer's
+    # cross-axis-invalidating flow layout) lives behind this gate.
+    "NSCollectionViewFlowLayout",
+    "NSCollectionViewLayout",
     "NSFont",
     "NSAppearance",
     "NSAccessibilityConstants",

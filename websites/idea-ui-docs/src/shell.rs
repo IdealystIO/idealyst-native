@@ -1,20 +1,19 @@
-//! The docs chrome: the design's custom header bar (`top_with`), the
-//! grouped + searchable sidebar with status dots (`leading_with`), the
-//! central `page_frame` (group overline, title + status badge, lead,
-//! body, Usage panel), and the per-page helper components every body is
-//! built from (`CodePanel`, `PropsTable`, `DemoSurface`, `Demo`,
-//! `Callout`, `Section`, `P`, `H2`, `H3`).
+//! The docs chrome: the design's custom header bar, the grouped +
+//! searchable sidebar with status dots (both built ONCE inside the swap
+//! navigator's `.layout(...)` closure — see `lib.rs`), the central
+//! `page_frame` (group overline, title + status badge, lead, body, Usage
+//! panel), and the per-page helper components every body is built from
+//! (`CodePanel`, `PropsTable`, `DemoSurface`, `Demo`, `Callout`,
+//! `Section`, `P`, `H2`, `H3`).
 //!
 //! Each helper is a real `#[component]` so it dispatches inside `ui!`.
 
 use std::rc::Rc;
 
 use runtime_core::{
-    component, derived, effect, fragment, pressable, signal, switch, ui, viewport_size, when, Color,
+    component, derived, effect, fragment, pressable, signal, switch, ui, when, Breakpoint, Color,
     Element, IntoElement, SafeAreaSides, Signal, StyleApplication, Tokenized,
 };
-use runtime_core::primitives::navigator::ambient_drawer;
-use drawer_navigator::SlotProps;
 use idea_ui::{
     dark_theme, light_theme, set_idea_theme, typography_kind, Icon, Modal, Spacer, Stack, StackGap,
     Switch, Table, TableCell, TableRow, Typography,
@@ -35,13 +34,17 @@ use crate::styles::{
 const VERSION: &str = "v0.1.0";
 
 // =============================================================================
-// Header — the custom top bar mounted via `top_with(TopSlot::Custom)`.
-// Logo + name + version, a "component reference" label, the active
-// entry's token hint, and the Light/Dark segmented toggle.
+// Header — the custom top bar, built once by the `.layout(...)` closure
+// and mounted above the outlet. Hamburger (narrow widths only) + logo +
+// name + version, a "component reference" label, the active entry's
+// token hint, and the Light/Dark segmented toggle.
 // =============================================================================
 
-pub fn header(slot: SlotProps, is_dark: Signal<bool>) -> Element {
-    let active_route = slot.active_route;
+pub fn header(
+    active_route: Signal<&'static str>,
+    is_dark: Signal<bool>,
+    drawer_open: Signal<bool>,
+) -> Element {
     // Token hint follows the active component. Rebuilt on navigation.
     let token_hint = switch(
         move || active_route.get(),
@@ -53,7 +56,7 @@ pub fn header(slot: SlotProps, is_dark: Signal<bool>) -> Element {
 
     ui! {
         view(style = DocHeader()) {
-            menu_button()
+            menu_button(drawer_open)
             view(style = HeaderBrand()) {
                 view(style = LogoBox()) {
                     text(style = LogoGlyph()) { "i".to_string() }
@@ -69,28 +72,19 @@ pub fn header(slot: SlotProps, is_dark: Signal<bool>) -> Element {
     }
 }
 
-// The leading hamburger. The custom header replaces the SDK's auto-
-// injected nav bar (web + macOS), so it must render its own way to open
-// the drawer once the sidebar collapses to a modal. The drawer publishes
-// an ambient `DrawerChrome { open, collapse_below }` for exactly this
-// "page-level header" case:
-//   - macOS: the drawer never collapses (always pinned) and publishes no
-//     ambient chrome → `ambient_drawer()` is `None` → no button.
-//   - web: `collapse_below` is the pin width (900); the reactive `when`
-//     shows the button only while the viewport is narrower than that,
-//     in lockstep with the sidebar's own CSS pin/modal switch.
-fn menu_button() -> Element {
-    let Some(chrome) = ambient_drawer() else {
-        return fragment(vec![]);
-    };
-    let below = chrome.collapse_below;
-    let open = chrome.open;
+// The leading hamburger. The AppShell's sidebar pins in-flow at/above
+// the `Lg` breakpoint (900 px — see `install_breakpoints` in `lib.rs`)
+// and becomes an off-canvas drawer below it, so the hamburger is only
+// rendered while the sidebar is a drawer. `sidebar_pinned` reads the
+// reactive breakpoint, so the `when` flips in lockstep with the
+// AppShell's own pin/drawer switch. Pressing it opens the app-owned
+// `drawer_open` signal the AppShell panel + scrim subscribe to.
+fn menu_button(drawer_open: Signal<bool>) -> Element {
     when(
-        move || viewport_size().get().width < below,
+        move || !idea_ui_nav::sidebar_pinned(Breakpoint::Lg),
         move || {
-            let open = open.clone();
             let glyph = ui! { text(style = MenuGlyph()) { "\u{2630}".to_string() } };
-            pressable(vec![glyph], move || (open)())
+            pressable(vec![glyph], move || drawer_open.set(true))
                 .with_style(MenuButton())
                 .into_element()
         },
@@ -140,13 +134,13 @@ fn seg_button(
 }
 
 // =============================================================================
-// Sidebar — search box + grouped nav with status dots. Mounted via
-// `leading_with`. Filtered reactively by the shared `q` signal.
+// Sidebar — search box + grouped nav with status dots. Built ONCE and
+// handed to the AppShell's `sidebar` prop (one panel serves both the
+// pinned column and the off-canvas drawer). Filtered reactively by the
+// shared `q` signal; `active_route` is the navigator's reactive mirror.
 // =============================================================================
 
-pub fn sidebar(slot: SlotProps, q: Signal<String>) -> Element {
-    let active_route = slot.active_route;
-
+pub fn sidebar(active_route: Signal<&'static str>, q: Signal<String>) -> Element {
     // The search now lives in a dialog. This open-state drives the modal; the
     // sidebar shows a button that opens it.
     let open: Signal<bool> = signal(false);
@@ -173,8 +167,8 @@ pub fn sidebar(slot: SlotProps, q: Signal<String>) -> Element {
         Rc::new(move || o.set(false))
     };
 
-    // A scroll view (not a plain view): the drawer SDK gives the leading
-    // slot a fixed full-height panel and leaves scrolling to the author, so
+    // A scroll view (not a plain view): the AppShell gives the sidebar a
+    // fixed full-height panel and leaves scrolling to the author, so
     // a nav list taller than the viewport must scroll here. The
     // `scroll_view` seed (`flex_grow:1 / flex_basis:0`) fills the panel's
     // height, bounding the scroller so its content overflows and scrolls.
@@ -196,6 +190,42 @@ pub fn sidebar(slot: SlotProps, q: Signal<String>) -> Element {
         }
         .safe_area(SafeAreaSides::VERTICAL)
     }
+}
+
+// =============================================================================
+// Layout helpers for the swap `.layout(...)` closure in `lib.rs`:
+// header-over-outlet column + growing outlet wrapper.
+// =============================================================================
+
+/// The header-over-outlet column filling the AppShell's content region.
+pub fn shell_column_style() -> StyleApplication {
+    static KEY: u8 = 0;
+    let sheet = runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
+        Rc::new(runtime_core::StyleSheet::r#static(runtime_core::StyleRules {
+            flex_direction: Some(runtime_core::FlexDirection::Column),
+            width: Some(runtime_core::Length::Percent(100.0).into()),
+            height: Some(runtime_core::Length::Percent(100.0).into()),
+            min_height: Some(runtime_core::Length::Px(0.0).into()),
+            ..Default::default()
+        }))
+    });
+    StyleApplication::new(sheet)
+}
+
+/// The outlet's growing wrapper: absorbs the column's remaining height
+/// so screens (whose own `scroll_view`s need a bounded box) fill below
+/// the header.
+pub fn outlet_grow_style() -> StyleApplication {
+    static KEY: u8 = 0;
+    let sheet = runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
+        Rc::new(runtime_core::StyleSheet::r#static(runtime_core::StyleRules {
+            flex_direction: Some(runtime_core::FlexDirection::Column),
+            flex_grow: Some(1.0f32.into()),
+            min_height: Some(runtime_core::Length::Px(0.0).into()),
+            ..Default::default()
+        }))
+    });
+    StyleApplication::new(sheet)
 }
 
 /// The search dialog body: a live text input over the reactive result list.

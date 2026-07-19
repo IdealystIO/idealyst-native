@@ -42,7 +42,7 @@ fn main() {
             let page = render_path_with(
                 &path,
                 |b| {
-                    drawer_navigator::chrome::register(b);
+                    swap_navigator::register_generic(b);
                     codeblock::register(b);
                 },
                 website::app,

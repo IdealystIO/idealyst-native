@@ -109,7 +109,27 @@ impl<B: Backend + 'static> Drop for StyleHandle<B> {
         if let Some(id) = self.cohort_id.take() {
             theme_cohort_unregister(id);
         }
-        self.backend.borrow_mut().on_node_unstyled(&self.node);
+        // Re-entrancy guard: this Drop can run WHILE the backend is
+        // already mutably borrowed — e.g. `Backend::release_virtualizer`
+        // (called under the walker's borrow) synchronously shuts down
+        // its data source, which drops the per-row scopes, which drop
+        // their StyleHandles (the iOS docs-page crash: SIGABRT
+        // "already borrowed" on the 4th navigation). `on_node_unstyled`
+        // is a cleanup notification, so deferring it a microtask is
+        // safe; same pattern as the walker's `release_navigator`
+        // cleanup.
+        match self.backend.try_borrow_mut() {
+            Ok(mut b) => b.on_node_unstyled(&self.node),
+            Err(_) => {
+                let backend = self.backend.clone();
+                let node = self.node.clone();
+                crate::schedule_microtask(move || {
+                    if let Ok(mut b) = backend.try_borrow_mut() {
+                        b.on_node_unstyled(&node);
+                    }
+                });
+            }
+        }
     }
 }
 
@@ -431,6 +451,7 @@ fn attach_style_static_container<B: Backend + 'static>(
         // Subscribe to theme/token changes — the cohort would normally
         // do this for a static node, but this node is out of the cohort.
         crate::style::subscribe_to_all_token_signals();
+        let _ = crate::style::tokens_version_signal().get();
         // Reading the signal subscribes this Effect; a container width
         // change re-fires it. `apply_one` reads `current_breakpoint()`
         // internally, so viewport breakpoints re-fire it too.
@@ -862,6 +883,15 @@ fn attach_style_reactive<B: Backend + 'static>(
         // effect is dropped — that's how `on_node_unstyled` fires
         // exactly once per styled node when its scope tears down.
 
+        // Subscribe to the tokens VERSION unconditionally. The
+        // per-token reads inside `Tokenized::resolve()` happen only
+        // on resolution-cache MISSES — among N effects sharing one
+        // resolution key, only the first resolver subscribed and the
+        // rest went permanently deaf to theme swaps (the "each theme
+        // toggle repaints fewer nodes" collapse on native; web hides
+        // it behind the CSS `var()` cascade).
+        let _ = style::tokens_version_signal().get();
+
         #[cfg(feature = "debug-stats")]
         debug::record_apply_style_enter();
         #[cfg(feature = "debug-stats")]
@@ -1046,10 +1076,33 @@ fn attach_style_reactive<B: Backend + 'static>(
                 .borrow_mut()
                 .apply_style(&handle.node, &resolved);
             #[cfg(feature = "debug-stats")]
-            debug::record_apply_phase(
-                "attach_style_apply_call",
-                debug::now_micros().saturating_sub(_t_apply_start),
-            );
+            {
+                let elapsed = debug::now_micros().saturating_sub(_t_apply_start);
+                debug::record_apply_phase("attach_style_apply_call", elapsed);
+                // Fingerprint pathological single applies (>50ms) so the
+                // phase-counter MAX is attributable to a concrete style —
+                // the aggregate table can't say WHICH node paid it.
+                if elapsed > 50_000 {
+                    crate::logging::log(
+                        crate::logging::LogLevel::Warn,
+                        &format!(
+                            "[slow-style-apply] {}us — rules: bg={:?} font={:?} w={:?} h={:?} \
+                             transform_ops={:?} radius={:?} border_top_w={:?}",
+                            elapsed,
+                            resolved.background.as_ref().map(|t| t.value().0.clone()),
+                            resolved.font_family.as_ref().map(|f| match f {
+                                crate::style::FontFamily::Typeface(t) => t.family_name,
+                                crate::style::FontFamily::System(n) => n.as_str(),
+                            }),
+                            resolved.width.as_ref().map(|t| *t.value()),
+                            resolved.height.as_ref().map(|t| *t.value()),
+                            resolved.transform.as_ref().map(|v| v.len()),
+                            resolved.border_top_left_radius.as_ref().map(|t| *t.value()),
+                            resolved.border_top_width.as_ref().map(|t| *t.value()),
+                        ),
+                    );
+                }
+            }
         }
 
         #[cfg(feature = "debug-stats")]

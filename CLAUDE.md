@@ -18,7 +18,7 @@ The repo's author of record is the user. Tools that helped write the code don't 
 
 ## 1. Test changes — especially in framework core
 
-Run the test suite when you make changes. Architectural changes to framework core (anything in `crates/framework/core/`, the Backend trait, reactive system, wire protocol, scene model) MUST be accompanied by tests that cover the new behavior. Framework stability is non-negotiable — a change without test coverage is incomplete.
+Run the test suite when you make changes. Architectural changes to framework core (anything in `crates/runtime/core/`, the Backend trait, reactive system, wire protocol, scene model) MUST be accompanied by tests that cover the new behavior. Framework stability is non-negotiable — a change without test coverage is incomplete.
 
 If existing tests don't cover the area you're touching, add coverage as part of the same change. Don't merge "the tests still pass" when the tests don't actually exercise what you changed.
 
@@ -32,7 +32,7 @@ When you change behavior, find the documentation that describes it and update it
 
 ## 3. Core stays minimal — peripheral features go through External
 
-`crates/framework/core/` is for the lowest primitives only. If you're tempted to add a feature that feels like a "widget," "helper," "convenience," or anything composable from existing primitives, build it as a third-party extension using `Element::External` plus the per-backend registry (see [[project_third_party_extension]]). Do not bloat core with peripheral features.
+`crates/runtime/core/` is for the lowest primitives only. If you're tempted to add a feature that feels like a "widget," "helper," "convenience," or anything composable from existing primitives, build it as a third-party extension using `Element::External` plus the per-backend registry (see [[project_third_party_extension]]). Do not bloat core with peripheral features.
 
 If `Element::External` isn't wired up yet for the surface you need, that's a signal to wire it up — not a license to add the feature directly to core.
 
@@ -57,9 +57,9 @@ When diagnosing perf regressions or attributing time across the framework's hot 
 
 ### How it works
 
-- **`framework_core::debug` module** (gated by the `debug-stats` Cargo feature on `framework-core`) holds the thread-local counters keyed by `&'static str` phase name. Each entry tracks `call_count`, `total_us`, `max_us`.
+- **`runtime_core::debug` module** (gated by the `debug-stats` Cargo feature on `runtime-core`) holds the thread-local counters keyed by `&'static str` phase name. Each entry tracks `call_count`, `total_us`, `max_us`.
 - **`backend-web/src/phase_timer.rs`** exposes `PhaseTimer::start("phase_name")` — returns a guard that fires `record_apply_phase` on drop. Stub-struct equivalent when `debug-stats` is off, so the macro expands to dead code the optimizer strips.
-- **Reading counters**: call `framework_core::debug::take_phase_counters()` (returns + clears) or `clear_phase_counters()`.
+- **Reading counters**: call `runtime_core::debug::take_phase_counters()` (returns + clears) or `clear_phase_counters()`.
 
 ### Adding a timer
 
@@ -77,8 +77,8 @@ Use **stable, specific** phase names — they're aggregation keys. Prefer `"text
 
 The `debug-stats` feature is **OFF by default** in the bench variants because the timer reads (`performance.now()` on web) skew the per-leaf numbers when 10 k+ ops hit the timer. To enable temporarily:
 
-1. Define a `debug-stats` feature on the variant's own crate that forwards to deps — `features = ["framework-core/debug-stats"]` on the dep line is NOT enough; the variant's own `#[cfg(feature = "debug-stats")]` blocks (like `phase_counters_json`) only see THIS crate's features, not deps'. The variant must declare its own `debug-stats = ["framework-core/debug-stats", "backend-web/debug-stats"]` in `[features]`, then default to it (or pass `--features` at build time).
-2. **Call `backend_web::install_time_source()` at startup.** Without it, `framework_core::time::now_micros()` returns `0` on wasm32, and every `PhaseTimer` records duration `0` — counts are real but all timings are useless. The variant's `start()` must call both `install_scheduler()` AND `install_time_source()`.
+1. Define a `debug-stats` feature on the variant's own crate that forwards to deps — `features = ["runtime-core/debug-stats"]` on the dep line is NOT enough; the variant's own `#[cfg(feature = "debug-stats")]` blocks (like `phase_counters_json`) only see THIS crate's features, not deps'. The variant must declare its own `debug-stats = ["runtime-core/debug-stats", "backend-web/debug-stats"]` in `[features]`, then default to it (or pass `--features` at build time).
+2. **Call `backend_web::install_time_source()` at startup.** Without it, `runtime_core::time::now_micros()` returns `0` on wasm32, and every `PhaseTimer` records duration `0` — counts are real but all timings are useless. The variant's `start()` must call both `install_scheduler()` AND `install_time_source()`.
 3. Add a `#[wasm_bindgen]` export that drains and JSON-serializes phase counters — typically extend the variant's existing `bench_stats_json()` (see [benchmark/idealyst-native/wasm/src/lib.rs](benchmark/idealyst-native/wasm/src/lib.rs)).
 4. Run the bench, call the export from devtools (`window.benchStats()`). For iframe-hosted variants, log to console + `parent.postMessage` so the data reaches the parent devtools.
 5. **Turn it back off before reporting benchmark numbers** — debug-stats inflates per-op cost.

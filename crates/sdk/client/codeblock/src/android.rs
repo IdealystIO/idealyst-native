@@ -21,6 +21,20 @@ pub(crate) fn build(
     props: &Rc<CodeBlockProps>,
     backend: &mut AndroidBackend,
 ) -> GlobalRef {
+    let node = build_widget(props, backend);
+    // Divert author `padding_*` on this node to the widget's own
+    // `setPadding` (RustCodeBlock sets `clipToPadding = false`), so the
+    // padding scrolls WITH the content instead of insetting + clipping the
+    // scroll viewport. Mirrors the iOS/macOS handlers' registration via
+    // `install_external_content_measure`.
+    backend.register_external_scroller(&node);
+    node
+}
+
+fn build_widget(
+    props: &Rc<CodeBlockProps>,
+    backend: &mut AndroidBackend,
+) -> GlobalRef {
     // Concatenate every span's text into one source string, recording
     // each span's (start, end, color) byte range. Java's
     // `String.length` is in UTF-16 code units; we feed Rust UTF-8

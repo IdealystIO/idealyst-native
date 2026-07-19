@@ -18,11 +18,10 @@
 //! `#[macro_use]` lifts those to crate-root scope so page modules
 //! can invoke them via the `ui!` DSL.
 
-use runtime_core::{component, signal, ui, Element, Ref, Screen, Signal};
-use drawer_navigator::{
-    DrawerBuilder, DrawerHandle, DrawerNavigator, DrawerScreenExt, HeaderStyle,
-};
-use idea_ui::{idea_header, install_idea_theme, light_theme, IdeaTheme};
+use idea_ui_nav::AppShell;
+use runtime_core::{component, effect, signal, ui, Breakpoint, Element, Ref, Screen, Signal};
+use swap_navigator::{MountPolicy, SwapBuilder, SwapHandle, SwapNavigator};
+use idea_ui::{install_idea_theme, light_theme};
 
 pub mod meta;
 pub mod registry;
@@ -53,12 +52,11 @@ pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
 // Recorder-side registration for the runtime-server sidecar. Distinct fn
 // name (not an overload of `register_extensions`) so it never collides
 // with the host target's per-backend overload when both compile in the
-// sidecar build. Only the drawer navigator needs a recording handler.
-// Gated by `sidecar` (set only by the generated sidecar wrapper) so
-// device/web builds never pull `dev-server`.
+// sidecar build. Gated by `sidecar` (set only by the generated sidecar
+// wrapper) so device/web builds never pull `dev-server`.
 #[cfg(feature = "sidecar")]
 pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBackend) {
-    drawer_navigator::recording::register(backend);
+    swap_navigator::recording::register(backend);
 }
 
 use routes::{
@@ -70,8 +68,6 @@ use routes::{
     REACTIVE_TEXT_BINDINGS_ROUTE, THIRD_PARTY_PRIMITIVES_ROUTE, UI_DSL_ROUTE,
     WGPU_NATIVE_API_ROUTE, WRITING_A_BACKEND_ROUTE,
 };
-use shell::content_builder;
-
 #[component]
 pub fn app() -> Element {
     install_idea_theme(light_theme());
@@ -79,91 +75,103 @@ pub fn app() -> Element {
     // Theme flag the sidebar's dark-mode toggle drives. Owned at
     // the root so it survives across screen pushes.
     let is_dark: Signal<bool> = signal(false);
-    let drawer: Ref<DrawerHandle> = Ref::new();
+    // Drawer-open state for narrow viewports — author-owned now (the
+    // AppShell scrim + the auto-close effect close it; the mobile
+    // header's hamburger opens it). Pinned widths ignore it entirely.
+    let drawer_open: Signal<bool> = signal(false);
+    let nav: Ref<SwapHandle> = Ref::new();
 
-    // Builder-pattern form so the typed `Bound<DrawerHandle>` flows
-    // through and we can call `.layout(web_layout())` without losing
-    // the type after `IntoElement` coercion. The layout closure
-    // applies on both the local-render path (wasm in-browser) and
-    // the runtime-server-replay path (recording backend serializes the layout
-    // subtree + ships `AttachNavigatorLayout` over the wire).
-    let builder = DrawerNavigator::new(&OVERVIEW_ROUTE)
-        .header(idea_header(|t| HeaderStyle {
-            background: Some(t.colors().surface.value().clone()),
-            title: Some(t.colors().text.value().clone()),
-            tint: Some(t.colors().text.value().clone()),
-            body_background: Some(t.colors().background.value().clone()),
-        }))
-        .screen(INTRODUCTION_ROUTE, |_| {
-            Screen::new(pages::introduction::page()).title("Introduction")
-        })
-        .screen(OVERVIEW_ROUTE, |_| Screen::new(pages::overview::page()).title("Overview"))
-        .screen(QUICKSTART_ROUTE, |_| {
-            Screen::new(pages::quickstart::page()).title("Getting Started")
-        })
-        .screen(COMPONENTS_ROUTE, |_| {
-            Screen::new(pages::components::page()).title("Components")
-        })
-        .screen(REACTIVITY_ROUTE, |_| {
-            Screen::new(pages::reactivity::page()).title("Reactivity")
-        })
-        .screen(ASYNC_REACTIVITY_ROUTE, |_| {
-            Screen::new(pages::async_reactivity::page()).title("Async Reactivity")
-        })
-        .screen(SERVER_FUNCTIONS_ROUTE, |_| {
-            Screen::new(pages::server_functions::page()).title("Server Functions")
-        })
-        .screen(UI_DSL_ROUTE, |_| Screen::new(pages::ui_dsl::page()).title("UI DSL"))
-        .screen(PRIMITIVES_ROUTE, |_| {
-            Screen::new(pages::primitives::page()).title("Primitives")
-        })
-        .screen(STYLES_ROUTE, |_| Screen::new(pages::styles::page()).title("Styles & Themes"))
-        .screen(ANIMATION_ROUTE, |_| {
-            Screen::new(pages::animation::page()).title("Animation")
-        })
-        .screen(NAVIGATION_ROUTE, |_| {
-            Screen::new(pages::navigation::page()).title("Navigation")
-        })
-        .screen(LISTS_ROUTE, |_| Screen::new(pages::lists::page()).title("Lists"))
-        .screen(ICONS_ROUTE, |_| Screen::new(pages::icons::page()).title("Icons"))
-        .screen(REFS_ROUTE, |_| Screen::new(pages::refs::page()).title("Refs"))
-        .screen(PORTAL_ROUTE, |_| {
-            Screen::new(pages::portal::page()).title("Portal & Overlays")
-        })
-        .screen(NET_ROUTE, |_| Screen::new(pages::net::page()).title("Net"))
-        .screen(ROBOT_ROUTE, |_| Screen::new(pages::robot::page()).title("Robot"))
-        .screen(DEV_TOOLS_ROUTE, |_| {
-            Screen::new(pages::dev_tools::page()).title("Dev Tools")
-        })
-        .screen(BACKENDS_ROUTE, |_| Screen::new(pages::backends::page()).title("Backends"))
-        .screen(WRITING_A_BACKEND_ROUTE, |_| {
-            Screen::new(pages::writing_a_backend::page()).title("Writing a Backend")
-        })
+    // Screen titles are gone from the builder: the shell's own mobile
+    // header derives the label reactively from the navigator's
+    // `active_route` (see `shell::mobile_header`). The sidebar pins at
+    // the framework's default `Lg` breakpoint — the same width the
+    // legacy drawer chrome used (its default pin width was
+    // `breakpoints().lg_min`), so the collapse point is unchanged.
+    let builder = SwapNavigator::new(&OVERVIEW_ROUTE)
+        .screen(INTRODUCTION_ROUTE, |_| Screen::new(pages::introduction::page()))
+        .screen(OVERVIEW_ROUTE, |_| Screen::new(pages::overview::page()))
+        .screen(QUICKSTART_ROUTE, |_| Screen::new(pages::quickstart::page()))
+        .screen(COMPONENTS_ROUTE, |_| Screen::new(pages::components::page()))
+        .screen(REACTIVITY_ROUTE, |_| Screen::new(pages::reactivity::page()))
+        .screen(ASYNC_REACTIVITY_ROUTE, |_| Screen::new(pages::async_reactivity::page()))
+        .screen(SERVER_FUNCTIONS_ROUTE, |_| Screen::new(pages::server_functions::page()))
+        .screen(UI_DSL_ROUTE, |_| Screen::new(pages::ui_dsl::page()))
+        .screen(PRIMITIVES_ROUTE, |_| Screen::new(pages::primitives::page()))
+        .screen(STYLES_ROUTE, |_| Screen::new(pages::styles::page()))
+        .screen(ANIMATION_ROUTE, |_| Screen::new(pages::animation::page()))
+        .screen(NAVIGATION_ROUTE, |_| Screen::new(pages::navigation::page()))
+        .screen(LISTS_ROUTE, |_| Screen::new(pages::lists::page()))
+        .screen(ICONS_ROUTE, |_| Screen::new(pages::icons::page()))
+        .screen(REFS_ROUTE, |_| Screen::new(pages::refs::page()))
+        .screen(PORTAL_ROUTE, |_| Screen::new(pages::portal::page()))
+        .screen(NET_ROUTE, |_| Screen::new(pages::net::page()))
+        .screen(ROBOT_ROUTE, |_| Screen::new(pages::robot::page()))
+        .screen(DEV_TOOLS_ROUTE, |_| Screen::new(pages::dev_tools::page()))
+        .screen(BACKENDS_ROUTE, |_| Screen::new(pages::backends::page()))
+        .screen(WRITING_A_BACKEND_ROUTE, |_| Screen::new(pages::writing_a_backend::page()))
         .screen(THIRD_PARTY_PRIMITIVES_ROUTE, |_| {
             Screen::new(pages::third_party_primitives::page())
-                .title("Third-party Primitives")
         })
         .screen(BUILDING_A_THEME_SYSTEM_ROUTE, |_| {
             Screen::new(pages::building_a_theme_system::page())
-                .title("Building a Theme System")
         })
         .screen(REACTIVE_TEXT_BINDINGS_ROUTE, |_| {
             Screen::new(pages::reactive_text_bindings::page())
-                .title("Reactive Text Bindings")
         })
-        .screen(WGPU_NATIVE_API_ROUTE, |_| {
-            Screen::new(pages::wgpu_native_api::page()).title("wgpu Native API")
+        .screen(WGPU_NATIVE_API_ROUTE, |_| Screen::new(pages::wgpu_native_api::page()))
+        .screen(SIMULATOR_ROUTE, |_| Screen::new(pages::simulator_demo::page()))
+        .screen(MACROS_ROUTE, |_| Screen::new(pages::macros_page::page()))
+        .screen(CLI_ROUTE, |_| Screen::new(pages::cli::page()))
+        .screen(PLATFORMS_ROUTE, |_| Screen::new(pages::platforms::page()))
+        // Legacy web behavior: one screen resident at a time; switching
+        // away disposes the screen's scope (which also tears down the
+        // Simulator page's embedded wgpu host + render loop) and a
+        // return rebuilds it fresh. Matches browser semantics and the
+        // old drawer-on-web engine exactly.
+        .mount_policy(MountPolicy::LazyDisposing)
+        // The shell: AppShell packages pinned-sidebar ⇄ drawer around
+        // the one-shot outlet; the mobile header (hamburger + reactive
+        // title) collapses in below the pin width.
+        .layout(move |nav_ctx| {
+            // Auto-close the drawer when a sidebar link navigates while
+            // unpinned (the legacy web drawer engine did this in its
+            // Select arm; author-owned now). Reading `active_route`
+            // inside the effect subscribes it to every navigation.
+            let active_route = nav_ctx.active_route;
+            effect!({
+                let _ = active_route.get();
+                if !idea_ui_nav::sidebar_pinned(Breakpoint::Lg) {
+                    drawer_open.set(false);
+                }
+            });
+
+            let sidebar_el = shell::sidebar(active_route, is_dark);
+            let header = shell::mobile_header(active_route, drawer_open);
+            let body: Element = ui! {
+                view(style = shell::outlet_grow_style) {
+                    { nav_ctx.outlet }
+                }
+            };
+            let content: Element = ui! {
+                view(style = shell::shell_column_style) {
+                    header
+                    body
+                }
+            };
+            ui! {
+                // Width matches the docs `Sidebar` sheet (260) so the
+                // panel and its content agree exactly.
+                AppShell(
+                    sidebar = vec![sidebar_el],
+                    is_open = drawer_open,
+                    pin_at = Breakpoint::Lg,
+                    width = 260.0,
+                ) {
+                    { content }
+                }
+            }
         })
-        .screen(SIMULATOR_ROUTE, |_| {
-            Screen::new(pages::simulator_demo::page()).title("Simulator")
-        })
-        .screen(MACROS_ROUTE, |_| Screen::new(pages::macros_page::page()).title("Macros"))
-        .screen(CLI_ROUTE, |_| Screen::new(pages::cli::page()).title("CLI"))
-        .screen(PLATFORMS_ROUTE, |_| {
-            Screen::new(pages::platforms::page()).title("Platforms")
-        })
-        .sidebar_with(content_builder(is_dark))
-        .bind(drawer);
+        .bind(nav);
 
     ui! { builder }
 }

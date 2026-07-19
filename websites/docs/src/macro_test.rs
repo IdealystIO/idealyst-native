@@ -233,5 +233,9 @@ fn note_block() {
 
 #[test]
 fn page_function_renders() {
+    // The page renders idea-ui `Typography`, whose sheet lookup panics
+    // unless a theme is installed first (enforced since the extensible
+    // theme sheets landed) — same call `app()` makes before mounting.
+    idea_ui::install_idea_theme(idea_ui::light_theme());
     let _prim: runtime_core::Element = reactivity::page();
 }

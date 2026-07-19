@@ -58,6 +58,14 @@ If you're new to the codebase, read the docs in this order:
    internals: per-platform mapping tables, the Backend-trait surface,
    and the GPU-backend semantics tree.
 
+9. [`server-functions.md`](./server-functions.md). The full-stack layer:
+   `#[server]` fns (one function, two compilations), the `server` cargo
+   feature split and what does/doesn't need cfg-gating, extractors
+   (`State`/`Auth`/`Cookies`), typed `ServerError<E>`, middleware + the
+   cookie/bearer auth patterns, streaming (`#[subscription]` /
+   `#[channel]` / `#[sse]`), schema versioning, batching, and serving.
+   Read this when your app grows a backend.
+
 ## Migrating
 
 - [`migration-0.2-to-0.3.md`](./migration-0.2-to-0.3.md). The reactive-surface

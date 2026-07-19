@@ -77,8 +77,16 @@ stylesheet! {
                 padding_horizontal: 0.0,
                 border_bottom_width: 0.0,
             }
+            // Content-driven height (40px button + 8px vertical padding
+            // = the same 56px bar), NOT an explicit `height: 56`: the
+            // mobile safe-area inset is delivered as extra padding_top
+            // (see `mobile_header`), and a fixed height can't grow to
+            // absorb it — the bar stays 56px and the button renders
+            // under the status bar / dynamic island, clipped and
+            // untappable.
             narrow(_t) {
-                height: 56.0,
+                min_height: 56.0,
+                padding_vertical: 8.0,
                 padding_horizontal: 8.0,
                 border_bottom_width: 1.0,
             }
@@ -147,33 +155,39 @@ stylesheet! {
 }
 
 // =============================================================================
-// Sidebar body
+// Sidebar
 //
-// Drawer-navigator on web supplies the outer chrome:
-//   `.ui-nav-drawer-root` — flex-row, 100% × 100% viewport.
-//   `.ui-nav-drawer-sidebar` — flex:0 0 auto, height: 100%, overflow-y: auto.
-//   `.ui-nav-drawer-body` — flex:1 1 auto, height: 100%, overflow: hidden.
+// The AppShell panel is a fixed full-height container and leaves
+// scrolling to the author. The brand header stays PINNED at the top;
+// only the nav list below it scrolls. Three layers:
 //
-// We don't need our own PageRoot / Sidebar / Content layout
-// stylesheets anymore — the navigator owns that. `SidebarBody`
-// styles the inner column the sidebar builder returns
-// (background, padding, gap, divider border on the right edge,
-// vertical flex layout).
+//   `SidebarFrame` — the outer PLAIN column filling the panel. Carries
+//   the surface background + right-edge divider so they span the full
+//   panel height and stay put while the nav scrolls. Hosts the pinned
+//   header, then the scroller.
+//
+//   `SidebarScroll` — the `scroll_view` under the header. Absorbs the
+//   frame's remaining height (`flex_grow:1 / flex_basis:0` — an author
+//   style replaces the scroll_view's default grow seed, so restate it),
+//   clamping there so THIS node overflows and scrolls.
+//
+//   `SidebarBody` — the inner PLAIN column. Padding lives here, not on
+//   the scroll view: a scroll view's own `padding` doesn't reliably
+//   inset its content (its documentView isn't Taffy-positioned on
+//   macOS), so keep it on an ordinary view.
 // =============================================================================
 
 stylesheet! {
-    pub SidebarBody<IdeaThemeRef> {
+    pub SidebarFrame<IdeaThemeRef> {
         base(_t) {
             background: Tokenized::token("color-surface", Color("#ffffff".into())),
             border_right_width: 1.0,
             border_right_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
-            padding: Tokenized::token("spacing-lg", Length::Px(16.0)),
-            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
             flex_direction: FlexDirection::Column,
-            // Match the drawer-sidebar's full height so the right-edge
-            // divider line spans the whole viewport even when the
-            // nav-link list is short.
-            min_height: Length::pct(100.0),
+            width: Length::pct(100.0),
+            // Fill the AppShell panel (`Surface(grow = 1)` parent).
+            flex_grow: 1.0,
+            flex_basis: Length::Px(0.0),
             // Inter for sidebar text; CSS inherits to every Text child.
             // Sibling to the screen-scroll subtree, so we set it here
             // too rather than relying on a shared ancestor.
@@ -182,6 +196,43 @@ stylesheet! {
         transitions {
             background: 250ms EaseInOut,
             border_right_color: 250ms EaseInOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub SidebarScroll<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            width: Length::pct(100.0),
+            flex_grow: 1.0,
+            flex_basis: Length::Px(0.0),
+        }
+    }
+}
+
+stylesheet! {
+    pub SidebarBody<IdeaThemeRef> {
+        base(_t) {
+            // Top inset is the small gap under the pinned header's
+            // divider (the header owns the large outer padding).
+            padding_top: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            padding_left: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            padding_right: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            padding_bottom: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            flex_direction: FlexDirection::Column,
+            // Fill the scroller's viewport when the nav list is short so
+            // `Spacer` can pin the theme toggle to the bottom; taller
+            // content grows past it and scrolls.
+            min_height: Length::pct(100.0),
+            // Never shrink below content: the scroller is a flex column,
+            // and `min_height: 100%` above replaces the default
+            // content-size shrink floor — without this the body clamps
+            // to the viewport height, its children overflow its own box,
+            // and its bottom padding lands mid-list instead of under the
+            // footer.
+            flex_shrink: 0.0,
         }
     }
 }
@@ -230,6 +281,11 @@ stylesheet! {
 stylesheet! {
     pub SidebarHeader<IdeaThemeRef> {
         base(_t) {
+            // Pinned above the nav scroller (outside `SidebarBody`), so
+            // it carries its own outer padding on the top three sides.
+            padding_top: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            padding_left: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            padding_right: Tokenized::token("spacing-lg", Length::Px(16.0)),
             padding_bottom: Tokenized::token("spacing-md", Length::Px(12.0)),
             border_bottom_width: 1.0,
             border_bottom_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
@@ -691,7 +747,13 @@ stylesheet! {
             border_width: 1.0,
             border_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
             border_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
-            padding: 20.0,
+            // NO padding here: the panel's inset lives on the code block
+            // itself (`CodeText`'s `padding`), INSIDE its scroll region,
+            // so scrolled code reaches this panel's edge before clipping.
+            // Panel-level padding would shrink the native scroll viewport
+            // and clip moving text 20px before the border (web didn't show
+            // the same because CSS `overflow: hidden` clips at the padding
+            // box, letting overflow paint across the padding).
             overflow: Overflow::Hidden,
             // Without this, the flexbox default `min-width: auto` on
             // the panel equals its content's intrinsic min-content —
@@ -735,6 +797,12 @@ stylesheet! {
             font_size: 14.0,
             line_height: 22.0,
             color: Tokenized::token("color-text", Color("#1f2328".into())),
+            // The code surface's inset. Lives on the code block (not the
+            // wrapping panel) so it sits INSIDE the scroll region: native
+            // backends divert it to the text widget's insets, so the
+            // padding scrolls with the content and mid-scroll text reaches
+            // the panel edge — the `<pre> { padding }` observable model.
+            padding: 20.0,
         }
         transitions {
             color: 250ms EaseInOut,
@@ -787,7 +855,8 @@ stylesheet! {
             background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
             border_top_width: 1.0,
             border_top_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
-            padding: 20.0,
+            // NO padding — the inset lives on the code block itself
+            // (`CodeText`), inside its scroll region. See `CodePanel`.
             overflow: Overflow::Hidden,
             // Let the region shrink below its longest code line's
             // intrinsic width (paired with the responsive `<pre>` wrap).

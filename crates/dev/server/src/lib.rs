@@ -23,9 +23,8 @@ use runtime_core::{
     Backend, Color, ColorScheme, StateBits, StyleRules, TextHandle, TextOps, ViewHandle, ViewOps,
 };
 use wire::{
-    Command, EventArgs, HandlerId, NodeId, ScopeId, StyleId, WireColor, WireDrawerSide,
-    WireDrawerType, WireMountPolicy, WirePageMetadata, WireScreenOptions, WireStateBit,
-    WireTabPlacement, WireTabRegistration,
+    Command, EventArgs, HandlerId, NodeId, ScopeId, StyleId, WireColor,
+    WirePageMetadata, WireScreenOptions, WireStateBit,
 };
 
 pub mod convert_out;
@@ -387,16 +386,6 @@ struct RecorderState {
     /// re-acquire the handler that owns a given navigator.
     nav_handler_instances:
         HashMap<NodeId, Rc<RefCell<Box<dyn runtime_core::NavigatorHandler<WireRecordingBackend>>>>>,
-
-    /// Per-drawer-navigator open-state signal, keyed by the navigator's
-    /// `NodeId`. A drawer recording handler registers its
-    /// `DrawerPresentation.is_open` here at `init` so the reverse channel
-    /// ([`WireRecordingBackend::handle_drawer_state_changed`]) can sync
-    /// dev-side state when the *client* opens/closes the drawer via a
-    /// platform gesture — without dispatching back through the handler
-    /// (which would re-emit an `OpenDrawer`/`CloseDrawer` echo to the
-    /// client that already moved).
-    drawer_open_signals: HashMap<NodeId, runtime_core::Signal<bool>>,
 }
 
 /// Inert `NavigatorOps` for `make_navigator_handle` on a navigator that
@@ -467,7 +456,6 @@ impl WireRecordingBackend {
             scene: SceneModel::new(),
             navigator_handlers: runtime_core::NavigatorRegistry::new(),
             nav_handler_instances: HashMap::new(),
-            drawer_open_signals: HashMap::new(),
         }));
         // Install a per-thread weak handle so `RecordingViewOps`
         // (called from `AnimatedValue::bind` -> `ViewHandle::set_animated_*`)
@@ -485,7 +473,7 @@ impl WireRecordingBackend {
 
     /// Register a navigator handler factory keyed by presentation type
     /// `P`. The app's `register_extensions(&mut recorder)` calls this
-    /// (via the SDK leaf, e.g. `drawer_navigator::register(recorder)`)
+    /// (via the SDK leaf, e.g. `stack_navigator::recording::register`)
     /// before mount so `create_navigator` can record the navigator.
     /// Mirrors `WgpuBackend::register_navigator`.
     pub fn register_navigator<P, F>(&mut self, factory: F)
@@ -499,11 +487,10 @@ impl WireRecordingBackend {
             .register::<P, _>(factory);
     }
 
-    /// Hand a recording `NavigatorHandler` (e.g. the drawer SDK's
-    /// `recording` handler) a cloneable, microtask-safe emit handle for
-    /// navigator wire commands. The handler grabs one during `init` and
-    /// uses it to emit `CreateDrawerNavigator` / `DrawerAttachSidebar` /
-    /// `NavigatorAttachInitial` / `NavigatorSelect` / `OpenDrawer` … both
+    /// Hand a recording `NavigatorHandler` a cloneable, microtask-safe
+    /// emit handle for navigator wire commands. The handler grabs one
+    /// during `init` and uses it to emit `CreateNavigator` /
+    /// `NavigatorAttachInitial` / `NavigatorSelect` … both
     /// synchronously during `init` and later from the control dispatcher
     /// closure it installs (which runs outside any backend borrow, on a
     /// user event — long after `init` returned).
@@ -645,10 +632,6 @@ impl WireRecordingBackend {
         // Drop live handler instances; the post-reset re-walk re-creates
         // them via `create_navigator` against the (preserved) registry.
         state.nav_handler_instances.clear();
-        // Drop is_open signals from the old walk — the re-walk's handler
-        // `init` registers fresh ones (the old `Signal`s belong to the
-        // torn-down reactive scopes).
-        state.drawer_open_signals.clear();
         // Drop old closures (frees their captured Rcs — old
         // NavigatorControl, signal handles, etc. — before the
         // next render starts) but keep `next` + `identity_to_id`
@@ -674,6 +657,12 @@ impl WireRecordingBackend {
     /// [`Self::command_count`] API which lets multiple clients each
     /// hold their own cursor into the same shared log.
     pub fn drain_commands(&self) -> Vec<Command> {
+        // Flush queued scheduler microtasks first (outlet-navigator
+        // layout builds, deferred chrome) so the commands they record
+        // are in THIS drain, not silently postponed to the next one.
+        // Must run before the `inner` borrow — the tasks re-enter the
+        // recorder.
+        scheduler::drain_microtasks();
         std::mem::take(&mut self.inner.borrow_mut().out)
     }
 
@@ -894,48 +883,6 @@ impl NavRecorder {
         self.state.upgrade().map(|rc| f(&mut rc.borrow_mut()))
     }
 
-    /// Emit `CreateDrawerNavigator`, minting an identity-deduped node.
-    /// Call this from the handler's `init` (under the navigator's
-    /// ambient identity) so the node id stays stable across sidecar
-    /// respawns — the same property that makes hot reload incremental.
-    #[allow(clippy::too_many_arguments)]
-    pub fn create_drawer_navigator(
-        &self,
-        initial_route: &str,
-        initial_path: &str,
-        side: WireDrawerSide,
-        drawer_type: WireDrawerType,
-        drawer_width: f32,
-        swipe_to_open: bool,
-        mount_policy: WireMountPolicy,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> NodeId {
-        self.with_state(|state| {
-            let id = WireRecordingBackend::mint_node(state);
-            let wire_a11y = state.wire_a11y(a11y);
-            state.emit(Command::CreateDrawerNavigator {
-                id,
-                initial_route: initial_route.to_string(),
-                initial_path: initial_path.to_string(),
-                side,
-                drawer_type,
-                drawer_width,
-                swipe_to_open,
-                mount_policy,
-                a11y: wire_a11y,
-            });
-            id
-        })
-        .unwrap_or(NodeId(0))
-    }
-
-    /// Emit `DrawerAttachSidebar` — `sidebar` is the root node of the
-    /// already-recorded sidebar primitive subtree (built via
-    /// `host.build_node`).
-    pub fn attach_sidebar(&self, navigator: NodeId, sidebar: NodeId) {
-        self.with_state(|s| s.emit(Command::DrawerAttachSidebar { navigator, sidebar }));
-    }
-
     /// Emit `NavigatorAttachInitial` for the navigator's initial screen.
     pub fn attach_initial(
         &self,
@@ -949,8 +896,8 @@ impl NavRecorder {
         });
     }
 
-    /// Emit `NavigatorSelect` — swap a drawer/tab navigator's single
-    /// visible screen without tearing down a stack.
+    /// Emit `NavigatorSelect` — swap a select-style (swap) navigator's
+    /// single visible screen without tearing down a stack.
     pub fn select(
         &self,
         navigator: NodeId,
@@ -964,25 +911,10 @@ impl NavRecorder {
         });
     }
 
-    /// Emit `OpenDrawer`.
-    pub fn open_drawer(&self, navigator: NodeId) {
-        self.with_state(|s| s.emit(Command::OpenDrawer { navigator }));
-    }
-
-    /// Emit `CloseDrawer`.
-    pub fn close_drawer(&self, navigator: NodeId) {
-        self.with_state(|s| s.emit(Command::CloseDrawer { navigator }));
-    }
-
-    /// Emit `ToggleDrawer`.
-    pub fn toggle_drawer(&self, navigator: NodeId) {
-        self.with_state(|s| s.emit(Command::ToggleDrawer { navigator }));
-    }
-
     /// Intern `rules` to a `StyleId` (emitting `RegisterStyle` on first
     /// sight) and emit the matching per-slot `Apply*Style` command. SDK
-    /// slot names map to the wire's navigator/drawer style channels;
-    /// unknown slots are ignored (matches every backend handler's
+    /// slot names map to the wire's navigator style channels; unknown
+    /// slots are ignored (matches every backend handler's
     /// no-op-on-unknown-slot contract).
     pub fn apply_slot_style(&self, navigator: NodeId, slot: &str, rules: &Rc<StyleRules>) {
         self.with_state(|state| {
@@ -992,52 +924,19 @@ impl NavRecorder {
                 "title" => Command::ApplyNavigatorTitleStyle { navigator, style },
                 "button" => Command::ApplyNavigatorButtonStyle { navigator, style },
                 "body" => Command::ApplyNavigatorBodyStyle { navigator, style },
-                "sidebar" => Command::ApplyDrawerSidebarStyle { navigator, style },
-                "scrim" => Command::ApplyDrawerScrimStyle { navigator, style },
                 _ => return,
             };
             state.emit(cmd);
         });
     }
 
-    // ----- Tab navigator ---------------------------------------------------
-
-    /// Emit `CreateTabNavigator`, minting an identity-deduped node. The
-    /// tab registrations (labels/icons) ride on the command as data, so
-    /// the client can reconstruct the tab bar without any closures
-    /// crossing the wire.
-    #[allow(clippy::too_many_arguments)]
-    pub fn create_tab_navigator(
-        &self,
-        initial_route: &str,
-        initial_path: &str,
-        tabs: Vec<WireTabRegistration>,
-        placement: WireTabPlacement,
-        mount_policy: WireMountPolicy,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> NodeId {
-        self.with_state(|state| {
-            let id = WireRecordingBackend::mint_node(state);
-            let wire_a11y = state.wire_a11y(a11y);
-            state.emit(Command::CreateTabNavigator {
-                id,
-                initial_route: initial_route.to_string(),
-                initial_path: initial_path.to_string(),
-                tabs,
-                placement,
-                mount_policy,
-                a11y: wire_a11y,
-            });
-            id
-        })
-        .unwrap_or(NodeId(0))
-    }
-
     // ----- Stack navigator -------------------------------------------------
 
     /// Emit `CreateNavigator` (the plain/stack navigator), minting an
-    /// identity-deduped node. Same once-at-`init`-under-the-nav-identity
-    /// contract as [`create_drawer_navigator`](Self::create_drawer_navigator).
+    /// identity-deduped node. Call this once from the handler's `init`
+    /// (under the navigator's ambient identity) so the node id stays
+    /// stable across sidecar respawns — the same property that makes
+    /// hot reload incremental.
     pub fn create_stack_navigator(
         &self,
         initial_route: &str,
@@ -1754,9 +1653,8 @@ impl Backend for WireRecordingBackend {
     ) -> Self::Node {
         // Serialize the payload via the SDK's registered external serde so
         // it survives the trip to the device. Empty when no serde is
-        // registered (sentinel externals like the drawer sidebar-adopt) —
-        // the client then falls back to the not-available placeholder, as
-        // before.
+        // registered (sentinel externals) — the client then falls back to
+        // the not-available placeholder, as before.
         let payload_bytes =
             runtime_core::serialize_external_payload(type_name, &**payload).unwrap_or_default();
         let mut state = self.inner.borrow_mut();
@@ -2177,9 +2075,6 @@ impl Backend for WireRecordingBackend {
         if let Some(handler) = handler {
             handler.borrow_mut().release(self);
         }
-        // Drop the reverse-channel is_open signal for this navigator (if
-        // it was a drawer). Safe even when absent.
-        self.inner.borrow_mut().drawer_open_signals.remove(node);
     }
 
     fn update_accessibility(
@@ -2373,6 +2268,66 @@ impl Backend for WireRecordingBackend {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::ReleaseNode { node: *node });
     }
+
+    // ---------------------------------------------------------------------
+    // Virtualizer. These MUST live in the trait impl: the walker calls
+    // `Backend::create_virtualizer`, whose default body is
+    // `unimplemented!()`. A refactor once left these as inherent methods
+    // on `WireRecordingBackend` — shadowed dead code, so any screen with
+    // a `flat_list` panicked the dev session thread on build.
+    // ---------------------------------------------------------------------
+
+    fn create_virtualizer(
+        &mut self,
+        callbacks: runtime_core::VirtualizerCallbacks<NodeId>,
+        overscan: f32,
+        layout: runtime_core::VirtualLayout,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> NodeId {
+        // Eagerly snapshot the current data set: count + keys +
+        // initial sizes. The wire ships these so the app's
+        // virtualizer can stand up its scroll math and visible-window
+        // tracking. Items themselves mount lazily via
+        // `VirtualizerMountItem` reverse-channel events.
+        let count = (callbacks.item_count)();
+        let keys: Vec<u64> = (0..count).map(|i| (callbacks.item_key)(i)).collect();
+        let sizes: Vec<f32> = (0..count).map(|i| (callbacks.item_size)(i)).collect();
+        let measured = callbacks.measure_sizes;
+
+        let mut state = self.inner.borrow_mut();
+        let id = Self::mint_node(&mut state);
+        let wire_a11y = state.wire_a11y(a11y);
+        state.emit(Command::CreateVirtualizer {
+            id,
+            overscan,
+            layout: wire_virtual_layout(layout),
+            initial_size: wire::WireItemSize { measured, sizes },
+            initial_keys: keys,
+            a11y: wire_a11y,
+        });
+        // Note: callbacks aren't stored on the recorder side yet.
+        // Lazy mount-on-demand is the natural next step:
+        //   - Stash `callbacks` in a `HashMap<NodeId, _>` similar to
+        //     navigators.
+        //   - Add `handle_virtualizer_mount_item(node, index)` on the
+        //     recorder, mirroring `handle_screen_released`.
+        //   - Inside it: `let (n, scope) = (callbacks.mount_item)(idx)`,
+        //     emit `VirtualizerAttachItem { node, index, child: n,
+        //     scope: ScopeId(scope) }`.
+        // Deferred so the comprehensive nav/link/overlay/graphics
+        // work ships first.
+        let _ = callbacks; // suppress unused
+        id
+    }
+
+    fn virtualizer_data_changed(&mut self, node: &NodeId) {
+        // Re-snapshot count for now — keys/sizes refresh in a follow-up
+        // alongside mount-on-demand wiring above.
+        self.inner.borrow_mut().emit(Command::VirtualizerDataChanged {
+            node: *node,
+            item_count: 0,
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2465,28 +2420,12 @@ fn wire_virtual_layout(l: runtime_core::VirtualLayout) -> wire::WireVirtualLayou
 // ---------------------------------------------------------------------------
 
 impl WireRecordingBackend {
-    /// Register a drawer navigator's `is_open` signal so the reverse
-    /// channel can sync it on client-side gestures. Called by the
-    /// drawer recording handler's `init` (the recorder analogue of the
-    /// per-backend `open_changed` callback web/iOS install). Keyed by
-    /// the navigator's `NodeId`; cleared on reset / `release_navigator`.
-    pub fn register_drawer_open_signal(
-        &self,
-        navigator: NodeId,
-        signal: runtime_core::Signal<bool>,
-    ) {
-        self.inner
-            .borrow_mut()
-            .drawer_open_signals
-            .insert(navigator, signal);
-    }
-
     /// Handle an `AppToDev::ScreenReleased { scope }` event from the
     /// client.
     ///
     /// No-op by design in the recorder model: the dev side owns screen
     /// lifecycle. Every navigator recording handler's dispatcher drives
-    /// `release_screen` itself (drawer on `Select`; stack on
+    /// `release_screen` itself (swap on `Select`; stack on
     /// `Pop`/`Replace`/`Reset`), and the thin client reconstructs
     /// navigators as primitive layouts that never originate their own
     /// releases — a native back gesture round-trips as a `Pop` dispatch
@@ -2496,108 +2435,5 @@ impl WireRecordingBackend {
     pub fn handle_screen_released(&self, _scope: u64) -> bool {
         false
     }
-
-    /// Handle `AppToDev::DrawerStateChanged { navigator, is_open }` — the
-    /// user opened/closed the drawer with a platform gesture on the
-    /// client. Sync the dev-side `is_open` signal so author code (a
-    /// sidebar highlight, a disclosure chevron, an effect) observes the
-    /// real state.
-    ///
-    /// Sets the signal **directly** rather than dispatching
-    /// `Open`/`Close` through the handler: the client already moved, so
-    /// re-dispatching would emit a redundant `OpenDrawer`/`CloseDrawer`
-    /// echo back to it. The compare-then-set also stops a set→effect→
-    /// re-entrancy from looping.
-    pub fn handle_drawer_state_changed(&self, navigator: NodeId, is_open: bool) {
-        // Copy the signal out before touching it — setting it runs
-        // reactive effects that may re-enter the recorder, and we must
-        // not hold the `inner` borrow across that.
-        let sig = self
-            .inner
-            .borrow()
-            .drawer_open_signals
-            .get(&navigator)
-            .copied();
-        if let Some(sig) = sig {
-            if sig.get() != is_open {
-                sig.set(is_open);
-            }
-        }
-    }
-
-    /// Handle `AppToDev::TabSelected { navigator, index }` — the user
-    /// tapped a tab on the client.
-    ///
-    /// No-op by design, same reasoning as
-    /// [`handle_screen_released`](Self::handle_screen_released): the dev
-    /// side owns navigation. The tab recording handler's dispatcher
-    /// drives tab switches (`Select`), and the thin client's
-    /// reconstructed tab bar round-trips a tap as a `Select` the dev
-    /// side services — it doesn't originate its own tab switch. Kept in
-    /// the protocol for a future client hosting a real native tab bar.
-    pub fn handle_tab_selected(&self, _navigator: NodeId, _index: u32) {
-        // See handle_screen_released — dev side owns navigation.
-    }
 }
 
-// ==========================================================================
-// Legacy nav recorder methods — inherent. Dev wire's navigator recording
-// path was driven by Backend trait methods that have been removed; these
-// inherent versions are temporarily dead code until the dev wire is
-// rewired to record at the SDK-handler level (post-SDK-migration TODO).
-// ==========================================================================
-
-impl WireRecordingBackend {
-    pub fn create_virtualizer(
-        &mut self,
-        callbacks: runtime_core::VirtualizerCallbacks<NodeId>,
-        overscan: f32,
-        layout: runtime_core::VirtualLayout,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> NodeId {
-        // Eagerly snapshot the current data set: count + keys +
-        // initial sizes. The wire ships these so the app's
-        // virtualizer can stand up its scroll math and visible-window
-        // tracking. Items themselves mount lazily via
-        // `VirtualizerMountItem` reverse-channel events.
-        let count = (callbacks.item_count)();
-        let keys: Vec<u64> = (0..count).map(|i| (callbacks.item_key)(i)).collect();
-        let sizes: Vec<f32> = (0..count).map(|i| (callbacks.item_size)(i)).collect();
-        let measured = callbacks.measure_sizes;
-
-        let mut state = self.inner.borrow_mut();
-        let id = Self::mint_node(&mut state);
-        let wire_a11y = state.wire_a11y(a11y);
-        state.emit(Command::CreateVirtualizer {
-            id,
-            overscan,
-            layout: wire_virtual_layout(layout),
-            initial_size: wire::WireItemSize { measured, sizes },
-            initial_keys: keys,
-            a11y: wire_a11y,
-        });
-        // Note: callbacks aren't stored on the recorder side yet.
-        // Lazy mount-on-demand is the natural next step:
-        //   - Stash `callbacks` in a `HashMap<NodeId, _>` similar to
-        //     navigators.
-        //   - Add `handle_virtualizer_mount_item(node, index)` on the
-        //     recorder, mirroring `handle_screen_released`.
-        //   - Inside it: `let (n, scope) = (callbacks.mount_item)(idx)`,
-        //     emit `VirtualizerAttachItem { node, index, child: n,
-        //     scope: ScopeId(scope) }`.
-        // Deferred so the comprehensive nav/link/overlay/graphics
-        // work ships first.
-        let _ = callbacks; // suppress unused
-        id
-    }
-
-    pub fn virtualizer_data_changed(&mut self, node: &NodeId) {
-        // Re-snapshot count for now — keys/sizes refresh in a follow-up
-        // alongside mount-on-demand wiring above.
-        self.inner.borrow_mut().emit(Command::VirtualizerDataChanged {
-            node: *node,
-            item_count: 0,
-        });
-    }
-
-}

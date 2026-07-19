@@ -1,38 +1,36 @@
-//! Persistent shell: sidebar (web) / drawer (mobile) with route
-//! links, plus page-level helpers used by every page.
+//! Persistent shell: the `AppShell` sidebar panel (pinned on wide
+//! viewports, off-canvas drawer below them), the mobile header, plus
+//! page-level helpers used by every page.
 //!
-//! The drawer navigator handles per-platform behavior automatically
-//! — on web the sidebar pins beside the body, on mobile the same
-//! content slides in as a drawer.
+//! The sidebar builds ONCE into the AppShell panel and survives every
+//! navigation; each link reads the navigator's reactive `active_route`
+//! inside its style closure, so the active highlight updates without
+//! rebuilding the tree.
 
 use std::rc::Rc;
 
-use runtime_core::{component, ui, Element, SafeAreaSides, Signal, StyleApplication};
-use drawer_navigator::DrawerSlotProps;
+use runtime_core::{
+    component, pressable, text, ui, Element, IntoElement, SafeAreaSides, Signal,
+    StyleApplication,
+};
 use idea_ui::{Typography, Card, dark_theme, Divider, light_theme, set_idea_theme, Stack, Switch, StackGap, StackPadding};
 
 use crate::routes::SECTIONS;
 use crate::styles::{
-    CodeBlockSheet, CodeBlockText, Content, NavLinkBox, NavLinkText, PageRoot, Sidebar,
-    SidebarHeader, SidebarSection, SidebarSectionLabel,
+    CodeBlockSheet, CodeBlockText, MobileHeader, MobileHeaderButton, MobileHeaderTitle,
+    MobileHeaderTitleWrap, NavLinkBox, NavLinkText, Sidebar, SidebarHeader, SidebarSection,
+    SidebarSectionLabel,
 };
 
 // =============================================================================
-// Drawer content — the side panel itself. The framework hands this
-// to the web layout (via `LayoutProps::sidebar`) on web; native
-// backends render it as the drawer panel directly.
+// Sidebar — the AppShell panel content. Built exactly once; the same
+// nodes serve both the pinned column and the off-canvas drawer.
 // =============================================================================
 
-pub fn content_builder(
-    is_dark: Signal<bool>,
-) -> impl Fn(DrawerSlotProps) -> Element + 'static {
-    move |props: DrawerSlotProps| {
-        let active_route = props.active_route;
-        drawer_content(active_route, is_dark)
-    }
-}
-
-fn drawer_content(active_route: Signal<&'static str>, is_dark: Signal<bool>) -> Element {
+/// Build the persistent sidebar. `active_route` is the navigator's
+/// reactive route mirror (from `SwapContext`); `is_dark` is the
+/// app-level theme flag the dark-mode toggle drives.
+pub fn sidebar(active_route: Signal<&'static str>, is_dark: Signal<bool>) -> Element {
     let container_style = Sidebar();
     let header_style = SidebarHeader();
 
@@ -46,24 +44,107 @@ fn drawer_content(active_route: Signal<&'static str>, is_dark: Signal<bool>) -> 
         },
     ];
 
-    let mut children: Vec<Element> = Vec::new();
-    children.push(ui! { view(style = header_style) { header_children } });
-
-    for s in SECTIONS {
-        children.push(sidebar_section(s, active_route));
-    }
-
-    children.push(ui! { Divider() });
-    children.push(theme_toggle(is_dark));
-
     // ScrollView so the panel scrolls when content exceeds height
     // (long nav, small screen). `.safe_area(ALL)` keeps the brand
     // out of the status bar and the theme toggle out of the home
     // indicator — backends call `set_safe_area_insets(...)`; the
     // padding reactively tracks orientation changes and pin/unpin.
     ui! {
-        scroll_view(style = container_style) { children }
+        scroll_view(style = container_style) {
+            view(style = header_style) { header_children }
+            for s in SECTIONS {
+                sidebar_section(s, active_route)
+            }
+            Divider()
+            theme_toggle(is_dark)
+        }
             .safe_area(SafeAreaSides::ALL)
+    }
+}
+
+// =============================================================================
+// Swap-layout chrome helpers — the `ui!` call sites live in `lib.rs`.
+// =============================================================================
+
+/// Header-over-outlet column for the swap layout in `app()`.
+pub fn shell_column_style() -> runtime_core::StyleApplication {
+    static KEY: u8 = 0;
+    let sheet = runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
+        std::rc::Rc::new(runtime_core::StyleSheet::r#static(runtime_core::StyleRules {
+            flex_direction: Some(runtime_core::FlexDirection::Column),
+            width: Some(runtime_core::Length::Percent(100.0).into()),
+            height: Some(runtime_core::Length::Percent(100.0).into()),
+            min_height: Some(runtime_core::Length::Px(0.0).into()),
+            ..Default::default()
+        }))
+    });
+    runtime_core::StyleApplication::new(sheet)
+}
+
+/// The outlet's growing wrapper: absorbs the column's remaining height
+/// so screens (whose own `scroll_view`s need a bounded box) fill below
+/// the mobile header.
+pub fn outlet_grow_style() -> runtime_core::StyleApplication {
+    static KEY: u8 = 0;
+    let sheet = runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
+        std::rc::Rc::new(runtime_core::StyleSheet::r#static(runtime_core::StyleRules {
+            flex_direction: Some(runtime_core::FlexDirection::Column),
+            flex_grow: Some(1.0f32.into()),
+            min_height: Some(runtime_core::Length::Px(0.0).into()),
+            ..Default::default()
+        }))
+    });
+    runtime_core::StyleApplication::new(sheet)
+}
+
+/// The active screen's sidebar label — drives the mobile header's
+/// reactive title (the per-screen `.title(...)` chrome is gone with
+/// the outlet model). Falls back to the route name for any route
+/// missing from `SECTIONS`.
+fn label_for_route(route_name: &'static str) -> &'static str {
+    for s in SECTIONS {
+        for entry in s.items {
+            if entry.name == route_name {
+                return entry.label;
+            }
+        }
+    }
+    route_name
+}
+
+/// Mobile-style top bar — hamburger on the left, the active page's
+/// label leading-aligned. Mounts ONCE in the swap layout column and
+/// survives every screen swap. Rendered unconditionally; the
+/// `MobileHeader` sheet's `breakpoint lg` overlay collapses it to zero
+/// height at pinned widths (the hamburger is the only way to open the
+/// drawer once the sidebar overlays itself, so the bar must appear at
+/// exactly the width where the AppShell sidebar collapses).
+pub fn mobile_header(
+    active_route: Signal<&'static str>,
+    drawer_open: Signal<bool>,
+) -> Element {
+    let header_style = MobileHeader();
+    let title_wrap_style = MobileHeaderTitleWrap();
+    let title_style = move || StyleApplication::new(MobileHeaderTitle::sheet());
+    let button_style = move || StyleApplication::new(MobileHeaderButton::sheet());
+
+    // --- menu button (leading) ---
+    let menu_icon: Element = ui! { text(style = button_style) { "\u{2630}" } };
+    let menu_button = pressable(vec![menu_icon], move || drawer_open.set(true))
+        .into_element();
+
+    // --- title — reactive on the navigator's active_route ---
+    let title_source = move || label_for_route(active_route.get()).to_string();
+    let title_view: Element = text(title_source).with_style(title_style).into_element();
+    let title_node = ui! {
+        view(style = title_wrap_style) { title_view }
+    };
+
+    ui! {
+        view(style = header_style) {
+            menu_button
+            title_node
+        }
     }
 }
 

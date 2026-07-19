@@ -18,16 +18,19 @@
 //!   and the `NavigatorHandler<B>` trait SDKs implement per backend.
 //! - `registry` — `NavigatorRegistry<B>` keyed by presentation TypeId.
 
-pub mod chrome;
 pub mod host;
 pub mod registry;
 pub mod scroll;
 pub mod shared;
+pub mod url_sync;
 
-pub use chrome::{ambient_drawer, DrawerChrome};
 pub use host::{NavigatorHandler, NavigatorHost};
 pub use registry::{NavigatorHandlerFactory, NavigatorRegistry, RegisterNavigator};
 pub use scroll::{ambient_scroll_context, ScrollContext};
+pub use url_sync::{
+    handle_popstate, install_url_provider, reset_url_sync_for_tests, url_provider_installed,
+    UrlProvider,
+};
 pub use shared::{
     ambient_navigator, capture_ambient_nav_context, current_nav_base, current_screen_route,
     consumed_prefix, current_screen_state, enable_route_collector, join_path, match_pattern,

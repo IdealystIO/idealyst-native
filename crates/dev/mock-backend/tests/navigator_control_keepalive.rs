@@ -30,12 +30,10 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use drawer_navigator::{
-    DrawerBuilder, DrawerHandle, DrawerNavigator, DrawerPresentation, DrawerScreenExt,
-};
 use mock_backend::MockBackend;
 use runtime_core::primitives::navigator::{NavigatorHandler, NavigatorHost, Screen};
 use runtime_core::{text, view, Backend, Ref, Route, Signal};
+use swap_navigator::{SwapBuilder, SwapHandle, SwapNavigator, SwapPresentation};
 
 const HOME: Route<()> = Route::<()>::new("home", "/");
 
@@ -79,24 +77,21 @@ fn reactive_nav_state_survives_handler_dropping_host() {
     let mut mock = MockBackend::new();
     {
         let cell = active_route_out.clone();
-        mock.register_navigator::<DrawerPresentation, _>(move || {
+        mock.register_navigator::<SwapPresentation, _>(move || {
             Box::new(DropHostHandler { active_route_out: cell.clone() })
         });
     }
 
-    let nav: Ref<DrawerHandle> = Ref::new();
+    let nav: Ref<SwapHandle> = Ref::new();
     let backend = Rc::new(RefCell::new(mock));
     // Hold the owner so the mounted root scope (and the navigator keepalive
     // effect anchored in it) stays alive while we read `active_route`.
     let _owner = {
         let nav = nav.clone();
         runtime_core::mount(backend, move || {
-            DrawerNavigator::new(&HOME)
-                .sidebar(view(vec![text("SIDEBAR").into()]).into())
-                .screen(HOME, |_| {
-                    Screen::new(view(vec![text("HOME").into()])).title("Home")
-                })
-                .drawer_width(280.0)
+            SwapNavigator::new(&HOME)
+                .screen(HOME, |_| Screen::new(view(vec![text("HOME").into()])))
+                .layout(|nav| view(vec![nav.outlet]).into())
                 .bind(nav.clone())
                 .into()
         })

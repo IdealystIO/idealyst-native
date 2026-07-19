@@ -409,19 +409,34 @@ pub(super) fn build<B: Backend + 'static>(
             backend.borrow_mut().clear_children(&parent);
         })
     };
+    let get_node_scroll: Rc<dyn Fn(B::Node) -> (f32, f32)> = {
+        let backend = backend.clone();
+        Rc::new(move |node| backend.borrow().node_scroll(&node))
+    };
+    let set_node_scroll: Rc<dyn Fn(B::Node, f32, f32)> = {
+        let backend = backend.clone();
+        Rc::new(move |node, x, y| {
+            backend.borrow_mut().set_node_scroll(&node, x, y);
+        })
+    };
 
     // Build an author `.layout(|nav| …)` tree, capturing the node of the
     // `NavigatorOutlet` the author splatted so the SDK handler can address
     // it for screen swaps. Mirrors `build_node_scoped` (retained chrome
     // scope + ambient-nav publish) but wraps the build in an
     // `OutletCaptureGuard` — the outlet's dispatch arm writes its node into
-    // the guard's cell.
-    let build_layout_with_outlet: Rc<dyn Fn(Element) -> (B::Node, Option<B::Node>)> = {
+    // the guard's cell. Takes the layout PRODUCER so the author closure
+    // itself runs inside the chrome scope — `effect!` in author chrome is
+    // owned by the navigator (freed at teardown) instead of panicking
+    // "no active reactive scope".
+    let build_layout_with_outlet: Rc<
+        dyn Fn(Box<dyn FnOnce() -> Element>) -> (B::Node, Option<B::Node>),
+    > = {
         let backend = backend.clone();
         let scopes_slot = nav_chrome_scopes.clone();
         let chrome_identity = crate::Identity::node(nav_identity, 2, None, None);
         let control_for_chrome = control.clone();
-        Rc::new(move |layout_elem| {
+        Rc::new(move |make_layout: Box<dyn FnOnce() -> Element>| {
             let mut scope = Box::new(reactive::Scope::new());
             let guard = super::OutletCaptureGuard::<B::Node>::push();
             let root = reactive::with_scope(&mut scope, || {
@@ -429,6 +444,7 @@ pub(super) fn build<B: Backend + 'static>(
                     let _nav_guard = primitives::navigator::AmbientNavGuard::push(
                         control_for_chrome.clone(),
                     );
+                    let layout_elem = make_layout();
                     super::build(&backend, 0, layout_elem)
                 })
             });
@@ -437,6 +453,19 @@ pub(super) fn build<B: Backend + 'static>(
             (root, outlet)
         })
     };
+
+    // Park the URL-sync context on the control (kind-agnostic, inert):
+    // an outlet-model handler opts in via `control.enable_url_sync()` in
+    // its `init`, activating substrate pushState/popstate mirroring.
+    // Legacy class-based handlers never opt in (they own their URL work).
+    {
+        control.set_url_sync_context(primitives::navigator::url_sync::UrlSyncContext {
+            resolve_entry: resolve_entry.clone(),
+            nav_state: nav_state.clone(),
+            base: my_base.clone(),
+            initial_full_path: join_path(&my_base, initial_path),
+        });
+    }
 
     let host = NavigatorHost {
         initial_route: initial,
@@ -458,6 +487,8 @@ pub(super) fn build<B: Backend + 'static>(
         build_in_screen,
         insert_node,
         clear_children,
+        get_node_scroll,
+        set_node_scroll,
         build_layout_with_outlet,
         screen_style_overlay,
     };
@@ -595,6 +626,38 @@ pub(super) fn build<B: Backend + 'static>(
         let _ = &_screen_scopes_keepalive;
         let _ = &_control_keepalive;
     });
+
+    // Framework-owned handler teardown, symmetric with the keepalive
+    // above: when the navigator's owning scope drops (unmount, or the
+    // parent screen hosting a NESTED navigator is released), tell the
+    // backend to release its per-node handler entry. Nothing else ever
+    // calls `release_navigator` — without this, the handler's shared
+    // state holds `mount_screen`-closure clones that capture the backend
+    // `Rc`, closing a backend→handler→closure→backend cycle that keeps
+    // released screens' scopes registered in the reactive arena until
+    // process/thread death, where their teardown runs inside TLS
+    // destruction and aborts ("cannot access a TLS value during
+    // destruction"). Regression: mock-backend
+    // `nested_stack_in_swap_teardown_without_url_sync`.
+    //
+    // `try_borrow_mut` + microtask fallback: a scope drop can cascade
+    // from paths that already hold the backend borrow (a release inside
+    // a build/dispatch window); deferring the release one microtask is
+    // safe — the handler entry is keyed by node and idempotent to
+    // remove.
+    {
+        let backend = backend.clone();
+        let node_for_release = node.clone();
+        reactive::on_cleanup(move || match backend.try_borrow_mut() {
+            Ok(mut b) => b.release_navigator(&node_for_release),
+            Err(_) => {
+                let backend = backend.clone();
+                crate::schedule_microtask(move || {
+                    backend.borrow_mut().release_navigator(&node_for_release);
+                });
+            }
+        });
+    }
 
     node
 }

@@ -60,7 +60,6 @@ use std::any::Any;
 use std::rc::Rc;
 
 mod stack;
-mod tab_drawer;
 
 // =============================================================================
 // Local callback bundle types — paralleling web-navigator-helpers.
@@ -86,52 +85,10 @@ pub struct AndroidNavCallbacks {
     pub defer_initial_mount: bool,
 }
 
-/// Tab-navigator-specific callbacks.
-pub struct AndroidTabCallbacks {
-    pub navigator: AndroidNavCallbacks,
-    pub tabs: Vec<TabRegistration>,
-    pub placement: TabPlacement,
-    pub mount_policy: MountPolicy,
-    pub active_changed: Rc<dyn Fn(&'static str, String)>,
-}
-
-/// Drawer-navigator-specific callbacks.
-pub struct AndroidDrawerCallbacks {
-    pub navigator: AndroidNavCallbacks,
-    pub side: DrawerSide,
-    pub drawer_type: DrawerType,
-    pub drawer_width: f32,
-    pub swipe_to_open: bool,
-    pub mount_policy: MountPolicy,
-    pub is_open: Signal<bool>,
-    pub active_changed: Rc<dyn Fn(&'static str, String)>,
-    pub open_changed: Rc<dyn Fn(bool)>,
-}
-
 // =============================================================================
 // Local kind-specific enums + structs — moved out of runtime-core into the
 // helpers crate (SDK-side concepts after the substrate refactor).
 // =============================================================================
-
-/// Identifier + display metadata for a single tab. Mostly opaque to the
-/// helper itself — the active-screen view-swap engine doesn't render
-/// tab chrome (authors build their own bar via the layout slot).
-pub struct TabRegistration {
-    pub route: &'static str,
-    pub path: &'static str,
-    pub label: Option<String>,
-    pub icon: Option<String>,
-}
-
-/// Where the tab bar lives relative to the screen content. Currently
-/// informational on Android — author chrome owns positioning.
-#[derive(Clone, Copy, Debug)]
-pub enum TabPlacement {
-    Auto,
-    Top,
-    Bottom,
-    Sidebar,
-}
 
 /// When to materialize a screen's subtree relative to navigation.
 #[derive(Clone, Copy, Debug)]
@@ -139,31 +96,6 @@ pub enum MountPolicy {
     EagerPersistent,
     LazyPersistent,
     LazyDisposing,
-}
-
-/// Which side of the screen the drawer slides in from.
-#[derive(Clone, Copy, Debug)]
-pub enum DrawerSide {
-    Start,
-    End,
-}
-
-/// Visual presentation style for the drawer chrome.
-#[derive(Clone, Copy, Debug)]
-pub enum DrawerType {
-    Front,
-    Slide,
-}
-
-/// Drawer-specific commands ridden across the substrate's
-/// `NavCommand::Custom` channel. The drawer SDK builds one of these
-/// inside an `Rc<dyn Any>`, dispatches it, and the helper's dispatcher
-/// downcasts to drive the native open/close/toggle action.
-#[derive(Clone, Copy, Debug)]
-pub enum DrawerCmd {
-    Open,
-    Close,
-    Toggle,
 }
 
 // =============================================================================
@@ -238,37 +170,14 @@ pub fn create_stack(
     stack::create(backend, callbacks, control)
 }
 
-/// Tab navigator entry point. Same posture as [`create_stack`] but
-/// builds a plain `FrameLayout` (no FragmentManager) for view-swap on
-/// `Select`.
-pub fn create_tab(
-    backend: &mut AndroidBackend,
-    callbacks: AndroidTabCallbacks,
-    control: Rc<NavigatorControl>,
-) -> GlobalRef {
-    tab_drawer::create_tab(backend, callbacks, control)
-}
-
-/// Drawer navigator entry point. Builds a `RustExactFrameLayout`
-/// wrapping a `RustDrawerLayout` with a body `LinearLayout` for the
-/// active screen + Toolbar. The sidebar is attached separately by the
-/// SDK handler via [`drawer_attach_sidebar`] after the SDK
-/// materializes it through `host.build_node`.
-pub fn create_drawer(
-    backend: &mut AndroidBackend,
-    callbacks: AndroidDrawerCallbacks,
-    control: Rc<NavigatorControl>,
-) -> GlobalRef {
-    tab_drawer::create_drawer(backend, callbacks, control)
-}
-
 /// Mount the framework-built initial screen into a freshly-created
 /// navigator. The SDK handler calls this from
 /// `NavigatorHandler::attach_initial` after translating its typed
 /// options to [`AndroidScreenOptions`].
 ///
-/// Works for all three kinds — the helpers crate dispatches based on
-/// which thread-local registry holds the node.
+/// Stack-only since the tab/drawer engines were removed with the
+/// legacy SDKs (the outlet model renders their chrome as author
+/// layout).
 pub fn attach_initial(
     navigator: &GlobalRef,
     screen: GlobalRef,
@@ -279,30 +188,13 @@ pub fn attach_initial(
     // Absent / `Some(true)` ⇒ back works normally.
     let back_locked = options.back_enabled.map(|enabled| !enabled).unwrap_or(false);
     let fullscreen = options.fullscreen.unwrap_or(false);
-    if stack::attach_initial(navigator, &screen, scope_id, back_locked, fullscreen) {
-        return;
-    }
-    tab_drawer::attach_initial(navigator, screen, scope_id, options);
+    let _ = stack::attach_initial(navigator, &screen, scope_id, back_locked, fullscreen);
 }
 
 /// Tear down a navigator: release every still-mounted screen scope,
-/// drop the instance entry, free any leaked listener boxes. Works for
-/// all three kinds via the same registry-dispatch as
-/// [`attach_initial`].
+/// drop the instance entry, free any leaked listener boxes.
 pub fn release(node: &GlobalRef) {
-    if stack::release(node) {
-        return;
-    }
-    tab_drawer::release(node);
-}
-
-/// Attach a freshly-built sidebar view to a drawer navigator. Called
-/// by the drawer SDK handler after `host.build_node` (deferred via
-/// microtask) materializes the sidebar Element into a `GlobalRef`.
-///
-/// No-op on tab and stack navigators.
-pub fn drawer_attach_sidebar(navigator: &GlobalRef, sidebar: GlobalRef) {
-    tab_drawer::attach_sidebar(navigator, sidebar);
+    let _ = stack::release(node);
 }
 
 /// Build a `NavigatorHandle` for the navigator identified by `node`.
@@ -313,47 +205,7 @@ pub fn make_handle(node: &GlobalRef) -> NavigatorHandle {
     if let Some(handle) = stack::make_handle(node) {
         return handle;
     }
-    if let Some(handle) = tab_drawer::make_handle(node) {
-        return handle;
-    }
     NavigatorHandle::new(Rc::new(()), &NOOP_OPS)
-}
-
-/// Apply a navigator header-slot style. The SDK handler routes its
-/// `apply_slot_style("header", ...)` call here. No-op when `node`
-/// isn't a registered navigator or the slot isn't supported on the
-/// active kind.
-pub fn apply_header_style(
-    node: &GlobalRef,
-    rules: &Rc<runtime_core::StyleRules>,
-) {
-    tab_drawer::apply_header_style(node, rules);
-}
-
-/// Apply a navigator title-slot style. Currently honors `rules.color`.
-pub fn apply_title_style(
-    node: &GlobalRef,
-    rules: &Rc<runtime_core::StyleRules>,
-) {
-    tab_drawer::apply_title_style(node, rules);
-}
-
-/// Apply a navigator button-slot style. Tints the Toolbar's nav-icon
-/// from `rules.color`.
-pub fn apply_button_style(
-    node: &GlobalRef,
-    rules: &Rc<runtime_core::StyleRules>,
-) {
-    tab_drawer::apply_button_style(node, rules);
-}
-
-/// Apply a navigator body-slot style — paints the active-screen
-/// container's background.
-pub fn apply_body_style(
-    node: &GlobalRef,
-    rules: &Rc<runtime_core::StyleRules>,
-) {
-    tab_drawer::apply_body_style(node, rules);
 }
 
 // =============================================================================

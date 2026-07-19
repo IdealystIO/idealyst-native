@@ -138,6 +138,11 @@ fn reactive_secure_effect_is_freed_on_owner_drop() {
     let value = signal(String::new());
     let visible: Signal<bool> = signal(false);
 
+    // Warm the thread-lifetime reactive globals (the theme-cohort
+    // driver's `current_breakpoint()` memo) before the baseline —
+    // same rationale as `icon_reactive_data.rs`.
+    let _ = runtime_core::current_breakpoint().get();
+
     let effects_baseline = arena_stats().effects_in_use;
 
     let tree = text_input(value, |_| {})

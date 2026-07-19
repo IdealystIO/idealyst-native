@@ -9,12 +9,14 @@
 //! the pinned column), each run re-firing its resource fetches.
 //!
 //! `AppShell` builds everything exactly once. The sidebar lives in a single
-//! always-mounted panel; "pinned vs drawer" is purely reactive styling on
-//! that panel (and its scrim + the content offset), driven by
-//! [`current_breakpoint`]. Crossing the breakpoint never remounts anything,
-//! so sidebar state and in-flight work survive resizes — and the main
-//! content (where you splat `{nav.outlet}`) never moves, which is exactly
-//! the stable-outlet pattern the one-shot outlet requires.
+//! always-mounted panel; "pinned vs drawer" is STATIC breakpoint styling —
+//! `__bp_*` overlays that compile to real `@media (min-width: …)` rules on
+//! web and SSR, so a server-rendered page is viewport-correct on first
+//! paint with no JS, and a live resize re-pins with zero Rust work. Only
+//! the drawer's `is_open` is reactive. Crossing the breakpoint never
+//! remounts anything, so sidebar state and in-flight work survive resizes
+//! — and the main content (where you splat `{nav.outlet}`) never moves,
+//! which is exactly the stable-outlet pattern the one-shot outlet requires.
 //!
 //! ```ignore
 //! SwapNavigator::new(&HOME)
@@ -34,8 +36,8 @@
 use idea_ui::{Surface, SurfaceColor};
 use runtime_core::{
     component, current_breakpoint, pressable, ui, Breakpoint, ChildList, Color, Easing, Element,
-    IdealystSchema, Length, PointerEvents, Position, Reactive, Signal, StyleApplication,
-    StyleRules, StyleSheet, Tokenized, Transform, Transition,
+    FlexDirection, IdealystSchema, Length, PointerEvents, Position, Reactive, Signal,
+    StyleApplication, StyleRules, StyleSheet, Tokenized, Transform, Transition,
 };
 use std::rc::Rc;
 
@@ -99,7 +101,8 @@ impl Default for AppShellProps {
 
 /// Renders the shell: main content, a tap-to-close scrim, and ONE sidebar
 /// panel — pinned in view at/above `pin_at`, an off-canvas drawer below it.
-/// All three are always mounted; responsiveness is reactive styling only.
+/// All three are always mounted; pinning is static breakpoint styling
+/// (`@media` on web/SSR), only the drawer's `is_open` is reactive.
 #[component(children)]
 pub fn AppShell(props: AppShellProps) -> Element {
     let is_open = props.is_open;
@@ -107,6 +110,28 @@ pub fn AppShell(props: AppShellProps) -> Element {
     let width = props.width.get();
     let content = props.children;
     let sidebar = props.sidebar;
+
+    // The pin threshold as a breakpoint-overlay axis. Pinning is STATIC
+    // breakpoint styling (not a reactive `current_breakpoint()` read):
+    // on web + SSR the overlays compile to real `@media (min-width: …)`
+    // rules, so a server-rendered page is viewport-correct on first
+    // paint with no JS — and a live resize re-pins with no Rust work.
+    // Only the drawer's `is_open` stays reactive. `Xs` has no overlay
+    // axis (mobile-first base IS the xs layout); treat it as "always
+    // pinned" by overlaying at every width via the base itself.
+    let pin_axis: Option<&'static str> = pin_at.axis_name();
+
+    // Sheets are cached per (width, pin axis) — the width is baked into
+    // rule values, so each distinct width mints its own sheet key. The
+    // key packs the width bits with the axis discriminant.
+    fn cache_key(width: f32, pin_axis: Option<&'static str>, which: u8) -> usize {
+        let mut k = width.to_bits() as usize;
+        k = k.wrapping_mul(31).wrapping_add(match pin_axis {
+            None => 0,
+            Some(a) => a.as_ptr() as usize,
+        });
+        k.wrapping_mul(31).wrapping_add(which as usize)
+    }
 
     let container_style = {
         move || {
@@ -119,70 +144,108 @@ pub fn AppShell(props: AppShellProps) -> Element {
         }
     };
 
-    // Main content: fills the shell, offset by the sidebar width while
-    // pinned. The offset is a margin (the panel itself stays absolute in
-    // BOTH modes) so pin/unpin never reflows the panel subtree — only this
-    // wrapper's margin animates.
-    let content_style = {
+    // Main content: fills the shell; the pinned-sidebar offset is a
+    // margin applied by the breakpoint overlay (the panel itself stays
+    // absolute in BOTH modes, so pin/unpin never reflows the panel
+    // subtree — only this wrapper's margin animates).
+    let content_sheet = runtime_core::cached_stylesheet(
+        cache_key(width, pin_axis, 0),
         move || {
-            let pinned = sidebar_pinned(pin_at);
-            let key = if pinned { "app_shell_content_pinned" } else { "app_shell_content" };
-            StyleApplication::new(base_sheet()).with_computed(key, move || StyleRules {
+            let mut sheet = StyleSheet::r#static(StyleRules {
                 height: Some(Length::Percent(100.0).into()),
                 min_height: Some(Length::Px(0.0).into()),
                 min_width: Some(Length::Px(0.0).into()),
-                margin_left: Some(Length::Px(if pinned { width } else { 0.0 }).into()),
+                margin_left: Some(Length::Px(if pin_axis.is_none() { width } else { 0.0 }).into()),
                 margin_left_transition: Some(Transition::new(SLIDE_MS, Easing::EaseOut)),
                 ..Default::default()
-            })
-        }
-    };
+            });
+            if let Some(axis) = pin_axis {
+                sheet = sheet.variant(axis, "on", move |_| StyleRules {
+                    margin_left: Some(Length::Px(width).into()),
+                    ..Default::default()
+                });
+            }
+            Rc::new(sheet)
+        },
+    );
+    let content_style = StyleApplication::new(content_sheet);
 
-    // Scrim: active only as a drawer (unpinned + open); inert and
-    // click-through otherwise.
+    // Scrim: reactive on `is_open` only; the pinned overlay forces it
+    // inert at every width past the threshold (nothing to dismiss).
+    let scrim_sheet = |open: bool, width: f32, pin_axis: Option<&'static str>| {
+        runtime_core::cached_stylesheet(
+            cache_key(width, pin_axis, if open { 1 } else { 2 }),
+            move || {
+                let mut sheet = StyleSheet::r#static(StyleRules {
+                    position: Some(Position::Absolute),
+                    top: Some(Length::Px(0.0).into()),
+                    left: Some(Length::Px(0.0).into()),
+                    right: Some(Length::Px(0.0).into()),
+                    bottom: Some(Length::Px(0.0).into()),
+                    background: Some(Tokenized::Literal(Color("#000000".into()))),
+                    opacity: Some(Tokenized::Literal(if open { 0.45 } else { 0.0 })),
+                    pointer_events: Some(if open { PointerEvents::Auto } else { PointerEvents::None }),
+                    opacity_transition: Some(Transition::new(SLIDE_MS, Easing::EaseOut)),
+                    ..Default::default()
+                });
+                if let Some(axis) = pin_axis {
+                    sheet = sheet.variant(axis, "on", |_| StyleRules {
+                        opacity: Some(Tokenized::Literal(0.0)),
+                        pointer_events: Some(PointerEvents::None),
+                        ..Default::default()
+                    });
+                }
+                Rc::new(sheet)
+            },
+        )
+    };
     let scrim_style = {
-        move || {
-            let dimming = is_open.get() && !sidebar_pinned(pin_at);
-            let key = if dimming { "app_shell_scrim_on" } else { "app_shell_scrim_off" };
-            StyleApplication::new(base_sheet()).with_computed(key, move || StyleRules {
-                position: Some(Position::Absolute),
-                top: Some(Length::Px(0.0).into()),
-                left: Some(Length::Px(0.0).into()),
-                right: Some(Length::Px(0.0).into()),
-                bottom: Some(Length::Px(0.0).into()),
-                background: Some(Tokenized::Literal(Color("#000000".into()))),
-                opacity: Some(Tokenized::Literal(if dimming { 0.45 } else { 0.0 })),
-                pointer_events: Some(if dimming { PointerEvents::Auto } else { PointerEvents::None }),
-                opacity_transition: Some(Transition::new(SLIDE_MS, Easing::EaseOut)),
-                ..Default::default()
-            })
-        }
+        move || StyleApplication::new(scrim_sheet(is_open.get(), width, pin_axis))
     };
 
-    // Panel: always absolute on the leading edge; pinned just means
-    // permanently slid in. Keeping ONE positioning mode (rather than
-    // toggling in-flow/absolute) is what makes pin/unpin a pure style flip
-    // with no remount, and — with no z-index in StyleRules — the panel must
-    // stay the LAST sibling to paint above the scrim.
+    // Panel: always absolute on the leading edge; the pinned overlay
+    // slides it permanently in. Keeping ONE positioning mode (rather
+    // than toggling in-flow/absolute) is what makes pin/unpin a pure
+    // style flip with no remount, and — with no z-index in StyleRules —
+    // the panel must stay the LAST sibling to paint above the scrim.
+    let panel_sheet = |open: bool, width: f32, pin_axis: Option<&'static str>| {
+        runtime_core::cached_stylesheet(
+            cache_key(width, pin_axis, if open { 3 } else { 4 }),
+            move || {
+                let mut sheet = StyleSheet::r#static(StyleRules {
+                    position: Some(Position::Absolute),
+                    top: Some(Length::Px(0.0).into()),
+                    bottom: Some(Length::Px(0.0).into()),
+                    left: Some(Length::Px(0.0).into()),
+                    width: Some(Length::Px(width).into()),
+                    // Explicit flex container: the web backend emits
+                    // `display: flex` only when a flex-container property
+                    // is present, and without it the inner `Surface(grow
+                    // = 1)` has no flex context — it sizes to content and
+                    // overflows the panel's bounded height, so an author
+                    // sidebar `scroll_view` never clamps and can't
+                    // scroll.
+                    flex_direction: Some(FlexDirection::Column),
+                    transform: Some(vec![Transform::TranslateX(Length::Px(if open {
+                        0.0
+                    } else {
+                        -width
+                    }))]),
+                    transform_transition: Some(Transition::new(SLIDE_MS, Easing::EaseOut)),
+                    ..Default::default()
+                });
+                if let Some(axis) = pin_axis {
+                    sheet = sheet.variant(axis, "on", |_| StyleRules {
+                        transform: Some(vec![Transform::TranslateX(Length::Px(0.0))]),
+                        ..Default::default()
+                    });
+                }
+                Rc::new(sheet)
+            },
+        )
+    };
     let panel_style = {
-        move || {
-            let shown = is_open.get() || sidebar_pinned(pin_at);
-            let key = if shown { "app_shell_panel_open" } else { "app_shell_panel_closed" };
-            StyleApplication::new(base_sheet()).with_computed(key, move || StyleRules {
-                position: Some(Position::Absolute),
-                top: Some(Length::Px(0.0).into()),
-                bottom: Some(Length::Px(0.0).into()),
-                left: Some(Length::Px(0.0).into()),
-                width: Some(Length::Px(width).into()),
-                transform: Some(vec![Transform::TranslateX(Length::Px(if shown {
-                    0.0
-                } else {
-                    -width
-                }))]),
-                transform_transition: Some(Transition::new(SLIDE_MS, Easing::EaseOut)),
-                ..Default::default()
-            })
-        }
+        move || StyleApplication::new(panel_sheet(is_open.get(), width, pin_axis))
     };
 
     let close = move || is_open.set(false);
@@ -233,9 +296,13 @@ pub fn AppShell(props: AppShellProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_core::{resolve_style, set_viewport_size, text, StyleSource, ViewportSize};
+    use runtime_core::{resolve_style, text, StyleSource};
 
-    fn resolve(el: &Element) -> Rc<StyleRules> {
+    /// Resolve an element's style at the MOBILE base (no breakpoint
+    /// overlay active) or with the `pin_at` overlay forced on —
+    /// simulating "at/above the pin breakpoint" without a viewport,
+    /// since pinning is static `__bp_*` overlay styling now.
+    fn resolve(el: &Element, pinned: bool) -> Rc<StyleRules> {
         let style = match el {
             Element::View { style, .. } => style.as_ref().expect("styled view"),
             Element::Pressable { style, .. } => style.as_ref().expect("styled pressable"),
@@ -243,8 +310,10 @@ mod tests {
         };
         let app = match style {
             StyleSource::Reactive(f) => f(),
-            _ => panic!("app-shell styles are reactive"),
+            StyleSource::Static(app) => app.clone(),
+            _ => panic!("unexpected style source"),
         };
+        let app = if pinned { app.with("__bp_lg", "on") } else { app };
         resolve_style(&app)
     }
 
@@ -281,50 +350,72 @@ mod tests {
             .expect("panel has a translateX")
     }
 
-    // At/above the pin breakpoint the SAME panel is permanently slid in
-    // (even with is_open=false), the scrim is inert, and the content is
-    // offset by the sidebar width — pinned mode is styling, not a remount.
+    // At/above the pin breakpoint (the `__bp_lg` overlay) the SAME panel
+    // is permanently slid in (even with is_open=false), the scrim is
+    // inert, and the content is offset by the sidebar width — pinned
+    // mode is static overlay styling, not a remount, so the SSR first
+    // paint carries BOTH layouts and `@media` picks one.
     #[test]
-    fn pinned_panel_shows_without_open_and_scrim_is_inert() {
-        set_viewport_size(ViewportSize::new(1280.0, 800.0)); // >= Lg
+    fn pinned_overlay_shows_panel_and_inerts_scrim() {
         let shell = shell(Signal::new(false));
         let (content, scrim, panel) = parts(&shell);
 
-        assert_eq!(translate_x(&resolve(panel)), 0.0, "pinned panel is in view");
+        assert_eq!(translate_x(&resolve(panel, true)), 0.0, "pinned panel is in view");
         assert_eq!(
-            resolve(scrim).pointer_events,
+            resolve(scrim, true).pointer_events,
             Some(PointerEvents::None),
             "pinned: scrim never intercepts"
         );
         assert_eq!(
-            resolve(content).margin_left,
+            resolve(content, true).margin_left,
             Some(Length::Px(280.0).into()),
             "pinned: content offset by the sidebar width"
         );
     }
 
-    // Below the pin breakpoint the same nodes behave as a drawer: panel
-    // slides with is_open, scrim dims/intercepts only while open, content
-    // is full-bleed.
+    // The panel must be an explicit flex column. The web backend emits
+    // `display: flex` only when a flex-container property is present in
+    // the rules; without one the panel renders `display: block`, the
+    // inner `Surface(grow = 1)`'s flex sizing is inert, and the sidebar
+    // chain sizes to content — overflowing the panel's bounded height so
+    // an author sidebar `scroll_view` never clamps and cannot scroll
+    // (website sidebar: nav list taller than the viewport was simply
+    // clipped, in both pinned and drawer modes).
     #[test]
-    fn unpinned_behaves_as_drawer() {
-        set_viewport_size(ViewportSize::new(400.0, 800.0)); // Xs
+    fn regression_panel_is_flex_column_so_sidebar_scrollers_clamp() {
+        let shell = shell(Signal::new(false));
+        let (_, _, panel) = parts(&shell);
+
+        for pinned in [false, true] {
+            assert_eq!(
+                resolve(panel, pinned).flex_direction,
+                Some(FlexDirection::Column),
+                "panel declares itself a flex column (pinned = {pinned})"
+            );
+        }
+    }
+
+    // The mobile-first BASE (no overlay) behaves as a drawer: panel
+    // slides with is_open, scrim dims/intercepts only while open,
+    // content is full-bleed.
+    #[test]
+    fn mobile_base_behaves_as_drawer() {
         let is_open = Signal::new(false);
         let shell = shell(is_open);
         let (content, scrim, panel) = parts(&shell);
 
-        assert_eq!(translate_x(&resolve(panel)), -280.0, "closed drawer is off-screen");
-        assert_eq!(resolve(scrim).pointer_events, Some(PointerEvents::None));
+        assert_eq!(translate_x(&resolve(panel, false)), -280.0, "closed drawer is off-screen");
+        assert_eq!(resolve(scrim, false).pointer_events, Some(PointerEvents::None));
         assert_eq!(
-            resolve(content).margin_left,
+            resolve(content, false).margin_left,
             Some(Length::Px(0.0).into()),
-            "unpinned: content is full-bleed"
+            "mobile base: content is full-bleed"
         );
 
         is_open.set(true);
-        assert_eq!(translate_x(&resolve(panel)), 0.0, "open drawer slides in");
+        assert_eq!(translate_x(&resolve(panel, false)), 0.0, "open drawer slides in");
         assert_eq!(
-            resolve(scrim).pointer_events,
+            resolve(scrim, false).pointer_events,
             Some(PointerEvents::Auto),
             "open drawer scrim intercepts (tap to close)"
         );

@@ -190,6 +190,7 @@ fn main() {{
     let mut addr = "127.0.0.1:8081".to_string();
     let mut static_only = false;
     let mut bundle_module: Option<String> = Some("/pkg/{lib}.js".to_string());
+    let mut bundle_overridden = false;
     let mut static_dir: Option<PathBuf> = None;
     let mut export_dir: Option<PathBuf> = None;
 
@@ -207,6 +208,7 @@ fn main() {{
             }}
             "--bundle" if i + 1 < argv.len() => {{
                 bundle_module = Some(argv[i + 1].clone());
+                bundle_overridden = true;
                 i += 1;
             }}
             "--static-dir" if i + 1 < argv.len() => {{
@@ -225,6 +227,20 @@ fn main() {{
             _ => {{}}
         }}
         i += 1;
+    }}
+
+    // `idealyst build --web` content-addresses the staged bundle
+    // (`pkg/<lib>.<hash>.js` — cache busting), so the unhashed default
+    // above would 404 against a production `--static-dir`. Resolve the
+    // fingerprinted entry from the served dir unless the caller pinned
+    // one with `--bundle`. A dev-shaped pkg (plain names) resolves to
+    // `None` and the default stands.
+    if !bundle_overridden {{
+        if let Some(dir) = static_dir.as_deref() {{
+            if let Some(found) = backend_ssr::resolve_bundle_module(dir, "{lib}") {{
+                bundle_module = Some(found);
+            }}
+        }}
     }}
 
     if let Some(out) = export_dir {{
@@ -354,4 +370,53 @@ fn cargo_build(wrapper_dir: &Path, release: bool, user_features: &[String]) -> R
         anyhow::bail!("cargo build failed for the SSR wrapper at {}", wrapper_dir.display());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod wrapper_template_tests {
+    //! Shape regression for the generated SSR wrapper. The wrapper is
+    //! ephemeral generated source, so drift is invisible until a user
+    //! runs it — these tests pin the load-bearing lines.
+
+    use super::*;
+
+    fn generated_main_rs() -> String {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("project");
+        let wrapper_dir = tmp.path().join("wrapper");
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(
+            project_dir.join("Cargo.toml"),
+            "[package]\nname = \"demo-app\"\nversion = \"0.0.1\"\n",
+        )
+        .unwrap();
+        let manifest = parse_manifest(&project_dir).expect("parse manifest");
+        let source = FrameworkSource::Workspace {
+            root: tmp.path().join("workspace"),
+        };
+        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest)
+            .expect("generate wrapper");
+        fs::read_to_string(wrapper_dir.join("src/main.rs")).unwrap()
+    }
+
+    /// A production bundle staged by `idealyst build --web` has a
+    /// content-hashed entry (`pkg/<lib>.<hash>.js`); the wrapper must
+    /// resolve it from `--static-dir` instead of hardcoding the
+    /// unhashed default (which would 404 → silent no-hydration).
+    #[test]
+    fn wrapper_resolves_fingerprinted_bundle_from_static_dir() {
+        let main_rs = generated_main_rs();
+        assert!(
+            main_rs.contains("backend_ssr::resolve_bundle_module(dir, \"demo_app\")"),
+            "wrapper must resolve the hashed entry for the project's lib_name:\n{main_rs}",
+        );
+        assert!(
+            main_rs.contains("if !bundle_overridden {"),
+            "an explicit --bundle must win over auto-resolution:\n{main_rs}",
+        );
+        assert!(
+            main_rs.contains("bundle_overridden = true;"),
+            "--bundle parsing must record the override:\n{main_rs}",
+        );
+    }
 }

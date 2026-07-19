@@ -20,3 +20,7 @@ tiny_http = { version = "0.12", optional = true }
 # (for their SSR handlers), so a dev-dep back on a nav SDK would create a
 # crate cycle + duplicate `backend-ssr`. Navigator render-at-path + chrome
 # tests/examples live in the SDK crates (e.g. stack-navigator/tests/ssr.rs).
+
+[dev-dependencies]
+# `resolve_bundle_module` tests build synthetic `pkg/` dirs.
+tempfile = "3"

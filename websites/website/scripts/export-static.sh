@@ -24,8 +24,9 @@
 #     CloudFront and a viewer-request function that rewrites non-asset
 #     URIs to /index.html.
 #   * The site assumes it lives at the bucket root (`<base href="/">`
-#     in index.html and absolute `/pkg/website.js` import). Subpath
-#     hosting requires editing both.
+#     in index.html and an absolute `/pkg/website.<hash>.js` import —
+#     the build stamps the content hash in). Subpath hosting requires
+#     editing both.
 
 set -euo pipefail
 
@@ -81,9 +82,11 @@ upload_gzipped() {
     --metadata-directive REPLACE
 }
 
-# Long cache for content-addressed-ish assets. wasm/js change on every
-# release; the cheap defense without true cache-busting filenames is to
-# tie cache lifetimes to the deploy cycle + invalidate CloudFront.
+# Long cache is SAFE here: `idealyst build --web` content-addresses the
+# bundle (pkg/<lib>.<hash>.js, hashed wasm + chunks) and rewrites
+# index.html to match, so a redeploy changes every pkg filename and old
+# cached entries can never be mixed with new ones. Only index.html
+# (uploaded below with no-cache) has to revalidate.
 LONG_CACHE='public, max-age=31536000, immutable'
 upload_gzipped wasm 'application/wasm'                          "$LONG_CACHE"
 upload_gzipped js   'application/javascript; charset=utf-8'     "$LONG_CACHE"

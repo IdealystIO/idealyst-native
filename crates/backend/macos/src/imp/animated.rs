@@ -56,6 +56,12 @@ pub(crate) struct AnimatedState {
     /// against the view's width on each frame.
     pub(crate) static_translate_pct_x: Option<f32>,
     pub(crate) static_translate_pct_y: Option<f32>,
+    /// True after the first `apply_static_transform` on this view.
+    /// Gates `transitions { transform: … }`: the initial apply snaps
+    /// (CSS parity — transitions fire on *changes*), later applies
+    /// animate via a CABasicAnimation (see
+    /// [`crate::transform_transition_policy`]).
+    pub(crate) static_transform_seen: bool,
 }
 
 impl AnimatedState {
@@ -73,6 +79,7 @@ impl AnimatedState {
             anim_rotate_z: 0.0,
             static_translate_pct_x: None,
             static_translate_pct_y: None,
+            static_transform_seen: false,
         }
     }
 }
@@ -100,6 +107,22 @@ pub(crate) fn apply_static_transform(
     let state = states
         .entry(key)
         .or_insert_with(|| RefCell::new(AnimatedState::new()));
+    // Snapshot for `transitions { transform: … }`: the static tuple
+    // BEFORE this apply (change detection) and the layer's CURRENT
+    // on-screen matrix (the tween's `from` — read from the
+    // presentation layer so a mid-flight reversal retargets smoothly
+    // instead of jumping). First apply snaps — CSS parity.
+    let (seen_before, old_static) = {
+        let mut s = state.borrow_mut();
+        let seen = s.static_transform_seen;
+        s.static_transform_seen = true;
+        (seen, (s.translate_x, s.translate_y, s.scale_x, s.scale_y, s.rotate_z))
+    };
+    let from_matrix = if seen_before && style.transform_transition.is_some() {
+        current_layer_transform(view)
+    } else {
+        None
+    };
     {
         let mut s = state.borrow_mut();
         s.translate_x = 0.0;
@@ -144,6 +167,76 @@ pub(crate) fn apply_static_transform(
     // percent-sized views — the layout pass calls this again with
     // real bounds via `sync_transform_after_layout`).
     rebuild_transform(view, &state.borrow());
+
+    // `transitions { transform: … }` — animate the change instead of
+    // snapping, matching web's CSS `transition: transform` (the
+    // AppShell drawer slide). `rebuild_transform` above already set
+    // the final MODEL matrix; the CABasicAnimation drives the
+    // presentation from the captured on-screen matrix to it.
+    if let (Some(t), Some(from)) = (style.transform_transition.as_ref(), from_matrix) {
+        let s = state.borrow();
+        let new_static = (s.translate_x, s.translate_y, s.scale_x, s.scale_y, s.rotate_z);
+        if crate::transform_transition_policy::should_animate_static_transform(
+            seen_before,
+            true,
+            new_static != old_static,
+        ) {
+            animate_layer_transform(view, from, t);
+        }
+    }
+}
+
+/// Read the CURRENT on-screen transform of `view`'s layer: the
+/// presentation layer's matrix while an animation is in flight
+/// (drawer reversed mid-slide), else the model value.
+fn current_layer_transform(view: &NSView) -> Option<CATransform3D> {
+    let layer: Option<Retained<NSObject>> = unsafe { msg_send_id![view, layer] };
+    let layer = layer?;
+    let pres: Option<Retained<NSObject>> = unsafe { msg_send_id![&layer, presentationLayer] };
+    let src = pres.unwrap_or(layer);
+    Some(unsafe { msg_send![&src, transform] })
+}
+
+/// Attach a `CABasicAnimation(keyPath: "transform")` running `from` →
+/// the layer's (already-set) model matrix. AppKit layer-backed views
+/// suppress implicit CALayer animations, so an explicit animation is
+/// the AppKit-native way to tween a layer transform — the macOS
+/// counterpart of iOS's `UIView animateWithDuration:` wrap and web's
+/// CSS `transition: transform`.
+fn animate_layer_transform(
+    view: &NSView,
+    from: CATransform3D,
+    transition: &runtime_core::Transition,
+) {
+    use objc2_foundation::NSString;
+    let layer: Option<Retained<NSObject>> = unsafe { msg_send_id![view, layer] };
+    let Some(layer) = layer else { return };
+
+    let keypath = NSString::from_str("transform");
+    let anim: Option<Retained<NSObject>> = unsafe {
+        msg_send_id![objc2::class!(CABasicAnimation), animationWithKeyPath: &*keypath]
+    };
+    let Some(anim) = anim else { return };
+    let from_val: Option<Retained<NSObject>> = unsafe {
+        msg_send_id![objc2::class!(NSValue), valueWithCATransform3D: from]
+    };
+    let Some(from_val) = from_val else { return };
+    let _: () = unsafe { msg_send![&anim, setFromValue: &*from_val] };
+    // `toValue` stays nil → animates to the layer's model value
+    // (the final matrix `rebuild_transform` just set).
+    let duration = transition.duration_ms as f64 / 1000.0;
+    let _: () = unsafe { msg_send![&anim, setDuration: duration] };
+    let name = NSString::from_str(
+        crate::transform_transition_policy::easing_to_ca_timing_name(transition.easing),
+    );
+    let tf: Option<Retained<NSObject>> = unsafe {
+        msg_send_id![objc2::class!(CAMediaTimingFunction), functionWithName: &*name]
+    };
+    if let Some(tf) = tf {
+        let _: () = unsafe { msg_send![&anim, setTimingFunction: &*tf] };
+    }
+    let key = NSString::from_str("idealyst-transform-transition");
+    let _: () = unsafe { msg_send![&layer, addAnimation: &*anim, forKey: &*key] };
 }
 
 /// Re-apply transforms for any view with non-identity animated

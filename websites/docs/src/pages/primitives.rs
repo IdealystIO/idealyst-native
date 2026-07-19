@@ -393,23 +393,23 @@ docs! {
     },
 
     section(heading = "Navigator") {
-        p("A stack-based navigator. Push, pop, replace, reset, with a \
-           declarative route table built up via ",
-          code("Screen(route = ..., title = ...)"),
-          " children. Backends own the platform-native stack (",
-          code("UINavigationController"), " on iOS, ", code("FragmentManager"),
-          " on Android, an inline subtree swap on web)."),
-    },
-
-    section(heading = "TabNavigator") {
-        p("A tab bar plus a switched content region. An ordered list of ",
-          code("Screen"), " entries plus a route table."),
-    },
-
-    section(heading = "DrawerNavigator") {
-        p("A slide-in side panel plus a switched body region. Can be pinned \
-           beside the body above a viewport-width breakpoint (becomes a \
-           sidebar). The docs site uses this at the top level."),
+        p(code("Element::Navigator"), " is the one navigation primitive — a \
+           registry-dispatched extension point the navigator SDKs build on. \
+           Two SDK behaviors exist: ", code("swap-navigator"),
+          " (a flat set of co-equal screens switched via ", code("Select"),
+          ") and ", code("stack-navigator"),
+          " (push/pop with depth). Both take a declarative route table via ",
+          code(".screen(route, |params| ...)"), " builders and an author ",
+          code(".layout(|nav| ...)"), " that wraps the navigator's single \
+           outlet (", code("{ nav.outlet }"), ") in whatever chrome the \
+           design calls for — a tab bar, a drawer, a header. The docs site's \
+           shell is a swap navigator inside an ", code("idea_ui_nav::AppShell"),
+          "; there is no separate tab or drawer navigator kind."),
+        p("Backends stay native where it matters: the stack mounts a real ",
+          code("UINavigationController"), " on iOS and the Fragment \
+           back-stack on Android inside its outlet (native transitions and \
+           swipe-back, native bar hidden), while web gets automatic \
+           History-API URL sync."),
     },
 
     section(heading = "Link") {
@@ -524,8 +524,9 @@ docs! {
             ["Styles — the styling system every primitive's ", code("style"),
              " slot feeds into."],
             ["Refs — programmatic handles on a primitive."],
-            ["Navigation — ", code("Navigator"), ", ", code("TabNavigator"),
-             ", ", code("DrawerNavigator"), ", ", code("Link"), "."],
+            ["Navigation — ", code("SwapNavigator"), ", ",
+             code("StackNavigator"), ", the outlet model, and ",
+             code("Link"), "."],
             ["Lists — ", code("Virtualizer"), " / ", code("flat_list"), " in depth."],
             [link("Portal & Overlays", to = "portal"), " — ",
              code("Portal"), " (the primitive), ", code("overlay()"),

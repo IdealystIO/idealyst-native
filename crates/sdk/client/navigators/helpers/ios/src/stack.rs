@@ -47,6 +47,9 @@ pub(crate) struct StackEntry {
         Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<IosNode>>,
     pub(crate) nav_state: NavState,
     pub(crate) depth_changed: Rc<dyn Fn(usize)>,
+    /// See `IosNavCallbacks::top_changed` — fired with the top screen's
+    /// scope id after every visible-screen transition.
+    pub(crate) top_changed: Option<Rc<dyn Fn(u64)>>,
 }
 
 pub(crate) struct ScreenEntry {
@@ -90,6 +93,16 @@ fn fullscreen_of(options: &dyn Any) -> bool {
         .downcast_ref::<IosScreenOptions>()
         .and_then(|o| o.fullscreen)
         .unwrap_or(false)
+}
+
+/// Fire the SDK's `top_changed` hook with the current top screen's
+/// scope id (no-op when unhooked or the stack is empty). Called at the
+/// same points as [`sync_active_screen`] so an outlet-model SDK can
+/// republish the revealed screen's author-header state.
+fn fire_top_changed(hook: &Option<Rc<dyn Fn(u64)>>, stack: &[ScreenEntry]) {
+    if let (Some(hook), Some(top)) = (hook, stack.last()) {
+        hook(top.scope_id);
+    }
 }
 
 /// Hide / show the nav-bar back chevron for one screen. UIKit's
@@ -148,6 +161,7 @@ pub(crate) struct NavigatorDelegateIvars {
     stack: Rc<RefCell<Vec<ScreenEntry>>>,
     release: Rc<dyn Fn(u64)>,
     depth_changed: Rc<dyn Fn(usize)>,
+    top_changed: Option<Rc<dyn Fn(u64)>>,
 }
 
 declare_class!(
@@ -193,6 +207,7 @@ declare_class!(
             // swipe recognizer is controller-global, so re-point it at the
             // newly-revealed top's back-lock state.
             sync_active_screen(nav, &ivars.stack.borrow());
+            fire_top_changed(&ivars.top_changed, &ivars.stack.borrow());
             (ivars.depth_changed)(visible_depth);
         }
     }
@@ -204,12 +219,14 @@ impl NavigatorDelegate {
         stack: Rc<RefCell<Vec<ScreenEntry>>>,
         release: Rc<dyn Fn(u64)>,
         depth_changed: Rc<dyn Fn(usize)>,
+        top_changed: Option<Rc<dyn Fn(u64)>>,
     ) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(NavigatorDelegateIvars {
             stack,
             release,
             depth_changed,
+            top_changed,
         });
         unsafe { msg_send_id![super(this), init] }
     }
@@ -244,6 +261,7 @@ pub(crate) fn create(
     let stack_rc: Rc<RefCell<Vec<ScreenEntry>>> = Rc::new(RefCell::new(Vec::new()));
 
     let nav_for_dispatch = nav.clone();
+    let top_for_dispatch = callbacks.top_changed.clone();
     let mount_for_dispatch = callbacks.mount_screen.clone();
     let release_for_dispatch = callbacks.release_screen.clone();
     let depth_for_dispatch = callbacks.depth_changed.clone();
@@ -254,6 +272,7 @@ pub(crate) fn create(
         stack_rc.clone(),
         callbacks.release_screen.clone(),
         callbacks.depth_changed.clone(),
+        callbacks.top_changed.clone(),
     );
     unsafe {
         let delegate_proto = ProtocolObject::from_ref(&*delegate);
@@ -269,6 +288,7 @@ pub(crate) fn create(
         mount_screen: callbacks.mount_screen.clone(),
         nav_state: callbacks.nav_state.clone(),
         depth_changed: callbacks.depth_changed.clone(),
+        top_changed: callbacks.top_changed.clone(),
     };
     let key = &*nav_view as *const UIView as usize;
     STACK_INSTANCES.with(|m| {
@@ -296,6 +316,7 @@ pub(crate) fn create(
                 set_back_chevron_hidden(&vc, !back_enabled);
                 stack.push(ScreenEntry { vc, scope_id, header_targets, back_enabled, fullscreen });
                 sync_active_screen(&nav_for_dispatch, &stack);
+                fire_top_changed(&top_for_dispatch, &stack);
                 depth_for_dispatch(stack.len());
                 schedule_layout_pass();
             }
@@ -309,6 +330,7 @@ pub(crate) fn create(
                 }
                 // Revealed the screen beneath — re-sync the swipe to it.
                 sync_active_screen(&nav_for_dispatch, &stack);
+                fire_top_changed(&top_for_dispatch, &stack);
                 depth_for_dispatch(stack.len());
                 schedule_layout_pass();
             }
@@ -329,6 +351,7 @@ pub(crate) fn create(
                 }
                 stack.push(ScreenEntry { vc, scope_id, header_targets, back_enabled, fullscreen });
                 sync_active_screen(&nav_for_dispatch, &stack);
+                fire_top_changed(&top_for_dispatch, &stack);
                 let vcs: Vec<Retained<UIViewController>> =
                     stack.iter().map(|e| e.vc.clone()).collect();
                 unsafe {
@@ -357,6 +380,7 @@ pub(crate) fn create(
                 }
                 stack.push(ScreenEntry { vc: vc.clone(), scope_id, header_targets, back_enabled, fullscreen });
                 sync_active_screen(&nav_for_dispatch, &stack);
+                fire_top_changed(&top_for_dispatch, &stack);
                 unsafe {
                     nav_for_dispatch.setViewControllers_animated(
                         &objc2_foundation::NSArray::from_vec(vec![vc]),
@@ -421,6 +445,7 @@ pub(crate) fn attach_initial(
         .borrow_mut()
         .push(ScreenEntry { vc: root_vc, scope_id, header_targets, back_enabled, fullscreen });
     sync_active_screen(&entry.controller, &entry.stack.borrow());
+    fire_top_changed(&entry.top_changed, &entry.stack.borrow());
 
     // If this was a deep link (resolved route != configured initial), insert
     // the index UNDER the detail once the walker's borrow releases.
@@ -497,6 +522,7 @@ fn reconstruct_back_stack(
     }
     // Detail is back on top after re-seating — re-sync the swipe to it.
     sync_active_screen(&entry.controller, &entry.stack.borrow());
+    fire_top_changed(&entry.top_changed, &entry.stack.borrow());
     (entry.depth_changed)(entry.stack.borrow().len());
 }
 

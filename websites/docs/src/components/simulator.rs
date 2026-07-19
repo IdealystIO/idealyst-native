@@ -182,8 +182,10 @@ pub fn Simulator(props: SimulatorProps) -> Element {
                 // pointer/wheel listeners. Returns a handle whose
                 // drop tears everything back down in the right
                 // order.
-                let build_ui = build_ui.clone();
-                match host_web::mount(surface, size, profile, skin, move || (&*build_ui)()).await {
+                // `mount` takes the `Rc<dyn Fn() -> Element>` directly
+                // now (shared with the iOS host's unmount/remount
+                // path) — no closure shim.
+                match host_web::mount(surface, size, profile, skin, build_ui.clone()).await {
                     Ok(handle) => shared::fill(&slot, handle),
                     Err(err) => {
                         web_sys::console::warn_1(

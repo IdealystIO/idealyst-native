@@ -29,11 +29,22 @@ Every backend renders **one** native node per `code_block(...)` call:
 | --- | --- |
 | Web (+ SSR) | A `<pre>` with one styled `<span>` per run, built through the `Backend` trait so SSR + hydration stay in lockstep. |
 | Android | A `RustCodeBlock` (HorizontalScrollView + TextView) with a `SpannableString` carrying one `ForegroundColorSpan` per run. One TextView regardless of token count. |
-| iOS | A horizontal `UIScrollView` wrapping a `UILabel` whose `attributedText` is an `NSAttributedString` with per-run `NSForegroundColorAttributeName` ranges. One label per block. |
-| macOS / terminal / gpu | Fall through to the framework's external-not-registered placeholder. Adding handlers follows the iOS/Android shape. |
+| iOS | A horizontal `UIScrollView` wrapping an inset-honoring label whose `attributedText` is an `NSAttributedString` with per-run `NSForegroundColorAttributeName` ranges. One label per block. |
+| macOS | A horizontal `NSScrollView` wrapping an `NSTextField` label with per-run `NSColor` ranges. Same shape as iOS. |
+| terminal / gpu | Fall through to the framework's external-not-registered placeholder. Adding handlers follows the iOS/Android shape. |
 
 `.with_style(...)` lands on the outer native node (the `<pre>` /
-`HorizontalScrollView` / `UIScrollView`).
+`HorizontalScrollView` / `UIScrollView` / `NSScrollView`).
+
+Padding is **author-driven**: handlers bake none in. `padding_*` in the
+style is realized *inside* the block's scroll region on every backend
+(CSS padding on the `<pre>`, label `textInsets` on iOS, documentView
+offset on macOS, `setPadding` + `clipToPadding=false` on Android), so
+the padding scrolls with the content and mid-scroll text reaches the
+block's own edge — the `<pre> { padding }` observable model. Put the
+inset in the code block's style, not on a wrapping panel; panel padding
+would shrink the native scroll viewport and clip moving text before the
+panel's edge.
 
 ## Why a third-party primitive, not a framework one
 

@@ -242,6 +242,18 @@ where
 
     let mut scope = Box::new(reactive::Scope::new());
     let root = reactive::with_scope(&mut scope, || {
+        // Install the theme-cohort driver EAGERLY, while the ROOT scope
+        // is the active one, so the driver's lifetime is the whole
+        // mount. Installed lazily (at the first static-style attach) it
+        // would be owned by whatever scope happens to be active THEN —
+        // under the outlet navigation model that's typically the first
+        // SCREEN's scope, and navigating away (`LazyDisposing`) dropped
+        // the driver and WIPED the whole cohort map, orphaning every
+        // still-mounted static-styled node (the navigator chrome). The
+        // visible bug: after any navigation, a theme toggle re-tinted
+        // screen content but the sidebar/header background stayed on
+        // the old theme (native only — web re-tints via CSS vars).
+        theme_cohort::install_theme_cohort_driver(&backend);
         // Both the tree constructor and the build walk run inside the
         // same root scope. Reactive primitives created during
         // construction adopt this scope and are freed on `Owner`
@@ -496,6 +508,11 @@ pub(super) fn build_inner<B: Backend + 'static>(
     // exists only after dispatch). Lets the robot drive real input focus.
     #[cfg(feature = "robot")]
     let robot_is_text_input = matches!(&node, Element::TextInput { .. });
+    // Same pre-dispatch capture for scroll views: they get a `set_scroll`
+    // action (the programmatic pan analogue e2e drives use on platforms
+    // with no scriptable touch input, e.g. the iOS simulator).
+    #[cfg(feature = "robot")]
+    let robot_is_scroll_view = matches!(&node, Element::ScrollView { .. });
 
     type Dispatcher<B> = fn(&Rc<RefCell<B>>, Element) -> <B as Backend>::Node;
     let dispatcher: Dispatcher<B> = match &node {
@@ -592,6 +609,23 @@ pub(super) fn build_inner<B: Backend + 'static>(
                 id,
                 Rc::new(move || backend_focus.borrow().make_text_input_handle(&node_focus).focus()),
                 Rc::new(move || backend_blur.borrow().make_text_input_handle(&node_blur).blur()),
+            );
+        }
+        // Scroll views get a `set_scroll` action — the programmatic pan
+        // analogue. Route through the backend's `ScrollViewHandle` (made
+        // here, borrow released) rather than `Backend::set_node_scroll`
+        // under a live `borrow_mut`: the native scroll write fires scroll
+        // notifications SYNCHRONOUSLY (AppKit `reflectScrolledClipView:`),
+        // whose reactive effects re-borrow the backend to re-style — a
+        // held borrow aborts with "RefCell already borrowed" (seen live on
+        // the macOS website: sticky/TOC-spy restyles under the robot
+        // drive). The handle's ops take no backend borrow, same as the
+        // author-facing `scroll_to` path.
+        if robot_is_scroll_view {
+            let handle = backend.borrow().make_scroll_view_handle(&result);
+            crate::robot::attach_scroll_action(
+                id,
+                Rc::new(move |x, y| handle.scroll_to(x, y)),
             );
         }
     }

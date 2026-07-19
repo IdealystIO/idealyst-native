@@ -190,8 +190,16 @@ pub fn run(args: Args) -> Result<()> {
         },
     );
 
+    // The web target's staged bundle is content-hashed; its entry shim
+    // name (`<lib>.<hash>.js`) flows into the SSG export so emitted
+    // pages hydrate via the fingerprinted URL.
+    let mut web_entry: Option<String> = None;
     for target in &targets {
-        build_target(*target, &dir, &args).with_context(|| format!("build {}", target))?;
+        if let Some(entry) =
+            build_target(*target, &dir, &args).with_context(|| format!("build {}", target))?
+        {
+            web_entry = Some(entry);
+        }
     }
 
     if args.runtime_server {
@@ -203,7 +211,12 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     if args.ssg {
-        build_ssg_export(&dir, &args, targets.contains(&Target::Web))?;
+        build_ssg_export(
+            &dir,
+            &args,
+            targets.contains(&Target::Web),
+            web_entry.as_deref(),
+        )?;
     }
 
     Ok(())
@@ -235,15 +248,19 @@ fn collect_targets(args: &Args, manifest_targets: &[Target]) -> Vec<Target> {
     out
 }
 
-fn build_target(target: Target, dir: &std::path::Path, args: &Args) -> Result<()> {
+/// Returns the web bundle's content-hashed entry shim name for the
+/// web target (`Some("<lib>.<hash>.js")`); `None` for every other
+/// target.
+fn build_target(target: Target, dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
     match target {
-        Target::Web => build_web(dir, args),
-        Target::Ios => build_ios_target(dir, args),
-        Target::Android => build_android_target(dir, args),
-        Target::Roku => build_roku_target(dir, args),
-        Target::Macos => build_macos_target(dir, args),
-        Target::Terminal => build_terminal_target(dir, args),
+        Target::Web => return build_web(dir, args),
+        Target::Ios => build_ios_target(dir, args)?,
+        Target::Android => build_android_target(dir, args)?,
+        Target::Roku => build_roku_target(dir, args)?,
+        Target::Macos => build_macos_target(dir, args)?,
+        Target::Terminal => build_terminal_target(dir, args)?,
     }
+    Ok(None)
 }
 
 fn build_terminal_target(dir: &std::path::Path, args: &Args) -> Result<()> {
@@ -265,7 +282,7 @@ fn build_terminal_target(dir: &std::path::Path, args: &Args) -> Result<()> {
     Ok(())
 }
 
-fn build_web(dir: &std::path::Path, args: &Args) -> Result<()> {
+fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
     // Web builds go through a generated wrapper crate, same shape as
     // iOS / Android: the user's app crate stays platform-agnostic
     // (no `web.rs`, no `[lib] crate-type = ["cdylib"]`, no
@@ -337,10 +354,11 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<()> {
         if args.gzip { " (gzipped)" } else { "" },
         bundle.display(),
     );
-
-    // TODO(lazy-primitive): post-cargo wasm-split-cli step here.
-    // Read the wasm-pack output, run wasm-split-cli to extract
-    // chunks, emit them into `<bundle>/pkg/`. Coming up next.
+    eprintln!(
+        "[build web] pkg/ filenames carry the build hash — safe to serve with \
+         `Cache-Control: public, max-age=31536000, immutable`; keep `*.html` at \
+         `no-cache` so redeploys are picked up."
+    );
 
     if args.gzip {
         eprintln!(
@@ -349,7 +367,7 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<()> {
              websites/website/scripts/export-static.sh for a reference S3 upload."
         );
     }
-    Ok(())
+    Ok(artifact.entry_js)
 }
 
 fn build_ios_target(dir: &std::path::Path, args: &Args) -> Result<()> {
@@ -468,7 +486,12 @@ fn build_ssr_binary(dir: &std::path::Path, args: &Args, web_built: bool) -> Resu
     Ok(())
 }
 
-fn build_ssg_export(dir: &std::path::Path, args: &Args, web_built: bool) -> Result<()> {
+fn build_ssg_export(
+    dir: &std::path::Path,
+    args: &Args,
+    web_built: bool,
+    web_entry: Option<&str>,
+) -> Result<()> {
     // SSG reuses the SSR wrapper binary — same generator, same dep
     // graph; the wrapper's `--export <dir>` mode calls `render_all` and
     // writes per-path `index.html` files into the bundle dir.
@@ -492,6 +515,19 @@ fn build_ssg_export(dir: &std::path::Path, args: &Args, web_built: bool) -> Resu
     cmd.arg("--export").arg(&out_dir);
     if args.ssg_static {
         cmd.arg("--static");
+    } else {
+        // Point the emitted pages' hydration script at the
+        // content-hashed entry shim. Entry from this run's web build
+        // when `--web` was included; otherwise from the pkg/ a prior
+        // `idealyst build --web` staged into the same out dir. Without
+        // a hashed bundle (nothing staged yet), the wrapper's unhashed
+        // default stands and the warning below fires.
+        let entry = web_entry.map(str::to_string).or_else(|| {
+            build_web::find_hashed_entry(&out_dir.join("pkg"), &parse_manifest(dir).ok()?.lib_name)
+        });
+        if let Some(entry) = entry {
+            cmd.arg("--bundle").arg(format!("/pkg/{entry}"));
+        }
     }
     let status = cmd
         .status()
@@ -501,10 +537,9 @@ fn build_ssg_export(dir: &std::path::Path, args: &Args, web_built: bool) -> Resu
     }
     if !web_built && !args.ssg_static {
         eprintln!(
-            "  ⚠ no `--web` in this build — emitted pages reference `/pkg/{}.js` for \
-             hydration but the bundle isn't staged. Run `idealyst build --web{}` to stage \
+            "  ⚠ no `--web` in this build — emitted pages reference the wasm bundle for \
+             hydration but it isn't staged in this run. Run `idealyst build --web{}` to stage \
              it, or re-run with `--ssg-static` for a no-hydration pure-static export.",
-            parse_manifest(dir)?.lib_name,
             if args.release { " --release" } else { "" },
         );
     }

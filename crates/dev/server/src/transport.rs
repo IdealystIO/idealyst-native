@@ -1008,12 +1008,6 @@ fn handle_app_msg(
             recorder.handle_screen_released(scope.0);
         }
         AppToDev::NavigatorDepthChanged { .. } => {}
-        AppToDev::DrawerStateChanged { navigator, is_open } => {
-            recorder.handle_drawer_state_changed(navigator, is_open);
-        }
-        AppToDev::TabSelected { navigator, index } => {
-            recorder.handle_tab_selected(navigator, index);
-        }
         AppToDev::VirtualizerMountItem { .. }
         | AppToDev::VirtualizerReleaseItem { .. }
         | AppToDev::VirtualizerMeasuredSize { .. } => {}

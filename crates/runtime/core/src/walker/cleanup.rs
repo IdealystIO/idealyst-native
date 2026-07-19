@@ -9,10 +9,46 @@
 //! callback fired exactly once. This is the only path that keeps
 //! browser-queued / native-queued late events from firing into
 //! freed `Signal`/`Effect` slots.
+//!
+//! ## Re-entrancy
+//!
+//! Every wrapper releases through [`release_or_defer`]: these Drops
+//! can run WHILE the backend is already mutably borrowed. The
+//! concrete case: `Backend::release_virtualizer` (called under the
+//! walker's borrow) synchronously shuts down its data source, which
+//! drops the per-row scopes — and a row that contains a graphics /
+//! portal / external node (or any styled node, see `StyleHandle`)
+//! re-enters the backend RefCell from ITS cleanup drop. That was the
+//! iOS "SIGABRT already-borrowed on navigating away from a docs page"
+//! crash. Releasing via microtask when the borrow is held is safe —
+//! the release hooks are teardown notifications keyed by node.
 
 use crate::backend::Backend;
 use std::cell::RefCell;
 use std::rc::Rc;
+
+/// Run `release(backend, node)` now if the backend is borrowable,
+/// else defer it one microtask (re-checking the borrow there; a
+/// backend still borrowed on the microtask would mean a borrow held
+/// across turns — a leak far worse than a skipped release note).
+fn release_or_defer<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    node: &B::Node,
+    release: fn(&mut B, &B::Node),
+) {
+    match backend.try_borrow_mut() {
+        Ok(mut b) => release(&mut b, node),
+        Err(_) => {
+            let backend = backend.clone();
+            let node = node.clone();
+            crate::schedule_microtask(move || {
+                if let Ok(mut b) = backend.try_borrow_mut() {
+                    release(&mut b, &node);
+                }
+            });
+        }
+    }
+}
 
 /// RAII wrapper that calls `Backend::release_graphics` when dropped.
 /// Installed unconditionally per Graphics primitive (i.e. doesn't
@@ -28,7 +64,7 @@ pub(super) struct GraphicsHandleCleanup<B: Backend + 'static> {
 
 impl<B: Backend + 'static> Drop for GraphicsHandleCleanup<B> {
     fn drop(&mut self) {
-        self.backend.borrow_mut().release_graphics(&self.node);
+        release_or_defer(&self.backend, &self.node, |b, n| b.release_graphics(n));
     }
 }
 
@@ -47,7 +83,7 @@ pub(super) struct VirtualizerHandleCleanup<B: Backend + 'static> {
 
 impl<B: Backend + 'static> Drop for VirtualizerHandleCleanup<B> {
     fn drop(&mut self) {
-        self.backend.borrow_mut().release_virtualizer(&self.node);
+        release_or_defer(&self.backend, &self.node, |b, n| b.release_virtualizer(n));
     }
 }
 
@@ -71,7 +107,7 @@ pub(super) struct PortalHandleCleanup<B: Backend + 'static> {
 
 impl<B: Backend + 'static> Drop for PortalHandleCleanup<B> {
     fn drop(&mut self) {
-        self.backend.borrow_mut().release_portal(&self.node);
+        release_or_defer(&self.backend, &self.node, |b, n| b.release_portal(n));
     }
 }
 
@@ -85,6 +121,6 @@ pub(super) struct ExternalHandleCleanup<B: Backend + 'static> {
 
 impl<B: Backend + 'static> Drop for ExternalHandleCleanup<B> {
     fn drop(&mut self) {
-        self.backend.borrow_mut().release_external(&self.node);
+        release_or_defer(&self.backend, &self.node, |b, n| b.release_external(n));
     }
 }

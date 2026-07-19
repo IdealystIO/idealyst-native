@@ -1414,21 +1414,10 @@ version = "0.0.1"
 dependencies = [
  "backend-ios-mobile",
  "codeblock",
- "drawer-navigator",
  "runtime-core",
+ "stack-navigator",
+ "swap-navigator",
  "table",
-]
-
-[[package]]
-name = "backend-ios-stack"
-version = "0.0.1"
-dependencies = [
- "block2 0.5.1",
- "objc2 0.5.2",
- "objc2-foundation 0.2.2",
- "objc2-ui-kit",
- "raw-window-handle",
- "runtime-core",
 ]
 
 [[package]]
@@ -1505,6 +1494,7 @@ version = "0.0.1"
 dependencies = [
  "css",
  "runtime-core",
+ "tempfile",
  "tiny_http",
 ]
 
@@ -1866,6 +1856,7 @@ dependencies = [
  "anyhow",
  "build-ios",
  "icon-gen",
+ "tempfile",
 ]
 
 [[package]]
@@ -1885,7 +1876,7 @@ dependencies = [
  "build-ios",
  "flate2",
  "icon-gen",
- "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "toml 0.8.23",
  "wasm-split-cli",
@@ -3285,15 +3276,16 @@ dependencies = [
  "dev-client",
  "dev-server",
  "docs-macro",
- "drawer-navigator",
  "host-web",
  "idea-ui",
+ "idea-ui-nav",
  "ios-sim",
  "js-sys",
  "libc",
  "lol_alloc",
  "render-api",
  "runtime-core",
+ "swap-navigator",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -3310,14 +3302,15 @@ dependencies = [
  "codeblock",
  "console_error_panic_hook",
  "dev-server",
- "drawer-navigator",
  "icons-lucide",
  "idea-ui",
+ "idea-ui-nav",
  "lol_alloc",
  "markdown",
  "mcp-catalog",
  "runtime-core",
  "serde_json",
+ "swap-navigator",
  "table",
  "wasm-bindgen",
  "web-sys",
@@ -3358,31 +3351,6 @@ name = "dpi"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
-
-[[package]]
-name = "drawer-navigator"
-version = "0.0.1"
-dependencies = [
- "android-navigator-helpers",
- "backend-android-mobile",
- "backend-ios-mobile",
- "backend-macos",
- "backend-ssr",
- "backend-terminal",
- "backend-web",
- "css",
- "dev-server",
- "host-terminal",
- "inventory",
- "ios-navigator-helpers",
- "jni 0.21.1",
- "log",
- "runtime-core",
- "wasm-bindgen",
- "web-navigator-helpers",
- "web-sys",
- "wire",
-]
 
 [[package]]
 name = "drm"
@@ -5094,6 +5062,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "host-macos-desktop"
+version = "0.0.1"
+dependencies = [
+ "log",
+ "objc2 0.5.2",
+ "objc2-foundation 0.2.2",
+ "raw-window-handle",
+ "render-api",
+ "render-wgpu",
+ "runtime-core",
+ "wgpu",
+]
+
+[[package]]
 name = "host-terminal"
 version = "0.0.1"
 dependencies = [
@@ -5126,6 +5108,7 @@ version = "0.0.1"
 dependencies = [
  "host-android-mobile",
  "host-ios-mobile",
+ "host-macos-desktop",
  "host-web",
  "render-api",
  "render-wgpu",
@@ -5615,13 +5598,14 @@ dependencies = [
  "codeblock",
  "console_error_panic_hook",
  "dev-server",
- "drawer-navigator",
  "icons-lucide",
  "idea-ui",
+ "idea-ui-nav",
  "lol_alloc",
  "robot-test",
  "runtime-core",
  "serde_json",
+ "swap-navigator",
  "table",
  "wasm-bindgen",
  "web-sys",
@@ -5640,11 +5624,11 @@ dependencies = [
 name = "idea-ui-docs-gpu"
 version = "0.0.1"
 dependencies = [
- "drawer-navigator",
  "host-winit",
  "idea-ui-docs",
  "render-wgpu",
  "runtime-core",
+ "swap-navigator",
 ]
 
 [[package]]
@@ -5848,6 +5832,7 @@ dependencies = [
  "backend-terminal",
  "icons-lucide",
  "idea-ui",
+ "idea-ui-nav",
  "runtime-core",
  "serde_json",
  "stack-navigator",
@@ -6895,7 +6880,6 @@ dependencies = [
  "codeblock",
  "dev-client",
  "dev-server",
- "drawer-navigator",
  "headless-screenshot",
  "image",
  "runtime-core",
@@ -6903,7 +6887,6 @@ dependencies = [
  "serde_json",
  "stack-navigator",
  "swap-navigator",
- "tab-navigator",
  "wire",
 ]
 
@@ -6981,7 +6964,7 @@ dependencies = [
  "idea-ui",
  "idea-ui-nav",
  "runtime-core",
- "stack-navigator-v2",
+ "stack-navigator",
  "swap-navigator",
 ]
 
@@ -10265,7 +10248,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
-name = "stack-demo-v2"
+name = "stack-demo"
 version = "0.0.1"
 dependencies = [
  "backend-android-mobile",
@@ -10277,7 +10260,7 @@ dependencies = [
  "idea-ui",
  "idea-ui-nav",
  "runtime-core",
- "stack-navigator-v2",
+ "stack-navigator",
 ]
 
 [[package]]
@@ -10289,33 +10272,16 @@ dependencies = [
  "backend-ios-mobile",
  "backend-macos",
  "backend-ssr",
- "backend-terminal",
  "backend-web",
- "css",
  "dev-server",
  "inventory",
  "ios-navigator-helpers",
  "jni 0.21.1",
+ "mock-backend",
  "runtime-core",
  "wasm-bindgen",
  "wasm-bindgen-test",
- "web-navigator-helpers",
  "web-sys",
- "wire",
-]
-
-[[package]]
-name = "stack-navigator-v2"
-version = "0.0.1"
-dependencies = [
- "backend-android-mobile",
- "backend-ios-mobile",
- "backend-macos",
- "backend-web",
- "dev-server",
- "inventory",
- "mock-backend",
- "runtime-core",
  "wire",
 ]
 
@@ -10730,26 +10696,6 @@ dependencies = [
  "pkg-config",
  "toml 1.1.2+spec-1.1.0",
  "version-compare",
-]
-
-[[package]]
-name = "tab-navigator"
-version = "0.0.1"
-dependencies = [
- "android-navigator-helpers",
- "backend-android-mobile",
- "backend-ios-mobile",
- "backend-macos",
- "backend-ssr",
- "backend-web",
- "dev-server",
- "inventory",
- "ios-navigator-helpers",
- "jni 0.21.1",
- "runtime-core",
- "web-navigator-helpers",
- "web-sys",
- "wire",
 ]
 
 [[package]]
@@ -11630,9 +11576,10 @@ dependencies = [
  "backend-web",
  "codeblock",
  "dev-server",
- "drawer-navigator",
  "idea-ui",
+ "idea-ui-nav",
  "runtime-core",
+ "swap-navigator",
 ]
 
 [[package]]
@@ -12501,17 +12448,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "web-navigator-helpers"
-version = "0.0.1"
-dependencies = [
- "backend-web",
- "css",
- "runtime-core",
- "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
 name = "web-sys"
 version = "0.3.99"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12562,14 +12498,15 @@ dependencies = [
  "backend-web",
  "codeblock",
  "dev-server",
- "drawer-navigator",
  "host-web",
  "host-wgpu",
  "idea-ui",
+ "idea-ui-nav",
  "ios-sim",
  "js-sys",
  "render-api",
  "runtime-core",
+ "swap-navigator",
  "wasm-bindgen",
  "web-sys",
  "welcome",

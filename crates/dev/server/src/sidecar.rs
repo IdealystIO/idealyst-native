@@ -1382,12 +1382,6 @@ mod runtime {
                 recorder.handle_screen_released(scope.0);
             }
             NavigatorDepthChanged { .. } => {}
-            DrawerStateChanged { navigator, is_open } => {
-                recorder.handle_drawer_state_changed(navigator, is_open);
-            }
-            TabSelected { navigator, index } => {
-                recorder.handle_tab_selected(navigator, index);
-            }
             VirtualizerMountItem { .. }
             | VirtualizerReleaseItem { .. }
             | VirtualizerMeasuredSize { .. } => {}

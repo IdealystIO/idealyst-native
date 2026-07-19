@@ -38,6 +38,37 @@ pub struct ServeConfig {
     pub extra_head: Option<String>,
 }
 
+/// Resolve the boot-module URL for a bundle staged by `idealyst build
+/// --web`. That build content-addresses `pkg/` — the entry shim is
+/// named `<lib>.<16 hex>.js` so redeploys can't be served stale from
+/// HTTP caches — and this finds the hashed entry under
+/// `<static_dir>/pkg/`, returning e.g.
+/// `Some("/pkg/website.3f9a12bc44d0e1a7.js")`. `None` when no
+/// fingerprinted shim exists (a dev-loop `pkg/` keeps plain names —
+/// callers fall back to `/pkg/<lib>.js`).
+///
+/// Matches on the file NAME only (never reads contents) so it works
+/// against a `--gzip` bundle, whose bytes are gzipped in place.
+/// `build_web::find_hashed_entry` is the build-time twin of this;
+/// keep their matching rules in sync.
+pub fn resolve_bundle_module(static_dir: &Path, lib_name: &str) -> Option<String> {
+    let prefix = format!("{lib_name}.");
+    let read = std::fs::read_dir(static_dir.join("pkg")).ok()?;
+    for entry in read.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(mid) = name
+            .strip_prefix(&prefix)
+            .and_then(|rest| rest.strip_suffix(".js"))
+        else {
+            continue;
+        };
+        if mid.len() == 16 && mid.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            return Some(format!("/pkg/{name}"));
+        }
+    }
+    None
+}
+
 /// Serve `app` over HTTP at `addr` (e.g. `"127.0.0.1:8080"`). Blocks
 /// forever; stop with Ctrl-C. `register` installs navigator chrome
 /// handlers per render (e.g. `|b| drawer_navigator::chrome::register(b)`).
@@ -125,5 +156,50 @@ fn content_type(path: &Path) -> &'static str {
         Some("otf") => "font/otf",
         Some("ico") => "image/x-icon",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod resolve_bundle_module_tests {
+    //! `resolve_bundle_module` is what keeps the generated SSR
+    //! wrapper's hydration script pointed at the content-hashed
+    //! bundle `idealyst build --web` stages. A miss here silently
+    //! degrades to the unhashed `/pkg/<lib>.js` default, which a
+    //! fingerprinted bundle doesn't contain — so the matching rules
+    //! get direct coverage.
+
+    use super::resolve_bundle_module;
+    use std::fs;
+
+    #[test]
+    fn finds_the_fingerprinted_entry_shim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = tmp.path().join("pkg");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("website.3f9a12bc44d0e1a7.js"), b"").unwrap();
+        fs::write(pkg.join("website_bg.3f9a12bc44d0e1a7.wasm"), b"").unwrap();
+        fs::write(pkg.join("__wasm_split.3f9a12bc44d0e1a7.js"), b"").unwrap();
+        assert_eq!(
+            resolve_bundle_module(tmp.path(), "website").as_deref(),
+            Some("/pkg/website.3f9a12bc44d0e1a7.js"),
+        );
+    }
+
+    #[test]
+    fn dev_shaped_pkg_and_decoys_resolve_to_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = tmp.path().join("pkg");
+        fs::create_dir_all(&pkg).unwrap();
+        // Dev-loop pkg: plain names, no fingerprint — callers keep
+        // their `/pkg/<lib>.js` default.
+        fs::write(pkg.join("website.js"), b"").unwrap();
+        fs::write(pkg.join("website_bg.wasm"), b"").unwrap();
+        // Wrong hash width / non-hex middles must not match.
+        fs::write(pkg.join("website.abc.js"), b"").unwrap();
+        fs::write(pkg.join("website.not-a-hash-here.js"), b"").unwrap();
+        assert_eq!(resolve_bundle_module(tmp.path(), "website"), None);
+        // Missing pkg/ entirely (e.g. --static preview with no web
+        // build) must be a graceful None, not an error.
+        assert_eq!(resolve_bundle_module(&tmp.path().join("nope"), "website"), None);
     }
 }

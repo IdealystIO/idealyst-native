@@ -370,25 +370,30 @@ struct SwapShared<B: Backend> {
     /// The active-screen outlet, captured from the author layout in the
     /// deferred build microtask. `None` until then.
     outlet: RefCell<Option<B::Node>>,
-    /// Mounted screens by route: `(node, scope_id)`. Persistent policies
-    /// keep entries across switches; `LazyDisposing` releases on switch-away.
-    mounted: RefCell<HashMap<&'static str, (B::Node, u64)>>,
-    /// Currently shown route.
-    active: RefCell<Option<&'static str>>,
+    /// Mounted screens keyed by their normalized URL — NOT the route
+    /// name. A parameterized route (`/entry/:name`) funnels many
+    /// distinct screens through one route name; name-keying made
+    /// same-route selects no-ops and served entry A's cached screen for
+    /// entry B (the docs-app catalog bug). Persistent policies keep
+    /// entries across switches; `LazyDisposing` releases on switch-away.
+    mounted: RefCell<HashMap<String, (B::Node, u64)>>,
+    /// Currently shown `(route name, normalized url)`.
+    active: RefCell<Option<(&'static str, String)>>,
     /// Initial screen the framework mounted (`defer_initial_mount = false`),
     /// stashed until the outlet exists. The `&'static str` is the route the
     /// walker actually RESOLVED for it (a cold-start deep link may resolve a
     /// route other than the configured initial) — captured at attach time so
     /// the screen is cached under the right key.
-    pending_initial: RefCell<Option<(&'static str, B::Node, u64)>>,
+    pending_initial: RefCell<Option<(&'static str, String, B::Node, u64)>>,
     /// The configured initial route name (the fallback when nothing was
     /// attached — deferred-mount hosts).
     initial_route: &'static str,
-    /// The walker's reactive active-route mirror. Read UNTRACKED at attach
-    /// time to learn the deep-link-resolved initial route: the walker sets it
-    /// BEFORE `mount_screen`/`attach_initial` on the non-deferred cold-start
-    /// path (see `walker::navigator`).
+    /// The walker's reactive active-route/path mirrors. Read UNTRACKED at
+    /// attach time to learn the deep-link-resolved initial route + URL: the
+    /// walker sets them BEFORE `mount_screen`/`attach_initial` on the
+    /// non-deferred cold-start path (see `walker::navigator`).
     active_route: runtime_core::Signal<&'static str>,
+    active_path: runtime_core::Signal<String>,
     mount_policy: MountPolicy,
     mount_screen:
         Rc<dyn Fn(&'static str, Box<dyn Any>, Option<Rc<dyn Any>>) -> MountResult<B::Node>>,
@@ -407,41 +412,66 @@ impl<B: Backend> SwapShared<B> {
         }
     }
 
-    /// The route the framework actually mounted as the initial screen: the
-    /// configured initial, unless a cold-start deep link resolved elsewhere
-    /// (the walker writes the resolved route into `active_route` before
-    /// attaching). Untracked — called from non-reactive handler paths.
-    fn resolved_initial_route(&self) -> &'static str {
-        runtime_core::untrack(|| self.active_route.get())
+    /// The `(route, url)` the framework actually mounted as the initial
+    /// screen: the configured initial, unless a cold-start deep link
+    /// resolved elsewhere (the walker writes the resolved route/path into
+    /// the mirrors before attaching). Untracked — called from
+    /// non-reactive handler paths.
+    fn resolved_initial(&self) -> (&'static str, String) {
+        runtime_core::untrack(|| (self.active_route.get(), self.active_path.get()))
     }
 
-    /// Cache the framework-attached initial screen under `route` and show it.
-    fn seat_initial(&self, route: &'static str, node: B::Node, scope_id: u64) {
+    /// Trailing-slash-tolerant URL key (`/docs` == `/docs/`), matching
+    /// the substrate URL layer's `paths_equal` tolerance.
+    fn url_key(url: &str) -> String {
+        let t = url.trim_end_matches('/');
+        if t.is_empty() { "/".to_string() } else { t.to_string() }
+    }
+
+    /// Cache the framework-attached initial screen under its URL and show it.
+    fn seat_initial(&self, route: &'static str, url: String, node: B::Node, scope_id: u64) {
+        let key = Self::url_key(&url);
         self.mounted
             .borrow_mut()
-            .insert(route, (node.clone(), scope_id));
+            .insert(key.clone(), (node.clone(), scope_id));
         self.show_in_outlet(node);
-        *self.active.borrow_mut() = Some(route);
+        *self.active.borrow_mut() = Some((route, key));
     }
 
     /// Resolve the screen for `name` (reuse the cached node for persistent
     /// policies, else mount fresh) and show it. `LazyDisposing` releases the
     /// previously-active screen's scope first.
-    fn select(&self, name: &'static str, params: Box<dyn Any>, state: Option<Rc<dyn Any>>) {
-        if self.active.borrow().as_deref() == Some(name) {
-            return; // already active — no-op
+    fn select(
+        &self,
+        name: &'static str,
+        url: &str,
+        params: Box<dyn Any>,
+        state: Option<Rc<dyn Any>>,
+    ) {
+        let key = Self::url_key(url);
+        // Already showing this exact URL — no-op. Comparing the URL (not
+        // just the route name) is what makes parameterized routes work:
+        // `/entry/button` → `/entry/card` shares one route name but MUST
+        // swap screens.
+        if self
+            .active
+            .borrow()
+            .as_ref()
+            .is_some_and(|(_, active_url)| *active_url == key)
+        {
+            return;
         }
 
         if self.mount_policy == MountPolicy::LazyDisposing {
-            // Copy the route out and END both borrows before `release_screen`:
+            // Copy the key out and END both borrows before `release_screen`:
             // it drops the screen's scope synchronously, running author
             // `on_cleanup` callbacks that may navigate (re-entering this
             // navigator's cells). An if-let on the `borrow_mut()` scrutinee
             // holds the guard through the body — "RefCell already borrowed"
             // (same class as the cache-lookup snapshot below).
-            let prev = *self.active.borrow();
+            let prev = self.active.borrow().as_ref().map(|(_, u)| u.clone());
             let released = prev
-                .and_then(|p| self.mounted.borrow_mut().remove(p))
+                .and_then(|p| self.mounted.borrow_mut().remove(&p))
                 .map(|(_, sid)| sid);
             if let Some(sid) = released {
                 (self.release_screen)(sid);
@@ -450,16 +480,18 @@ impl<B: Backend> SwapShared<B> {
 
         // Snapshot the lookup so the `borrow()` releases before the miss path
         // takes a `borrow_mut()` (else: "RefCell already borrowed").
-        let cached = self.mounted.borrow().get(name).map(|(n, _)| n.clone());
+        let cached = self.mounted.borrow().get(&key).map(|(n, _)| n.clone());
         let node = if let Some(n) = cached {
             n
         } else {
             let r = (self.mount_screen)(name, params, state);
-            self.mounted.borrow_mut().insert(name, (r.node.clone(), r.scope_id));
+            self.mounted
+                .borrow_mut()
+                .insert(key.clone(), (r.node.clone(), r.scope_id));
             r.node
         };
         self.show_in_outlet(node);
-        *self.active.borrow_mut() = Some(name);
+        *self.active.borrow_mut() = Some((name, key));
     }
 }
 
@@ -517,6 +549,8 @@ impl<B: Backend + 'static> NavigatorHandler<B> for SwapHandler<B> {
             release_screen,
             insert_node,
             clear_children,
+            get_node_scroll,
+            set_node_scroll,
             control,
             build_layout_with_outlet,
             nav_state,
@@ -530,6 +564,13 @@ impl<B: Backend + 'static> NavigatorHandler<B> for SwapHandler<B> {
 
         install_select_link_activator(&control);
 
+        // Opt into substrate URL sync: on web, `Select`s mirror into
+        // browser history (pushState) and back/forward popstates come
+        // back as ordinary `Select` dispatches; deep links + scroll
+        // restore ride along. No-op on URL-less platforms — the handler
+        // itself never touches a URL (backend-neutral by design).
+        control.enable_url_sync();
+
         let shared = Rc::new(SwapShared {
             outlet: RefCell::new(None),
             mounted: RefCell::new(HashMap::new()),
@@ -537,6 +578,7 @@ impl<B: Backend + 'static> NavigatorHandler<B> for SwapHandler<B> {
             pending_initial: RefCell::new(None),
             initial_route,
             active_route: nav_state.active_route,
+            active_path: nav_state.active_path,
             mount_policy,
             mount_screen,
             insert_node,
@@ -550,8 +592,8 @@ impl<B: Backend + 'static> NavigatorHandler<B> for SwapHandler<B> {
         control.install({
             let shared = shared.clone();
             Box::new(move |cmd| match cmd {
-                NavCommand::Select { name, params, state, .. } => {
-                    shared.select(name, params, state);
+                NavCommand::Select { name, url, params, state } => {
+                    shared.select(name, &url, params, state);
                 }
                 // Swap navigators have no stack; a stray push/pop/replace is
                 // an author error routed here only if a `Link` bypassed the
@@ -599,12 +641,14 @@ impl<B: Backend + 'static> NavigatorHandler<B> for SwapHandler<B> {
                     on_select,
                 };
                 // Build the author chrome (or a bare outlet if no layout was
-                // set), capturing the outlet node.
-                let layout_elem = match &layout {
-                    Some(f) => f(ctx),
-                    None => ctx.outlet,
-                };
-                let (layout_root, outlet) = (build_layout_with_outlet)(layout_elem);
+                // set), capturing the outlet node. The producer closure runs
+                // inside the framework's retained nav-chrome scope, so an
+                // `effect!` in author chrome is owned by the navigator.
+                let (layout_root, outlet) =
+                    (build_layout_with_outlet)(Box::new(move || match &layout {
+                        Some(f) => f(ctx),
+                        None => ctx.outlet,
+                    }));
                 debug_assert!(
                     outlet.is_some(),
                     "swap-navigator: the author `.layout(...)` must splat `{{nav.outlet}}` \
@@ -613,16 +657,47 @@ impl<B: Backend + 'static> NavigatorHandler<B> for SwapHandler<B> {
                 (shared.insert_node)(root, layout_root);
                 *shared.outlet.borrow_mut() = outlet;
 
+                // Wire the outlet's scroll into the substrate URL sync so
+                // browser back restores the position the user left a
+                // screen at (no-op when the outlet isn't a scroll
+                // surface, or off web).
+                {
+                    let get = {
+                        let shared = shared.clone();
+                        let get_node_scroll = get_node_scroll.clone();
+                        Rc::new(move || {
+                            shared
+                                .outlet
+                                .borrow()
+                                .clone()
+                                .map(|o| get_node_scroll(o))
+                                .unwrap_or((0.0, 0.0))
+                        })
+                    };
+                    let set = {
+                        let shared = shared.clone();
+                        let set_node_scroll = set_node_scroll.clone();
+                        Rc::new(move |x, y| {
+                            if let Some(o) = shared.outlet.borrow().clone() {
+                                set_node_scroll(o, x, y);
+                            }
+                        })
+                    };
+                    control_for_ctx.install_scroll_accessor(get, set);
+                }
+
                 // Show the framework-mounted initial screen, cached under the
                 // route the walker RESOLVED for it (deep link aware).
-                let pending: Option<(&'static str, B::Node, u64)> =
+                let pending: Option<(&'static str, String, B::Node, u64)> =
                     shared.pending_initial.borrow_mut().take();
-                if let Some((route, node, sid)) = pending {
-                    shared.seat_initial(route, node, sid);
+                if let Some((route, path, node, sid)) = pending {
+                    shared.seat_initial(route, path, node, sid);
                 } else {
                     // Defensive: no stashed initial (e.g. deferred-mount host) —
-                    // mount the configured initial ourselves.
-                    shared.select(shared.initial_route, Box::new(()), None);
+                    // mount the configured initial ourselves. The configured
+                    // initial's path IS its url (unit-params root route).
+                    let (_, path) = shared.resolved_initial();
+                    shared.select(shared.initial_route, &path, Box::new(()), None);
                 }
             });
         }
@@ -649,13 +724,13 @@ impl<B: Backend + 'static> NavigatorHandler<B> for SwapHandler<B> {
         // differ, and caching e.g. the "/settings" screen under "home" shows
         // the wrong screen on every later selection of either route.
         if let Some(shared) = &self.shared {
-            let route = shared.resolved_initial_route();
+            let (route, path) = shared.resolved_initial();
             let outlet = shared.outlet.borrow().clone();
             if outlet.is_some() {
                 // Rare: outlet already built (microtask ran first) — seat now.
-                shared.seat_initial(route, screen, scope_id);
+                shared.seat_initial(route, path, screen, scope_id);
             } else {
-                *shared.pending_initial.borrow_mut() = Some((route, screen, scope_id));
+                *shared.pending_initial.borrow_mut() = Some((route, path, screen, scope_id));
             }
         }
     }
@@ -762,6 +837,40 @@ mod fallback {
     target_os = "android"
 )))]
 pub use fallback::register;
+
+/// Runtime-server (wire recorder) registration. The outlet model needs
+/// NO kind-specific wire commands: the handler drives its screen swaps
+/// through the backend-erased `insert_node`/`clear_children`, which the
+/// recorder ships as ordinary node ops the dev-client replays like any
+/// other subtree change. Registering the SAME backend-neutral handler on
+/// the recorder is the entire runtime-server story — contrast the legacy
+/// per-kind recording handlers + `CreateTabNavigator`-style ops.
+#[cfg(feature = "runtime-server")]
+pub mod recording {
+    use super::{SwapHandler, SwapPresentation};
+    use dev_server::WireRecordingBackend;
+
+    /// Register the swap handler on the runtime-server recorder. Call
+    /// from the sidecar bootstrap alongside the other recorder
+    /// registrations.
+    pub fn register(backend: &mut WireRecordingBackend) {
+        backend.register_navigator::<SwapPresentation, _>(|| {
+            Box::new(SwapHandler::<WireRecordingBackend>::new())
+        });
+    }
+}
+
+/// Register the swap handler on any backend exposing the GENERIC
+/// registry trait — the SSR backend today (`backend_ssr::render_path_with`
+/// callers), test backends via their inherent registries. The SAME
+/// backend-neutral [`SwapHandler`] as everywhere: SSR renders the author
+/// layout + the walker-resolved screen in the outlet, so a server-rendered
+/// page carries the real navigation chrome for first paint + crawlers.
+pub fn register_generic<B: runtime_core::primitives::navigator::RegisterNavigator>(
+    backend: &mut B,
+) {
+    backend.register_navigator::<SwapPresentation, _>(|| Box::new(SwapHandler::<B>::new()));
+}
 
 // =============================================================================
 // Prelude

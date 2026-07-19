@@ -388,9 +388,16 @@ pub enum DocConcept {
     Route,
     RouteParams,
     Screen,
+    /// `swap-navigator` — a flat set of co-equal screens switched via
+    /// `Select`. Tab bars, drawers, and sidebars are author chrome
+    /// wrapped around its outlet, not navigator kinds of their own.
+    SwapNavigator,
+    /// `stack-navigator` — push/pop with depth and a back-stack.
     StackNavigator,
-    TabNavigator,
-    DrawerNavigator,
+    /// `{nav.outlet}` — the one-shot slot in an author `.layout(...)`
+    /// where the navigator mounts the active screen (the analog of
+    /// react-router's `<Outlet/>`).
+    NavigatorOutlet,
     Link,
     AmbientNavigator,
     MountPolicy,
@@ -622,9 +629,9 @@ impl DocConcept {
             DocConcept::Route => "Route",
             DocConcept::RouteParams => "RouteParams",
             DocConcept::Screen => "Screen",
+            DocConcept::SwapNavigator => "Swap navigator",
             DocConcept::StackNavigator => "Stack navigator",
-            DocConcept::TabNavigator => "Tab navigator",
-            DocConcept::DrawerNavigator => "Drawer navigator",
+            DocConcept::NavigatorOutlet => "Navigator outlet",
             DocConcept::Link => "Link",
             DocConcept::AmbientNavigator => "Ambient navigator",
             DocConcept::MountPolicy => "Mount policy",
@@ -752,9 +759,9 @@ impl DocConcept {
             DocConcept::Route => "route",
             DocConcept::RouteParams => "route-params",
             DocConcept::Screen => "screen",
+            DocConcept::SwapNavigator => "swap-navigator",
             DocConcept::StackNavigator => "stack-navigator",
-            DocConcept::TabNavigator => "tab-navigator",
-            DocConcept::DrawerNavigator => "drawer-navigator",
+            DocConcept::NavigatorOutlet => "navigator-outlet",
             DocConcept::Link => "link",
             DocConcept::AmbientNavigator => "ambient-navigator",
             DocConcept::MountPolicy => "mount-policy",

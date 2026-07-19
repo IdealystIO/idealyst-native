@@ -25,7 +25,8 @@ use backend_ios::IosBackend;
 /// the iOS target. Adding a first-party SDK to the over-the-wire
 /// native client = adding its `register` call here.
 fn register_first_party_sdks(backend: &mut IosBackend) {
-    drawer_navigator::register(backend);
+    swap_navigator::register(backend);
+    stack_navigator::register(backend);
     codeblock::register(backend);
     table::register(backend);
 }

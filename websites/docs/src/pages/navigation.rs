@@ -10,15 +10,15 @@ docs! {
     slug = "navigation",
     title = "Navigation",
     category = Reference,
-    description = "Stack, tabs, drawer, and the Link primitive — typed routes and ambient navigators.",
+    description = "Swap and stack navigators, chrome as author layout around the outlet, and the Link primitive — typed routes and ambient navigators.",
     related = ["primitives", "components", "refs", "styles"],
     concepts = [
         Route,
         RouteParams,
         Screen,
+        SwapNavigator,
         StackNavigator,
-        TabNavigator,
-        DrawerNavigator,
+        NavigatorOutlet,
         Link,
         AmbientNavigator,
         MountPolicy,
@@ -26,19 +26,33 @@ docs! {
 
     section(heading = "Overview") {
         p("Navigation is how your app moves between screens. Idealyst ships \
-           three navigator primitives — ", code("stack"), ", ", code("tabs"),
-          ", ", code("drawer"), " — plus a ", code("Link"), " primitive that \
-           declaratively dispatches navigation without you wiring up a handle."),
-        p("All three navigators share a substrate: typed routes, per-screen \
+           two navigator behaviors as SDK crates — ", code("swap-navigator"),
+          " (a flat set of co-equal screens the user switches between) and ",
+          code("stack-navigator"), " (push/pop with depth and a back-stack) \
+           — plus a ", code("Link"), " primitive that declaratively \
+           dispatches navigation without you wiring up a handle."),
+        p("There is deliberately no tab navigator and no drawer navigator. \
+           What used to be a \"tab bar\" or a \"drawer panel\" is just \
+           ordinary author layout wrapped around the navigator's single \
+           outlet — the analog of react-router's ",
+          code("<Outlet/>"), ". A tab UI is a swap navigator whose ",
+          code(".layout(|nav| …)"), " puts a bar under ", code("{nav.outlet}"),
+          "; a drawer UI is the same navigator with the outlet wrapped in a \
+           side panel. ", code("idea_ui_nav"), " ships themed chrome \
+           components for the common shapes: ", code("TabBar"), ", ",
+          code("Drawer"), ", ", code("AppShell"), " (pinned-sidebar ⇄ drawer), \
+           and ", code("StackHeader"), "."),
+        p("Both navigators share a substrate: typed routes, per-screen \
            reactive scopes, an ambient-navigator stack the ", code("Link"),
-          " primitive reads, URL-pattern matching, and a per-screen ",
-          code("ScreenOptions"), " bundle for header chrome. What differs is \
-           the active-screen selection UI (a stack on a stack navigator, a \
-           tab bar, a slide-in panel) and the imperative commands the handle \
-           exposes."),
+          " primitive reads, URL-pattern matching, and web URL sync \
+           (history, deep links, scroll restore) provided by the framework. \
+           What differs is the command vocabulary — ", code("Select"),
+          " for swap, ", code("Push"), "/", code("Pop"), "/", code("Replace"),
+          "/", code("Reset"), " for stack — and whether covered screens \
+           exist below the visible one."),
         p("This page covers all of it: routes and params, declaring screens, \
-           the three navigator kinds, headers, the ", code("Link"), " primitive, \
-           nested navigators, and the breakpoint behavior the drawer leans on."),
+           the two navigator behaviors, chrome as layout, headers, the ",
+          code("Link"), " primitive, and nested navigators."),
     },
 
     section(heading = "Routes") {
@@ -54,11 +68,11 @@ docs! {
             pub const ABOUT:   Route<()>            = Route::new("about",   "/about");
         "##),
 
-        p("The ", code("name"), " (first arg) is the in-stack key — what the \
-           framework and native backends use to identify the route. The ",
-          code("path"), " (second arg) is the URL pattern web (and any future \
-           SSR backend) maps ", code("window.location"), " against. Native \
-           backends ignore ", code("path"), "; they work purely from ",
+        p("The ", code("name"), " (first arg) is the in-navigator key — what \
+           the framework and chrome components use to identify the route. \
+           The ", code("path"), " (second arg) is the URL pattern web and \
+           SSR map ", code("window.location"), " against. Native backends \
+           ignore ", code("path"), "; they work purely from ",
           code("name"), " plus boxed params."),
 
         p("The generic ", code("P"), " is the typed payload the route carries. \
@@ -87,10 +101,11 @@ docs! {
         "##),
 
         p("The two methods round-trip your typed struct through a URL on web \
-           and SSR. ", code("to_path"), " builds the URL when you push the \
-           route; ", code("from_segments"), " parses it back when the \
-           browser's location changes. Native backends never call either \
-           method — they pass the boxed struct through directly."),
+           and SSR. ", code("to_path"), " builds the URL when you navigate to \
+           the route; ", code("from_segments"), " parses it back when the \
+           browser's location changes (back/forward, deep links). Native \
+           backends never call either method — they pass the boxed struct \
+           through directly."),
     },
 
     section(heading = "Why params are typed") {
@@ -108,40 +123,47 @@ docs! {
 
     section(heading = "Screens") {
         p("A ", code("Screen"), " is what a route's render closure returns: a \
-           primitive tree plus optional header configuration."),
+           primitive tree plus optional per-screen options."),
 
         code(rust, r##"
             use runtime_core::{Screen, ui};
+            use stack_navigator::StackScreenExt;
 
             fn render_home(_params: ()) -> Screen {
                 Screen::new(ui! {
                     // ...home page content
                 })
                 .title("Home")
-                .header_shown(true)
             }
         "##),
 
         p("The ", code("Screen::new(...)"), " builder takes anything that \
-           converts to a ", code("Element"), ". Chainable methods set \
-           per-screen header options:"),
+           converts to an ", code("Element"), ". For stack screens, the ",
+          code("StackScreenExt"), " trait (from ", code("stack-navigator"),
+          ") adds chainable header options:"),
 
         list(
-            [code(".title(\"...\")"), " — the title shown in the header bar."],
-            [code(".header_shown(bool)"), " — whether the header is visible."],
-            [code(".header_left(HeaderButton::new(\"back\", on_press))"),
-             " — left slot (replaces the default back button if set)."],
-            [code(".header_right(HeaderButton::new(\"settings\", on_press))"),
-             " — right slot."],
-            [code(".header_background(|| my_color())"), " / ",
-             code(".header_tint(...)"), " / ", code(".title_color(...)"),
-             " — colors. These are closures so they re-evaluate when the \
-              active theme changes, retinting the header reactively without \
-              a screen rebuild."],
+            [code(".title(\"...\")"), " — the screen title. Drives the \
+              native bar title on mobile and the ", code("StackHeader"),
+             " on web/desktop."],
+            [code(".header_left(HeaderButton::text(\"Edit\").on_press(...))"),
+             " — leading header slot."],
+            [code(".header_right(...)"), " — trailing header slot."],
+            [code(".hide_header(true)"), " — hide the header entirely for \
+              this screen."],
+            [code(".back_enabled(false)"),
+             " — lock the platform back affordance (iOS swipe-back, Android \
+              system back) while this screen is on top. Browser back cannot \
+              be locked — a platform constraint."],
+            [code(".fullscreen(true)"),
+             " — request full-screen (status bar / home indicator hidden) \
+              while this screen is on top. Native mobile only."],
         ),
 
-        p("If you don't need options, return a bare ", code("Element"),
-          " — the ", code("Into<Screen>"), " impl wraps it for you:"),
+        p("Swap screens draw no navigator chrome of their own, so they take \
+           no options today. If you don't need options, return a bare ",
+          code("Element"), " — the ", code("Into<Screen>"),
+          " impl wraps it for you:"),
 
         code(rust, r##"
             fn render_home(_: ()) -> Element {
@@ -149,233 +171,305 @@ docs! {
             }
         "##),
 
-        p("…and the navigator builder accepts it the same way."),
+        p("…and either navigator builder accepts it the same way."),
+    },
+
+    section(heading = "The swap navigator") {
+        p(code("SwapNavigator"), " manages a flat set of co-equal screens. \
+           There is no depth: selecting a screen swaps the one visible \
+           screen in the outlet. It's the behavior behind tab UIs, drawer / \
+           sidebar UIs, wizards, and site shells — the chrome around the \
+           outlet is what makes each of those look different."),
+
+        code(rust, r##"
+            use swap_navigator::{SwapBuilder, SwapHandle, SwapNavigator};
+            use idea_ui_nav::{TabBar, TabItem};
+            use runtime_core::{ui, Ref, Screen};
+
+            let nav: Ref<SwapHandle> = Ref::new();
+
+            let builder = SwapNavigator::new(&HOME)
+                .screen(HOME,    |_| Screen::new(home_page()))
+                .screen(SEARCH,  |_| Screen::new(search_page()))
+                .screen(PROFILE, |p: ProfileParams| Screen::new(profile_page(p)))
+                // The layout OWNS the chrome tree and splats `{nav.outlet}`
+                // where the active screen renders. This one is a tab UI:
+                .layout(|nav| ui! {
+                    view(style = fill_column) {
+                        view(style = grow) { { nav.outlet } }
+                        TabBar(
+                            items = vec![
+                                TabItem::new("home", "Home"),
+                                TabItem::new("search", "Search"),
+                                TabItem::new("profile", "Profile"),
+                            ],
+                            active_route = nav.active_route,
+                            on_select = nav.on_select,
+                        )
+                    }
+                });
+
+            ui! { builder.bind(nav) }
+        "##),
+
+        p("The ", code(".layout(|nav| …)"), " closure receives a ",
+          code("SwapContext"), ":"),
+
+        list(
+            [code("nav.outlet"),
+             " — splat it (", code("{ nav.outlet }"),
+             ") where the active screen mounts. It's a one-shot, non-",
+             code("Clone"),
+             " value: splat it exactly once, in one stable spot. It cannot \
+              be branched into a reactive ", code("if"), " / ", code("when"),
+             " — responsive layouts keep the outlet pinned and reactively \
+              restyle the chrome around it."],
+            [code("nav.active_route"), " — ",
+             code("Signal<&'static str>"),
+             ", the active screen's route name. Read it to highlight the \
+              live tab or sidebar link."],
+            [code("nav.active_path"), " — the active screen's full path."],
+            [code("nav.on_select"),
+             " — switch to a sibling screen by route name. What a tab bar \
+              or sidebar link calls."],
+        ),
+
+        p("For programmatic switching with typed params, ", code(".bind(...)"),
+          " fills a ", code("Ref<SwapHandle>"), " and ",
+          code("handle.select(&PROFILE, ProfileParams { id: 42 })"),
+          " builds the URL from the params and dispatches ", code("Select"),
+          ". Selecting the already-active screen is a no-op."),
+
+        p("If you skip ", code(".layout(...)"),
+          " entirely, the outlet fills the navigator with no surrounding \
+           chrome — useful when a parent already draws the chrome."),
+    },
+
+    section(heading = "Swap state preservation — MountPolicy") {
+        p("How an inactive swap screen behaves is controlled by ",
+          code("MountPolicy"), ", set navigator-wide via ",
+          code(".mount_policy(...)"), ":"),
+
+        list(
+            [code("LazyPersistent"),
+             " (default) — mount the screen the first time it's selected, \
+              then keep it mounted. Switching away preserves its state \
+              (scroll position, nested stack depth, form fields); switching \
+              back is instant. Matches React Navigation's tab default."],
+            [code("EagerPersistent"),
+             " — mount every screen at navigator creation. Higher memory; \
+              switches are pure visibility toggles. Use when all screens \
+              are \"always live.\""],
+            [code("LazyDisposing"),
+             " — drop the inactive screen's scope (and its background work) \
+              on switch; re-mount fresh on return. Lowest memory; loses \
+              state. Matches browser semantics — both doc sites use it so \
+              navigating away from a page tears its work down."],
+        ),
     },
 
     section(heading = "The stack navigator") {
-        p(code("Navigator"), " is the classic push/pop stack. It's what iOS \
-           calls a ", code("UINavigationController"), " and Android calls a \
-           back-stack-driven ", code("FragmentManager"), ". On web, it's an \
-           inline subtree swap that threads through ", code("history.pushState"),
-          " / ", code("popstate"), "."),
+        p(code("StackNavigator"), " is the push/pop sibling: ", code("push"),
+          " mounts a screen on top of a back-stack, ", code("pop"),
+          " removes the top and reveals the one below. The visible screen \
+           is the top of the stack, swapped into the same single outlet. \
+           Chrome is author layout here too — typically a ",
+          code("StackHeader"), " above the outlet:"),
 
         code(rust, r##"
-            use stack_navigator::Navigator;
-            use runtime_core::Ref;
+            use stack_navigator::{
+                header_state, StackBuilder, StackHandle, StackNavigator, StackScreenExt,
+            };
+            use idea_ui_nav::StackHeader;
+            use runtime_core::{rx, ui, Ref, Screen};
 
-            let nav: Ref<NavigatorHandle> = Ref::new();
+            let nav: Ref<StackHandle> = Ref::new();
 
-            ui! {
-                Navigator::new(&HOME)
-                    .screen(HOME,    |_| render_home(()))
-                    .screen(PROFILE, |p| render_profile(p))
-                    .screen(ABOUT,   |_| render_about(()))
-                    .bind(nav)
-            }
+            let builder = StackNavigator::new(&LIST)
+                .screen(LIST, {
+                    let nav = nav.clone();
+                    move |_| Screen::new(list_page(nav.clone())).title("Inbox")
+                })
+                .screen(DETAIL, |p: DetailParams| {
+                    Screen::new(detail_page(p)).title("Detail")
+                })
+                .layout(|nav| {
+                    let screen_chrome = nav.screen_chrome;
+                    let state = rx!(header_state(&screen_chrome));
+                    ui! {
+                        view(style = fill_column) {
+                            StackHeader(
+                                state = state,
+                                show_back = nav.can_go_back,
+                                on_back = Some(nav.pop.clone()),
+                            )
+                            view(style = grow) { { nav.outlet } }
+                        }
+                    }
+                });
+
+            ui! { builder.bind(nav) }
         "##),
 
-        p("The handle's commands:"),
+        p("The handle's commands (via the bound ", code("Ref<StackHandle>"),
+          "):"),
 
         list(
-            [code("nav.push(&PROFILE, ProfileParams { id: 42 })"),
+            [code("nav.push(&DETAIL, DetailParams { id: 42 })"),
              " — push a new screen onto the top."],
-            [code("nav.pop()"), " — pop the top screen."],
+            [code("nav.pop()"), " — pop the top screen (no-op at the root)."],
             [code("nav.replace(&route, params)"), " — replace the top of the stack."],
             [code("nav.reset(&route, params)"),
              " — clear the stack, mount the new route as the root. Useful \
               for post-login redirects."],
         ),
 
-        p("Each pushed screen runs inside its own reactive ", code("Scope"),
-          ". Popping drops the scope — every signal, effect, and ref \
-           allocated inside that screen is freed in one shot. You don't \
-           write screen-teardown code."),
-    },
+        p("The ", code(".layout(|nav| …)"), " closure receives a ",
+          code("StackContext"), " — the same ", code("outlet"), " / ",
+          code("active_route"), " / ", code("active_path"),
+          " as swap, plus stack-specific state:"),
 
-    section(heading = "What backends do for the stack") {
         list(
-            [code("iOS"), " — ", code("UINavigationController"),
-             " with a child ", code("UIViewController"),
-             " per pushed screen. The back-swipe gesture, the slide \
-              animation, the navigation bar all come from UIKit."],
-            [code("Android"), " — ", code("FrameLayout"), " driven by ",
-             code("FragmentManager"), ". Each push commits a new ",
-             code("Fragment"),
-             " and adds it to the back stack so the system Back button \
-              pops correctly."],
-            [code("Web"),
-             " — an inline container. push/pop swap the active subtree \
-              atomically. ", code("history.pushState"),
-             " writes a URL built from ",
-             code("params.to_path(route.path())"), "; ",
-             code("popstate"), " events drive pops."],
+            [code("nav.depth"), " — stack depth (1 at the root)."],
+            [code("nav.can_go_back"),
+             " — whether a pop is possible (depth > 1); gate the back \
+              affordance on it."],
+            [code("nav.pop"), " — pop the top screen."],
+            [code("nav.screen_chrome"),
+             " — the active screen's header slots, updated on every \
+              navigation. Read it via ", code("stack_navigator::header_state"),
+             " inside ", code("rx!"), " and feed the result to a ",
+             code("StackHeader"), "."],
         ),
+
+        p("Each pushed screen runs inside its own reactive scope. Popping \
+           drops the scope — every signal, effect, and ref allocated inside \
+           that screen is freed in one shot. You don't write screen-teardown \
+           code."),
     },
 
-    section(heading = "The tab navigator") {
-        p(code("TabNavigator"), " is a tab bar plus a switched content region."),
+    section(heading = "Stack retention — what happens below the top") {
+        p("Covered screens follow ", code("StackRetention"),
+          ", resolved per platform by default:"),
+
+        list(
+            [code("Retain"),
+             " — covered screens stay alive (scope + detached node); pop \
+              reveals them with all state intact. Native-stack semantics; \
+              the default everywhere except web."],
+            [code("Rebuild"),
+             " — covered screens are disposed on push; pop re-mounts the \
+              revealed screen from its URL (route pattern → typed params), \
+              exactly like a fresh navigation after a refresh. Browser \
+              semantics; the default on web. Also applies to cold-start \
+              deep links: the synthesized parent entry is URL-only and \
+              never mounts until you actually pop to it."],
+            [code("PlatformDefault"),
+             " — the default: ", code("Rebuild"), " on web, ",
+             code("Retain"), " everywhere else."],
+        ),
+
+        p("Force either with ", code(".retention(...)"),
+          " on the builder. Both are right for their platform — a native \
+           stack keeps covered screens alive so back reveals them with \
+           state intact, while a browser treats every navigation as \
+           URL-driven."),
+    },
+
+    section(heading = "Chrome is author layout — idea-ui-nav") {
+        p("Because chrome is just layout, you can build any navigation UI \
+           from plain views. ", code("idea_ui_nav"),
+          " packages the common, themed shapes so you don't have to:"),
+
+        list(
+            [code("TabBar"),
+             " — a themed tab bar for a swap navigator. Wire ",
+             code("active_route = nav.active_route"), " and ",
+             code("on_select = nav.on_select"),
+             "; the active tab highlights via the live route and taps \
+              dispatch ", code("Select"), "."],
+            [code("Drawer"),
+             " — a themed side panel wrapping the outlet: sliding panel, \
+              tap-to-close scrim, mount-once. ", code("is_open"),
+             " is a plain ", code("Signal<bool>"),
+             " the author owns — a hamburger opens it, sidebar links close \
+              it after selecting."],
+            [code("AppShell"),
+             " — the responsive \"pinned sidebar on desktop, drawer on \
+              mobile\" shell. The sidebar builds exactly ONCE; pinned vs \
+              drawer is static breakpoint styling that compiles to real ",
+             code("@media"),
+             " rules on web and SSR, so the server-rendered first paint is \
+              viewport-correct with no JS and crossing the breakpoint never \
+              remounts anything. Configure with ", code("is_open"), ", ",
+             code("pin_at"), " (default ", code("Breakpoint::Lg"), "), and ",
+             code("width"), "; use ", code("sidebar_pinned(pin_at)"),
+             " to hide the hamburger / skip drawer-closing while pinned."],
+            [code("StackHeader"),
+             " — a themed top bar for stack screens on web/desktop. It \
+              reads the active screen's ", code("StackHeaderState"),
+             " and self-suppresses when a native bar is already rendering \
+              it (mobile) or the screen set ", code("hide_header"),
+             " — so you place it unconditionally and nothing doubles."],
+        ),
 
         code(rust, r##"
-            use tab_navigator::{TabNavigator, TabSpec};
-
-            let tabs: Ref<TabsHandle> = Ref::new();
-
-            ui! {
-                TabNavigator::new(&HOME)
-                    .tab(HOME,    TabSpec::new("Home").icon("house"),       |_| home_screen())
-                    .tab(SEARCH,  TabSpec::new("Search").icon("magnifyingglass"), |_| search_screen())
-                    .tab(PROFILE, TabSpec::new("Profile").icon("person"),   |p| profile_screen(p))
-                    .bind(tabs)
-            }
-        "##),
-
-        p("The ", code("TabSpec"), " carries the chrome — label, icon, \
-           optional reactive badge:"),
-
-        code(rust, r##"
-            TabSpec::new("Messages")
-                .icon("envelope")
-                .badge(move || {
-                    let count = unread.get();
-                    if count == 0 { String::new() } else { count.to_string() }
+            // The docs site's own shell: swap navigator + AppShell.
+            SwapNavigator::new(&OVERVIEW)
+                .screen(OVERVIEW, |_| Screen::new(overview_page()))
+                // ...more screens...
+                .mount_policy(MountPolicy::LazyDisposing)
+                .layout(move |nav| ui! {
+                    AppShell(
+                        sidebar = vec![sidebar(nav.active_route)],
+                        is_open = drawer_open,
+                        pin_at = Breakpoint::Lg,
+                        width = 260.0,
+                    ) {
+                        // The one stable spot for the one-shot outlet:
+                        { nav.outlet }
+                    }
                 })
         "##),
-
-        p("The badge closure runs in an Effect; reading signals subscribes \
-           it. Returning an empty string hides the badge."),
     },
 
-    section(heading = "Tab state preservation") {
-        p("How a tab's screen behaves when it's not the active one is \
-           controlled by ", code("MountPolicy"), ":"),
+    section(heading = "What backends do") {
+        p("Both SDKs drive everything through the framework's ",
+          code("NavigatorHost"),
+          " callbacks (build the layout with an outlet, mount/release \
+           per-screen subtrees, swap nodes), so ONE backend-neutral handler \
+           serves every backend — there are no per-backend twins to drift \
+           apart. Two surfaces get extra treatment:"),
 
         list(
-            [code("LazyPersistent"),
-             " (default) — mount the screen the first time its tab is \
-              activated, then keep it mounted forever. Switching away \
-              preserves its state (scroll position, nested stack depth, \
-              form fields). Switching back is instant — the screen is \
-              still there. Matches React Navigation's default."],
-            [code("EagerPersistent"),
-             " — mount every tab's screen at navigator creation. Higher \
-              memory; tab switches are pure visibility toggles. Use this \
-              for apps where all tabs are \"always live.\""],
-            [code("LazyDisposing"),
-             " — drop the inactive tab's scope on switch. Lowest memory; \
-              loses state. Use for tabs whose contents are cheap to rebuild."],
+            [code("Web"),
+             " — URL sync is substrate-provided and automatic: ",
+             code("Select"), " and ", code("Push"), " write ",
+             code("history.pushState"),
+             " entries, browser back/forward reconcile into ordinary nav \
+              commands, cold-start deep links seed the right screen, and \
+              per-entry scroll offsets restore on back. The handlers never \
+              touch the URL themselves."],
+            [code("iOS / Android"),
+             " — the stack still FEELS native: inside the outlet lives a \
+              real ", code("UINavigationController"),
+             " (interactive swipe-back, native transitions) or the \
+              Fragment back-stack (system back button, back-lock). The \
+              native bar is always hidden — the header is the author's ",
+             code("StackHeader"),
+             ", driven by the same ", code("screen_chrome"),
+             " state, so every backend renders the same chrome with native \
+              transition mechanics underneath."],
         ),
 
-        p("Set it per-tab via ",
-          code(".tab(...).mount_policy(MountPolicy::EagerPersistent)"),
-          " or as a navigator default."),
-    },
-
-    section(heading = "What backends do for tabs") {
-        list(
-            [code("iOS"), " — ", code("UITabBarController"),
-             ". The bar is iOS-rendered (icons from SF Symbols by default; \
-              you can supply your own)."],
-            [code("Android"), " — ", code("BottomNavigationView"),
-             " (bottom placement) or ", code("TabLayout"),
-             " (top placement), hosting child fragments."],
-            [code("Web"), " — a ", code("<nav role=\"tablist\">"),
-             " plus a content region. The bar's HTML is the framework's; \
-              the icons are SVGs."],
-        ),
-
-        p("The handle exposes ", code("tabs.select(&route, params)"),
-          " for programmatic switching. Users tap the bar normally."),
-    },
-
-    section(heading = "The drawer navigator") {
-        p(code("DrawerNavigator"), " is a slide-in side panel plus a \
-           switched body region. Users open the drawer with a hamburger \
-           button (or the platform's edge-swipe gesture); the drawer's \
-           content panel renders whatever navigation UI the design calls \
-           for; tapping an entry switches the body to that entry's screen."),
-
-        code(rust, r##"
-            use drawer_navigator::{DrawerNavigator, DrawerSide};
-
-            let drawer: Ref<DrawerHandle> = Ref::new();
-
-            ui! {
-                DrawerNavigator::new(&HOME)
-                    .screen(HOME,    |_| Screen::new(home_page()).title("Home"))
-                    .screen(LIBRARY, |_| Screen::new(library_page()).title("Library"))
-                    .screen(SETTINGS,|_| Screen::new(settings_page()).title("Settings"))
-                    .content(|props| drawer_panel(props))
-                    .side(DrawerSide::Start)
-                    .bind(drawer)
-            }
-        "##),
-
-        p("The ", code("content"), " closure renders the drawer's panel. It \
-           receives a ", code("DrawerContentProps"), " with the nav \
-           callbacks and reactive state, so the panel can build whatever \
-           shape — a list of ", code("Link"), "s, a brand header, a \
-           settings toggle at the bottom, anything."),
-
-        p("Handle commands:"),
-
-        list(
-            [code("drawer.select(&route, params)"),
-             " — switch the active screen."],
-            [code("drawer.open()"), " / ", code("drawer.close()"), " / ",
-             code("drawer.toggle()"), " — control the panel."],
-            [code("drawer.is_open()"),
-             " — current state (non-reactive read; subscribe to the signal \
-              directly if you need reactivity)."],
-        ),
-    },
-
-    section(heading = "Drawer vs sidebar — the breakpoint behavior") {
-        p("This is the part of the drawer that's interesting cross-platform."),
-
-        p("On a phone, the drawer slides over the body — a temporary modal \
-           panel with a scrim. On a tablet, desktop browser, or any wide \
-           viewport, the drawer pins beside the body permanently, becoming \
-           the sidebar. Tapping inside the body doesn't dismiss it because \
-           there's nothing to dismiss; it's just always there."),
-
-        p("The framework doesn't make you wire this up. Each backend \
-           chooses based on viewport width:"),
-
-        list(
-            [code("iOS"), " uses the size class — regular-width = pinned \
-              sidebar, compact-width = modal drawer. Same posture as ",
-             code("UISplitViewController"),
-             " without adopting that API's opinions."],
-            [code("Android"), " uses ", code("Configuration.screenWidthDp"), "."],
-            [code("Web"), " uses a CSS media query."],
-        ),
-
-        p("You don't get a knob to override this from app code. The \
-           reasoning is that phone vs tablet adaptation is a backend \
-           concern: each platform has conventions about what \"tablet\" \
-           means, and the backend respects those conventions."),
-
-        p("If you genuinely need different layouts at different widths \
-           beyond the drawer's auto-adapt, that's a stylesheet concern — \
-           see Styles."),
-    },
-
-    section(heading = "DrawerType — the animation") {
-        p("Two animation styles:"),
-
-        list(
-            [code("Front"),
-             " — the drawer slides over the body, body stays put, scrim \
-              dims the body. Material's default; React Navigation's ",
-             code("\"front\""), " type."],
-            [code("Slide"),
-             " — both drawer and body slide together. The body moves to \
-              reveal the drawer underneath. iOS-leaning default; React \
-              Navigation's ", code("\"slide\""), " type."],
-        ),
-
-        p("Set with ", code(".drawer_type(DrawerType::Slide)"),
-          ". Defaults to the platform's idiomatic choice."),
+        p("For SSR/SSG, register the handlers on the SSR backend with ",
+          code("swap_navigator::register_generic"), " / ",
+          code("stack_navigator::register_generic"),
+          "; for ", code("idealyst dev"), " non-local mode, the sidecar \
+           registers the ", code("recording"),
+          " modules so screen swaps ship as plain node ops over the wire. \
+           On the app backends (web, iOS, Android, macOS) the SDKs \
+           self-register — building the navigator is enough."),
     },
 
     section(heading = "The Link primitive") {
@@ -384,7 +478,7 @@ docs! {
           code("on_click"), " — but it has costs:"),
 
         list(
-            ["You have to thread a ", code("Ref<NavigatorHandle>"),
+            ["You have to thread a handle ", code("Ref"),
              " through every component that needs to navigate."],
             ["The browser's link semantics (right-click \"copy link\", \
               cmd-click new tab, hover URL preview, keyboard activation, \
@@ -417,105 +511,92 @@ docs! {
               graph by walking the primitive tree."],
             ["No prop drilling: the ", code("Link"),
              " reads the ambient navigator — the closest enclosing \
-              navigator whose ", code("mount_screen"),
-             " is building this subtree — and dispatches through it."],
-        ),
-    },
-
-    section(heading = "Picking the right NavKind") {
-        p("Activation dispatches a ", code("NavCommand"), " against the \
-           ambient navigator. The kind picks which command:"),
-
-        list(
-            [code("Push"),
-             " — push the route. Default inside a stack navigator."],
-            [code("Replace"), " — replace the top of the stack."],
-            [code("Reset"),
-             " — clear the stack and mount the route as the root. Useful \
-              for post-login redirects."],
-            [code("Select"),
-             " — switch active screen without changing stack depth. \
-              Default inside tabs and drawer navigators."],
+              navigator whose screen is building this subtree — and \
+              dispatches through it."],
         ),
 
-        code(rust, r##"
-            link(route = &HOME, params = (), kind = NavKind::Reset) {
-                text { "Sign out" }
-            }
-        "##),
-
-        p("The constructor picks a default based on the ambient navigator \
-           kind, so ", code("link(route = ..., params = ...)"),
-          " (no ", code("kind"), ") does the right thing in any context."),
+        p("The command a link dispatches follows the ambient navigator's \
+           behavior: inside a swap navigator the installed link activator \
+           rewrites activation to ", code("Select"),
+          " (links switch, never push); inside a stack it defaults to ",
+          code("Push"), ". A bare ", code("link(route = ..., params = ...)"),
+          " therefore does the right thing in any context."),
     },
 
     section(heading = "Nested navigators") {
-        p("Navigators nest. A tab navigator at the root with a stack \
-           navigator inside each tab is a common shape:"),
+        p("Navigators nest by putting one navigator inside another's \
+           screen. A common app shape — drawer shell at the root, tabs in \
+           one section, a stack inside a tab — is three navigators deep, \
+           every level author-chromed (this is exactly the ",
+          code("examples/nav-showcase"), " structure):"),
 
         code(rust, r##"
-            ui! {
-                TabNavigator::new(&TAB_HOME)
-                    .tab(TAB_HOME, TabSpec::new("Home"), |_| ui! {
-                        Navigator::new(&HOME)
-                            .screen(HOME, |_| home_screen())
-                            .screen(DETAIL, |p| detail_screen(p))
-                    })
-                    .tab(TAB_PROFILE, TabSpec::new("Profile"), |_| ui! {
-                        Navigator::new(&PROFILE_ROOT)
-                            .screen(PROFILE_ROOT, |_| profile_root_screen())
-                            .screen(EDIT_PROFILE, |_| edit_profile_screen())
-                    })
+            // Root: swap + Drawer chrome
+            SwapNavigator::new(&D_HOME)
+                .screen(D_HOME,     |_| Screen::new(tabs_section()))
+                .screen(D_SETTINGS, |_| Screen::new(settings_stack()))
+                .layout(move |nav| ui! {
+                    Drawer(sidebar = sidebar(nav.on_select.clone()), is_open = drawer_open) {
+                        { nav.outlet }
+                    }
+                });
+
+            // "Home" section: swap + TabBar; the Feed tab hosts a stack
+            fn tabs_section() -> Element {
+                let builder = SwapNavigator::new(&T_FEED)
+                    .screen(T_FEED,   |_| Screen::new(feed_stack()))
+                    .screen(T_ALERTS, |_| Screen::new(alerts_page()))
+                    .layout(|nav| ui! {
+                        view(style = fill_column) {
+                            view(style = grow) { { nav.outlet } }
+                            TabBar(
+                                items = vec![
+                                    TabItem::new("feed", "Feed"),
+                                    TabItem::new("alerts", "Alerts"),
+                                ],
+                                active_route = nav.active_route,
+                                on_select = nav.on_select,
+                            )
+                        }
+                    });
+                ui! { builder }
             }
+
+            // Feed: a stack (list → detail) inside the Feed tab
+            fn feed_stack() -> Element { /* StackNavigator::new(&F_LIST)… */ }
         "##),
 
-        p("A ", code("Link"), " inside the home tab's ", code("DETAIL"),
-          " screen targets the home tab's stack — not the root tabs. The \
+        p("A ", code("Link"), " inside the feed stack's detail screen \
+           targets that stack — not the tabs, not the drawer. The \
            ambient-navigator stack pushes each navigator's control plane \
            as its screens build, so ", code("Link"),
           " always finds the innermost navigator by default."),
 
         p("If you need to break out — e.g. a \"log out\" link inside a \
            deeply nested screen needs to reset the root navigator — \
-           capture a ", code("Ref<NavigatorHandle>"),
-          " to the outer navigator and call its imperative methods \
-           directly, or use a future ", code(".via(ref)"),
-          " Link override."),
-    },
+           capture the outer navigator's handle ", code("Ref"),
+          " and call its imperative methods directly."),
 
-    section(heading = "Tab state survives switches") {
-        p("Combined with ", code("MountPolicy::LazyPersistent"),
+        p("Combined with the swap default ", code("MountPolicy::LazyPersistent"),
           ", nested stacks keep their state: navigate three levels deep \
-           into the Home tab, switch to Profile, switch back — you're \
-           still three levels deep. The nested stack's screens are still \
+           into the Feed tab, switch to Alerts, switch back — you're still \
+           three levels deep. The nested stack's screens are still \
            mounted; their signals still hold their values."),
     },
 
-    section(heading = "Headers and theming") {
-        p("Each navigator kind exposes a top-level ", code(".header(...)"),
-          " helper that takes a ", code("HeaderStyle"),
-          " (or a closure producing one):"),
-
-        code(rust, r##"
-            DrawerNavigator::new(&HOME)
-                .screen(/* ... */)
-                .header(|theme: &MyTheme| HeaderStyle {
-                    background: Some(theme.surface.value().clone()),
-                    title: Some(theme.text.value().clone()),
-                    tint: Some(theme.text.value().clone()),
-                    body_background: Some(theme.background.value().clone()),
-                })
-        "##),
-
-        p("The closure runs against the active theme, so swapping themes \
-           re-tints the bar without a screen rebuild. Per-screen options \
-           (set via ",
-          code("Screen::new(...).title(...).header_left(...)"),
-          ") layer on top of the navigator-level defaults."),
-
-        p("idea-ui ships an ", code("idea_header(...)"),
-          " helper that bundles common patterns. The docs site uses it; \
-           you can use it, fork it, or write your own."),
+    section(heading = "Sizing — navigators and outlets fill") {
+        p("The navigator's root fills its container by default (width/height \
+           100% + ", code("flex-grow: 1"),
+          "), so an app whose root is a navigator fills the viewport on \
+           every backend. The outlet fills too: a style-less ",
+          code("{nav.outlet}"),
+          " defaults to a bounded, fillable flex region (",
+          code("flex: 1 1 0"), " + ", code("min-height: 0"),
+          "), so screens that assume they can fill — and scroll views that \
+           need a bounded height — work with zero configuration. Override \
+           either by styling it directly: ", code(".with_style(...)"),
+          " on the navigator builder, ",
+          code("ctx.outlet.with_style(...)"), " on the outlet."),
     },
 
     section(heading = "Scopes and lifecycle, recap") {
@@ -523,18 +604,20 @@ docs! {
 
         list(
             ["Each mounted screen has its own reactive scope. When the \
-              screen unmounts (pop, tab switch with ",
-             code("LazyDisposing"),
-             ", drawer select away from), the scope drops. Every signal, \
-              effect, and ref allocated inside is freed."],
+              screen unmounts (pop with ", code("Rebuild"),
+             " retention, swap-away with ", code("LazyDisposing"),
+             "), the scope drops. Every signal, effect, and ref allocated \
+              inside is freed."],
             ["Backend nodes survive when their identity is stable. Hot \
               reload preserves a screen's nodes if the screen's place in \
               the tree hasn't moved."],
-            ["Navigation state itself is reactive. Each navigator \
-              publishes a ", code("NavState"),
-             " signal bundle that layout closures and external code can \
-              subscribe to. The drawer's open-state, the tab navigator's \
-              active index, the stack's depth — all observable as signals."],
+            ["Navigation state itself is reactive. The layout closure's \
+              context signals (", code("active_route"), ", ",
+             code("active_path"), ", ", code("depth"), ", ",
+             code("can_go_back"), ", ", code("screen_chrome"),
+             ") are the walker's scoped nav-state mirrors — chrome and \
+              external code subscribe to them like any other signal, and \
+              they're freed with the navigator."],
         ),
     },
 
@@ -543,12 +626,14 @@ docs! {
             ["Routes and params — the full ", code("RouteParams"),
              " trait, the pattern matching algorithm, and the URL ↔ \
               typed-payload story."],
-            ["The ", code("Link"), " primitive — every prop, every ",
-             code("NavKind"),
-             ", and how the ambient stack works in detail."],
-            ["Layout and chrome — ", code("LayoutPlan"), " / ",
-             code("LayoutBuilder"),
-             ", how navigators feed into custom layout for web."],
+            ["The ", code("Link"), " primitive — every prop and how the \
+              ambient stack works in detail."],
+            [link("Primitives", to = "primitives"), " — where ",
+             code("Element::Navigator"),
+             " and the outlet sit among the other primitives."],
+            [link("Writing a backend", to = "writing-a-backend"),
+             " — the ", code("create_navigator"), " / ",
+             code("NavigatorHost"), " contract a backend implements."],
             ["Hot reload — how navigation state survives source edits."],
         ),
     },

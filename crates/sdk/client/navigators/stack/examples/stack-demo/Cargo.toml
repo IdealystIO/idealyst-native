@@ -1,0 +1,40 @@
+[package]
+name = "stack-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Outlet-model stack demo — root pushes detail screens; the header is author layout (idea-ui-nav StackHeader) wrapping the navigator's outlet, with a back arrow gated on can_go_back."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+sidecar = ["dep:dev-server", "stack-navigator/runtime-server"]
+
+[dependencies]
+runtime-core = { workspace = true }
+stack-navigator = { workspace = true }
+idea-ui = { workspace = true }
+idea-ui-nav = { workspace = true }
+dev-server = { workspace = true, optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+backend-android-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+backend-macos = { workspace = true }
+
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))'.dependencies]
+backend-terminal = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Stack Demo v2"
+bundle_id = "ai.truday.idealyst.stackdemov2"
+version   = "0.0.1"
+targets   = ["web", "ios", "android"]

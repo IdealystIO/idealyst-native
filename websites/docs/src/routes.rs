@@ -2,8 +2,9 @@
 //!
 //! Routes are organized into hierarchical sections; the sidebar
 //! renders each section's label as a small header and the entries
-//! beneath it as nav links. On mobile, the same flat list flows
-//! through the DrawerNavigator's drawer entries.
+//! beneath it as nav links. On mobile, the same sidebar renders in
+//! the `AppShell`'s off-canvas drawer panel (built once, shared with
+//! the pinned desktop sidebar).
 
 use runtime_core::Route;
 

@@ -38,10 +38,14 @@
 //! debugging the leak with a memory profiler that needs unbounded
 //! growth).
 
-/// Default cap. 2 GB is ~40× the steady-state RSS of an idle MCP
-/// server and ~10× a typical `dev` orchestrator, so a leak trips
-/// the cap well before it can crater the host.
-pub const DEFAULT_LIMIT_MB: u64 = 2048;
+/// Default cap. 4 GB is ~80× the steady-state RSS of an idle MCP
+/// server and ~20× a typical `dev` orchestrator, so a leak still
+/// trips the cap well before it can crater the host — while leaving
+/// headroom for the CLI's legitimately heavy in-process work:
+/// `wasm-split` on a debug-build wasm parses + rewrites the whole
+/// module in memory and peaks past 2 GB on large apps (the website's
+/// ~42 MB post-bindgen debug wasm aborted at the old 2 GB cap).
+pub const DEFAULT_LIMIT_MB: u64 = 4096;
 
 /// Env var name for override. `0` disables.
 pub const ENV_OVERRIDE: &str = "IDEALYST_MEMORY_LIMIT_MB";

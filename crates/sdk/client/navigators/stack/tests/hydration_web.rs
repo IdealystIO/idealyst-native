@@ -1,84 +1,61 @@
-//! Web hydration regression: the navigator's INITIAL screen must be built
-//! exactly ONCE during SSR hydration — not twice.
+//! SSR-hydration for the outlet-model stack: the client mounts over
+//! server-rendered HTML and the initial screen is BUILT exactly once
+//! (the walker's `attach_initial` build; the handler's deferred layout
+//! microtask seats that same screen instead of mounting a second copy).
 //!
-//! Bug: in local-render mode the walker builds the initial screen and hands
-//! it to `navigator_attach_initial` (which, under hydration, adopts the
-//! server's screen DOM in place), AND a create-time microtask separately
-//! auto-mounts the initial screen. Off hydration the `attach_initial` build is
-//! a discarded throwaway; but under hydration the throwaway build ADOPTS the
-//! SSR DOM while the microtask builds a FRESH copy — so the whole screen
-//! (chrome, nav, content) renders twice.
-//!
-//! Fix (`helpers/web` + `backend_web::is_hydrating`): during hydration the
-//! walker's `attach_initial` is the authoritative, already-adopted mount and
-//! the create-time microtask skips.
-//!
-//! The test renders the navigator's SSR HTML via `backend-ssr`, injects it
-//! into `#app`, then drives a real `WebBackend::hydrate` + `runtime_core::mount`
-//! in a headless browser and asserts the initial screen is BUILT exactly once.
-//!
-//! Scope note: this is an INTEGRATION smoke test for the navigator hydration
-//! path — it exercises `hydrate → mount → drain(microtask) → finish` end to end
-//! (and caught a cyclic-insert crash during development). It does not, on its
-//! own, reproduce the full-app duplication (that needs the app's exact
-//! structure/URL/adoption); the strict behavioral 2→1 guard is the e2e
-//! (Playwright) check against the built site.
+//! Mirrors the legacy `stack-navigator/tests/hydration_web.rs` contract
+//! so the outlet model can replace it without regressing hydration.
+//! Browser-run (`wasm_bindgen_test_configure!(run_in_browser)`) — run
+//! with `wasm-pack test --headless --chrome`.
 
 #![cfg(target_arch = "wasm32")]
 
-use std::cell::Cell;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use backend_web::WebBackend;
 use runtime_core::primitives::navigator::Screen;
-use runtime_core::{text, view, Route};
-use stack_navigator::{Navigator, StackBuilder, StackScreenExt};
+use runtime_core::{text, view, IntoElement, Route};
+use stack_navigator::{StackBuilder, StackNavigator, StackScreenExt};
 use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
 const HOME: Route<()> = Route::<()>::new("home", "/");
 
-// A marker only the initial screen renders, so we can count screen copies.
 const MARKER: &str = "HYDRATE-SCREEN-MARKER";
 
 fn app_tree(builds: Rc<Cell<u32>>) -> runtime_core::Element {
-    Navigator::new(&HOME)
+    StackNavigator::new(&HOME)
         .screen(HOME, move |_| {
             builds.set(builds.get() + 1);
-            Screen::new(view(vec![text(MARKER).into()]))
+            Screen::new(view(vec![text(MARKER).into()])).title("Home")
+        })
+        .layout(|nav| {
+            view(vec![text("HEADER CHROME").into_element(), nav.outlet]).into_element()
         })
         .into()
 }
 
 #[wasm_bindgen_test]
 fn initial_screen_not_duplicated_under_hydration() {
-    // 1. Render the SSR HTML for the navigator at "/" (faithful structure).
+    // 1. Server render (same tree, generic SSR registration).
     let ssr_builds = Rc::new(Cell::new(0u32));
     let ssr_html = {
         let b = ssr_builds.clone();
-        // Register the navigator's SSR chrome handler — same as the app's
-        // `register_ssr_extensions` — so the container carries the
-        // structural `NAV_ROOT_HYDRATION_CLASS` marker and the client
-        // adopts it (rather than rebuilding fresh).
         backend_ssr::render_path_with(
             "/",
-            |bk| stack_navigator::chrome::register(bk),
+            |bk| stack_navigator::register_generic(bk),
             move || app_tree(b.clone()),
         )
         .html
     };
-    assert!(
-        ssr_html.contains(MARKER),
-        "SSR should render the initial screen once: {ssr_html}"
-    );
+    assert!(ssr_html.contains(MARKER), "SSR rendered the screen: {ssr_html}");
+    assert!(ssr_html.contains("HEADER CHROME"), "SSR rendered the chrome: {ssr_html}");
 
-    // 2. Inject it as the pre-rendered document the client hydrates.
+    // 2. Inject as the pre-rendered document; force the URL to "/" so
+    //    the client's cold-start resolution matches the server's.
     let win = web_sys::window().unwrap();
-    // The create-time auto-mount microtask is URL-driven (it mounts the initial
-    // route only when `current_pathname() == "/"`); the wasm-test page URL
-    // isn't "/", so force it so the microtask path is actually exercised.
     win.history()
         .unwrap()
         .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some("/"))
@@ -92,29 +69,26 @@ fn initial_screen_not_duplicated_under_hydration() {
     app.set_inner_html(&ssr_html);
     doc.body().unwrap().append_child(&app).unwrap();
 
-    // 3. Hydrate + mount the SAME tree. Count client-side screen builds only.
+    // 3. Hydrate + mount the SAME tree; count client-side screen builds.
     let client_builds = Rc::new(Cell::new(0u32));
     backend_web::install_scheduler();
     let mut backend = WebBackend::hydrate("#app");
-    stack_navigator::register(&mut backend); // inventory submit isn't retained in a test bin
+    stack_navigator::register(&mut backend);
     let rc = Rc::new(RefCell::new(backend));
     backend_web::install_global_self(&rc);
     let builds = client_builds.clone();
     let _owner = runtime_core::mount(rc, move || app_tree(builds.clone()));
 
-    // `mount` runs the walker pass AND drains the buffered create-time
-    // microtask inside the adoption window. This is the invariant the fix
-    // guarantees: the initial screen is BUILT exactly once under hydration.
-    // Before the fix it builds twice — the walker's `attach_initial` (which
-    // adopts the SSR screen in place) AND the create-time microtask (fresh) —
-    // which is what duplicates the whole screen tree. After the fix the
-    // microtask skips during hydration and `attach_initial` is authoritative.
     assert_eq!(
         client_builds.get(),
         1,
-        "initial screen must BUILD exactly once under hydration, not twice \
-         (walker attach_initial is authoritative; create-time microtask skips) \
-         — got {} builds",
-        client_builds.get()
+        "initial screen must BUILD exactly once under hydration — the \
+         walker's attach_initial build is authoritative and the handler's \
+         deferred seating must reuse it, not mount a second copy"
     );
+
+    // The visible tree has exactly one marker + the chrome.
+    let body_text = doc.body().unwrap().text_content().unwrap_or_default();
+    let marker_count = body_text.matches(MARKER).count();
+    assert_eq!(marker_count, 1, "one screen copy in the DOM, got: {body_text}");
 }

@@ -23,7 +23,7 @@ use runtime_core::{
     text, view, Backend, Color, Length, Position, Route, StyleApplication, StyleRules,
     StyleSheet, Tokenized,
 };
-use stack_navigator::{Navigator, StackBuilder, StackPresentation};
+use stack_navigator::{StackBuilder, StackNavigator, StackPresentation};
 
 const HOME: Route<()> = Route::<()>::new("home", "/");
 
@@ -72,7 +72,7 @@ fn screen_style_overlay_merges_fill_rules_over_author_style() {
 
     let backend = Rc::new(RefCell::new(mock));
     let _owner = runtime_core::mount(backend.clone(), move || {
-        Navigator::new(&HOME)
+        StackNavigator::new(&HOME)
             .screen(HOME, |_| {
                 // The screen's author style deliberately CONFLICTS on
                 // `position` (the field the legacy CSS needed `!important`

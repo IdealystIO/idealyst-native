@@ -600,3 +600,73 @@ fn navigator_root_author_style_overrides_default_fill() {
         b.dump()
     );
 }
+
+/// Regression: an `effect!` created directly in the author `.layout(|nav| …)`
+/// closure must be legal — the closure runs inside the navigator's retained
+/// chrome scope, exactly like a component body.
+///
+/// The bug (website migration): the SDK handlers built the layout Element
+/// FIRST and only then handed it to `NavigatorHost::build_layout_with_outlet`,
+/// which opened the chrome scope around the *element build*. Code executed in
+/// the layout closure itself (the website's drawer auto-close `effect!` on
+/// `active_route`) therefore ran with no active reactive scope and panicked
+/// at mount ("effect! { … } used with no active reactive scope"), blanking
+/// the whole app. The host now takes the layout *producer* and runs it inside
+/// the scope, so the effect is owned by the navigator and freed at teardown.
+#[test]
+fn regression_author_layout_effect_has_reactive_scope() {
+    install_buffering_scheduler();
+
+    let mut mock = MockBackend::new();
+    mock.register_navigator::<SwapPresentation, _>(|| Box::new(SwapHandler::<MockBackend>::new()));
+    let backend = Rc::new(RefCell::new(mock));
+
+    // Log of `active_route` values observed by the author-chrome effect.
+    let seen: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+
+    let nav: Ref<SwapHandle> = Ref::new();
+    let nav_for_app = nav.clone();
+    let seen_for_app = seen.clone();
+    let owner: Box<dyn Any> = Box::new(runtime_core::mount(backend.clone(), move || {
+        use swap_navigator::SwapNavigator;
+        let nav = nav_for_app.clone();
+        let seen = seen_for_app.clone();
+        SwapNavigator::new(&HOME)
+            .screen(HOME, |_| Screen::new(view(vec![text("HOME CONTENT").into()])))
+            .screen(SETTINGS, |_| Screen::new(view(vec![text("SETTINGS CONTENT").into()])))
+            .layout(move |ctx| {
+                // The website's drawer auto-close shape: subscribe to every
+                // navigation from author chrome. Panicked before the fix.
+                let active_route = ctx.active_route;
+                let seen = seen.clone();
+                runtime_core::effect!({
+                    seen.borrow_mut().push(active_route.get());
+                });
+                view(vec![ctx.outlet, text("BAR").into_element()]).into_element()
+            })
+            .bind(nav)
+            .into()
+    }));
+    runtime_core::drain_buffered_microtasks();
+
+    assert_eq!(
+        seen.borrow().as_slice(),
+        &["home"],
+        "chrome effect ran once at mount with the initial route"
+    );
+
+    // Navigating re-runs the effect (it subscribed to `active_route`).
+    nav.get().expect("SwapHandle filled after mount").select(&SETTINGS, ());
+    runtime_core::drain_buffered_microtasks();
+    assert_eq!(
+        seen.borrow().as_slice(),
+        &["home", "settings"],
+        "chrome effect re-ran on Select"
+    );
+
+    // Teardown: the effect is owned by the navigator's chrome scope, so
+    // unmounting must free it cleanly (no freed-signal read, no abort).
+    drop(owner);
+    runtime_core::drain_buffered_microtasks();
+    assert_eq!(seen.borrow().len(), 2, "effect did not fire during teardown");
+}

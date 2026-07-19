@@ -25,10 +25,18 @@
 //!   client. So scheduler tick rate = client raf rate. Idle sessions
 //!   pay nothing.
 //!
-//! - **Microtask = synchronous.** Native scheduler convention: no
-//!   event loop to defer to, so microtasks just run inline at queue
-//!   time. Same as `runtime_core::scheduling::schedule_microtask`'s
-//!   built-in fallback on non-wasm targets.
+//! - **Microtask = queued, drained at flush points.** Originally
+//!   synchronous-inline (the native fallback convention), but the
+//!   outlet-model navigators (`swap-navigator`, `stack-navigator`)
+//!   defer their author-layout build to a microtask precisely so it
+//!   runs AFTER the walker's `create_navigator` backend borrow releases
+//!   — running it inline re-enters the borrow and panics ("RefCell
+//!   already borrowed"), exactly what the web promise queue, the macOS
+//!   mount buffer, and the SSR queuing scheduler all avoid. Microtasks
+//!   now queue and drain (to empty, FIFO) in [`drive_pending`] — which
+//!   runs on every client `RequestFrame` — and before every
+//!   `drain_commands` flush, so their recorded commands always make the
+//!   next sync.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -57,6 +65,31 @@ thread_local! {
     /// entries in practice (timeline events, transition tails).
     static DEADLINES: RefCell<Vec<DeadlineEntry>> =
         RefCell::new(Vec::new());
+
+    /// Queued microtasks (see the module doc: queued so navigator
+    /// layout builds run outside the walker's backend borrow). Drained
+    /// FIFO-to-empty by [`drain_microtasks`].
+    static MICROTASKS: RefCell<Vec<Box<dyn FnOnce() + 'static>>> =
+        RefCell::new(Vec::new());
+}
+
+/// Drain the queued microtasks to empty (a task may enqueue more;
+/// bounded so a runaway self-reschedule panics instead of hanging).
+/// Runs from [`drive_pending`] and before every recorder
+/// `drain_commands` flush. Must be called with the recorder backend
+/// UN-borrowed — the queued closures re-enter it.
+pub fn drain_microtasks() {
+    for _ in 0..1000 {
+        let batch: Vec<Box<dyn FnOnce()>> =
+            MICROTASKS.with(|q| std::mem::take(&mut *q.borrow_mut()));
+        if batch.is_empty() {
+            return;
+        }
+        for f in batch {
+            f();
+        }
+    }
+    panic!("SidecarScheduler: microtask queue never drained (runaway reschedule?)");
 }
 
 type RafFn = Box<dyn FnMut() + 'static>;
@@ -97,10 +130,13 @@ struct DeadlineEntry {
 
 impl Scheduler for SidecarScheduler {
     fn schedule_microtask(&self, f: Box<dyn FnOnce() + 'static>) {
-        // No event loop to defer to. Synchronous-now matches the
-        // built-in `schedule_microtask` fallback for native targets
-        // and is what every other dev-server code path assumes.
-        f();
+        // Queue, don't run inline: the outlet-model navigators defer
+        // their layout build to a microtask so it runs AFTER the
+        // walker's `create_navigator` backend borrow releases; inline
+        // execution re-enters the borrow and panics. Drained by
+        // `drive_pending` (every client RequestFrame) and before each
+        // recorder `drain_commands` flush — see the module doc.
+        MICROTASKS.with(|q| q.borrow_mut().push(f));
     }
 
     fn after_animation_frame(
@@ -197,10 +233,12 @@ pub fn install() {
 /// The runtime-server sidecar's session thread calls this from
 /// `WireRecordingBackend::tick_animations` on each `RequestFrame`.
 ///
-/// Ordering matches browser convention: deadlines (timeouts) first,
-/// raf_loops second. Microtasks are synchronous-at-queue-time so
-/// they're already drained by the time we get here.
+/// Ordering matches browser convention: microtasks first (they were
+/// queued before this frame), then deadlines (timeouts), then
+/// raf_loops.
 pub fn drive_pending() {
+    drain_microtasks();
+
     let now = Instant::now();
 
     // 1. Expired deadlines. Drain ready entries in one pass; prune

@@ -29,10 +29,14 @@ use std::collections::HashSet;
 
 use idea_ui::{install_idea_theme, light_theme, Button, Stack, StackGap, StackPadding, Tab, Tabs};
 use runtime_core::{
-    component, signal, text, ui, Element, IntoElement, Ref, Route, Screen, Signal,
+    component, rx, signal, text, ui, Element, FlexDirection, IntoElement, Length, Ref, Route,
+    Screen, Signal, StyleApplication, StyleRules, StyleSheet,
 };
 use serde_json::Value;
-use stack_navigator::{Navigator, StackBuilder, StackHandle, StackScreenExt};
+use idea_ui_nav::StackHeader;
+use stack_navigator::{
+    header_state, StackBuilder, StackContext, StackHandle, StackNavigator, StackScreenExt,
+};
 
 mod client;
 mod discovery;
@@ -95,15 +99,50 @@ pub fn app() -> Element {
     // signal so the reactive `text` panels re-render. Self-reschedules.
     schedule_poll(snapshot);
 
-    let builder = Navigator::new(&PICKER)
+    let builder = StackNavigator::new(&PICKER)
         .screen(PICKER, move |_| {
             Screen::new(picker_page(nav)).title("Idealyst Inspector")
         })
         .screen(INSPECTOR, move |_| {
             Screen::new(inspector_page(snapshot, nav)).title("Inspector")
+        })
+        // Outlet-model chrome: the header is author layout (the same
+        // `StackHeader` on every backend), replacing the legacy
+        // navigator's built-in bar.
+        .layout(|nav: StackContext| {
+            let screen_chrome = nav.screen_chrome;
+            let state = rx!(header_state(&screen_chrome));
+            let header: Element = ui! {
+                StackHeader(
+                    state = state,
+                    show_back = nav.can_go_back,
+                    on_back = Some(nav.pop.clone()),
+                )
+            };
+            let body = nav.outlet;
+            let children: Vec<Element> = vec![header, body];
+            ui! {
+                view(style = nav_column_style) {
+                    children
+                }
+            }
         });
 
     ui! { builder.bind(nav) }
+}
+
+/// Header-over-outlet column for the author stack chrome.
+fn nav_column_style() -> StyleApplication {
+    static KEY: u8 = 0;
+    let sheet = runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
+        std::rc::Rc::new(StyleSheet::r#static(StyleRules {
+            flex_direction: Some(FlexDirection::Column),
+            width: Some(Length::Percent(100.0).into()),
+            height: Some(Length::Percent(100.0).into()),
+            ..Default::default()
+        }))
+    });
+    StyleApplication::new(sheet)
 }
 
 fn schedule_poll(snapshot: Signal<Snapshot>) {
@@ -190,9 +229,26 @@ fn inspector_page(snapshot: Signal<Snapshot>, nav: Ref<StackHandle>) -> Element 
 
     let header = text(move || format::header(&snapshot.get())).into_element();
 
-    let tabs = vec![Tab::new("Elements"), Tab::new("Logs"), Tab::new("Stats")];
-    let on_tab: Rc<dyn Fn(usize)> = Rc::new(move |i| tab.set(i));
-    let strip = ui! { Tabs(tabs = tabs, active = tab, on_change = on_tab) };
+    // Current idea-ui Tabs API: id-keyed tabs in a Signal list, id-based
+    // active + on_change. The body still branches on the index signal.
+    let tabs = signal(vec![
+        Tab::new("elements", "Elements"),
+        Tab::new("logs", "Logs"),
+        Tab::new("stats", "Stats"),
+    ]);
+    let active_id = rx!(match tab.get() {
+        0 => "elements".to_string(),
+        1 => "logs".to_string(),
+        _ => "stats".to_string(),
+    });
+    let on_tab: Rc<dyn Fn(String)> = Rc::new(move |id| {
+        tab.set(match id.as_str() {
+            "elements" => 0,
+            "logs" => 1,
+            _ => 2,
+        })
+    });
+    let strip = ui! { Tabs(tabs = tabs, active = active_id, on_change = on_tab) };
 
     let back: Rc<dyn Fn()> = Rc::new(move || {
         nav.get().map(|h| h.pop());

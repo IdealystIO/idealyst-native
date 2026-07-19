@@ -58,17 +58,13 @@ headless-screenshot = { workspace = true, optional = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
 base64 = "0.22"
 serde_json = "1"
-# End-to-end navigator round-trip test: register the drawer recording
-# handler on the recorder, mount a real DrawerNavigator, and assert the
-# client reconstructs sidebar + screen. `runtime-server` pulls the
-# recording handler (which itself deps dev-server — already in graph).
-drawer-navigator = { workspace = true, features = ["runtime-server"] }
-stack-navigator = { workspace = true, features = ["runtime-server"] }
-tab-navigator = { workspace = true, features = ["runtime-server"] }
-# Local-mount test for the new swap navigator's backend-neutral handler
+# Local-mount test for the swap navigator's backend-neutral handler
 # (author layout + outlet capture + Select swap + Link→Select). Runs the
 # generic handler directly on MockBackend — no wire / recording handler.
-swap-navigator = { workspace = true }
+swap-navigator = { workspace = true, features = ["runtime-server"] }
+# URL-sync tests drive the outlet-model stack (push/pop over the substrate
+# URL layer) alongside swap; wire tests exercise both over the recorder.
+stack-navigator = { workspace = true, features = ["runtime-server"] }
 # External-payload-over-wire round-trip test: `code_block(...)` is an
 # `Element::External` whose payload must serialize across the wire.
 codeblock = { workspace = true }

@@ -25,7 +25,7 @@
 
 use idea_ui::{install_idea_theme, light_theme};
 use runtime_core::{component, signal, Element, Ref, Route, Screen, Signal};
-use stack_navigator::{Navigator, StackBuilder, StackHandle, StackScreenExt};
+use stack_navigator::{StackBuilder, StackHandle, StackNavigator, StackScreenExt};
 
 mod screens;
 #[cfg(feature = "robot")]
@@ -94,7 +94,7 @@ pub fn app() -> Element {
     #[cfg(feature = "robot")]
     runtime_core::after_ms_detached(INITIAL_RUN_DELAY_MS, suites::run_all);
 
-    let builder = Navigator::new(&ROOT)
+    let builder = StackNavigator::new(&ROOT)
         .screen(ROOT, move |_| {
             Screen::new(screens::root_page(state, nav)).title("Conformance")
         })

@@ -267,7 +267,24 @@ pub fn layout_affecting_key(style: &StyleRules) -> String {
 
     // --- Typography (changes a label's intrinsic measured size) ---
     len!("fsz", style.font_size);
-    enom!("ff", style.font_family);
+    // Font family keys by the typeface's stable ID / system name — NOT
+    // `{:?}` of the whole `FontFamily`. A `Typeface` reaches its faces'
+    // `AssetSource` (embedded font bytes); even with `AssetSource`'s
+    // byte-eliding Debug this stays the semantically right key: two
+    // applies share a family iff the id/name matches.
+    let _ = write!(s, "ff=");
+    match style.font_family.as_ref() {
+        Some(runtime_core::FontFamily::Typeface(t)) => {
+            let _ = write!(s, "t{}", t.id.0);
+        }
+        Some(runtime_core::FontFamily::System(name)) => {
+            let _ = write!(s, "s{}", name);
+        }
+        None => {
+            let _ = write!(s, "_");
+        }
+    }
+    s.push(';');
     enom!("fwt", style.font_weight);
     enom!("fst", style.font_style);
     f32opt!("lh", style.line_height);
@@ -395,6 +412,61 @@ mod tests {
             "paint-only delta changed the layout key — would force a needless layout pass",
         );
         assert!(!is_layout_affecting(Some(&key_before), &key_after));
+    }
+
+    /// Regression: `layout_affecting_key` must key a `Typeface` by its
+    /// stable ID, never by Debug-formatting the family. A `face!`
+    /// typeface reaches its faces' `AssetSource` embedded font BYTES —
+    /// the old `enom!("ff", …)` `{:?}` rendered every byte as decimal
+    /// text, so ANY node styled with `font_family: &INTER` paid
+    /// ~184ms of string formatting per `apply_style` (every website
+    /// navigation and every theme toggle stalled by ~an eighth of a
+    /// second per styled container on iOS).
+    #[test]
+    fn regression_typeface_key_is_id_based_not_debug_of_bytes() {
+        use runtime_core::assets::{
+            AssetId, AssetSource, SystemFallback, Typeface, TypefaceFace, TypefaceId,
+        };
+        use runtime_core::{FontStyle, FontWeight};
+
+        // A face with a big embedded payload — stand-in for a real TTF.
+        static BYTES: [u8; 64 * 1024] = [7u8; 64 * 1024];
+        static FACES: [TypefaceFace; 1] = [TypefaceFace {
+            weight: FontWeight::Normal,
+            style: FontStyle::Normal,
+            asset: AssetId(1),
+            source: AssetSource::BundledEmbedded {
+                path: "fonts/Test.ttf",
+                bytes: &BYTES,
+                extension: "ttf",
+            },
+        }];
+        static FACE: Typeface = Typeface {
+            id: TypefaceId(42),
+            family_name: "Test",
+            faces: &FACES,
+            fallback: SystemFallback::SansSerif,
+        };
+
+        let mut styled = StyleRules::default();
+        styled.font_family = Some(runtime_core::FontFamily::Typeface(FACE));
+        let key = layout_affecting_key(&styled);
+        assert!(
+            key.len() < 600,
+            "typeface key must be O(1), not O(font bytes) — got {} chars",
+            key.len()
+        );
+
+        // Different typeface ID ⇒ different key (font swap re-layouts).
+        static FACE2: Typeface = Typeface {
+            id: TypefaceId(43),
+            family_name: "Test",
+            faces: &FACES,
+            fallback: SystemFallback::SansSerif,
+        };
+        let mut styled2 = StyleRules::default();
+        styled2.font_family = Some(runtime_core::FontFamily::Typeface(FACE2));
+        assert_ne!(key, layout_affecting_key(&styled2));
     }
 
     // A genuine size change MUST still flag layout.

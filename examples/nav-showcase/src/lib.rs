@@ -23,12 +23,22 @@ use runtime_core::{
     Length, Ref, Route, Screen, Signal, StyleApplication, StyleRules, StyleSheet,
 };
 use std::rc::Rc;
-use stack_navigator_v2::{header_state, StackBuilder, StackHandle, StackNavigator, StackScreenExt};
+use stack_navigator::{header_state, StackBuilder, StackHandle, StackNavigator, StackScreenExt};
 use swap_navigator::{SwapBuilder, SwapHandle, SwapNavigator};
 
 /// Navigators self-register via `inventory` (force-linked, so it works in dev +
 /// release). Hook kept for the CLI bootstrap.
 pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+
+/// Runtime-server (sidecar) recorder registrations — the CLI-generated
+/// sidecar wrapper calls this so the outlet-model navigators run
+/// host-side in `idealyst dev` non-local mode (their screen swaps ship
+/// as plain node ops; see the SDKs' `recording` modules).
+#[cfg(feature = "sidecar")]
+pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBackend) {
+    swap_navigator::recording::register(backend);
+    stack_navigator::recording::register(backend);
+}
 
 // ---------------------------------------------------------------------------
 // Root: a Drawer over three sections.
@@ -291,7 +301,7 @@ fn settings_stack() -> Element {
 // ---------------------------------------------------------------------------
 
 /// The standard stack layout: a StackHeader over the outlet.
-fn stack_layout(nav: stack_navigator_v2::StackContext) -> Element {
+fn stack_layout(nav: stack_navigator::StackContext) -> Element {
     let screen_chrome = nav.screen_chrome;
     let state = rx!(header_state(&screen_chrome));
     ui! {

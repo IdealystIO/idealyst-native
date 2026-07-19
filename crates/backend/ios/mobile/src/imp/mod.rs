@@ -87,6 +87,16 @@ pub struct IosBackend {
     /// Set of view pointers that are UIScrollViews. Used in the
     /// post-layout pass to sync `contentSize` from Taffy children.
     scroll_views: std::collections::HashSet<usize>,
+    /// External single-axis scrollers (SDK leaves like `codeblock`) keyed by
+    /// scroll-view pointer, mapping to the content view whose `sizeThatFits:`
+    /// drives the node's measure_fn. `apply_style` diverts the author's
+    /// `padding_*` on these nodes to the content label's `textInsets` (so the
+    /// padding scrolls WITH the content and the scroll viewport reaches the
+    /// node's own edge — the web `<pre> { padding }` observable model) instead
+    /// of Taffy padding (which would inset + clip the scroll viewport itself).
+    /// Populated by [`Self::install_external_content_measure`]; cleaned up in
+    /// `release_external`.
+    external_content_measures: HashMap<usize, Retained<UIView>>,
     /// Cache of rasterized icon UIImages keyed by (icon identity, size).
     /// Icon identity = pointer address of the `paths` static slice.
     /// Size = point size as u16 (half-point granularity is enough).
@@ -578,6 +588,7 @@ impl IosBackend {
             callback_targets: Vec::new(),
             app_key_responder: None,
             scroll_views: std::collections::HashSet::new(),
+            external_content_measures: HashMap::new(),
             icon_image_cache: HashMap::new(),
             image_cache: HashMap::new(),
             font_registry: backend_ios_core::font::FontRegistry::new(),
@@ -677,6 +688,10 @@ impl IosBackend {
         // first `apply_style` is correctly treated as layout-affecting
         // instead of matching the dead view's key and skipping layout.
         self.layout_style_keys.remove(&key);
+        // Same recycling hazard for the external-scroller registry: a
+        // recycled pointer that used to be a content-measured scroller
+        // must not divert the new view's padding to a dead label.
+        self.external_content_measures.remove(&key);
         node
     }
 
@@ -980,20 +995,27 @@ impl IosBackend {
     ///
     /// We probe the content's `sizeThatFits:` at its natural (unbounded)
     /// size — single-axis scrollers don't wrap, so this yields the true
-    /// content extent — and add `pad` on each side to match the scroll
-    /// view's `contentInset`. The node fills any parent-known width and
-    /// scrolls content wider than that.
+    /// content extent. The node fills any parent-known width and scrolls
+    /// content wider than that.
+    ///
+    /// Also registers `node` as an external scroller so `apply_style`
+    /// diverts the author's `padding_*` to `content`'s `textInsets`
+    /// (see the `external_content_measures` field doc). `content` should
+    /// be an inset-honoring label from [`Self::new_text_inset_label`] —
+    /// its `sizeThatFits:` then includes the padding, so the measure
+    /// accounts for it exactly once.
     pub fn install_external_content_measure(
         &mut self,
         node: &objc2_ui_kit::UIView,
         content: &objc2_ui_kit::UIView,
-        pad: f32,
     ) {
         let layout = self.layout_for_view(node);
         let content: objc2::rc::Retained<objc2_ui_kit::UIView> = unsafe {
             objc2::rc::Retained::retain(content as *const _ as *mut objc2_ui_kit::UIView)
                 .unwrap()
         };
+        self.external_content_measures
+            .insert(node as *const UIView as usize, content.clone());
         self.layout.set_measure_fn(
             layout,
             std::rc::Rc::new(move |known_dimensions, available_space| {
@@ -1021,13 +1043,21 @@ impl IosBackend {
                     width: known_dimensions
                         .width
                         .or(avail_w)
-                        .unwrap_or(content_w + 2.0 * pad),
-                    height: known_dimensions
-                        .height
-                        .unwrap_or(content_h + 2.0 * pad),
+                        .unwrap_or(content_w),
+                    height: known_dimensions.height.unwrap_or(content_h),
                 }
             }),
         );
+    }
+
+    /// Construct an inset-honoring label (`IdealystLabel`) for SDK external
+    /// handlers whose content view must honor the author's `padding_*` as
+    /// `textInsets` (see [`Self::install_external_content_measure`]). Returned
+    /// as a plain `UIView`; it responds to every `UILabel` selector plus
+    /// `setTextInsets:`.
+    pub fn new_text_inset_label(&self) -> Retained<UIView> {
+        let label = text_inset::IdealystLabel::new(self.mtm);
+        objc2::rc::Retained::into_super(objc2::rc::Retained::into_super(label))
     }
 
     /// Width-aware variant of [`install_external_content_measure`](Self::install_external_content_measure)
@@ -3127,6 +3157,69 @@ impl Backend for IosBackend {
                 text_style.padding_top = None;
                 text_style.padding_bottom = None;
                 self.layout.set_style(layout_node, &text_style);
+            } else if let Some(content) =
+                self.external_content_measures.get(&view_key_for_style).cloned()
+            {
+                // External scroller (SDK leaf like `codeblock`): divert the
+                // author's `padding_*` to the content label's `textInsets`
+                // so the padding scrolls WITH the content — text sits inset
+                // at rest and reaches the node's own edge mid-scroll,
+                // matching web's `<pre> { padding }` (a UIScrollView always
+                // clips at its bounds, so Taffy padding here would instead
+                // shrink the scroll viewport and clip the content early).
+                // The inset-honoring label folds the insets into
+                // `sizeThatFits:`, which the measure_fn reports — so like
+                // the Label branch above, Taffy padding must be stripped or
+                // the box double-counts it.
+                let resolve = |t: &Option<runtime_core::Tokenized<runtime_core::Length>>| {
+                    t.as_ref()
+                        .map(|tok| match tok.resolve() {
+                            runtime_core::Length::Px(px) => px as f64,
+                            // Percent/Auto have no defined sizing parent on
+                            // a measured leaf; treat as zero (same policy as
+                            // `apply_text_insets_if_label`).
+                            _ => 0.0,
+                        })
+                        .unwrap_or(0.0)
+                };
+                let insets = text_inset::TextInsets {
+                    top: resolve(&style.padding_top),
+                    left: resolve(&style.padding_left),
+                    bottom: resolve(&style.padding_bottom),
+                    right: resolve(&style.padding_right),
+                };
+                let _: () = unsafe { msg_send![&*content, setTextInsets: insets] };
+                // Re-fit the label's frame to the new inset-inclusive size so
+                // the post-layout `contentSize` sync (subview extents) sees
+                // it. Probe at UNBOUNDED size — `sizeToFit` would measure at
+                // the label's current bounds, wrapping the text to the
+                // previous fitted width minus the new insets (each re-apply
+                // then wraps further). A single-axis scroller's content never
+                // wraps; its natural extent is the truth.
+                unsafe {
+                    let probe = objc2_foundation::CGSize {
+                        width: f64::MAX,
+                        height: f64::MAX,
+                    };
+                    let fit: objc2_foundation::CGSize =
+                        msg_send![&*content, sizeThatFits: probe];
+                    let frame = objc2_foundation::CGRect {
+                        origin: objc2_foundation::CGPoint { x: 0.0, y: 0.0 },
+                        size: fit,
+                    };
+                    let _: () = msg_send![&*content, setFrame: frame];
+                }
+                let mut scroller_style: StyleRules = (**style).clone();
+                scroller_style.padding_left = None;
+                scroller_style.padding_right = None;
+                scroller_style.padding_top = None;
+                scroller_style.padding_bottom = None;
+                self.layout.set_style(layout_node, &scroller_style);
+                // The measure_fn's output changed (the label folds the new
+                // insets into `sizeThatFits:`), but the padding-STRIPPED
+                // Taffy style may be byte-identical to the previous apply —
+                // invalidate the measure cache explicitly so the box resizes.
+                self.layout.mark_dirty(layout_node);
             } else {
                 self.layout.set_style(layout_node, style);
             }
@@ -3500,6 +3593,31 @@ impl Backend for IosBackend {
         // `view_key` like portals do.
         if self.detached_window_roots.contains_key(&node.view_key()) {
             self.release_private_layer_window(node);
+        }
+        // Drop the external-scroller padding-divert registration (and its
+        // retained content view) for content-measured leaves like `codeblock`.
+        self.external_content_measures.remove(&node.view_key());
+    }
+
+    /// UIScrollView content offset, in points. Non-scroll nodes read (0,0),
+    /// matching the trait contract.
+    fn node_scroll(&self, node: &Self::Node) -> (f32, f32) {
+        if let IosNode::ScrollView(scroll) = node {
+            let p: objc2_foundation::CGPoint = unsafe { msg_send![&**scroll, contentOffset] };
+            (p.x as f32, p.y as f32)
+        } else {
+            (0.0, 0.0)
+        }
+    }
+
+    /// Set the UIScrollView content offset (no animation — callers are the
+    /// navigator's scroll restore and the robot's `set_scroll` drive, both
+    /// of which want the final position, not a tween). Non-scroll nodes are
+    /// a no-op, matching the trait contract.
+    fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {
+        if let IosNode::ScrollView(scroll) = node {
+            let p = objc2_foundation::CGPoint { x: x as f64, y: y as f64 };
+            let _: () = unsafe { msg_send![&**scroll, setContentOffset: p] };
         }
     }
 

@@ -1,13 +1,25 @@
 //! iOS handler for the `code_block` external. Produces a single
-//! `UIScrollView` (horizontal) wrapping one `UILabel` whose
-//! `attributedText` is an `NSAttributedString` with per-range
-//! `NSForegroundColorAttributeName` attributes. One label per code
-//! block, regardless of token count.
+//! `UIScrollView` (horizontal) wrapping one inset-honoring label
+//! (`IosBackend::new_text_inset_label`) whose `attributedText` is an
+//! `NSAttributedString` with per-range `NSForegroundColorAttributeName`
+//! attributes. One label per code block, regardless of token count.
 //!
 //! Mirrors the Android handler (HorizontalScrollView + TextView +
 //! SpannableString). Both share the rationale: every per-token span
 //! lowers to an inline attribute on a single native text widget
 //! instead of one widget per token.
+//!
+//! ## Padding is author-driven, not baked in
+//!
+//! The handler applies NO padding of its own. The author's `padding_*`
+//! (via `.with_style` on the `code_block`) lands on the scroll node and
+//! the backend diverts it to the label's `textInsets` (see
+//! `IosBackend::install_external_content_measure`), so the padding
+//! scrolls WITH the content — text sits inset at rest and reaches the
+//! block's own edge mid-scroll, exactly like web's `<pre> { padding }`.
+//! A previous revision hard-coded a 20pt `contentInset` here; combined
+//! with author padding on a wrapping panel that doubled the visible
+//! padding and clipped scrolled content 20pt before the panel edge.
 
 use crate::CodeBlockProps;
 use backend_ios::{IosBackend, IosNode};
@@ -18,62 +30,23 @@ use objc2::rc::{Allocated, Retained};
 use objc2_foundation::{
     NSAttributedString, NSDictionary, NSMutableAttributedString, NSString,
 };
-use objc2_ui_kit::{UILabel, UIScrollView};
+use objc2_ui_kit::UIScrollView;
 use runtime_core::Color;
 use std::rc::Rc;
 
-/// Inner padding (in points) drawn around the code text. Matches the
-/// Android handler's `RustCodeBlock.PADDING_DP` and the web's
-/// canonical `<pre>` padding. Picked as a single constant here so the
-/// look stays consistent if the framework ever exposes a per-instance
-/// override.
-const PADDING_PT: f64 = 20.0;
-
-/// Mirror of UIKit's `UIEdgeInsets` struct. We don't pull the full
-/// `objc2-ui-kit` type because the SDK's tiny feature set
-/// (UIScrollView + UILabel) doesn't already enable it — re-declaring
-/// keeps `Cargo.toml` minimal. Same trick `virtualizer.rs` uses.
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct UIEdgeInsets {
-    top: f64,
-    left: f64,
-    bottom: f64,
-    right: f64,
-}
-unsafe impl objc2::Encode for UIEdgeInsets {
-    const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
-        "UIEdgeInsets",
-        &[
-            <f64 as objc2::Encode>::ENCODING,
-            <f64 as objc2::Encode>::ENCODING,
-            <f64 as objc2::Encode>::ENCODING,
-            <f64 as objc2::Encode>::ENCODING,
-        ],
-    );
-}
-
-fn set_content_inset(scroll: &UIScrollView, pad: f64) {
-    let insets = UIEdgeInsets {
-        top: pad,
-        left: pad,
-        bottom: pad,
-        right: pad,
-    };
-    let _: () = unsafe { msg_send![scroll, setContentInset: insets] };
-}
-
 /// `Element::External` handler for the iOS codeblock kind. Returns
 /// the wrapping UIScrollView so the framework parents it into the
-/// surrounding view tree; the inner UILabel + NSAttributedString are
+/// surrounding view tree; the inner label + NSAttributedString are
 /// invisible to Taffy / the layout pass (one external node, one
 /// layout entry).
 pub(crate) fn build(props: &Rc<CodeBlockProps>, backend: &mut IosBackend) -> IosNode {
     let mtm = backend.mtm();
 
-    // Build the label. UILabel auto-handles multi-line text when
-    // `numberOfLines = 0` and the attributed string contains `\n`s.
-    let label: Retained<UILabel> = unsafe { UILabel::new(mtm) };
+    // Build the label. An inset-honoring UILabel subclass so the
+    // author's `padding_*` (diverted by the backend to `textInsets`)
+    // insets the glyphs and folds into `sizeThatFits:`. Multi-line via
+    // `numberOfLines = 0`; the attributed string carries `\n`s.
+    let label = backend.new_text_inset_label();
     let _: () = unsafe { msg_send![&label, setNumberOfLines: 0isize] };
     // Monospace font. UIFont's `monospacedSystemFont` is the right
     // call on iOS 13+; that's well below our deployment floor.
@@ -101,24 +74,9 @@ pub(crate) fn build(props: &Rc<CodeBlockProps>, backend: &mut IosBackend) -> Ios
     let _: () = unsafe { msg_send![&scroll, setShowsHorizontalScrollIndicator: false] };
     let _: () = unsafe { msg_send![&scroll, setShowsVerticalScrollIndicator: false] };
 
-    // Inner padding via `contentInset` — UIScrollView treats this as
-    // extra scrollable space around the content, so the user can
-    // scroll past the content edge to reveal the inset. Visual
-    // result: the code text always has 20pt of breathing room on
-    // each side, even when scrolled to either horizontal extreme
-    // (matching `<pre> { padding: 20px; overflow-x: auto }` on web
-    // and the Android handler's `setPadding` on the inner TextView).
-    //
-    // UILabel doesn't honor a setPadding-style API natively (no
-    // textInsets without a UILabel subclass); contentInset on the
-    // wrapping scroll view is the conventional iOS approach for
-    // this exact pattern.
-    //
-    // Also disable contentInset adjustment so the system doesn't
-    // layer safe-area insets on top of ours (iOS 11+ default behavior
-    // would add ~20pt extra below the status bar via "Automatic",
-    // which would double-count our top inset).
-    set_content_inset(&scroll, PADDING_PT);
+    // Disable contentInset adjustment so the system doesn't layer
+    // safe-area insets onto the content (iOS 11+ "Automatic" default
+    // would add ~20pt below the status bar for a block near the top).
     let _: () = unsafe {
         // UIScrollViewContentInsetAdjustmentBehavior.never = 2
         msg_send![&scroll, setContentInsetAdjustmentBehavior: 2isize]
@@ -135,10 +93,9 @@ pub(crate) fn build(props: &Rc<CodeBlockProps>, backend: &mut IosBackend) -> Ios
     // AND give it a measure_fn driven by the label's `sizeThatFits:` — a
     // bare `UIScrollView` has no intrinsic size, so without this it
     // collapses to 0×0 in a flex column (the parent `CodePanel` sets no
-    // height) and the codeblock renders blank. `PADDING_PT` on each side
-    // matches the `contentInset` set above so the box includes the same
-    // breathing room the content scrolls within.
-    backend.install_external_content_measure(&scroll, &label, PADDING_PT as f32);
+    // height) and the codeblock renders blank. This also registers the
+    // node for the padding→textInsets divert described in the module doc.
+    backend.install_external_content_measure(&scroll, &label);
 
     // We need the label's intrinsic size to actually drive the
     // scroll view's contentSize. Without a layout pass, UILabel
@@ -208,7 +165,7 @@ fn build_color_dict(color: &NSObject) -> Retained<NSDictionary<NSString, NSObjec
 /// `UIFont.monospacedSystemFontOfSize:weight:` on iOS 13+. Falls
 /// back to a Menlo lookup if the API isn't available; on any modern
 /// device the primary path always succeeds.
-fn set_monospace_font(label: &UILabel, size: f64) {
+fn set_monospace_font(label: &objc2_ui_kit::UIView, size: f64) {
     unsafe {
         let cls = objc2::class!(UIFont);
         // weight = UIFontWeightRegular = 0.0

@@ -106,10 +106,16 @@ pub(super) fn theme_cohort_register(reapply: Box<dyn Fn()>) -> CohortId {
 }
 
 pub(super) fn theme_cohort_unregister(id: CohortId) {
-    THEME_COHORT.with(|slab| {
+    // `try_with`, not `with`: this runs from `StyleHandle::drop`, which a
+    // leaked-at-exit scope can reach during thread-local DESTRUCTION (the
+    // arena TLS destructor dropping a still-registered effect's captured
+    // scopes — see `Scope::drop`'s thread-death guard). Same posture as
+    // `theme_cohort_reset` below; slab bookkeeping is moot once the
+    // thread is exiting.
+    let _ = THEME_COHORT.try_with(|slab| {
         if let Some(slot) = slab.borrow_mut().get_mut(id.0 as usize) {
             if slot.take().is_some() {
-                THEME_COHORT_FREE.with(|f| f.borrow_mut().push(id.0));
+                let _ = THEME_COHORT_FREE.try_with(|f| f.borrow_mut().push(id.0));
             }
         }
     });
@@ -198,6 +204,10 @@ pub(super) fn install_theme_cohort_driver<B: Backend + 'static>(backend: &Rc<Ref
         // resolve calls in `apply_one`, which keeps per-token
         // subscriptions fresh as the cohort grows.
         crate::style::subscribe_to_all_token_signals();
+        // Version subscription too — covers tokens installed after
+        // this run (per-token subscriptions only cover names that
+        // existed when the driver last ran).
+        let _ = crate::style::tokens_version_signal().get();
 
         // Subscribe to the active breakpoint bucket too. Static-styled
         // nodes have no per-node Effect, so without this a viewport
@@ -258,7 +268,16 @@ pub(super) fn install_theme_cohort_driver<B: Backend + 'static>(backend: &Rc<Ref
         // only — never touches the cohort slab — so the long
         // borrow is safe.
         THEME_COHORT.with(|slab| {
-            for entry in slab.borrow().iter().flatten() {
+            let slab = slab.borrow();
+            #[cfg(feature = "debug-stats")]
+            crate::logging::log(
+                crate::logging::LogLevel::Info,
+                &format!(
+                    "[theme-cohort] driver fan-out: {} live entries",
+                    slab.iter().flatten().count()
+                ),
+            );
+            for entry in slab.iter().flatten() {
                 (entry.reapply)();
             }
         });

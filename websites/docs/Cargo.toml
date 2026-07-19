@@ -17,10 +17,10 @@ crate-type = ["cdylib", "rlib"]
 # only when the feature is on, so a release build stays lean.
 dev-hot-reload = ["dep:dev-client", "backend-web/runtime-server"]
 # `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
-# (build-runtime-server). Pulls `dev-server` + the drawer SDK's recording
+# (build-runtime-server). Pulls `dev-server` + the swap SDK's recording
 # handler so `register_extensions_recorder` can register a navigator
 # recording handler on the runtime-server recorder backend.
-sidecar = ["dep:dev-server", "drawer-navigator/runtime-server"]
+sidecar = ["dep:dev-server", "swap-navigator/runtime-server"]
 
 [dependencies]
 # `async-driver` exposes `spawn_async` + `render_loop`. The Simulator
@@ -29,7 +29,8 @@ sidecar = ["dep:dev-server", "drawer-navigator/runtime-server"]
 runtime-core = { workspace = true, features = ["async-driver"] }
 idea-ui = { workspace = true }
 docs-macro = { workspace = true }
-drawer-navigator = { workspace = true }
+swap-navigator = { workspace = true }
+idea-ui-nav = { workspace = true }
 # Recorder backend for the runtime-server sidecar wrapper. Optional —
 # pulled in only by the `sidecar` feature (host-side sidecar build);
 # never compiled for device/web targets.
@@ -62,7 +63,7 @@ backend-ios-mobile = { workspace = true }
 [target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
 backend-android-mobile = { workspace = true }
 
-# macOS desktop (AppKit) build path. `drawer_navigator::register`
+# macOS desktop (AppKit) build path. `swap_navigator::register`
 # resolves to its macOS impl (`&mut MacosBackend`) on this host, so the
 # example's `register_extensions` takes the same type.
 [target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
@@ -71,7 +72,7 @@ backend-macos = { workspace = true }
 # Terminal (TTY) build path. Same `register_extensions(&mut TerminalBackend)`
 # hook as the other targets — the CLI-generated wrapper at
 # `target/idealyst/<app>/terminal/src/main.rs` calls it before mount so
-# the drawer navigator (and any other SDKs) install their handler
+# the swap navigator (and any other SDKs) install their handler
 # factories.
 [target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))'.dependencies]
 backend-terminal = { workspace = true }

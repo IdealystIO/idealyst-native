@@ -274,13 +274,32 @@ docs! {
 
     section(heading = "Navigation (defaults: unimplemented!())") {
         list(
-            [code("create_stack_navigator"), " — stack navigator"],
-            [code("create_tab_navigator")],
-            [code("create_drawer_navigator")],
+            [code("create_navigator"),
+             " — the single, unified entry point for every navigator kind. \
+              Receives the SDK's presentation payload (keyed by ",
+             code("TypeId"), "), a ", code("NavigatorHost"),
+             " callbacks bundle, and accessibility props. Backends that \
+              hold a ", code("NavigatorRegistry"),
+             " consult it for a handler factory; on a miss they should \
+              render a \"navigator not registered\" placeholder node so \
+              the missing wiring is visible instead of crashing."],
+            [code("release_navigator"), " — paired teardown; drop the \
+              handler state keyed by the node. Defaults to no-op."],
+            [code("make_navigator_handle"), " — returns the ",
+             code("NavigatorHandle"), " the SDK's ", code(".bind(...)"),
+             " fills."],
+            [code("apply_navigator_slot_style"),
+             " — optional slot-style routing to the handler. Defaults to \
+              no-op."],
         ),
-        p("These take a callbacks bundle so the framework can ask the \
-           backend to mount/release per-screen subtrees on demand. The shape \
-           is large; the trait's source has annotated examples."),
+        p("The ", code("NavigatorHost"),
+          " bundle carries every framework-owned affordance a handler \
+           needs — build the author layout with an outlet, mount/release \
+           per-screen subtrees on demand, match URL paths, and the \
+           reactive nav-state signals. Because the swap and stack SDK \
+           handlers are backend-neutral (they drive everything through \
+           the host), a new backend usually only needs the registry \
+           plumbing — the SDKs' handlers then work unchanged."),
         p(code("create_link"), " is also navigation, but its default \
            falls through to ", code("create_view"),
           " — see the container section below."),
@@ -513,9 +532,9 @@ docs! {
             [link("Lists", to = "lists"), " — the ",
              code("VirtualizerCallbacks"), " bundle in detail."],
             [link("Navigation", to = "navigation"),
-             " — what the navigator ", code("create_*"),
-             " methods are expected to do (and the per-screen mount/release \
-              callbacks they receive)."],
+             " — what ", code("create_navigator"),
+             " is expected to do (and the per-screen mount/release \
+              callbacks the ", code("NavigatorHost"), " bundle carries)."],
             [link("Robot", to = "robot"),
              " — what test-id propagation looks like (your backend's \
               primitive creation can opt in by capturing the ",

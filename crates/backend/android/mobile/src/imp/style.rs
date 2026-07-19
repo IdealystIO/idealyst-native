@@ -21,6 +21,14 @@ pub(crate) fn apply_rules(
     state: &mut NodeAnim,
     rules: &StyleRules,
     font_registry: &FontRegistry,
+    // `true` for external content-measured scrollers (SDK leaves like
+    // `codeblock`): their `padding_*` goes to the view's own `setPadding`
+    // (the widget sets `clipToPadding = false`, so the padding scrolls
+    // with the content and mid-scroll text reaches the node's own edge —
+    // web's `<pre> { padding }` model) instead of Taffy padding, which
+    // would inset + clip the scroll viewport. The caller strips the
+    // padding from the Taffy style, mirroring the TextView pairing below.
+    force_view_padding: bool,
 ) {
     let _t_total = crate::phase_timer::PhaseTimer::start("apply_style_total");
     let view = node.as_obj();
@@ -49,7 +57,7 @@ pub(crate) fn apply_rules(
     // Net result: authors can write `padding_*` on a text style and
     // it just works — no `XStyle + XText` split required.
     let is_text_view = super::is_text_view(env, &view);
-    let want_padding = if is_text_view {
+    let want_padding = if is_text_view || force_view_padding {
         [
             dp_to_px(env, &view, px_or(rules.padding_left.as_ref(), 0.0)),
             dp_to_px(env, &view, px_or(rules.padding_top.as_ref(), 0.0)),
@@ -564,6 +572,50 @@ fn apply_transform(
             }
         }
     }
+    // Change/first-apply tracking for `transitions { transform: … }`.
+    let mask: u8 = (style_writes_tx as u8)
+        | ((style_writes_ty as u8) << 1)
+        | ((style_writes_sx as u8) << 2)
+        | ((style_writes_sy as u8) << 3)
+        | ((style_writes_rot as u8) << 4);
+    let vals = [tx_px, ty_px, sx, sy, rot_deg];
+    let seen_before = state.last_static_transform.is_some();
+    let changed = state
+        .last_static_transform
+        .map(|(m, v)| m != mask || v != vals)
+        .unwrap_or(true);
+    state.last_static_transform = Some((mask, vals));
+
+    // `transitions { transform: … }` — drive the change through a
+    // `ViewPropertyAnimator` instead of snapping the properties,
+    // matching web's CSS `transition: transform` (the AppShell drawer
+    // slide). First apply and no-change re-applies snap; percent
+    // translates stay on the snap path (their px value resolves in
+    // the LAYOUT pass, after this returns — animating a stale value
+    // would slide to the wrong place).
+    let animate = pct_x.is_none()
+        && pct_y.is_none()
+        && rules.transform_transition.is_some()
+        && crate::transform_transition_policy::should_animate_static_transform(
+            seen_before,
+            true,
+            changed,
+        );
+    if animate {
+        let t = rules.transform_transition.as_ref().unwrap();
+        if animate_via_view_property_animator(
+            env,
+            view,
+            (style_writes_tx.then_some(tx_px), style_writes_ty.then_some(ty_px)),
+            (style_writes_sx.then_some(sx), style_writes_sy.then_some(sy)),
+            style_writes_rot.then_some(rot_deg),
+            t,
+        ) {
+            return;
+        }
+        // JNI failure → fall through to the snap path below (never
+        // leave the view at a stale transform).
+    }
     if style_writes_tx {
         let _ = env.call_method(view, "setTranslationX", "(F)V", &[JValue::Float(tx_px)]);
     }
@@ -579,6 +631,88 @@ fn apply_transform(
     if style_writes_rot {
         let _ = env.call_method(view, "setRotation", "(F)V", &[JValue::Float(rot_deg)]);
     }
+}
+
+/// Animate the written transform axes to their targets via
+/// `View.animate()` (`ViewPropertyAnimator`) — Android's native
+/// property tween, which also retargets smoothly when a running slide
+/// reverses (the platform animates from the current value). Only the
+/// axes the style explicitly writes are touched, preserving the
+/// "don't clobber animation-owned axes" contract of the snap path.
+/// Returns `false` if any JNI step failed (caller snaps instead).
+fn animate_via_view_property_animator(
+    env: &mut JNIEnv,
+    view: &JObject,
+    (tx, ty): (Option<f32>, Option<f32>),
+    (sx, sy): (Option<f32>, Option<f32>),
+    rot: Option<f32>,
+    transition: &runtime_core::Transition,
+) -> bool {
+    use crate::transform_transition_policy::{easing_to_interpolator, Interp};
+
+    let Ok(animator) = env
+        .call_method(view, "animate", "()Landroid/view/ViewPropertyAnimator;", &[])
+        .and_then(|v| v.l())
+    else {
+        return false;
+    };
+    let chain: [(&str, Option<f32>); 5] = [
+        ("translationX", tx),
+        ("translationY", ty),
+        ("scaleX", sx),
+        ("scaleY", sy),
+        ("rotation", rot),
+    ];
+    for (method, val) in chain {
+        let Some(v) = val else { continue };
+        if env
+            .call_method(
+                &animator,
+                method,
+                "(F)Landroid/view/ViewPropertyAnimator;",
+                &[JValue::Float(v)],
+            )
+            .is_err()
+        {
+            return false;
+        }
+    }
+    if env
+        .call_method(
+            &animator,
+            "setDuration",
+            "(J)Landroid/view/ViewPropertyAnimator;",
+            &[JValue::Long(transition.duration_ms as i64)],
+        )
+        .is_err()
+    {
+        return false;
+    }
+    let interpolator = match easing_to_interpolator(transition.easing) {
+        Interp::Named(class) => env.new_object(class, "()V", &[]),
+        Interp::Cubic(x1, y1, x2, y2) => env.new_object(
+            "android/view/animation/PathInterpolator",
+            "(FFFF)V",
+            &[
+                JValue::Float(x1),
+                JValue::Float(y1),
+                JValue::Float(x2),
+                JValue::Float(y2),
+            ],
+        ),
+    };
+    if let Ok(interp) = interpolator {
+        let _ = env.call_method(
+            &animator,
+            "setInterpolator",
+            "(Landroid/animation/TimeInterpolator;)Landroid/view/ViewPropertyAnimator;",
+            &[JValue::Object(&interp)],
+        );
+    }
+    // `start()` is implicit on the next frame, but calling it makes
+    // the intent explicit and cancels a prior pending run.
+    let _ = env.call_method(&animator, "start", "()V", &[]);
+    true
 }
 
 /// Resolve any `transform: translate(%, %)` requests stashed on

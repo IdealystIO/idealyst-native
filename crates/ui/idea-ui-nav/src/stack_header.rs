@@ -11,7 +11,7 @@
 //! ```ignore
 //! // in a stack navigator's `.layout(|nav| …)`:
 //! StackHeader(
-//!     state = rx!(stack_navigator_v2::header_state(&nav.screen_chrome)),
+//!     state = rx!(stack_navigator::header_state(&nav.screen_chrome)),
 //!     show_back = nav.can_go_back,
 //!     on_back = Some(nav.pop.clone()),
 //! )
@@ -41,7 +41,7 @@ fn base_sheet() -> Rc<StyleSheet> {
 #[derive(IdealystSchema)]
 pub struct StackHeaderProps {
     /// The active screen's header slots. Feed
-    /// `rx!(stack_navigator_v2::header_state(&nav.screen_chrome))`. `None` ⇒
+    /// `rx!(stack_navigator::header_state(&nav.screen_chrome))`. `None` ⇒
     /// nothing renders; `state.native` / `state.hidden` also suppress it.
     #[schema(constraint = "reactive: Option<StackHeaderState>")]
     pub state: Reactive<Option<StackHeaderState>>,

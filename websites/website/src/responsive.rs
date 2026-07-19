@@ -26,7 +26,6 @@
 use std::cell::OnceCell;
 use std::rc::Rc;
 
-use drawer_navigator::DrawerHandle;
 use idea_ui::{current_breakpoint, Breakpoint};
 use runtime_core::{memo, ReadSignal, Ref, Signal, StyleApplication, StyleSheet};
 
@@ -197,25 +196,16 @@ pub fn install_responsive_css() {
 /// can never drift apart.
 fn build_css() -> String {
     format!(
-        "{BACKDROP_CSS}@media (max-width: {}px){{{COLLAPSE_RULES}}}",
+        "@media (max-width: {}px){{{COLLAPSE_RULES}}}",
         SIDEBAR_COLLAPSE_PX - 1,
     )
 }
 
-/// Backdrop overlay rules — outside the media query (the backdrop is
-/// inert until `.is-on` is toggled, regardless of viewport width).
-/// Trailing `\n` separates it from the generated media block.
-const BACKDROP_CSS: &str = "\
-.web-site-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0);\
-transition:background 220ms ease;pointer-events:none;z-index:998;}\
-.web-site-backdrop.is-on{background:rgba(0,0,0,0.42);pointer-events:auto;}\
-\n";
-
 /// Rules that live *inside* the sidebar-collapse media query.
 ///
 /// The sidebar pin/modal collapse itself now lives in the navigator's
-/// shared stylesheet (`css::navigator_layout_css`, driven by
-/// [`drawer_navigator::install_navigator_pin_width`] — which `app()` pins
+/// AppShell's static breakpoint overlays (pinned via the `Lg`
+/// breakpoint, which `app()` aligns
 /// to [`SIDEBAR_COLLAPSE_PX`]). That sheet is emitted by BOTH the live web
 /// backend and SSR, so the collapse is correct on the static first paint —
 /// the whole point of the migration. We no longer duplicate those rules
@@ -236,104 +226,7 @@ const COLLAPSE_RULES: &str = "\
 // DOM elements (backdrop) and reactive class mirror
 // ---------------------------------------------------------------------------
 
-/// Append the backdrop to `<body>`, wire its click → close
-/// handler, and install a reactive effect that toggles the
-/// `.drawer-open` class on `.ui-nav-drawer-root` (CSS gates the
-/// sidebar transform) plus `.is-on` on the backdrop (CSS gates the
-/// dim + pointer-events) whenever `is_open` changes.
-///
-/// The menu button itself lives **inside the framework tree** as
-/// part of the mobile header (see [`crate::shell::mobile_header`]) —
-/// it doesn't need this observer to render. This function only
-/// owns the backdrop overlay + the class-mirror so the open / close
-/// CSS transitions stay in sync with the SDK's signal.
-///
-/// Idempotent — second call no-ops (a hot-reload rebuild would
-/// otherwise stack a second backdrop DOM node and leak another
-/// reactive effect each cycle).
-pub fn install_drawer_open_observer(
-    #[allow(unused)] is_open: Signal<bool>,
-    #[allow(unused)] nav: Ref<DrawerHandle>,
-) {
-    #[cfg(target_arch = "wasm32")]
-    {
-        use runtime_core::watch;
-        use std::cell::Cell;
-        use wasm_bindgen::closure::Closure;
-        use wasm_bindgen::JsCast;
 
-        thread_local! { static INSTALLED: Cell<bool> = const { Cell::new(false) }; }
-        if INSTALLED.with(|c| c.get()) {
-            return;
-        }
-        INSTALLED.with(|c| c.set(true));
-
-        let Some(win) = web_sys::window() else { return };
-        let Some(doc) = win.document() else { return };
-        let Some(body) = doc.body() else { return };
-
-        // --- backdrop ---
-        let Ok(backdrop) = doc.create_element("div") else { return };
-        let _ = backdrop.set_attribute("class", "web-site-backdrop");
-        let _ = body.append_child(&backdrop);
-
-        // Same SDK-enum-mismatch workaround as `set_open_drawer`:
-        // flip `is_open` directly instead of `nav.close()`. Same
-        // RefCell-borrow split (get the signal under `.with`, then
-        // `.set` outside the ARENA borrow).
-        let close_nav = nav;
-        let close_cb = Closure::wrap(Box::new(move |_: web_sys::Event| {
-            let sig = close_nav.with(|h| h.is_open_signal());
-            if let Some(sig) = sig {
-                sig.set(false);
-            }
-        }) as Box<dyn FnMut(web_sys::Event)>);
-        let _ = backdrop.add_event_listener_with_callback(
-            "click",
-            close_cb.as_ref().unchecked_ref(),
-        );
-        close_cb.forget();
-
-        // --- reactive class mirror ---
-        // Re-resolves `.ui-nav-drawer-root` on every fire because the
-        // navigator's container is created during the SDK handler's
-        // `init` (synchronously) but the sidebar build closure that
-        // installs this observer runs in a microtask AFTER init. So
-        // by the time the effect's first fire runs, the root exists.
-        // For safety against future re-orderings, `query_selector`
-        // returning `None` is silently skipped — the next signal
-        // change will retry.
-        //
-        // This observer is wired up **outside the component tree** — the
-        // sidebar build closure that installs it runs in a microtask after
-        // init, so there is no reactive scope to own it. That is exactly
-        // what `watch` is for: it returns a caller-owned `Subscription`.
-        // We `.leak()` it because the observer should live for the whole
-        // page (the `INSTALLED` guard above makes this once-only), the
-        // honest replacement for the old `Effect::persist()` pin.
-        let backdrop_for_effect = backdrop;
-        watch(move || {
-            let open = is_open.get();
-            let Some(win) = web_sys::window() else { return };
-            let Some(doc) = win.document() else { return };
-            if let Ok(Some(root)) = doc.query_selector(".ui-nav-drawer-root") {
-                let class_list = root.class_list();
-                if open {
-                    let _ = class_list.add_1("drawer-open");
-                } else {
-                    let _ = class_list.remove_1("drawer-open");
-                }
-            }
-            let class_list = backdrop_for_effect.class_list();
-            if open {
-                let _ = class_list.add_1("is-on");
-            } else {
-                let _ = class_list.remove_1("is-on");
-            }
-        })
-        .leak();
-    }
-}
 
 #[cfg(test)]
 mod tests {

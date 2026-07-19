@@ -242,15 +242,17 @@ mod tests {
     // build_detached + External adopt sentinel (runtime-server wire client)
     // =========================================================================
 
-    /// Marker type standing in for `wire::WireSidebarAdopt`.
+    /// Marker type standing in for a wire-client adopt sentinel (the
+    /// legacy `wire::WireSidebarAdopt` was the original consumer; the
+    /// adopt mechanism itself is generic and remains in core).
     #[derive(Debug)]
     struct AdoptMarker;
 
     /// `build_detached` with an `adopt` whose `TypeId` matches an
     /// `Element::External` returns the pre-built adopt node for that leaf
     /// instead of calling `create_external`. This is the wire client's
-    /// sidebar-adopt path: dev-client passes its holder node, the SDK's
-    /// `leading_slot` stamps a marker-typed External, and the walker
+    /// adopt path: dev-client passes its holder node, the SDK's
+    /// slot stamps a marker-typed External, and the walker
     /// adopts the holder. Regression: the prior design routed this
     /// through an `ExternalRegistry` handler keyed by `type_id` that then
     /// downcast the `payload` (panicked on a marker-typed `Rc<()>`), and

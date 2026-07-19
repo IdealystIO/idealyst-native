@@ -899,7 +899,12 @@ mod tests {
         let unscoped: Vec<&str> = cat
             .entries()
             .iter()
-            .filter(|e| e.module_path.starts_with("idea_ui"))
+            // Match the `idea_ui` CRATE exactly — a bare `starts_with`
+            // would also catch `idea_ui_nav` (linked for the AppShell
+            // chrome), a separate crate that declares no doc_scope!.
+            .filter(|e| {
+                e.module_path == "idea_ui" || e.module_path.starts_with("idea_ui::")
+            })
             .filter(|e| cat.scope_for(e.module_path).is_none())
             .map(|e| e.name)
             .collect();

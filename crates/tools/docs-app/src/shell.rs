@@ -1,4 +1,5 @@
-//! Persistent shell (drawer sidebar) + the page chrome the catalog
+//! Persistent shell (the `AppShell` sidebar + mobile header the swap
+//! layout in `lib.rs` mounts once) + the page chrome the catalog
 //! renderer composes from: `CodePanel`, `FieldsTable`, `Callout`,
 //! `Section`, and the two page entry points `overview_page` /
 //! `entry_page`.
@@ -9,7 +10,6 @@
 
 use std::rc::Rc;
 
-use drawer_navigator::SlotProps;
 use idea_ui::{
     tone, typography_kind, variant, Card, Divider, Field, Modal, Spacer, Stack, StackGap, Table,
     TableCell, Tag, TableRow, Typography,
@@ -26,47 +26,79 @@ use crate::styles::{
     Callout as CalloutBox, Chip, ChipActive, ChipRow, ChipText, ChipTextActive,
     CodePanel as CodePanelBox, CodeText, LinkText, MemberRow, PageColumn, PagePad, PreviewBox, PreviewSlot,
     ResultHead, ResultNamespace, ResultsScroll, ScreenScroll, SearchBox, SearchBoxText,
-    SearchResultsBody, SidebarBody, SidebarHeader, SidebarSection, ThemeToggleBox, ThemeToggleText,
+    SearchResultsBody, SidebarBody, SidebarHeader, SidebarScroll, SidebarSection, ThemeToggleBox,
+    ThemeToggleText,
 };
 
 // =============================================================================
-// Page chrome: scroll surface + mobile hamburger (lifted from idea-ui-docs).
+// Page chrome: scroll surface (lifted from idea-ui-docs). The mobile
+// hamburger lives in the swap layout's `mobile_header` now — mounted once
+// above the outlet in `lib.rs`, not per page.
 // =============================================================================
 
 fn layout(content: Element) -> Element {
     let style = ScreenScroll();
     ui! {
         view(style = PageColumn()) {
-            menu_button()
             scroll_view(style = style) { content }
                 .safe_area(SafeAreaSides::BOTTOM)
         }
     }
 }
 
-fn menu_button() -> Element {
-    use runtime_core::primitives::navigator::ambient_drawer;
-    use runtime_core::viewport_size;
+/// Header-over-outlet column + growing outlet wrapper for the swap layout
+/// in `app()`. Public style fns (the `ui!` call sites live in `lib.rs`).
+pub fn shell_column_style() -> StyleApplication {
+    static KEY: u8 = 0;
+    let sheet = runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
+        Rc::new(runtime_core::StyleSheet::r#static(runtime_core::StyleRules {
+            flex_direction: Some(runtime_core::FlexDirection::Column),
+            width: Some(runtime_core::Length::Percent(100.0).into()),
+            height: Some(runtime_core::Length::Percent(100.0).into()),
+            min_height: Some(runtime_core::Length::Px(0.0).into()),
+            ..Default::default()
+        }))
+    });
+    StyleApplication::new(sheet)
+}
 
-    let Some(chrome) = ambient_drawer() else {
-        return ui! { view {} };
-    };
-    let open = chrome.open.clone();
-    let below = chrome.collapse_below;
+/// The outlet's growing wrapper: absorbs the column's remaining height so
+/// screens (whose own `scroll_view`s need a bounded box) fill below the
+/// mobile header.
+pub fn outlet_grow_style() -> StyleApplication {
+    static KEY: u8 = 0;
+    let sheet = runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
+        Rc::new(runtime_core::StyleSheet::r#static(runtime_core::StyleRules {
+            flex_direction: Some(runtime_core::FlexDirection::Column),
+            flex_grow: Some(1.0f32.into()),
+            min_height: Some(runtime_core::Length::Px(0.0).into()),
+            ..Default::default()
+        }))
+    });
+    StyleApplication::new(sheet)
+}
+
+/// Mobile-only top strip hosting the hamburger. Mounted ONCE in the swap
+/// layout (above the outlet); the reactive `if` hides it whenever the
+/// AppShell sidebar is pinned (at/above `Lg` — the old 960-px pin width),
+/// matching the legacy per-page menu button's visibility. The hamburger
+/// opens the app-owned drawer signal the AppShell panel + scrim subscribe
+/// to.
+pub fn mobile_header(drawer_open: runtime_core::Signal<bool>) -> Element {
     ui! {
-        if viewport_size().get().width < below {
+        if !idea_ui_nav::sidebar_pinned(runtime_core::Breakpoint::Lg) {
             view(style = crate::styles::TopBar()) {
-                hamburger(open.clone())
+                hamburger(drawer_open)
             }
         }
     }
 }
 
-fn hamburger(open: Rc<dyn Fn()>) -> Element {
+fn hamburger(drawer_open: runtime_core::Signal<bool>) -> Element {
     let glyph = runtime_core::icon(icons_lucide::MENU)
         .color(idea_ui::idea_color(|c| c.text.clone()))
         .into_element();
-    runtime_core::pressable(vec![glyph], move || (open)())
+    runtime_core::pressable(vec![glyph], move || drawer_open.set(true))
         .with_style(move || StyleApplication::new(crate::styles::MenuButton::sheet()))
         .into_element()
 }
@@ -120,9 +152,12 @@ pub fn ThemeToggle() -> Element {
     runtime_core::pressable(vec![inner], || crate::theme::toggle_theme()).into_element()
 }
 
-pub fn sidebar(slot: SlotProps, model: Rc<CatalogModel>) -> Element {
-    let active_path = slot.active_path;
-
+/// Build the sidebar. Called once from the swap layout in `lib.rs` (it
+/// goes into the `AppShell`'s always-mounted panel, so its reactive scope
+/// survives every navigation). `active_path` is the navigator's reactive
+/// full-path mirror — matched against each entry's `params.url()` because
+/// every catalog entry shares the one parameterized `entry` route name.
+pub fn sidebar(active_path: runtime_core::Signal<String>, model: Rc<CatalogModel>) -> Element {
     // Search modal state.
     let open = signal(false);
     let query = signal(String::new());
@@ -142,7 +177,15 @@ pub fn sidebar(slot: SlotProps, model: Rc<CatalogModel>) -> Element {
         },
     ];
 
+    // The sidebar owns its scroll now: the legacy drawer SDK wrapped the
+    // slot in its own `scroll_view`, but the AppShell panel is a plain
+    // fixed-height surface — without this wrapper the catalog's hundreds
+    // of entries would overflow the panel unscrollably. The wrapper
+    // carries `color-surface` (see `SidebarScroll`) so SidebarBody's
+    // missing `min_height` doesn't leave a transparent gap (the iOS
+    // hit-test constraint documented on `SidebarBody` still applies).
     ui! {
+        scroll_view(style = SidebarScroll()) {
         view(style = SidebarBody()) {
             view(style = SidebarHeader()) { header_children }
             SearchTrigger(on_press = Some(open_search.clone()))
@@ -186,6 +229,7 @@ pub fn sidebar(slot: SlotProps, model: Rc<CatalogModel>) -> Element {
             )
         }
         .safe_area(SafeAreaSides::VERTICAL)
+        }
     }
 }
 
@@ -852,7 +896,6 @@ fn icon_set_page(entry: &Entry) -> Element {
 
     ui! {
         view(style = PageColumn()) {
-            menu_button()
             IconGallery(
                 crate_name = meta.crate_name,
                 title = title,

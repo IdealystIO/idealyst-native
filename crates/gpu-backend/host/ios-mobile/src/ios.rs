@@ -328,6 +328,18 @@ pub async fn mount(
 // Internals
 // ---------------------------------------------------------------------------
 
+/// Restore the frame-active flag when the host dies. `draw_frame`
+/// publishes `set_frame_active(visible)` every tick; if the host is
+/// torn down while its view is hidden (navigating away from the
+/// screen embedding it), the flag would otherwise stay `false`
+/// forever and every author `raf_loop_scoped` ticker that reads
+/// `is_frame_active()` stays frozen app-wide.
+impl Drop for HostInner {
+    fn drop(&mut self) {
+        runtime_core::set_frame_active(true);
+    }
+}
+
 struct HostInner {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,

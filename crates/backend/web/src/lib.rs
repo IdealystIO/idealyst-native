@@ -63,6 +63,7 @@ pub mod render_loop;
 pub mod scheduler;
 mod style;
 pub mod time_source;
+pub mod url_provider;
 mod viewport_observer;
 
 #[cfg(feature = "async-driver")]
@@ -3127,6 +3128,24 @@ impl Backend for WebBackend {
 
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
         self.impl_apply_style(node, style)
+    }
+
+    /// DOM scroll offset of `node` (0,0 for non-Element nodes and
+    /// non-scrolling elements — `scrollLeft/Top` read 0 there). Used by
+    /// the navigator substrate's URL sync for back-restores scroll.
+    fn node_scroll(&self, node: &Self::Node) -> (f32, f32) {
+        node.dyn_ref::<web_sys::Element>()
+            .map(|el| (el.scroll_left() as f32, el.scroll_top() as f32))
+            .unwrap_or((0.0, 0.0))
+    }
+
+    /// Set `node`'s DOM scroll offset. Setting on a non-scrolling
+    /// element is a browser-defined no-op, matching the trait contract.
+    fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {
+        if let Some(el) = node.dyn_ref::<web_sys::Element>() {
+            el.set_scroll_left(x as i32);
+            el.set_scroll_top(y as i32);
+        }
     }
 
     fn set_animated_f32(

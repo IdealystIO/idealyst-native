@@ -594,11 +594,12 @@ pub trait Backend {
     #[allow(unused_variables)]
     fn attach_html_id(&self, node: &Self::Node, id: &str) {}
 
-    /// Stamp a layout class name on `node`, paired with
-    /// [`register_raw_css`](Backend::register_raw_css) which ships the
-    /// matching rules. Used for navigator chrome: the SSR backend stamps
-    /// the same `ui-nav-*` classes the live web navigator does (see
-    /// `css::nav_class`) so the server's first paint matches the client.
+    /// Stamp a structural class name on `node` — e.g. the stack
+    /// navigator's `NAV_ROOT_HYDRATION_CLASS` marker the SSR backend
+    /// emits so the hydrating web client can adopt the server-rendered
+    /// container. Pairs with
+    /// [`register_raw_css`](Backend::register_raw_css) when the class
+    /// also needs shipped rules.
     ///
     /// Default no-op — only document-backed backends (web, SSR) need it;
     /// native backends lay out chrome via their own primitives.
@@ -621,6 +622,25 @@ pub trait Backend {
     /// backends (web, SSR) implement it.
     #[allow(unused_variables)]
     fn attach_html_style(&self, node: &Self::Node, prop: &str, value: &str) {}
+
+    /// Read `node`'s scroll offset `(x, y)` when the node is itself a
+    /// scroll surface; `(0, 0)` otherwise. Used by the navigator
+    /// substrate's URL sync to snapshot the outgoing screen's scroll so
+    /// browser back can restore it. Default `(0, 0)` — backends whose
+    /// scroll offsets live on dedicated scroll primitives (native
+    /// mobile/desktop) don't need it; web reads `scrollLeft/scrollTop`.
+    #[allow(unused_variables)]
+    fn node_scroll(&self, node: &Self::Node) -> (f32, f32) {
+        (0.0, 0.0)
+    }
+
+    /// Set `node`'s scroll offset. Companion to
+    /// [`node_scroll`](Backend::node_scroll); harmless no-op when the
+    /// node doesn't scroll (matching DOM semantics, where setting
+    /// `scrollTop` on a non-scrolling element does nothing). Default
+    /// no-op.
+    #[allow(unused_variables)]
+    fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {}
     fn create_text(
         &mut self,
         content: &str,

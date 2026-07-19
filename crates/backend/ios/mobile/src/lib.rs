@@ -27,6 +27,12 @@ mod private_layer_hittest;
 // mount/release that consumes it is ios-only. See the module docs.
 mod portal_policy;
 
+// Pure animate-vs-snap decision + easing mapping for static
+// `transform:` changes with `transitions { transform: … }` (the
+// AppShell drawer slide). Un-gated so the regression tests run from
+// any host; the `UIView animateWithDuration:` half is ios-only.
+mod transform_transition_policy;
+
 #[cfg(target_os = "ios")]
 pub use imp::{
     install_global_self, mount_screen_in_vc, pin_to_edges, schedule_layout_pass,

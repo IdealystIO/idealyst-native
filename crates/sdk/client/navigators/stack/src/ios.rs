@@ -1,208 +1,294 @@
-//! iOS-backend handler for the Stack navigator SDK.
+//! iOS native push surface for the outlet-model stack.
 //!
-//! The UIKit machinery (`UINavigationController`, push/pop dispatch,
-//! interactive-pop delegate, header chrome) lives in the
-//! `ios-navigator-helpers` crate, shared with tab + drawer. This
-//! module's `IosStackHandler` is a thin wrapper: it constructs an
-//! `IosNavCallbacks` from the framework-supplied `NavigatorHost`,
-//! drives the helpers crate's `create_stack()` at init time, retains
-//! the returned container `IosNode`, and forwards subsequent post-init
-//! dispatch (`attach_initial` / `release` / `make_handle` /
-//! `apply_slot_style`) to the matching helpers entry point.
+//! The outlet model keeps chrome as author layout, but a stack on iOS
+//! should still FEEL native: real `UINavigationController` push/pop
+//! transitions and the interactive swipe-back gesture. This handler
+//! composes both:
+//!
+//! - the author `.layout(|nav| …)` builds exactly as on every other
+//!   backend, and `{nav.outlet}` marks where screens go;
+//! - INSIDE the outlet lives a `UINavigationController` (the shared
+//!   `ios-navigator-helpers` stack engine — the same battle-tested
+//!   machinery the legacy stack used: interactive-pop delegate,
+//!   per-top `back_enabled` re-sync, full-screen sync, cold-start
+//!   deep-link back-stack reconstruction);
+//! - the NATIVE BAR is always hidden (`header_shown: Some(false)`).
+//!   The header is the author's `idea_ui_nav::StackHeader`, driven by
+//!   [`StackContext::screen_chrome`] — published from the engine's
+//!   `top_changed` hook so swipe-back updates it too. Uniform output
+//!   across backends (CLAUDE.md §7): same chrome everywhere, native
+//!   transition mechanics underneath.
+//!
+//! Retention: covered screens stay alive inside the controller
+//! (native semantics — [`StackRetention::Retain`]); the `Rebuild`
+//! browser semantics don't apply to a native push surface.
 
-use crate::{BarButton, StackPresentation, StackScreenOptions, STACK_OPS};
+use crate::{StackPresentation, StackScreenOptions};
 use backend_ios::{IosBackend, IosNode};
-use ios_navigator_helpers::{
-    self as helpers, BarButton as HelpersBarButton, IosNavCallbacks, IosScreenOptions,
+use ios_navigator_helpers::{self as helpers, IosNavCallbacks, IosScreenOptions};
+use runtime_core::accessibility::AccessibilityProps;
+use runtime_core::primitives::navigator::{
+    navigator_fill_rules, navigator_outlet, MountResult, NavCommand, NavigatorHandler,
+    NavigatorHost,
 };
-use runtime_core::primitives::navigator::{MountResult, NavigatorHandler, NavigatorHost};
+use runtime_core::Backend;
 use std::any::Any;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
-pub struct IosStackHandler {
-    container: Option<IosNode>,
-}
-
-impl IosStackHandler {
-    pub fn new() -> Self {
-        Self { container: None }
+/// Force the native bar hidden and carry the per-screen flags the
+/// engine honors (`back_enabled` lock, `fullscreen`). Title/buttons are
+/// NOT translated — the author `StackHeader` renders them from
+/// `screen_chrome`, so native bar-button targets would be dead weight.
+fn to_ios_options(opts: &StackScreenOptions) -> IosScreenOptions {
+    IosScreenOptions {
+        header_shown: Some(false),
+        back_enabled: Some(opts.back_enabled),
+        fullscreen: Some(opts.fullscreen),
+        ..Default::default()
     }
 }
-impl Default for IosStackHandler {
+
+/// Screen options captured at mount, keyed by scope id — the source the
+/// engine's `top_changed` hook publishes `screen_chrome` from (the
+/// engine itself only retains the flags it enforces).
+type OptionsMap = Rc<RefCell<HashMap<u64, StackScreenOptions>>>;
+
+struct PendingInitial {
+    screen: IosNode,
+    scope_id: u64,
+    options: StackScreenOptions,
+}
+
+/// The iOS stack handler: author layout + outlet, with the shared
+/// `UINavigationController` engine (bar hidden) seated inside the
+/// outlet for native push/pop transitions and swipe-back.
+pub struct IosStackV2Handler {
+    /// The helpers-engine nav-controller node (lives inside the outlet).
+    engine: Rc<RefCell<Option<IosNode>>>,
+    /// Framework-attached initial screen, held until the deferred
+    /// layout build creates the outlet + engine.
+    pending_initial: Rc<RefCell<Option<PendingInitial>>>,
+    control: Option<Rc<runtime_core::primitives::navigator::NavigatorControl>>,
+}
+
+impl IosStackV2Handler {
+    /// A fresh, uninitialized handler; `init` wires the rest.
+    pub fn new() -> Self {
+        Self {
+            engine: Rc::new(RefCell::new(None)),
+            pending_initial: Rc::new(RefCell::new(None)),
+            control: None,
+        }
+    }
+}
+
+impl Default for IosStackV2Handler {
     fn default() -> Self {
         Self::new()
     }
 }
 
-fn translate_bar_button(btn: &BarButton) -> HelpersBarButton {
-    HelpersBarButton {
-        icon: btn.icon.clone(),
-        on_press: btn.on_press.clone(),
-        tint: btn.tint.clone(),
-    }
-}
-
-fn translate_options(opts: &StackScreenOptions) -> IosScreenOptions {
-    IosScreenOptions {
-        title: opts.title.clone(),
-        header_shown: opts.header_shown,
-        header_left: opts.header_left.as_ref().map(translate_bar_button),
-        header_right: opts.header_right.as_ref().map(translate_bar_button),
-        header_background: opts.header_background.clone(),
-        header_tint: opts.header_tint.clone(),
-        title_color: opts.title_color.clone(),
-        back_enabled: opts.back_enabled,
-        fullscreen: opts.fullscreen,
-        // `unmount_on_blur` is currently a no-op on the iOS stack.
-        // The field is plumbed through `StackScreenOptions` for API
-        // surface symmetry with drawer/tab `MountPolicy`, but
-        // honoring it requires three things this layer doesn't have
-        // yet:
-        //
-        //   1. **Mount-params snapshot.** `NavCommand::Push.params`
-        //      is `Box<dyn Any>` — owned, non-`Clone`, consumed by
-        //      the first `mount_screen` call. Remounting after a
-        //      pop needs a stored copy. Easiest fix is to switch
-        //      `Box<dyn Any>` → `Rc<dyn Any>` on the command type
-        //      so the dispatcher can keep a clone alongside the
-        //      `ScreenEntry`; alternatively, expose a framework
-        //      `remount_screen(scope_id)` that re-runs the
-        //      route's original builder with the original payload
-        //      transparently.
-        //   2. **Pop-completion hook that fires BEFORE the
-        //      revealed VC's `viewWillAppear`.** UIKit's
-        //      `UINavigationControllerDelegate::didShow` runs AFTER
-        //      the pop animation — too late to swap the revealed
-        //      VC's content view without a visible flash. The
-        //      cleanest hook is the navigation controller's
-        //      `willShow:animated:` delegate method (already
-        //      implementable since we own the delegate at
-        //      `crates/sdk/navigators/helpers/ios/src/stack.rs:79`).
-        //   3. **Per-`ScreenEntry` remount-needed marker.** The
-        //      helper's `Vec<ScreenEntry>` would need to track a
-        //      `mount_policy: MountPolicy` (or equivalent) per
-        //      entry so the `willShow` hook knows which screens
-        //      to rebuild and which to leave cached.
-        //
-        // Once (1) lands the rest is a straight refactor of
-        // `stack.rs::create_stack`'s `Push`/`Pop` arms. Until then
-        // the field rides as documentation of intent.
-        mount_policy: None,
-    }
-}
-
-impl NavigatorHandler<IosBackend> for IosStackHandler {
+impl NavigatorHandler<IosBackend> for IosStackV2Handler {
     fn init(
         &mut self,
         backend: &mut IosBackend,
         host: NavigatorHost<IosNode>,
-        _presentation: Rc<dyn Any>,
+        presentation: Rc<dyn Any>,
     ) -> IosNode {
+        let mtm = backend.mtm();
+        let a11y = AccessibilityProps::default();
+        let root = backend.create_view(&a11y);
+        backend.apply_style(&root, &navigator_fill_rules());
+
         let NavigatorHost {
             initial_route,
             initial_path,
             defer_initial_mount,
             mount_screen,
             release_screen,
-            match_path: _,
-            nav_state,
-            depth_changed,
-            active_changed: _,
+            insert_node,
             control,
-            build_node: _,
-            build_node_into: _,
-            build_in_screen: _,
-            // `resolve_entry` + `base` are consulted by the framework walker
-            // (deep-link resolution) and the web SDK; the iOS stack handler
-            // doesn't read them.
+            build_layout_with_outlet,
+            nav_state,
+            screen_chrome,
+            depth_changed,
             ..
         } = host;
 
-        // Adapter: the helpers-crate's `mount_screen` is 2-arg
-        // `(name, params)`; the substrate's host is 3-arg
-        // `(name, params, state)`. Discard `state` — the iOS stack
-        // engine doesn't currently thread per-screen state through
-        // UINavigationController, and no first-party iOS screen
-        // reads `current_screen_state()`. The closure rewraps the
-        // returned `MountResult.options` into an `IosScreenOptions`
-        // so the helper engine can downcast it cleanly inside the
-        // dispatcher.
+        let layout = presentation
+            .downcast_ref::<StackPresentation>()
+            .and_then(|p| p.layout.clone());
+
+        let options_map: OptionsMap = Rc::new(RefCell::new(HashMap::new()));
+
+        // Mount adapter for the engine: run the framework mount, capture
+        // the screen's v2 options for `screen_chrome`, and hand the
+        // engine the translated flags (bar hidden, back-lock, fullscreen).
         let mount_2arg: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<IosNode>> = {
             let m = mount_screen;
+            let map = options_map.clone();
             Rc::new(move |name, params| {
                 let result = m(name, params, None);
-                // If the screen carried `StackScreenOptions`, repack as
-                // `IosScreenOptions` so the helper engine doesn't have
-                // to know about SDK-side typed options.
-                let new_options: Box<dyn Any> =
-                    if let Some(opts) = result.options.downcast_ref::<StackScreenOptions>() {
-                        Box::new(translate_options(opts))
-                    } else if result.options.downcast_ref::<IosScreenOptions>().is_some() {
-                        result.options
-                    } else {
-                        // No SDK-side options attached. Hand the helper
-                        // a default `IosScreenOptions` so its
-                        // downcast-and-apply path is a no-op.
-                        Box::new(IosScreenOptions::default())
-                    };
-                MountResult {
-                    node: result.node,
-                    scope_id: result.scope_id,
-                    options: new_options,
-                }
+                let v2 = result
+                    .options
+                    .downcast_ref::<StackScreenOptions>()
+                    .cloned()
+                    .unwrap_or_default();
+                let ios: Box<dyn Any> = Box::new(to_ios_options(&v2));
+                map.borrow_mut().insert(result.scope_id, v2);
+                MountResult { node: result.node, scope_id: result.scope_id, options: ios }
             })
         };
 
-        let callbacks = IosNavCallbacks {
-            initial_route,
-            initial_path,
-            mount_screen: mount_2arg,
-            release_screen,
-            depth_changed,
-            nav_state,
-            defer_initial_mount,
+        // Release adapter: drop the captured options with the screen.
+        let release_2: Rc<dyn Fn(u64)> = {
+            let r = release_screen;
+            let map = options_map.clone();
+            Rc::new(move |scope_id| {
+                map.borrow_mut().remove(&scope_id);
+                r(scope_id);
+            })
         };
 
-        let node = helpers::create_stack(backend.mtm(), callbacks, control);
-        self.container = Some(node.clone());
-        node
+        // `top_changed` → publish the revealed screen's author-header
+        // state. `native = false`: the native bar is hidden, so the
+        // author `StackHeader` must SHOW (it auto-hides when native).
+        // Fires on push/pop/replace/reset AND swipe-back.
+        let top_changed: Rc<dyn Fn(u64)> = {
+            let map = options_map.clone();
+            Rc::new(move |scope_id| {
+                let state = map
+                    .borrow()
+                    .get(&scope_id)
+                    .cloned()
+                    .unwrap_or_default()
+                    .to_state(false);
+                screen_chrome.set(Some(Rc::new(state) as Rc<dyn Any>));
+            })
+        };
+
+        // Deferred: build the author layout, seat the native engine
+        // inside the outlet, then seat the framework-attached initial.
+        {
+            let engine_slot = self.engine.clone();
+            let pending = self.pending_initial.clone();
+            let map_for_task = options_map.clone();
+            let root = root.clone();
+            let control_for_task = control.clone();
+            let nav_state_for_task = nav_state.clone();
+            let active_route = nav_state.active_route;
+            let active_path = nav_state.active_path;
+            let depth = nav_state.depth;
+            let can_go_back = nav_state.can_go_back;
+            let screen_chrome_sig = screen_chrome;
+            runtime_core::schedule_microtask(move || {
+                let pop: Rc<dyn Fn()> = {
+                    let control = control_for_task.clone();
+                    Rc::new(move || control.dispatch(NavCommand::Pop))
+                };
+                let ctx = crate::StackContext {
+                    outlet: navigator_outlet(),
+                    active_route,
+                    active_path,
+                    depth,
+                    can_go_back,
+                    pop,
+                    screen_chrome: screen_chrome_sig,
+                };
+                // Producer closure runs inside the framework's retained
+                // nav-chrome scope, so an `effect!` in author chrome is
+                // owned by the navigator.
+                let (layout_root, outlet) =
+                    (build_layout_with_outlet)(Box::new(move || match &layout {
+                        Some(f) => f(ctx),
+                        None => ctx.outlet,
+                    }));
+                debug_assert!(
+                    outlet.is_some(),
+                    "stack-navigator (iOS): the author `.layout(...)` must splat `{{nav.outlet}}`"
+                );
+                insert_node(root, layout_root);
+
+                // Native engine (UINavigationController) inside the outlet.
+                let callbacks = IosNavCallbacks {
+                    initial_route,
+                    initial_path,
+                    mount_screen: mount_2arg,
+                    release_screen: release_2,
+                    depth_changed,
+                    nav_state: nav_state_for_task,
+                    defer_initial_mount,
+                    top_changed: Some(top_changed),
+                };
+                let nav_node = helpers::create_stack(mtm, callbacks, control_for_task);
+                if let Some(outlet) = outlet {
+                    insert_node(outlet, nav_node.clone());
+                }
+
+                // Seat the framework-attached initial screen (deep-link
+                // aware — the engine reconstructs the back stack itself).
+                if let Some(p) = pending.borrow_mut().take() {
+                    // The walker mounted the initial through the RAW host
+                    // `mount_screen` (not the engine adapter), so its
+                    // options enter the chrome map here.
+                    map_for_task.borrow_mut().insert(p.scope_id, p.options.clone());
+                    helpers::stack_attach_initial(
+                        mtm,
+                        &nav_node,
+                        p.screen,
+                        p.scope_id,
+                        &to_ios_options(&p.options),
+                    );
+                }
+                *engine_slot.borrow_mut() = Some(nav_node);
+            });
+        }
+
+        self.control = Some(control);
+        root
     }
 
     fn attach_initial(
         &mut self,
-        backend: &mut IosBackend,
+        _backend: &mut IosBackend,
         screen: IosNode,
         scope_id: u64,
         options: Box<dyn Any>,
     ) {
-        let Some(container) = self.container.clone() else { return };
-        let ios_opts = options
+        let v2 = options
             .downcast_ref::<StackScreenOptions>()
-            .map(translate_options)
+            .cloned()
             .unwrap_or_default();
-        helpers::stack_attach_initial(backend.mtm(), &container, screen, scope_id, &ios_opts);
-    }
-
-    fn on_command(&mut self, _cmd: runtime_core::NavCommand) {
-        // `helpers::create_stack` installs the dispatcher closure on
-        // the control plane at init time; commands route directly
-        // through that closure and never reach the handler.
-        unreachable!(
-            "IosStackHandler::on_command — helpers::create_stack owns the \
-             control-plane dispatcher"
-        );
+        // Normal (non-deferred) flow: the walker attaches synchronously,
+        // BEFORE the layout microtask builds the engine — stash. Deferred
+        // hosts can attach after the engine exists; seat directly then.
+        if let Some(engine) = self.engine.borrow().clone() {
+            let mtm = _backend.mtm();
+            helpers::stack_attach_initial(mtm, &engine, screen, scope_id, &to_ios_options(&v2));
+            return;
+        }
+        *self.pending_initial.borrow_mut() = Some(PendingInitial { screen, scope_id, options: v2 });
     }
 
     fn release(&mut self, _backend: &mut IosBackend) {
-        if let Some(container) = self.container.take() {
-            helpers::release_stack(&container);
+        if let Some(engine) = self.engine.borrow_mut().take() {
+            helpers::release_stack(&engine);
         }
     }
 
     fn make_handle(&self) -> runtime_core::NavigatorHandle {
-        match self.container.as_ref() {
-            Some(c) => helpers::make_stack_handle(c),
-            None => runtime_core::NavigatorHandle::new(Rc::new(()), &STACK_OPS),
+        // Prefer the control we retained at init (always present after
+        // init); the engine-node lookup is equivalent but only valid
+        // after the deferred build.
+        match &self.control {
+            Some(c) => runtime_core::NavigatorHandle::with_control(
+                Rc::new(()),
+                &crate::STACK_OPS,
+                c.clone(),
+            ),
+            None => runtime_core::NavigatorHandle::new(Rc::new(()), &crate::STACK_OPS),
         }
     }
 
@@ -212,31 +298,21 @@ impl NavigatorHandler<IosBackend> for IosStackHandler {
         slot: &'static str,
         style: &Rc<runtime_core::StyleRules>,
     ) {
-        let Some(container) = self.container.clone() else { return };
+        let Some(engine) = self.engine.borrow().clone() else { return };
         match slot {
-            "header" => helpers::apply_stack_header_style(&container, style),
-            "title" => helpers::apply_stack_title_style(&container, style),
-            "button" => helpers::apply_stack_button_style(&container, style),
-            // `body` paints the `UINavigationController`'s root view —
-            // the screen outlet that push/pop swap content inside.
-            // Same role as Android's `apply_body_style` and web's
-            // `apply_body_style`; without this, themed
-            // `HeaderStyle.body_background` is silently dropped.
-            "body" => helpers::apply_stack_body_style(&container, style),
+            // The native bar is hidden; header/title/button styling
+            // belongs to the author `StackHeader`. Only the body (the
+            // controller's root view — the screen outlet) is native.
+            "body" => helpers::apply_stack_body_style(&engine, style),
             _ => {}
         }
     }
 }
 
-/// Install the stack navigator handler on an iOS backend. Call once at
-/// startup so `Element::Navigator`s carrying a [`StackPresentation`]
-/// resolve to this backend's chrome.
+/// Register the iOS native-surface stack handler.
 pub fn register(backend: &mut IosBackend) {
-    backend.register_navigator::<StackPresentation, _>(|| Box::new(IosStackHandler::new()));
+    backend
+        .register_navigator::<StackPresentation, _>(|| Box::new(IosStackV2Handler::new()));
 }
 
-// Self-register at backend construction (no app-side `register` call needed).
-// See [[project_inventory_self_registration]].
-inventory::submit! {
-    backend_ios::IosNavigatorRegistrar(register)
-}
+inventory::submit! { backend_ios::IosNavigatorRegistrar(register) }

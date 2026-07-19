@@ -15,7 +15,8 @@ crate-type = ["cdylib", "rlib"]
 # to wait on `host_web::mount` without blocking the build walker.
 runtime-core = { workspace = true, features = ["async-driver"] }
 idea-ui = { workspace = true }
-drawer-navigator = { workspace = true }
+swap-navigator = { workspace = true }
+idea-ui-nav = { workspace = true }
 codeblock = { workspace = true }
 # Embedded `welcome` app — the canonical scaffold from `idealyst new`.
 # Re-mounted inside the home-page Simulator so visitors can preview
@@ -75,13 +76,13 @@ ssr = ["dep:backend-ssr"]
 # (build-runtime-server). Pulls `dev-server` + the drawer SDK's recording
 # handler so `register_extensions_recorder` can register a navigator
 # recording handler on the runtime-server recorder backend.
-sidecar = ["dep:dev-server", "drawer-navigator/runtime-server"]
+sidecar = ["dep:dev-server", "swap-navigator/runtime-server"]
 # Turn on the terminal build path. Like `ssr` above, this forces a
 # host-triple backend that `cfg(target_os)` can't select: the terminal
 # target builds for the host triple, so on a macOS host it collides with
 # `backend-macos`. The CLI's terminal wrapper enables this feature to break
 # the tie. (See the tutorial's Cargo.toml for the full rationale.)
-terminal = ["dep:backend-terminal", "drawer-navigator/terminal"]
+terminal = ["dep:backend-terminal"]
 
 # Web target — wasm + DOM. The marketing site's primary surface.
 #

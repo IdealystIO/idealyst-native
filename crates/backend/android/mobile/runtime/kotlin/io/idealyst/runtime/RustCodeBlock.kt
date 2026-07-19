@@ -1,7 +1,6 @@
 package io.idealyst.runtime
 
 import android.content.Context
-import android.content.res.Resources
 import android.graphics.Typeface
 import android.text.SpannableString
 import android.text.Spanned
@@ -35,15 +34,6 @@ import android.widget.TextView
  * `text` (the SpannableString) gets rebuilt.
  */
 class RustCodeBlock(context: Context) : HorizontalScrollView(context) {
-    companion object {
-        /// Inner padding (in dp) drawn around the code text. Matches
-        /// the framework's `<pre>`-style inset on web and the iOS
-        /// handler's UIScrollView contentInset; kept here so a future
-        /// API setter can override per-instance without touching the
-        /// Rust side.
-        private const val PADDING_DP: Float = 20f
-    }
-
     private val textView: TextView
 
     init {
@@ -63,16 +53,20 @@ class RustCodeBlock(context: Context) : HorizontalScrollView(context) {
             // alone (it acts as the "default" when no span covers a
             // range, but in practice every range is covered).
             //
-            // Inner padding lives on the TextView so it SCROLLS with
-            // the text: when the user pans horizontally, the right
-            // padding stays flush with the right edge of the visible
-            // scroll area (same as `<pre> { padding: 20px;
-            // overflow-x: auto }` on web). Padding on the outer
-            // HorizontalScrollView would clip the content under a
-            // fixed pad on either edge instead.
-            val padPx = (PADDING_DP * Resources.getSystem().displayMetrics.density).toInt()
-            setPadding(padPx, padPx, padPx, padPx)
+            // NO baked-in padding here: the author's `padding_*` (via the
+            // framework style on the code block) lands on THIS scroll view
+            // via `setPadding` (the backend's external-scroller divert).
+            // With `clipToPadding = false` below, that padding scrolls with
+            // the content — text sits inset at rest and reaches the block's
+            // own edge mid-scroll, same as `<pre> { padding: 20px;
+            // overflow-x: auto }` on web. A previous revision hard-coded
+            // 20dp here, which doubled with panel padding and clipped
+            // scrolled text before the block's edge.
         }
+        // Let content scroll under our padding and clip at the view edge
+        // (the `<pre>` overflow model). Padding itself arrives from the
+        // framework style via setPadding.
+        clipToPadding = false
         // Fill our scroll viewport horizontally so the scroll view
         // gives the TextView unbounded width on the main axis; the
         // TextView's intrinsic size (sum of glyph widths per line)

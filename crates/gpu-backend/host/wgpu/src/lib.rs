@@ -1,6 +1,6 @@
 //! Target-agnostic wgpu host. Pick the right per-platform mount
 //! based on the active target; consumers call [`mount`] without
-//! `cfg` and get web / iOS / (eventually) Android / macOS routing
+//! `cfg` and get web / iOS / Android / macOS routing
 //! transparently.
 //!
 //! Re-exports:
@@ -43,15 +43,19 @@ pub type MountError = host_ios_mobile::MountError;
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 pub type MountError = host_android_mobile::MountError;
 
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+pub type MountError = host_macos_desktop::MountError;
+
 #[cfg(not(any(
     target_arch = "wasm32",
     all(target_os = "ios", not(target_arch = "wasm32")),
-    all(target_os = "android", not(target_arch = "wasm32"))
+    all(target_os = "android", not(target_arch = "wasm32")),
+    all(target_os = "macos", not(target_arch = "wasm32"))
 )))]
 #[derive(Debug)]
 pub enum MountError {
     /// No wgpu host is wired for this target yet. Returned by
-    /// [`mount`] on macOS-AppKit, terminal, etc. so consumers can
+    /// [`mount`] on terminal, headless, etc. so consumers can
     /// show a fallback (the chassis-around-an-empty-surface state
     /// for the simulator preview) without confusing this with a
     /// real init failure.
@@ -61,7 +65,8 @@ pub enum MountError {
 #[cfg(not(any(
     target_arch = "wasm32",
     all(target_os = "ios", not(target_arch = "wasm32")),
-    all(target_os = "android", not(target_arch = "wasm32"))
+    all(target_os = "android", not(target_arch = "wasm32")),
+    all(target_os = "macos", not(target_arch = "wasm32"))
 )))]
 impl std::fmt::Display for MountError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -72,7 +77,8 @@ impl std::fmt::Display for MountError {
 #[cfg(not(any(
     target_arch = "wasm32",
     all(target_os = "ios", not(target_arch = "wasm32")),
-    all(target_os = "android", not(target_arch = "wasm32"))
+    all(target_os = "android", not(target_arch = "wasm32")),
+    all(target_os = "macos", not(target_arch = "wasm32"))
 )))]
 impl std::error::Error for MountError {}
 
@@ -91,10 +97,14 @@ pub type HostHandle = host_ios_mobile::IosHostHandle;
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 pub type HostHandle = host_android_mobile::AndroidHostHandle;
 
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+pub type HostHandle = host_macos_desktop::MacosHostHandle;
+
 #[cfg(not(any(
     target_arch = "wasm32",
     all(target_os = "ios", not(target_arch = "wasm32")),
-    all(target_os = "android", not(target_arch = "wasm32"))
+    all(target_os = "android", not(target_arch = "wasm32")),
+    all(target_os = "macos", not(target_arch = "wasm32"))
 )))]
 pub struct HostHandle {
     _no_construct: (),
@@ -103,7 +113,8 @@ pub struct HostHandle {
 #[cfg(not(any(
     target_arch = "wasm32",
     all(target_os = "ios", not(target_arch = "wasm32")),
-    all(target_os = "android", not(target_arch = "wasm32"))
+    all(target_os = "android", not(target_arch = "wasm32")),
+    all(target_os = "macos", not(target_arch = "wasm32"))
 )))]
 impl HostHandle {
     /// No-op on unsupported targets. The handle can't be constructed
@@ -158,10 +169,15 @@ pub async fn mount(
     {
         host_android_mobile::mount(surface, size, profile, painter, build_ui).await
     }
+    #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+    {
+        host_macos_desktop::mount(surface, size, profile, painter, build_ui).await
+    }
     #[cfg(not(any(
         target_arch = "wasm32",
         all(target_os = "ios", not(target_arch = "wasm32")),
-        all(target_os = "android", not(target_arch = "wasm32"))
+        all(target_os = "android", not(target_arch = "wasm32")),
+        all(target_os = "macos", not(target_arch = "wasm32"))
     )))]
     {
         // Bind the args so the function signature stays honest

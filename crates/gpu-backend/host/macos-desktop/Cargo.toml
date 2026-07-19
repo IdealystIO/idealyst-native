@@ -1,0 +1,40 @@
+[package]
+name = "host-macos-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# macOS native shell for the wgpu render backend.
+#
+# The AppKit sibling of `host-ios-mobile`: takes the framework's
+# `Graphics`-allocated CAMetalLayer-backed NSView surface (via the
+# macOS backend's `MacosSurfaceProvider`), runs the wgpu init against
+# the Metal backend, constructs the `render_wgpu::Host` + `Renderer`,
+# mounts the caller's UI, and drives per-frame paint through
+# `runtime_core::driver::render_loop` — the NSTimer driver
+# `host-appkit` installs at boot (`backend_macos::install_render_loop`).
+#
+# Used to embed a live preview of an idealyst app (the welcome
+# scaffold, a third-party SDK component) inside another idealyst
+# app's UI on macOS — e.g. the website's home-page Simulator.
+#
+# Note on inputs: like the iOS host, this does NOT install pointer
+# handlers — the embedded preview is read-only (the outer macOS
+# backend owns hit testing for the surrounding NSView tree).
+
+[dependencies]
+render-api = { workspace = true }
+render-wgpu = { workspace = true }
+runtime-core = { workspace = true, features = ["async-driver"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Match host-ios-mobile's wgpu major (29), Metal backend.
+wgpu = { version = "29", default-features = false, features = ["metal", "wgsl"] }
+raw-window-handle = "0.6"
+log = "0.4"
+# Used by the per-frame visibility check (`view.window != nil` +
+# recursive `!isHidden` / `alphaValue > 0`) so the wgpu render loop
+# stops submitting Metal frames for an NSView hidden behind a
+# navigator's persistent-but-not-visible screen.
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSObject"] }

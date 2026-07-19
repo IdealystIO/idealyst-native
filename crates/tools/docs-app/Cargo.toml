@@ -16,13 +16,15 @@ crate-type = ["cdylib", "rlib"]
 # `target/idealyst/<app>/web/wrapper/`. See websites/idea-ui-docs.
 runtime-server = []
 # `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper.
-sidecar = ["dep:dev-server", "drawer-navigator/runtime-server"]
+sidecar = ["dep:dev-server", "swap-navigator/runtime-server"]
 # `terminal`: forces the terminal backend on the host. The terminal target
 # builds for the host triple, so on a macOS host it collides with
 # `backend-macos` and `cfg(target_os)` can't disambiguate — the CLI's
 # terminal wrapper enables this feature to break the tie. (See the
-# tutorial's Cargo.toml for the full rationale.)
-terminal = ["dep:backend-terminal", "drawer-navigator/terminal"]
+# tutorial's Cargo.toml for the full rationale.) swap-navigator needs no
+# terminal feature — its backend-neutral handler serves the terminal
+# backend through the generic fallback registration.
+terminal = ["dep:backend-terminal"]
 
 [dependencies]
 # `catalog` flips on the emission gate in `runtime-macros` AND pulls
@@ -43,7 +45,11 @@ mcp-catalog = { workspace = true }
 # idea-ui-docs (DocControls impls); not strictly required here but
 # keeps the feature graph identical.
 idea-ui = { workspace = true, features = ["docs"] }
-drawer-navigator = { workspace = true }
+# Outlet-model navigation: the swap navigator swaps the active screen into
+# the layout's `{nav.outlet}`; idea-ui-nav's `AppShell` packages the
+# pinned-sidebar ⇄ off-canvas-drawer chrome around it.
+swap-navigator = { workspace = true }
+idea-ui-nav = { workspace = true }
 # Theme-aware syntax-highlighted code panels for usage snippets.
 codeblock = { workspace = true }
 # CommonMark/GFM prose rendering for guides + entry docs — one native
@@ -70,7 +76,8 @@ dev-server = { workspace = true, optional = true }
 runtime-core = { workspace = true, features = ["catalog"] }
 mcp-catalog = { workspace = true }
 idea-ui = { workspace = true, features = ["docs"] }
-drawer-navigator = { workspace = true }
+swap-navigator = { workspace = true }
+idea-ui-nav = { workspace = true }
 table = { workspace = true }
 codeblock = { workspace = true }
 # `catalog` makes icons-lucide self-register its `IconSetEntry` into the

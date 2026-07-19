@@ -69,6 +69,19 @@ pub fn reset_layout_subs() {
     LAYOUT_SUBS.with(|m| m.borrow_mut().clear());
 }
 
+thread_local! {
+    /// Records `Backend::set_node_scroll` calls as (node, x, y). Lets the
+    /// robot `set_scroll` action test assert a scroll drive reached the
+    /// backend with the right node + offsets.
+    static SCROLL_SETS: RefCell<Vec<(NodeId, f32, f32)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Test helper: drain the recorded `set_node_scroll` calls.
+#[allow(dead_code)]
+pub fn take_scroll_sets() -> Vec<(NodeId, f32, f32)> {
+    SCROLL_SETS.with(|s| s.borrow_mut().drain(..).collect())
+}
+
 // =============================================================================
 // NodeId — the backend's `Node` type
 // =============================================================================
@@ -618,6 +631,18 @@ impl ViewOps for MockViewOps {
 
 struct MockTextOps;
 impl TextOps for MockTextOps {}
+
+/// Ops behind [`MockBackend::make_scroll_view_handle`] — records scroll
+/// writes into the shared `SCROLL_SETS` log for the robot `set_scroll`
+/// action test.
+struct MockScrollViewOps;
+impl runtime_core::primitives::scroll_view::ScrollViewOps for MockScrollViewOps {
+    fn scroll_to(&self, node: &dyn std::any::Any, x: f32, y: f32) {
+        if let Some(id) = node.downcast_ref::<NodeId>() {
+            SCROLL_SETS.with(|s| s.borrow_mut().push((*id, x, y)));
+        }
+    }
+}
 
 // =============================================================================
 // Backend impl
@@ -1184,6 +1209,25 @@ impl Backend for MockBackend {
         n.set(keys::TEXT, Some(NativeValue::Text(format!("node-{}", node.0))));
         n.set(keys::BACKGROUND_COLOR, Some(NativeValue::Color([1.0, 0.0, 0.0, 1.0])));
         Some(n)
+    }
+
+    fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {
+        SCROLL_SETS.with(|s| s.borrow_mut().push((*node, x, y)));
+    }
+
+    // The robot `set_scroll` action routes through this handle (NOT
+    // `set_node_scroll` under a held backend borrow — the native scroll
+    // write fires scroll notifications synchronously and their reactive
+    // restyles re-borrow the backend). The mock ops record into the same
+    // thread-local log as `set_node_scroll` so tests observe the write.
+    fn make_scroll_view_handle(
+        &self,
+        node: &Self::Node,
+    ) -> runtime_core::primitives::scroll_view::ScrollViewHandle {
+        runtime_core::primitives::scroll_view::ScrollViewHandle::new(
+            Rc::new(*node),
+            &MockScrollViewOps,
+        )
     }
 
     fn finish(&mut self, root: Self::Node) {

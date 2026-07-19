@@ -1,49 +1,130 @@
-//! Android-backend handler for the Stack navigator SDK.
+//! Android native push surface for the outlet-model stack.
 //!
-//! The FragmentManager + `RustNavigator` machinery (per-instance state,
-//! dispatcher closures, JNI exports) lives in the
-//! `android-navigator-helpers` crate, shared with tab + drawer. This
-//! module's `AndroidStackHandler` is a thin wrapper: it constructs an
-//! `AndroidNavCallbacks` from the framework-supplied `NavigatorHost`,
-//! drives the helpers crate's `create_stack()` at init time, retains
-//! the returned container `GlobalRef`, and forwards subsequent post-init
-//! dispatch (`attach_initial` / `release` / `make_handle`) to the
-//! matching helpers entry point.
+//! Same composition as iOS (`src/ios.rs`): the author `.layout(|nav| …)`
+//! renders on every backend, and INSIDE `{nav.outlet}` lives the shared
+//! `android-navigator-helpers` stack engine — the Kotlin `RustNavigator`
+//! (FragmentManager back stack, native push/pop transitions, system-back
+//! integration, `OnBackPressedCallback` back-lock, immersive
+//! full-screen). The native Toolbar is never shown
+//! (`header_shown: Some(false)`); the header is the author's
+//! `idea_ui_nav::StackHeader`, driven by [`crate::StackContext::screen_chrome`].
+//!
+//! Unlike iOS (whose engine got a `top_changed` hook), Android's
+//! revealed-top tracking lives here: the engine reports pops only
+//! through `release_screen` (Kotlin `onDestroyView` →
+//! `nativeReleaseScreen`), so this handler mirrors the scope stack in
+//! its mount/release adapters and republishes `screen_chrome` — and
+//! `depth` — from them. That also fixes system-back leaving the `depth`
+//! signal stale (the legacy handler only updated depth on dispatcher
+//! commands, so `can_go_back` drifted after a hardware back).
+//!
+//! Retention: covered fragments stay alive in the FragmentManager
+//! (native semantics — [`crate::StackRetention::Retain`]).
 
 use crate::{StackPresentation, StackScreenOptions};
-use android_navigator_helpers::{AndroidNavCallbacks, AndroidScreenOptions, BarButton};
+use android_navigator_helpers::{self as helpers, AndroidNavCallbacks, AndroidScreenOptions};
 use backend_android::AndroidBackend;
 use jni::objects::GlobalRef;
-use runtime_core::{
-    primitives::navigator::{MountResult, NavigatorHandler, NavigatorHost, NavigatorOps},
-    NavigatorHandle,
+use runtime_core::accessibility::AccessibilityProps;
+use runtime_core::primitives::navigator::{
+    navigator_fill_rules, navigator_outlet, MountResult, NavCommand, NavigatorHandler,
+    NavigatorHost,
 };
+use runtime_core::Backend;
 use std::any::Any;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
-pub struct AndroidStackHandler {
-    container: Option<GlobalRef>,
-}
-
-impl AndroidStackHandler {
-    pub fn new() -> Self {
-        Self { container: None }
+/// Native Toolbar hidden; only the flags the engine enforces cross the
+/// boundary (back-lock, immersive full-screen). Title/buttons render in
+/// the author `StackHeader` from `screen_chrome`.
+fn to_android_options(opts: &StackScreenOptions) -> AndroidScreenOptions {
+    AndroidScreenOptions {
+        header_shown: Some(false),
+        back_enabled: Some(opts.back_enabled),
+        fullscreen: Some(opts.fullscreen),
+        ..Default::default()
     }
 }
 
-impl Default for AndroidStackHandler {
+/// Handler-owned mirror of the engine's screen stack + captured
+/// per-screen options, shared by the mount/release adapters. Owns its
+/// publish targets (set once at init) so every mutation site can
+/// republish uniformly.
+struct Mirror {
+    /// Scope ids bottom→top. Pushed by the mount adapter / initial
+    /// attach, pruned by the release adapter (which is how Kotlin-side
+    /// pops report back).
+    stack: Vec<u64>,
+    options: HashMap<u64, StackScreenOptions>,
+    screen_chrome: Option<runtime_core::Signal<Option<Rc<dyn Any>>>>,
+    depth_changed: Option<Rc<dyn Fn(usize)>>,
+}
+
+impl Mirror {
+    /// Publish the current top's author-header state + depth. `native =
+    /// false`: the Toolbar is hidden, the author `StackHeader` shows.
+    /// (Signals are generation-guarded, so publishes after navigator
+    /// teardown are safe no-ops.)
+    fn publish(&self) {
+        if let (Some(chrome), Some(top)) = (&self.screen_chrome, self.stack.last()) {
+            let state = self
+                .options
+                .get(top)
+                .cloned()
+                .unwrap_or_default()
+                .to_state(false);
+            chrome.set(Some(Rc::new(state) as Rc<dyn Any>));
+        }
+        if let Some(depth) = &self.depth_changed {
+            depth(self.stack.len());
+        }
+    }
+}
+
+/// The Android stack handler: author layout + outlet, with the shared
+/// Kotlin `RustNavigator` engine (Toolbar hidden) seated inside the
+/// outlet for native push/pop transitions and system-back handling.
+pub struct AndroidStackV2Handler {
+    engine: Option<GlobalRef>,
+    mirror: Rc<RefCell<Mirror>>,
+    control: Option<Rc<runtime_core::primitives::navigator::NavigatorControl>>,
+}
+
+impl AndroidStackV2Handler {
+    /// A fresh, uninitialized handler; `init` wires the rest.
+    pub fn new() -> Self {
+        Self {
+            engine: None,
+            mirror: Rc::new(RefCell::new(Mirror {
+                stack: Vec::new(),
+                options: HashMap::new(),
+                screen_chrome: None,
+                depth_changed: None,
+            })),
+            control: None,
+        }
+    }
+}
+
+impl Default for AndroidStackV2Handler {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl NavigatorHandler<AndroidBackend> for AndroidStackHandler {
+impl NavigatorHandler<AndroidBackend> for AndroidStackV2Handler {
     fn init(
         &mut self,
         backend: &mut AndroidBackend,
         host: NavigatorHost<GlobalRef>,
-        _presentation: Rc<dyn Any>,
+        presentation: Rc<dyn Any>,
     ) -> GlobalRef {
+        let a11y = AccessibilityProps::default();
+        let root = backend.create_view(&a11y);
+        backend.apply_style(&root, &navigator_fill_rules());
+
         let NavigatorHost {
             initial_route,
             initial_path,
@@ -51,59 +132,126 @@ impl NavigatorHandler<AndroidBackend> for AndroidStackHandler {
             mount_screen,
             release_screen,
             match_path,
-            nav_state,
-            depth_changed,
-            active_changed: _,
+            insert_node,
             control,
-            build_node: _,
-            build_node_into: _,
-            build_in_screen: _,
-            // `resolve_entry` + `base`: framework/web deep-link plumbing; the
-            // Android stack handler doesn't read them.
+            build_layout_with_outlet,
+            nav_state,
+            screen_chrome,
+            depth_changed,
             ..
         } = host;
 
-        // Adapter: helpers-crate `mount_screen` is 2-arg `(name, params)`;
-        // the substrate's host is 3-arg `(name, params, state)`. Discard
-        // `state` for the stack-on-Android path — the helpers crate
-        // doesn't currently thread per-screen state through the
-        // fragment transaction.
-        //
-        // We also repack the SDK-side `StackScreenOptions` into the
-        // helper-side `AndroidScreenOptions` here (mirroring the iOS
-        // handler), so the helper's command dispatcher — which only
-        // knows the helper type — can read `back_enabled` off the
-        // mounted screen without depending on this SDK crate.
+        let layout = presentation
+            .downcast_ref::<StackPresentation>()
+            .and_then(|p| p.layout.clone());
+
+        // Seat the publish targets on the mirror.
+        {
+            let mut mir = self.mirror.borrow_mut();
+            mir.screen_chrome = Some(screen_chrome);
+            mir.depth_changed = Some(depth_changed.clone());
+        }
+
+        // Mount adapter: capture v2 options, mirror the push, publish
+        // the new top, hand the engine the translated flags.
         let mount_2arg: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<GlobalRef>> = {
             let m = mount_screen;
+            let mirror = self.mirror.clone();
             Rc::new(move |name, params| {
                 let result = m(name, params, None);
-                let options: Box<dyn Any> =
-                    if let Some(opts) = result.options.downcast_ref::<StackScreenOptions>() {
-                        Box::new(translate_stack_options(opts))
-                    } else if result.options.downcast_ref::<AndroidScreenOptions>().is_some() {
-                        result.options
-                    } else {
-                        Box::new(AndroidScreenOptions::default())
-                    };
-                MountResult { node: result.node, scope_id: result.scope_id, options }
+                let v2 = result
+                    .options
+                    .downcast_ref::<StackScreenOptions>()
+                    .cloned()
+                    .unwrap_or_default();
+                let android: Box<dyn Any> = Box::new(to_android_options(&v2));
+                {
+                    let mut mir = mirror.borrow_mut();
+                    mir.options.insert(result.scope_id, v2);
+                    mir.stack.push(result.scope_id);
+                    mir.publish();
+                }
+                MountResult { node: result.node, scope_id: result.scope_id, options: android }
             })
         };
 
+        // Release adapter: Kotlin-side pops (dispatcher pop, system
+        // back, replace/reset teardown) all funnel through here — prune
+        // the mirror and republish the revealed top + depth.
+        let release_2: Rc<dyn Fn(u64)> = {
+            let r = release_screen;
+            let mirror = self.mirror.clone();
+            Rc::new(move |scope_id| {
+                {
+                    let mut mir = mirror.borrow_mut();
+                    mir.options.remove(&scope_id);
+                    mir.stack.retain(|s| *s != scope_id);
+                    mir.publish();
+                }
+                r(scope_id);
+            })
+        };
+
+        // The Kotlin engine can be created inside the init borrow (pure
+        // JNI object construction — it never mounts screens); only the
+        // author layout build defers.
         let callbacks = AndroidNavCallbacks {
             initial_route,
             initial_path,
             mount_screen: mount_2arg,
-            release_screen,
+            release_screen: release_2,
             match_path,
             depth_changed,
-            nav_state,
+            nav_state: nav_state.clone(),
             defer_initial_mount,
         };
+        let engine = helpers::create_stack(backend, callbacks, control.clone());
+        self.engine = Some(engine.clone());
 
-        let node = android_navigator_helpers::create_stack(backend, callbacks, control);
-        self.container = Some(node.clone());
-        node
+        // Deferred author-layout build: splice the chrome into the root
+        // and seat the engine container inside the outlet.
+        {
+            let root = root.clone();
+            let control_for_task = control.clone();
+            let active_route = nav_state.active_route;
+            let active_path = nav_state.active_path;
+            let depth = nav_state.depth;
+            let can_go_back = nav_state.can_go_back;
+            runtime_core::schedule_microtask(move || {
+                let pop: Rc<dyn Fn()> = {
+                    let control = control_for_task.clone();
+                    Rc::new(move || control.dispatch(NavCommand::Pop))
+                };
+                let ctx = crate::StackContext {
+                    outlet: navigator_outlet(),
+                    active_route,
+                    active_path,
+                    depth,
+                    can_go_back,
+                    pop,
+                    screen_chrome,
+                };
+                // Producer closure runs inside the framework's retained
+                // nav-chrome scope, so an `effect!` in author chrome is
+                // owned by the navigator.
+                let (layout_root, outlet) =
+                    (build_layout_with_outlet)(Box::new(move || match &layout {
+                        Some(f) => f(ctx),
+                        None => ctx.outlet,
+                    }));
+                debug_assert!(
+                    outlet.is_some(),
+                    "stack-navigator (Android): the author `.layout(...)` must splat `{{nav.outlet}}`"
+                );
+                insert_node(root, layout_root);
+                if let Some(outlet) = outlet {
+                    insert_node(outlet, engine);
+                }
+            });
+        }
+
+        self.control = Some(control);
+        root
     }
 
     fn attach_initial(
@@ -113,111 +261,58 @@ impl NavigatorHandler<AndroidBackend> for AndroidStackHandler {
         scope_id: u64,
         options: Box<dyn Any>,
     ) {
-        let Some(container) = self.container.clone() else { return };
-        let android_options = stack_options_to_android(options.downcast::<StackScreenOptions>().ok());
-        android_navigator_helpers::attach_initial(&container, screen, scope_id, &android_options);
-    }
-
-    fn on_command(&mut self, _cmd: runtime_core::NavCommand) {
-        unreachable!(
-            "AndroidStackHandler::on_command — helpers::create_stack owns the \
-             control-plane dispatcher"
-        );
+        let Some(engine) = self.engine.clone() else { return };
+        let v2 = options
+            .downcast_ref::<StackScreenOptions>()
+            .cloned()
+            .unwrap_or_default();
+        // The walker mounted the initial through the RAW host
+        // `mount_screen`, so mirror + options enter here; then seed the
+        // author header for the seated screen.
+        {
+            let mut mir = self.mirror.borrow_mut();
+            mir.options.insert(scope_id, v2.clone());
+            mir.stack.push(scope_id);
+        }
+        helpers::attach_initial(&engine, screen, scope_id, &to_android_options(&v2));
+        self.mirror.borrow().publish();
     }
 
     fn release(&mut self, _backend: &mut AndroidBackend) {
-        if let Some(container) = self.container.take() {
-            android_navigator_helpers::release(&container);
+        if let Some(engine) = self.engine.take() {
+            helpers::release(&engine);
         }
     }
 
-    fn make_handle(&self) -> NavigatorHandle {
-        match self.container.as_ref() {
-            Some(c) => android_navigator_helpers::make_handle(c),
-            None => NavigatorHandle::new(Rc::new(()), &NoopStackOps),
+    fn make_handle(&self) -> runtime_core::NavigatorHandle {
+        match &self.control {
+            Some(c) => runtime_core::NavigatorHandle::with_control(
+                Rc::new(()),
+                &crate::STACK_OPS,
+                c.clone(),
+            ),
+            None => runtime_core::NavigatorHandle::new(Rc::new(()), &crate::STACK_OPS),
         }
     }
 
     fn apply_slot_style(
         &mut self,
         _backend: &mut AndroidBackend,
-        slot: &'static str,
-        style: &Rc<runtime_core::StyleRules>,
+        _slot: &'static str,
+        _style: &Rc<runtime_core::StyleRules>,
     ) {
-        let Some(container) = self.container.clone() else { return };
-        match slot {
-            "header" => android_navigator_helpers::apply_header_style(&container, style),
-            "title" => android_navigator_helpers::apply_title_style(&container, style),
-            "button" => android_navigator_helpers::apply_button_style(&container, style),
-            "body" => android_navigator_helpers::apply_body_style(&container, style),
-            _ => {}
-        }
+        // Toolbar hidden — header/title/button styles belong to the
+        // author StackHeader. The legacy "body" slot only ever painted
+        // the tab/drawer Toolbar engine's container (a registry-miss
+        // no-op for stack nodes), so there is nothing native to style
+        // here; screens paint their own backgrounds.
     }
 }
 
-struct NoopStackOps;
-impl NavigatorOps for NoopStackOps {}
-
-/// Translate the SDK's typed `StackScreenOptions` to the helpers
-/// crate's `AndroidScreenOptions`. Returns the default empty options
-/// when the downcast failed (which happens for screens that didn't
-/// set any stack options via `.title(...)` / `.header_*(...)`).
-fn stack_options_to_android(opts: Option<Box<StackScreenOptions>>) -> AndroidScreenOptions {
-    match opts {
-        Some(opts) => translate_stack_options(&opts),
-        None => AndroidScreenOptions::default(),
-    }
-}
-
-/// Translate the SDK's `StackScreenOptions` to the helper-side
-/// `AndroidScreenOptions`. Shared by [`stack_options_to_android`] (the
-/// `attach_initial` path) and the `mount_2arg` repack (the push /
-/// replace / reset path), so `back_enabled` reaches the helper
-/// dispatcher uniformly regardless of how the screen was mounted.
-fn translate_stack_options(opts: &StackScreenOptions) -> AndroidScreenOptions {
-    AndroidScreenOptions {
-        title: opts.title.clone(),
-        header_shown: opts.header_shown,
-        header_left: opts.header_left.as_ref().map(|btn| BarButton {
-            icon: btn.icon.clone(),
-            on_press: btn.on_press.clone(),
-        }),
-        header_right: opts.header_right.as_ref().map(|btn| BarButton {
-            icon: btn.icon.clone(),
-            on_press: btn.on_press.clone(),
-        }),
-        header_background: opts.header_background.clone(),
-        header_tint: opts.header_tint.clone(),
-        title_color: opts.title_color.clone(),
-        back_enabled: opts.back_enabled,
-        fullscreen: opts.fullscreen,
-        // `unmount_on_blur` is a stack-only knob; AndroidScreenOptions
-        // shares its `mount_policy` slot with drawer/tab. The Android
-        // stack helper today doesn't honor unmount-on-push semantics —
-        // same blocker as iOS (`crates/sdk/navigators/stack/src/ios.rs`,
-        // `translate_options`): `NavCommand::Push.params` is
-        // non-`Clone` `Box<dyn Any>`, so the dispatcher has no way to
-        // remember mount params for a remount-on-pop pass. The Android
-        // helper would additionally need a "before the popped fragment
-        // is revealed" hook similar to UIKit's `willShow:animated:`
-        // delegate — likely a custom `FragmentTransaction.runOnCommit`
-        // wedge so the fragment whose scope was released gets a fresh
-        // mount before its view becomes visible. The field rides here
-        // for surface symmetry; honoring it lands in the same patch
-        // that lands iOS's path.
-        mount_policy: None,
-    }
-}
-
-/// Install the stack navigator handler on an Android backend. Call once at
-/// startup so `Element::Navigator`s carrying a [`StackPresentation`]
-/// resolve to this backend's chrome.
+/// Register the Android native-surface stack handler.
 pub fn register(backend: &mut AndroidBackend) {
-    backend.register_navigator::<StackPresentation, _>(|| Box::new(AndroidStackHandler::new()));
+    backend
+        .register_navigator::<StackPresentation, _>(|| Box::new(AndroidStackV2Handler::new()));
 }
 
-// Self-register at backend construction (no app-side `register` call needed).
-// See [[project_inventory_self_registration]].
-inventory::submit! {
-    backend_android::AndroidNavigatorRegistrar(register)
-}
+inventory::submit! { backend_android::AndroidNavigatorRegistrar(register) }

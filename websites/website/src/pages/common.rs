@@ -230,12 +230,11 @@ pub struct CodeBlockProps {
     pub src: String,
 }
 
-/// On non-web targets, `codeblock` falls back to a placeholder — the
-/// surrounding chrome still renders. Stubbed to an empty View on iOS
-/// (perf probe — codeblocks render incorrectly there today and are
-/// an outsized contributor to the layout-pass cost; the surrounding
-/// panel surface + section heading still draw).
-#[cfg(not(target_os = "ios"))]
+/// Renders via the `codeblock` SDK's per-backend single-node handler
+/// (web `<pre>`, iOS UIScrollView+UILabel, Android RustCodeBlock,
+/// macOS NSScrollView+NSTextField); targets without a handler get the
+/// framework's external placeholder while the surrounding chrome still
+/// renders.
 #[component]
 pub fn CodeBlock(props: CodeBlockProps) -> Element {
     let src_owned = props.src;
@@ -247,12 +246,6 @@ pub fn CodeBlock(props: CodeBlockProps) -> Element {
             .with_style(code_style)
             .into_element()
     })
-}
-
-#[cfg(target_os = "ios")]
-#[component]
-pub fn CodeBlock(_props: CodeBlockProps) -> Element {
-    ui! { view() }
 }
 
 // =============================================================================

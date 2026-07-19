@@ -47,33 +47,39 @@ impl Default for CardTabsProps {
 
 #[component]
 pub fn CardTabs(props: CardTabsProps) -> Element {
-    // Local Signal owns the active-tab index. Lives in the
-    // component's reactive scope, so it survives across re-renders
-    // triggered by parent updates but tears down when the
+    // Local Signal owns the active tab's *id* (idea-ui `Tabs` is
+    // id-keyed now — `active`/`on_change` carry a `Tab::id`, not a
+    // position). For this fixed strip the ids are the indices
+    // stringified, so the id round-trips to the panel index below.
+    // Lives in the component's reactive scope, so it survives across
+    // re-renders triggered by parent updates but tears down when the
     // component unmounts.
-    let active: Signal<usize> = signal(0_usize);
+    let active_id: Signal<String> = signal(0.to_string());
 
-    // Build the idea-ui `Tab` items (just labels) from the
+    // Build the idea-ui `Tab` items (id + label) from the
     // user-supplied pairs. The labels are owned strings; clone
     // them so the original `tabs` Vec stays intact for the
     // `switch` closure below.
     let tab_items: Vec<Tab> = props
         .tabs
         .iter()
-        .map(|(label, _)| Tab::new(label.clone()))
+        .enumerate()
+        .map(|(i, (label, _))| Tab::new(i.to_string(), label.clone()))
         .collect();
 
-    // `Tabs.on_change` updates the active signal. Owned `Rc` so
-    // each tap closure shares the same cell.
-    let on_change: Rc<dyn Fn(usize)> = Rc::new(move |idx| active.set(idx));
+    // `Tabs.on_change` reports the tapped tab's id — store it in the
+    // active signal. Owned `Rc` so each tap closure shares the same
+    // cell.
+    let on_change: Rc<dyn Fn(String)> = Rc::new(move |id| active_id.set(id));
 
-    // Active panel: `switch` subscribes to `active.get()` and
-    // re-invokes the right render closure on every change.
-    // `tabs_for_switch` clones the Vec (Rc closures clone for
-    // free) so the switch's `'static` body can capture it.
+    // Active panel: `switch` subscribes to `active_id.get()` (parsed
+    // back to the panel index) and re-invokes the right render
+    // closure on every change. `tabs_for_switch` clones the Vec (Rc
+    // closures clone for free) so the switch's `'static` body can
+    // capture it.
     let tabs_for_switch = props.tabs;
     let panel_primitive = switch(
-        move || active.get(),
+        move || active_id.get().parse::<usize>().unwrap_or(0),
         move |idx: &usize| {
             if let Some((_, render)) = tabs_for_switch.get(*idx) {
                 render()
@@ -86,14 +92,16 @@ pub fn CardTabs(props: CardTabsProps) -> Element {
         },
     );
 
-    // `TabsProps` carries the label list + active signal + on_change
-    // callback. Build it manually instead of through the
-    // `tabs!(...)` macro so we can hand over the pre-built
-    // `Vec<Tab>` directly.
+    // `TabsProps` carries the tab list (a reactive `Signal<Vec<Tab>>`
+    // — static here) + active-id + on_change callback. Build it
+    // manually instead of through the `tabs!(...)` macro so we can
+    // hand over the pre-built `Vec<Tab>` directly. `..Default` keeps
+    // the default underline indicator.
     let tabs_props = TabsProps {
-        tabs: tab_items,
-        active,
+        tabs: signal(tab_items),
+        active: active_id.into(),
         on_change,
+        ..Default::default()
     };
     let tabs_primitive = Tabs(tabs_props);
 

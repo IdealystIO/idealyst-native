@@ -21,7 +21,7 @@ use wire::{
     WireAlignItems, WireAssetSource, WireAssetTag, WireColor, WireEasing, WireFillRule,
     WireFlexDirection, WireFontFamily, WireFontStyle, WireFontWeight, WireGradient,
     WireGradientKind, WireGradientStop, WireIconData, WireJustifyContent, WireLength,
-    WireLiveRegionPriority, WireMountPolicy, WireObjectFit, WireOverflow, WirePosition, WirePresenceState,
+    WireLiveRegionPriority, WireObjectFit, WireOverflow, WirePosition, WirePresenceState,
     WireRadialExtent, WireRole, WireScreenOptions, WireStateBit, WireStyleRules, WireSystemFallback,
     WireTextAlign, WireTransform, WireTypefaceFace,
 };
@@ -202,14 +202,6 @@ fn leak_paths(paths: Vec<String>) -> &'static [&'static str] {
     let static_paths: Vec<&'static str> =
         paths.into_iter().map(|s| Box::leak(s.into_boxed_str()) as &'static str).collect();
     Box::leak(static_paths.into_boxed_slice())
-}
-
-/// Wire → mount-policy converter. The runtime-core mount-policy
-/// enum moved into per-SDK type space; this stub preserves the call
-/// site shape but returns a unit value (consumers ignore the result
-/// pending the wire-protocol redesign).
-pub fn wire_mount_policy(_p: WireMountPolicy) {
-    // Pending wire-protocol redesign.
 }
 
 /// Wire → screen-options stub. Returns an opaque `Box<dyn Any>` —

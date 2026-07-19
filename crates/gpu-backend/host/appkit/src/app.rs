@@ -282,6 +282,12 @@ where
     // Required before `render(...)` so `after_ms`/`raf_loop` etc.
     // dispatch through NSTimer instead of synchronously.
     backend_apple_core::scheduler::install_scheduler();
+    // Per-frame render-loop driver (NSTimer). Embedded wgpu hosts
+    // (`host-macos-desktop`, e.g. the website's Simulator preview) draw
+    // via `runtime_core::driver::render_loop`; without an installed
+    // driver that call silently returns a no-op handle and the preview
+    // never paints. Idempotent (first install wins).
+    backend_macos::install_render_loop();
     // Route runtime-core `log_*` through NSLog so they reach the macOS system
     // log / stderr the same way iOS and web now do — otherwise Rust-side logs
     // (e.g. an in-app E2E suite's `[E2E-RESULT]`) hit the StderrLogger fallback
@@ -462,6 +468,12 @@ pub fn run_aas(url: &str, opts: RunOptions) -> Result<(), RunError> {
     // synchronous native fallback. Skipping this is what makes the
     // welcome example's intro freeze on `opacity:0` in any mode.
     backend_apple_core::scheduler::install_scheduler();
+    // Per-frame render-loop driver (NSTimer). Embedded wgpu hosts
+    // (`host-macos-desktop`, e.g. the website's Simulator preview) draw
+    // via `runtime_core::driver::render_loop`; without an installed
+    // driver that call silently returns a no-op handle and the preview
+    // never paints. Idempotent (first install wins).
+    backend_macos::install_render_loop();
     // Route runtime-core `log_*` through NSLog so they reach the macOS system
     // log / stderr the same way iOS and web now do — otherwise Rust-side logs
     // (e.g. an in-app E2E suite's `[E2E-RESULT]`) hit the StderrLogger fallback

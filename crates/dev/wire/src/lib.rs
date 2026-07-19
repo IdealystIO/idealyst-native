@@ -141,7 +141,22 @@ use serde::{Deserialize, Serialize};
 /// (autogrow row bounds; the client backend converts rows→px from its real
 /// font metrics). Both `#[serde(default)]` → a pre-15 sender omits them and the
 /// client reads `None` (unbounded growth), so the field is backward-compatible.
-pub const PROTOCOL_VERSION: u32 = 16;
+///
+/// Bumped to 17: the legacy tab/drawer navigator SDKs were removed, and
+/// with them their kind-specific wire surface: `Command::CreateTabNavigator`,
+/// `CreateDrawerNavigator`, `DrawerAttachSidebar`, `NavigatorMountTab`,
+/// `OpenDrawer`/`CloseDrawer`/`ToggleDrawer`, the `ApplyDrawerSidebarStyle` /
+/// `ApplyDrawerScrimStyle` / `ApplyTab{Bar,Icon,Label}Style` slot channels,
+/// and the `AppToDev::DrawerStateChanged` / `TabSelected` reverse events
+/// (plus their support types and the client-side drawer factory registry).
+/// Navigation "kinds" are now author-side compositions over the generic
+/// swap/stack primitives, which travel as ordinary node ops — only the
+/// kind-agnostic navigator control plane (`CreateNavigator`,
+/// `NavigatorAttachInitial`, `NavigatorPush`/`Pop`/`Replace`/`Reset`/
+/// `Select`, `AttachNavigatorLayout`) remains. serde's external tagging is
+/// name-based, so surviving variants encode identically; the bump follows
+/// the remove-a-variant policy above.
+pub const PROTOCOL_VERSION: u32 = 17;
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
 /// than the canonical [`PROTOCOL_VERSION`] name. Both point at the same
@@ -333,12 +348,6 @@ pub enum AppToDev {
     /// Navigator depth changed (after push/pop/swipe-back/reset). Dev
     /// framework uses this to keep its NavState mirror in sync.
     NavigatorDepthChanged { navigator: NodeId, depth: u32 },
-
-    /// Drawer state flipped from a platform gesture.
-    DrawerStateChanged { navigator: NodeId, is_open: bool },
-
-    /// Tab activation triggered a lazy mount need.
-    TabSelected { navigator: NodeId, index: u32 },
 
     /// Virtualizer needs an item index mounted.
     VirtualizerMountItem { virtualizer: NodeId, index: usize },
@@ -681,28 +690,6 @@ pub enum Command {
         #[serde(default)]
         a11y: WireAccessibilityProps,
     },
-    CreateTabNavigator {
-        id: NodeId,
-        initial_route: String,
-        initial_path: String,
-        tabs: Vec<WireTabRegistration>,
-        placement: WireTabPlacement,
-        mount_policy: WireMountPolicy,
-        #[serde(default)]
-        a11y: WireAccessibilityProps,
-    },
-    CreateDrawerNavigator {
-        id: NodeId,
-        initial_route: String,
-        initial_path: String,
-        side: WireDrawerSide,
-        drawer_type: WireDrawerType,
-        drawer_width: f32,
-        swipe_to_open: bool,
-        mount_policy: WireMountPolicy,
-        #[serde(default)]
-        a11y: WireAccessibilityProps,
-    },
 
     // --- Tree mutation ---
     Insert {
@@ -943,11 +930,11 @@ pub enum Command {
         #[serde(default)]
         restore: bool,
     },
-    /// Switch a tab/drawer navigator to a different mounted screen
-    /// without tearing down the rest of the stack. Mirrors a
+    /// Switch a select-style (swap) navigator to a different mounted
+    /// screen without tearing down the rest of the stack. Mirrors a
     /// stack-`Push` payload but the client side dispatches
     /// `NavCommand::Select` instead. Pre-fix this was conflated with
-    /// `NavigatorReset`; SceneModel's snapshot would treat a tab swap
+    /// `NavigatorReset`; SceneModel's snapshot would treat a select swap
     /// as a full stack reset, dropping any persisted state on the same
     /// navigator. See the wire-protocol audit (`PushLikeKind::Select`
     /// masquerade).
@@ -958,17 +945,6 @@ pub enum Command {
         options: WireScreenOptions,
         #[serde(default)]
         url: String,
-    },
-    /// Mount a lazy tab's content after the app reports activation.
-    NavigatorMountTab {
-        navigator: NodeId,
-        index: u32,
-        screen: NodeId,
-        scope: ScopeId,
-    },
-    DrawerAttachSidebar {
-        navigator: NodeId,
-        sidebar: NodeId,
     },
     /// Attach a pre-built layout subtree to a navigator. Web-only
     /// semantically — the recording backend invokes the author's
@@ -984,15 +960,6 @@ pub enum Command {
         root: NodeId,
         outlet: NodeId,
     },
-    OpenDrawer {
-        navigator: NodeId,
-    },
-    CloseDrawer {
-        navigator: NodeId,
-    },
-    ToggleDrawer {
-        navigator: NodeId,
-    },
     ApplyNavigatorHeaderStyle {
         navigator: NodeId,
         style: StyleId,
@@ -1006,26 +973,6 @@ pub enum Command {
         style: StyleId,
     },
     ApplyNavigatorBodyStyle {
-        navigator: NodeId,
-        style: StyleId,
-    },
-    ApplyDrawerSidebarStyle {
-        navigator: NodeId,
-        style: StyleId,
-    },
-    ApplyDrawerScrimStyle {
-        navigator: NodeId,
-        style: StyleId,
-    },
-    ApplyTabBarStyle {
-        navigator: NodeId,
-        style: StyleId,
-    },
-    ApplyTabIconStyle {
-        navigator: NodeId,
-        style: StyleId,
-    },
-    ApplyTabLabelStyle {
         navigator: NodeId,
         style: StyleId,
     },
@@ -1678,13 +1625,6 @@ pub enum WireNavKind {
     Reset,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum WireMountPolicy {
-    EagerPersistent,
-    LazyPersistent,
-    LazyDisposing,
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WireScreenOptions {
     pub title: Option<String>,
@@ -1698,32 +1638,6 @@ pub struct WireHeaderButton {
     pub icon: String,
     pub on_press: HandlerId,
     pub tint: Option<WireColor>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum WireDrawerSide {
-    Left,
-    Right,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum WireDrawerType {
-    Front,
-    Back,
-    Slide,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum WireTabPlacement {
-    Bottom,
-    Top,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WireTabRegistration {
-    pub route: String,
-    pub label: String,
-    pub icon: Option<String>,
 }
 
 /// Cross-axis lane subdivision for a virtualizer, wire form. Mirrors
@@ -1787,153 +1701,6 @@ pub enum WireViewportPlacement {
     Left,
     Right,
     FullScreen,
-}
-
-pub use nav_registry::{
-    build_drawer_presentation, register_drawer_factory, register_drawer_state_translator,
-    translate_drawer_state, DrawerStateVerb, WireDrawerConfig, WireNavBuild, WireSidebarAdopt,
-};
-
-/// Client-side navigator presentation-factory registry.
-///
-/// Native chrome (UIKit slide-over, the web `ui-nav-drawer-*` CSS
-/// structure, …) is built by each navigator SDK's per-backend
-/// `NavigatorHandler`, which only runs when the app's `app()` runs
-/// on-device (`--local`). Under runtime-server mode the device is a
-/// passive wire replayer, so `dev-client` must drive the client's REAL
-/// backend `create_navigator` for that handler to run and produce real
-/// chrome.
-///
-/// `dev-client` is SDK-agnostic — it cannot construct an SDK's
-/// presentation type (e.g. drawer-navigator's `DrawerPresentation`). So
-/// each SDK registers a factory here at client startup (from its
-/// `register(&mut backend)` fn); `dev-client` looks the factory up by
-/// nav kind, calls it with the wire config, and hands the resulting
-/// presentation to `Backend::create_navigator`. This is the ONE
-/// SDK-specific seam in the otherwise-generic replay engine.
-///
-/// Lives in `wire` (not `runtime-core`) to keep core minimal — it is a
-/// dev/replay concern, which is exactly wire's role. The registry holds
-/// runtime closures, so it is the one part of this crate that is not
-/// "pure data"; it is fenced into this submodule to keep the protocol
-/// types clean.
-mod nav_registry {
-    use super::{WireDrawerSide, WireDrawerType, WireMountPolicy};
-    use std::any::{Any, TypeId};
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
-    /// The serializable subset of `DrawerPresentation` that crosses the
-    /// wire in `Command::CreateDrawerNavigator`. Handed to the
-    /// registered factory to rebuild the real presentation client-side.
-    #[derive(Debug, Clone, Copy)]
-    pub struct WireDrawerConfig {
-        pub side: WireDrawerSide,
-        pub drawer_type: WireDrawerType,
-        pub drawer_width: f32,
-        pub swipe_to_open: bool,
-        pub mount_policy: WireMountPolicy,
-    }
-
-    /// An SDK-built navigator presentation plus its dispatch identity.
-    /// `type_id` / `type_name` are what `Backend::create_navigator` uses
-    /// to route to the registered `NavigatorHandler`; `presentation` is
-    /// the boxed SDK presentation that handler downcasts.
-    pub struct WireNavBuild {
-        pub type_id: TypeId,
-        pub type_name: &'static str,
-        pub presentation: Rc<dyn Any>,
-    }
-
-    impl std::fmt::Debug for WireNavBuild {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.debug_struct("WireNavBuild")
-                .field("type_name", &self.type_name)
-                .finish_non_exhaustive()
-        }
-    }
-
-    /// Marker type for the navigator-chrome sidebar "adopt sentinel".
-    ///
-    /// An SDK's `leading_slot` stamps an `Element::External` whose
-    /// `type_id` is `TypeId::of::<WireSidebarAdopt>()`; `dev-client`
-    /// passes that same `TypeId` (paired with its holder node) as the
-    /// `adopt` argument to `runtime_core::build_detached`. The walker's
-    /// External build path then returns the holder for that leaf instead
-    /// of calling `create_external`. There is NO registry handler and NO
-    /// cross-crate global — the adopt is threaded entirely inside the
-    /// runtime-core build (see walker.rs). This type is pure data; only
-    /// its `TypeId` is meaningful (the payload carries an instance for
-    /// safety, but the walker intercepts before any payload downcast).
-    #[derive(Debug)]
-    pub struct WireSidebarAdopt;
-
-    type DrawerFactory = Rc<dyn Fn(WireDrawerConfig) -> WireNavBuild>;
-
-    thread_local! {
-        static DRAWER_FACTORY: RefCell<Option<DrawerFactory>> = RefCell::new(None);
-    }
-
-    /// Register the client-side factory that builds a drawer
-    /// presentation from wire config. Called by
-    /// `drawer_navigator::register(&mut backend)` on the wire client
-    /// (web / iOS / Android). Idempotent — last write wins.
-    pub fn register_drawer_factory(f: impl Fn(WireDrawerConfig) -> WireNavBuild + 'static) {
-        DRAWER_FACTORY.with(|c| *c.borrow_mut() = Some(Rc::new(f)));
-    }
-
-    /// Look up + invoke the registered drawer factory. Returns `None`
-    /// when no SDK registered one (an app without the drawer SDK, or a
-    /// headless backend with no native chrome) — the caller falls back
-    /// to structural reconstruction.
-    pub fn build_drawer_presentation(cfg: WireDrawerConfig) -> Option<WireNavBuild> {
-        DRAWER_FACTORY.with(|c| c.borrow().as_ref().map(|f| f(cfg)))
-    }
-
-    /// A programmatic drawer open/close/toggle verb arriving over the
-    /// wire (`Command::OpenDrawer` / `CloseDrawer` / `ToggleDrawer`),
-    /// emitted when app code calls `drawer.open()` etc. on the dev side.
-    /// (Navigation auto-close is handled client-side via the `Select`
-    /// dispatch and does NOT travel as one of these.)
-    #[derive(Debug, Clone, Copy)]
-    pub enum DrawerStateVerb {
-        Open,
-        Close,
-        Toggle,
-    }
-
-    type DrawerStateTranslator = Rc<dyn Fn(DrawerStateVerb) -> Rc<dyn Any>>;
-
-    thread_local! {
-        static DRAWER_STATE_TRANSLATOR: RefCell<Option<DrawerStateTranslator>> =
-            const { RefCell::new(None) };
-    }
-
-    /// Register the SDK-specific translator that maps a generic
-    /// [`DrawerStateVerb`] to the `NavCommand::Custom` payload the
-    /// client's registered drawer handler understands (the per-backend
-    /// helper `DrawerCmd` — `ios_navigator_helpers::DrawerCmd`,
-    /// `android_navigator_helpers::DrawerCmd`, …).
-    ///
-    /// Why a translator instead of dev-client constructing the command:
-    /// `dev-client` is SDK-agnostic and cannot name the helper `DrawerCmd`
-    /// type. So each platform's `drawer_navigator::register(&mut backend)`
-    /// installs this closure (mirrors [`register_drawer_factory`] and
-    /// `NavigatorControl::install_link_activator`). Idempotent — last
-    /// write wins; only one platform's `register` is compiled+called per
-    /// client binary.
-    pub fn register_drawer_state_translator(
-        f: impl Fn(DrawerStateVerb) -> Rc<dyn Any> + 'static,
-    ) {
-        DRAWER_STATE_TRANSLATOR.with(|c| *c.borrow_mut() = Some(Rc::new(f)));
-    }
-
-    /// Translate a wire drawer-state verb into the handler's `Custom`
-    /// payload. `None` when no SDK registered a translator — the caller
-    /// then no-ops (a structural drawer has no animated open/close model).
-    pub fn translate_drawer_state(verb: DrawerStateVerb) -> Option<Rc<dyn Any>> {
-        DRAWER_STATE_TRANSLATOR.with(|c| c.borrow().as_ref().map(|f| f(verb)))
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -2415,30 +2182,5 @@ mod tests {
         let _: Command = codec::decode(&codec::encode(&t).unwrap()).unwrap();
     }
 
-    #[test]
-    fn drawer_factory_register_and_build() {
-        struct DummyPresentation;
-        register_drawer_factory(|cfg| {
-            // Config crosses through verbatim.
-            assert_eq!(cfg.drawer_width, 280.0);
-            assert!(cfg.swipe_to_open);
-            WireNavBuild {
-                type_id: std::any::TypeId::of::<DummyPresentation>(),
-                type_name: "DummyPresentation",
-                presentation: std::rc::Rc::new(DummyPresentation),
-            }
-        });
-        let cfg = WireDrawerConfig {
-            side: WireDrawerSide::Left,
-            drawer_type: WireDrawerType::Front,
-            drawer_width: 280.0,
-            swipe_to_open: true,
-            mount_policy: WireMountPolicy::EagerPersistent,
-        };
-        let build = build_drawer_presentation(cfg).expect("factory registered");
-        assert_eq!(build.type_name, "DummyPresentation");
-        assert_eq!(build.type_id, std::any::TypeId::of::<DummyPresentation>());
-        assert!(build.presentation.downcast::<DummyPresentation>().is_ok());
-    }
 }
 

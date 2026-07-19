@@ -55,8 +55,6 @@ pub enum PrimitiveKind {
     Virtualizer,
     Graphics,
     Navigator,
-    TabNavigator,
-    DrawerNavigator,
     When,
     Switch,
     Each,

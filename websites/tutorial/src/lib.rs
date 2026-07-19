@@ -9,28 +9,34 @@
 //! is scaffolded for the deeper topics (custom backends, interactive
 //! CLIs, embedded rendering) that come later.
 //!
-//! The shell is a `DrawerNavigator`: a persistent sidebar lists the
-//! tracks and steps and survives navigation; the navigator swaps only
-//! the step body. Each step ends with a prev/next bar derived from the
-//! linear order in `routes`.
+//! The shell is a swap navigator (outlet model) wrapped in an
+//! `idea_ui_nav::AppShell`: the sidebar lists the tracks and steps,
+//! builds ONCE, and survives every navigation; the navigator swaps only
+//! the outlet's screen. Pinned-sidebar ⇄ off-canvas drawer is static
+//! breakpoint styling (real `@media` on web + SSR). Each step ends with
+//! a prev/next bar derived from the linear order in `routes`.
 
-use runtime_core::{color_scheme, component, signal, ui, ColorScheme, Element, Ref, Route, Signal};
-use runtime_core::primitives::navigator::Screen;
-use drawer_navigator::{
-    install_navigator_pin_width, DrawerBuilder, DrawerHandle, DrawerNavigator, DrawerScreenExt,
+use idea_ui_nav::AppShell;
+use runtime_core::{
+    color_scheme, component, effect, signal, ui, Breakpoint, ColorScheme, Element, Ref, Route,
+    Signal,
 };
+use runtime_core::primitives::navigator::Screen;
+use swap_navigator::{MountPolicy, SwapBuilder, SwapHandle, SwapNavigator};
 use idea_ui::{dark_theme, install_idea_theme, light_theme};
 
-/// Wrap a lesson's `Element` in a `Screen` whose nav-bar title is
-/// the sidebar `IndexEntry::label` for the route. Without this the
-/// iOS `UINavigationItem.title` / Android `Toolbar` title render
-/// empty (iOS no longer falls back to `route.name()`).
+/// Wrap a lesson's `Element` in a `Screen`. The label is drawn by the
+/// shell's own header (`shell::mobile_header` derives it reactively
+/// from `active_route` via [`label_for_route`]), so the Screen carries
+/// no navigator-chrome options anymore.
 fn titled(route: &'static Route<()>, el: Element) -> Screen {
-    let label = label_for_route(route.name()).unwrap_or_else(|| route.name());
-    Screen::new(el).title(label)
+    let _ = route;
+    Screen::new(el)
 }
 
-fn label_for_route(route_name: &'static str) -> Option<&'static str> {
+/// Sidebar `IndexEntry::label` for a route name — drives the mobile
+/// header's reactive title (`shell::mobile_header`).
+pub(crate) fn label_for_route(route_name: &'static str) -> Option<&'static str> {
     for section in routes::SECTIONS {
         for entry in section.entries {
             if entry.route.name() == route_name {
@@ -66,15 +72,27 @@ pub fn app() -> Element {
     let start_dark = matches!(color_scheme(), ColorScheme::Dark);
     install_idea_theme(if start_dark { dark_theme() } else { light_theme() });
 
-    let nav: Ref<DrawerHandle> = Ref::new();
+    let nav: Ref<SwapHandle> = Ref::new();
+    // Drawer-open state for narrow viewports — author-owned now (the
+    // AppShell scrim + the auto-close effect close it; the mobile
+    // header's hamburger opens it). Pinned widths ignore it entirely.
+    let drawer_open: Signal<bool> = signal(false);
     // App-level dark-mode state — lifted out of any screen scope so it
     // survives navigation. Captured by the sidebar builder below.
     let is_dark: Signal<bool> = signal(start_dark);
 
-    // Pin the sidebar (vs. modal slide-in) at wide viewports.
-    install_navigator_pin_width(900.0);
+    // Pin the sidebar at wide viewports: align the framework's `Lg`
+    // breakpoint with the tutorial's 900-dp collapse point (this replaces
+    // the legacy `install_navigator_pin_width(900.0)`) so `AppShell(pin_at
+    // = Lg)` and the mobile header's `breakpoint lg` overlay flip at the
+    // SAME width. First-install wins — must run before any
+    // breakpoint-keyed sheet resolves.
+    let _ = runtime_core::install_breakpoints(runtime_core::Breakpoints {
+        lg_min: 900.0,
+        ..Default::default()
+    });
 
-    let builder = DrawerNavigator::new(&HOME_ROUTE)
+    let builder = SwapNavigator::new(&HOME_ROUTE)
         .screen(HOME_ROUTE, move |_| titled(&HOME_ROUTE, lessons::home::page()))
         // Idealyst 101
         .screen(CORE_ENGINE_ROUTE, move |_| titled(&CORE_ENGINE_ROUTE, lessons::foundations::engine()))
@@ -105,8 +123,50 @@ pub fn app() -> Element {
         .screen(ADV_BACKENDS_ROUTE, move |_| titled(&ADV_BACKENDS_ROUTE, lessons::advanced::custom_backends()))
         .screen(ADV_CLI_ROUTE, move |_| titled(&ADV_CLI_ROUTE, lessons::advanced::interactive_cli()))
         .screen(ADV_EMBEDDED_ROUTE, move |_| titled(&ADV_EMBEDDED_ROUTE, lessons::advanced::embedded()))
-        .drawer_width(280.0)
-        .leading_with(move |slot| shell::sidebar(slot, is_dark));
+        // Legacy web behavior: one screen resident at a time; switching
+        // away disposes the screen's scope and a return rebuilds it fresh.
+        // Matches browser semantics and the old drawer-on-web engine.
+        .mount_policy(MountPolicy::LazyDisposing)
+        // The shell: AppShell packages pinned-sidebar ⇄ drawer around the
+        // one-shot outlet; the mobile header (hamburger + reactive title)
+        // collapses in below the pin width.
+        .layout(move |nav_ctx| {
+            // Auto-close the drawer when a sidebar link navigates while
+            // unpinned (the legacy web drawer engine did this in its
+            // Select arm; author-owned now). Reading `active_route`
+            // inside the effect subscribes it to every navigation.
+            let active_route = nav_ctx.active_route;
+            effect!({
+                let _ = active_route.get();
+                if !idea_ui_nav::sidebar_pinned(Breakpoint::Lg) {
+                    drawer_open.set(false);
+                }
+            });
+
+            let sidebar_el = shell::sidebar(active_route, is_dark);
+            let header = shell::mobile_header(active_route, drawer_open);
+            let body: Element = ui! {
+                view(style = shell::outlet_grow_style) {
+                    { nav_ctx.outlet }
+                }
+            };
+            let content: Element = ui! {
+                view(style = shell::shell_column_style) {
+                    header
+                    body
+                }
+            };
+            ui! {
+                AppShell(
+                    sidebar = vec![sidebar_el],
+                    is_open = drawer_open,
+                    pin_at = Breakpoint::Lg,
+                    width = 280.0,
+                ) {
+                    { content }
+                }
+            }
+        });
 
     ui! { builder.bind(nav) }
 }
@@ -148,10 +208,9 @@ pub fn register_extensions(_backend: &mut backend_terminal::TerminalBackend) {}
 // Recorder-side registration for the runtime-server sidecar. Distinct fn
 // name (not an overload of `register_extensions`) so it never collides
 // with the host target's per-backend overload when both compile in the
-// sidecar build. Only the drawer navigator needs a recording handler.
-// Gated by `sidecar` (set only by the generated sidecar wrapper) so
-// device/web builds never pull `dev-server`.
+// sidecar build. Gated by `sidecar` (set only by the generated sidecar
+// wrapper) so device/web builds never pull `dev-server`.
 #[cfg(feature = "sidecar")]
 pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBackend) {
-    drawer_navigator::recording::register(backend);
+    swap_navigator::recording::register(backend);
 }

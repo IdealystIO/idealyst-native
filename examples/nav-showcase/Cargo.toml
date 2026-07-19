@@ -9,12 +9,12 @@ description = "Kitchen-sink navigation demo — a Drawer at the root hosting Tab
 crate-type = ["rlib"]
 
 [features]
-sidecar = ["dep:dev-server", "swap-navigator/runtime-server", "stack-navigator-v2/runtime-server"]
+sidecar = ["dep:dev-server", "swap-navigator/runtime-server", "stack-navigator/runtime-server"]
 
 [dependencies]
 runtime-core = { workspace = true }
 swap-navigator = { workspace = true }
-stack-navigator-v2 = { workspace = true }
+stack-navigator = { workspace = true }
 idea-ui = { workspace = true }
 idea-ui-nav = { workspace = true }
 dev-server = { workspace = true, optional = true }

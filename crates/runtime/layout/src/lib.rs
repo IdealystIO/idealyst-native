@@ -2168,6 +2168,79 @@ mod tests {
         );
     }
 
+    /// The AppShell-sidebar shape: a `scroll_view` (flex column, definite
+    /// height) whose single body child sets `min_height: 100%` (so a short
+    /// nav list still fills the viewport and a `Spacer` can pin its footer)
+    /// PLUS `flex_shrink: 0`. A definite min-height REPLACES flexbox's
+    /// content-size shrink floor, so with the default `flex_shrink: 1`
+    /// the body shrinks to exactly the viewport height and its children
+    /// overflow the body's own frame — the body's bottom padding lands
+    /// mid-list instead of under the last child (website sidebar bug),
+    /// and on iOS the out-of-frame children lose hit testing (the
+    /// docs-app SidebarBody note, which blamed a "Taffy" quirk — it is
+    /// spec behavior browsers share; web reproduced it identically).
+    /// `flex_shrink: 0` restores content height on both engines; this
+    /// pins the Taffy half.
+    #[test]
+    fn regression_min_height_pct_scroll_body_keeps_content_height_with_shrink_zero() {
+        fn heights(shrink_zero: bool) -> (f32, f32) {
+            let mut t = LayoutTree::new();
+            let root = t.new_node();
+            let mut rr = StyleRules::default();
+            rr.height = Some(px(400.0));
+            rr.flex_direction = Some(FwFlexDirection::Column);
+            t.set_style(root, &rr);
+
+            // Scroller: real path — `scroll_view` seed (grow:1/basis:0 +
+            // overflow.y scroll) fills the 400px parent.
+            let scroller = t.new_node();
+            t.set_overflow_scroll(scroller, false);
+            let mut scr = StyleRules::default();
+            scr.flex_direction = Some(FwFlexDirection::Column);
+            t.set_style(scroller, &scr);
+
+            let body = t.new_node();
+            let mut br = StyleRules::default();
+            br.flex_direction = Some(FwFlexDirection::Column);
+            br.min_height = Some(pct(100.0));
+            br.padding_bottom = Some(px(16.0));
+            if shrink_zero {
+                br.flex_shrink = Some(f32t(0.0));
+            }
+            t.set_style(body, &br);
+
+            // The tall nav list.
+            let item = t.new_node();
+            let mut ir = StyleRules::default();
+            ir.height = Some(px(900.0));
+            t.set_style(item, &ir);
+
+            t.add_child(root, scroller);
+            t.add_child(scroller, body);
+            t.add_child(body, item);
+            t.compute(root, 300.0, 400.0);
+            (t.frame_of(scroller).height, t.frame_of(body).height)
+        }
+
+        // Default shrink: min-height 100% replaces the content floor and
+        // the body clamps to the viewport (the bug being pinned).
+        let (scroller, clamped) = heights(false);
+        assert!((scroller - 400.0).abs() < 1.0, "scroller fills its parent, got {scroller}");
+        assert!(
+            (clamped - 400.0).abs() < 1.0,
+            "default shrink clamps the min-height:100% body to the viewport \
+             (shared spec behavior this test documents), got {clamped}"
+        );
+
+        // flex_shrink: 0 — the body wraps its content, so its bottom
+        // padding sits under the last child inside the scrollable area.
+        let (_, full) = heights(true);
+        assert!(
+            (full - 916.0).abs() < 1.0,
+            "shrink 0 keeps content height + bottom padding (900 + 16), got {full}"
+        );
+    }
+
     /// Reproduction for the idea-ui adorned `Field` not filling its column on
     /// macOS. Structure: a definite-width surface > FieldGroup (default column,
     /// `align_items: stretch`) > shell (flex ROW, `width: 100%`) > [icon leaf,

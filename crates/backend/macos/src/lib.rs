@@ -30,6 +30,13 @@ mod layout_policy;
 // the iOS `portal_policy` module.
 mod portal_policy;
 
+// Pure animate-vs-snap decision + CA timing-name mapping for static
+// `transform:` changes with `transitions { transform: … }` (the
+// AppShell drawer slide). Un-gated so the regression tests run from
+// any host; the CABasicAnimation half is macos-only. Mirrors the iOS
+// `transform_transition_policy` module.
+mod transform_transition_policy;
+
 #[cfg(target_os = "macos")]
 pub use imp::{
     coalesce_layout_passes, install_global_self, private_layer_window_ids, schedule_layout_pass,
@@ -67,6 +74,25 @@ pub use backend_apple_core::scheduler::install_scheduler;
 /// Non-macOS no-op so cross-compile of host code still type-checks.
 #[cfg(not(target_os = "macos"))]
 pub fn install_scheduler() {}
+
+// NSTimer-backed `RenderLoopDriver` for `runtime_core::driver::render_loop`
+// (per-frame ticks for embedded wgpu hosts like `host-macos-desktop`).
+// `host-appkit` installs it at boot; without a driver, `render_loop`
+// silently returns a no-op handle and embedded previews never paint.
+// Gated on `async-driver` (which forwards `runtime-core/async-driver`,
+// the feature that compiles `runtime_core::driver`) — host-appkit
+// enables it, so real apps always have the driver.
+#[cfg(all(target_os = "macos", feature = "async-driver"))]
+mod render_loop;
+
+#[cfg(all(target_os = "macos", feature = "async-driver"))]
+pub use render_loop::install_render_loop;
+
+/// No-op when the `async-driver` feature is off (pure-backend builds
+/// without `runtime_core::driver`) or on non-macOS hosts, so consumer
+/// cross-compiles still type-check.
+#[cfg(not(all(target_os = "macos", feature = "async-driver")))]
+pub fn install_render_loop() {}
 
 /// No-op stub for `install_global_self` on non-macOS hosts so host-
 /// platform cross-compile of consumer code still type-checks.

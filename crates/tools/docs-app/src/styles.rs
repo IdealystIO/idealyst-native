@@ -117,6 +117,25 @@ stylesheet! {
 
 // ---- Sidebar ---------------------------------------------------------------
 
+// The sidebar's own scroll surface. The legacy drawer SDK wrapped its
+// leading slot in a scroll view; the AppShell panel is a plain
+// fixed-height surface, so the sidebar provides its own. Carries the
+// same `color-surface` background the SDK wrapper did, so SidebarBody's
+// deliberate lack of `min_height: 100%` (see the note there) doesn't
+// leave a transparent gap below short content.
+stylesheet! {
+    pub SidebarScroll<()> {
+        base(_t) {
+            height: Length::pct(100.0),
+            flex_direction: FlexDirection::Column,
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+        }
+        transitions {
+            background: 250ms EaseInOut,
+        }
+    }
+}
+
 stylesheet! {
     pub SidebarBody<()> {
         base(_t) {
@@ -126,18 +145,21 @@ stylesheet! {
             padding: Tokenized::token("spacing-lg", Length::Px(16.0)),
             gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
             flex_direction: FlexDirection::Column,
-            // NB: do NOT set `min_height: Percent(100)` here. Taffy
-            // clamps SidebarBody to the scroll view's height when
-            // min_height: 100% is set, so the bottom of the sidebar
-            // (overflow children — the dark-mode toggle, the last
-            // few nav links) renders outside SidebarBody's frame.
-            // They're still visible (scroll content extends past
-            // SidebarBody), but iOS UIView hit-testing won't descend
-            // into children outside the parent's frame — taps on the
-            // bottom half of the sidebar fall through to nothing.
-            // The SDK's scroll_view wrapper carries the same
-            // `color-surface` background so removing the min_height
-            // here doesn't leave a transparent gap.
+            // NB: `min_height: Percent(100)` alone is a trap here (and
+            // it's spec flexbox, not a Taffy quirk — web browsers do the
+            // identical thing): a definite min-height REPLACES flexbox's
+            // content-size shrink floor, so the default `flex_shrink: 1`
+            // clamps SidebarBody to the scroll view's height and the
+            // bottom of the sidebar (the dark-mode toggle, the last few
+            // nav links) renders outside SidebarBody's frame. Still
+            // visible (scroll content extends past it), but iOS UIView
+            // hit-testing won't descend into children outside the
+            // parent's frame — taps on the bottom half fall through.
+            // Either omit min_height (done here; the scroll_view wrapper
+            // carries the same `color-surface` background so there's no
+            // transparent gap) or pair it with `flex_shrink: 0` (the
+            // website's SidebarBody; pinned by runtime-layout's
+            // `regression_min_height_pct_scroll_body_keeps_content_height_with_shrink_zero`).
         }
         transitions {
             background: 250ms EaseInOut,
@@ -273,6 +295,11 @@ stylesheet! {
             font_size: 13.0,
             line_height: 20.0,
             color: Tokenized::token("color-text", Color("#1f2328".into())),
+            // The code surface's inset, INSIDE the block's scroll region
+            // (the codeblock SDK diverts it to the text widget's insets
+            // on native), so it scrolls with the content. The SDK used to
+            // bake this 20 into each native handler; it's author-driven now.
+            padding: 20.0,
         }
         transitions {
             color: 250ms EaseInOut,

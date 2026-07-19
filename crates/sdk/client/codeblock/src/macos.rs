@@ -23,10 +23,6 @@ use objc2_foundation::{
 use runtime_core::Color;
 use std::rc::Rc;
 
-/// Inner padding (points) drawn around the code text. Matches the iOS handler's
-/// `PADDING_PT` and the web `<pre>` padding, so the look stays consistent.
-const PADDING_PT: f64 = 20.0;
-
 /// `Element::External` handler for the macOS codeblock kind. Returns the
 /// wrapping `NSScrollView` so the framework parents it into the surrounding
 /// view tree; the inner `NSTextField` + `NSAttributedString` are invisible to
@@ -63,23 +59,22 @@ pub(crate) fn build(props: &Rc<CodeBlockProps>, backend: &mut MacosBackend) -> M
         let _: () = msg_send![&label, sizeToFit];
     }
 
-    // Pad the code by insetting the label inside a CONTAINER documentView, NOT
-    // via `NSScrollView.contentInsets`: contentInsets shift the overlay
-    // scroller up with the content, so the horizontal scrollbar floats over the
-    // text instead of sitting at the box's bottom edge. With a plain padded
-    // container the scroller stays at the scroll view's bottom, below the
-    // padded content. The label is offset by `PADDING_PT` on every side and the
-    // container is `label + 2·PADDING` — symmetric padding regardless of the
-    // container's (bottom-left) coordinate origin, since the block fits its
-    // height exactly.
+    // The label sits inside a CONTAINER documentView, NOT via
+    // `NSScrollView.contentInsets`: contentInsets shift the overlay
+    // scroller up with the content, so the horizontal scrollbar floats over
+    // the text instead of sitting at the box's bottom edge. The handler
+    // applies NO padding of its own — the author's `padding_*` (via
+    // `.with_style` on the `code_block`) lands on the scroll node, and the
+    // backend diverts it to the label's offset inside this container (see
+    // `MacosBackend::sync_external_scroller_padding`), so the padding
+    // scrolls WITH the content and mid-scroll text reaches the block's own
+    // edge — the web `<pre> { padding }` model. A previous revision baked a
+    // 20pt inset here; combined with author padding on a wrapping panel
+    // that doubled the visible padding.
     let label_frame: CGRect = unsafe { msg_send![&label, frame] };
-    let p = PADDING_PT;
     let container_rect = CGRect {
         origin: CGPoint { x: 0.0, y: 0.0 },
-        size: CGSize {
-            width: label_frame.size.width + p * 2.0,
-            height: label_frame.size.height + p * 2.0,
-        },
+        size: label_frame.size,
     };
     let container: Retained<NSView> = unsafe {
         let alloc: *mut AnyObject = msg_send![objc2::class!(NSView), alloc];
@@ -87,11 +82,11 @@ pub(crate) fn build(props: &Rc<CodeBlockProps>, backend: &mut MacosBackend) -> M
         Retained::from_raw(inited.cast::<NSView>()).expect("NSView init returned nil")
     };
     unsafe {
-        let inset_frame = CGRect {
-            origin: CGPoint { x: p, y: p },
+        let origin_frame = CGRect {
+            origin: CGPoint { x: 0.0, y: 0.0 },
             size: label_frame.size,
         };
-        let _: () = msg_send![&label, setFrame: inset_frame];
+        let _: () = msg_send![&label, setFrame: origin_frame];
         let _: () = msg_send![&container, addSubview: &*label];
     }
 
@@ -117,9 +112,10 @@ pub(crate) fn build(props: &Rc<CodeBlockProps>, backend: &mut MacosBackend) -> M
     // Register + measure: a bare NSScrollView has no intrinsic size, so without
     // this it collapses to 0×0 in the flex column and the codeblock renders
     // blank. The measure fills the parent's width (scrolling content wider than
-    // it) and reports the label's content height + the padding the container adds.
+    // it) and reports the label's content height + the author-styled insets.
+    // This also registers the node for the padding divert described above.
     let label_view: &NSView = &label;
-    backend.install_external_content_measure(&scroll, label_view, PADDING_PT as f32);
+    backend.install_external_content_measure(&scroll, label_view);
 
     MacosNode::View(scroll)
 }

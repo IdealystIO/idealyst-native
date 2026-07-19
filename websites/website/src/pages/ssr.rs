@@ -56,7 +56,7 @@ fn render_on_server() -> Element {
                    // Render the SAME app() the web bundle mounts \u{2014} at a URL,\n\
                    // on the host, against the SSR backend.\n\
                    let page = render_path_with(\"/features/ssr\", register_exts, my_app::app);\n\
-                   let html = render_document(&page, Some(\"/pkg/app.js\"));\n\
+                   let html = render_document(&page, Some(\"/pkg/app.js\"), None);\n\
                    // \u{2192} a complete <html> document: markup + scoped CSS + font links.";
     ui! {
         Section(
@@ -118,13 +118,15 @@ fn hydration() -> Element {
 }
 
 fn serving() -> Element {
-    let snippet = "use backend_ssr::{serve, ServeConfig};\n\
+    let snippet = "use backend_ssr::{resolve_bundle_module, serve, ServeConfig};\n\
                    \n\
                    serve(\n    \
                        \"127.0.0.1:8787\",\n    \
                        ServeConfig {\n        \
-                           // Built web bundle to boot + hydrate the server DOM:\n        \
-                           bundle_module: Some(\"/pkg/website.js\".into()),\n        \
+                           // Built web bundle to boot + hydrate the server DOM. The\n        \
+                           // staged bundle is content-hashed (pkg/website.<hash>.js),\n        \
+                           // so resolve the current entry instead of hardcoding it:\n        \
+                           bundle_module: resolve_bundle_module(\"dist/web\".as_ref(), \"website\"),\n        \
                            static_dir: Some(\"dist/web\".into()),  // fonts + bundle\n    \
                        },\n    \
                        register_exts,   // same extensions the web build registers\n    \
@@ -142,9 +144,11 @@ fn serving() -> Element {
                  hydrates; leave it off and you get a pure server-rendered content / SEO \
                  preview with no client JS at all.".to_string(),
                 "The one rule for matching output: register the same extensions the web \
-                 build registers. SSR renders identically to the client only when both sides \
-                 agree on the navigator chrome, the code-block renderer, and any other \
-                 `Element::External` leaf in the tree.".to_string(),
+                 build registers — the navigator handlers (`swap_navigator::register_generic` \
+                 / `stack_navigator::register_generic` on the SSR backend), the code-block \
+                 renderer, and any other `Element::External` leaf in the tree. SSR renders \
+                 identically to the client only when both sides agree on all of \
+                 them.".to_string(),
             ],
             code = Some(snippet.to_string()),
         )
@@ -160,8 +164,8 @@ fn status() -> Element {
             )
             Typography(
                 content = "The SSR backend is real and in active use: it renders this \
-                    marketing site \u{2014} a full DrawerNavigator app \u{2014} per route, and \
-                    render-at-path is proven across every page. What you can rely on today is \
+                    marketing site \u{2014} a full swap-navigator + `AppShell` app \u{2014} per \
+                    route, and render-at-path is proven across every page. What you can rely on today is \
                     server rendering: HTML + scoped CSS + fonts for any route, matching the web \
                     first paint.".to_string(),
             )

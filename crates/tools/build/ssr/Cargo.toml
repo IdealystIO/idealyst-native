@@ -16,3 +16,7 @@ build-ios = { workspace = true }
 # so every SSR-rendered page advertises the same icon set the
 # `static_dir` path serves out of `dist/web/`.
 icon-gen = { workspace = true }
+
+[dev-dependencies]
+# Wrapper-template regression tests generate into a tempdir.
+tempfile = "3"

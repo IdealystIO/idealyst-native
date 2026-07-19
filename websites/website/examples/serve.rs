@@ -70,7 +70,7 @@ fn main() {
             // `website::register_extensions`) so SSR renders identically
             // and the bundle hydrates by adoption: navigator chrome +
             // the code-block external (server-rendered `<pre>`).
-            drawer_navigator::chrome::register(b);
+            swap_navigator::register_generic(b);
             codeblock::register(b);
         },
         website::app,

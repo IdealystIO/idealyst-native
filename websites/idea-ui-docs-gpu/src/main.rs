@@ -4,16 +4,15 @@
 //! The pieces this exercises (all newly wired for the universal-native
 //! GPU path):
 //!   - [`NativeSkin`] reports a real host-OS [`Platform`] (here `MacOs`),
-//!     so idea-ui-docs takes its desktop custom-header + pinned-sidebar
-//!     branch — exactly what `backend-macos` renders — rather than the
-//!     mobile native-header branch a sim skin would trigger.
-//!   - [`host_winit::run_with`] registers the drawer navigator's
-//!     backend-neutral **desktop** handler on the `WgpuBackend` before
-//!     mount, via the new `RegisterNavigator` impl. `register_native`
-//!     selects the desktop (persistent-sidebar) handler — which lays out
-//!     with real `StyleRules`, so the GPU backend (no CSS) renders the
-//!     pinned sidebar + body correctly. Without registration the
-//!     navigator leaf would hit the "not registered" panic.
+//!     giving the app a genuine desktop identity (window as chrome, no
+//!     bezel) rather than a phone-simulator skin.
+//!   - [`host_winit::run_with`] registers the swap navigator's ONE
+//!     backend-neutral handler on the `WgpuBackend` before mount, via
+//!     the `RegisterNavigator` impl (`swap_navigator::register_generic`).
+//!     The chrome (idea-ui-nav `AppShell` + header) is plain author
+//!     layout built from real `StyleRules`, so the GPU backend (no CSS)
+//!     renders the pinned sidebar + body correctly. Without registration
+//!     the navigator leaf would hit the "not registered" panic.
 //!
 //! `table` (the docs PropsTable) needs no registration here: its native
 //! path lowers to primitives, not `Element::External`.
@@ -27,9 +26,9 @@ use runtime_core::{ColorScheme, Platform};
 use idea_ui_docs::app;
 
 fn main() {
-    // Desktop-sized window. idea-ui-docs pins its sidebar at ≥900px
-    // (`install_navigator_pin_width(900.0)`), so 1280 wide lands firmly in
-    // the pinned-sidebar layout.
+    // Desktop-sized window. idea-ui-docs pins its AppShell sidebar at
+    // ≥900px (`install_breakpoints(Breakpoints { lg_min: 900.0, .. })`),
+    // so 1280 wide lands firmly in the pinned-sidebar layout.
     let profile = DeviceProfile {
         logical_size: (1280, 832),
         position: None,
@@ -41,11 +40,13 @@ fn main() {
     // is the chrome; the skin draws no bezel.
     let skin = Rc::new(NativeSkin::new(Platform::MacOs));
 
-    // Register the DrawerNavigator's backend-neutral desktop handler on
-    // the wgpu backend before the app tree mounts. Form factor is the
-    // compile-time `idealyst_form` cfg (unset → desktop here).
+    // Register the SwapNavigator's backend-neutral handler on the wgpu
+    // backend before the app tree mounts, through the generic
+    // `RegisterNavigator` path. (The per-target `register` fns +
+    // inventory self-registration only cover web/macOS/iOS/Android; the
+    // GPU backend uses the same generic path as SSR.)
     let register = |backend: &mut WgpuBackend| {
-        drawer_navigator::register_native(backend);
+        swap_navigator::register_generic(backend);
     };
 
     if let Err(e) = run_with(profile, skin, register, app) {

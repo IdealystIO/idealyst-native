@@ -17,9 +17,10 @@ use std::rc::Rc;
 use runtime_core::primitives::scroll_view::ScrollViewHandle;
 use runtime_core::{
     component, derived, effect, icon, pressable, signal, text, ui, view, when, Easing,
-    IntoElement, Element, Ref, Route, Signal, StrokeAnimation, StyleApplication, ViewHandle,
+    IntoElement, Element, Ref, Route, SafeAreaSides, Signal, StrokeAnimation, StyleApplication,
+    ViewHandle,
 };
-use drawer_navigator::SlotProps;
+use runtime_core::Signal as NavSignal; // navigator active_route mirror
 use idea_ui::{
     current_breakpoint, dark_theme, light_theme, set_idea_theme, Spacer, Switch, Typography,
     Breakpoint,
@@ -35,7 +36,8 @@ use crate::styles::{
     FooterTagline, FooterTitle, FooterWordmark, MobileHeader, MobileHeaderButton,
     MobileHeaderTitle, MobileHeaderTitleWrap, NavLink, NavLinkActive, PageColumn, PageRow,
     PageScrollColumn, ScreenScroll,
-    SidebarBody, SidebarBrandRow, SidebarBrandText, SidebarFooter, SidebarHeader, SidebarLogo,
+    SidebarBody, SidebarBrandRow, SidebarBrandText, SidebarFooter, SidebarFrame, SidebarHeader,
+    SidebarLogo, SidebarScroll,
     SidebarSection, TocHeader, TocLink, TocPanel,
 };
 
@@ -329,33 +331,52 @@ pub fn footer() -> Element {
 /// (height 0, padding 0). Below the sidebar-collapse breakpoint
 /// it expands to the 56-px bar shown in the screenshots.
 ///
-/// Reactive title: reads `slot.active_route` directly — no
-/// thread-local mirror needed since `SlotProps` already carries
-/// the SDK's authoritative signal. Reading inside the
-/// `text(closure)` source subscribes the bar's reactive scope to
-/// every navigation.
+/// Reactive title: reads the navigator's `active_route` mirror
+/// directly. Reading inside the `text(closure)` source subscribes the
+/// bar's reactive scope to every navigation.
 ///
-/// Menu dispatch: reads `slot.open_drawer` (pre-bound by the SDK
-/// to dispatch `DrawerCmd::Open`). No more thread-local
-/// `OPEN_FN` round-trip.
-pub fn mobile_header(slot: SlotProps) -> Element {
+/// Menu dispatch: sets the app-owned `drawer_open` signal the
+/// `AppShell` panel + scrim subscribe to.
+pub fn mobile_header(
+    active_route: NavSignal<&'static str>,
+    drawer_open: Signal<bool>,
+) -> Element {
     // Keyed on the sidebar-collapse breakpoint (not the content-tighten
     // breakpoint `responsive_style` uses): the hamburger is the only way
     // to open the drawer once the sidebar overlays itself, so it must
     // appear at exactly the width where the sidebar collapses.
-    let header_style = crate::responsive::collapse_responsive_style(MobileHeader::sheet());
+    //
+    // Safe-area: the top inset rides the STYLE (extra padding_top in
+    // the expanded state only), not an element-level `.safe_area(TOP)`
+    // — that applies unconditionally, and in the collapsed (pinned-
+    // sidebar) state the backend-added inset padding would leave a
+    // phantom status-bar-height strip above the content. Reading the
+    // insets signal inside the closure subscribes it, so an
+    // orientation flip re-applies. No-op on web/desktop (insets 0).
+    let collapse_style = crate::responsive::collapse_responsive_style(MobileHeader::sheet());
+    let header_style = move || {
+        let app = collapse_style();
+        let insets = runtime_core::safe_area_insets().get();
+        if crate::responsive::sidebar_collapsed().get() && insets.top > 0.0 {
+            app.with_computed("mobile_header_safe_top", move || runtime_core::StyleRules {
+                // Base vertical padding (8) + the platform inset.
+                padding_top: Some(runtime_core::Length::Px(8.0 + insets.top).into()),
+                ..Default::default()
+            })
+        } else {
+            app
+        }
+    };
     let title_wrap_style = MobileHeaderTitleWrap();
     let title_style = move || StyleApplication::new(MobileHeaderTitle::sheet());
     let button_style = move || StyleApplication::new(MobileHeaderButton::sheet());
 
     // --- menu button (leading) ---
     let menu_icon: Element = ui! { text(style = button_style) { "\u{2630}" } };
-    let open_drawer = slot.open_drawer.clone();
-    let menu_button = pressable(vec![menu_icon], move || open_drawer())
+    let menu_button = pressable(vec![menu_icon], move || drawer_open.set(true))
         .into_element();
 
     // --- title (center) — reactive on the navigator's active_route ---
-    let active_route = slot.active_route;
     let title_source = move || label_for_route(active_route.get()).to_string();
     let title_view: Element = text(title_source).with_style(title_style).into_element();
     let title_node = ui! {
@@ -587,7 +608,42 @@ fn install_scroll_spy(
 /// screen would reset on every push). Toggling it both flips the
 /// signal AND swaps the installed idea-ui theme via
 /// `set_idea_theme(...)`.
-pub fn sidebar(slot: SlotProps, is_dark: Signal<bool>) -> Element {
+/// Header-over-outlet column + growing outlet wrapper for the swap
+/// layout in `app()`. Public style fns (the `ui!` call sites live in
+/// `lib.rs`).
+pub fn shell_column_style() -> runtime_core::StyleApplication {
+    static KEY: u8 = 0;
+    let sheet = runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
+        std::rc::Rc::new(runtime_core::StyleSheet::r#static(runtime_core::StyleRules {
+            flex_direction: Some(runtime_core::FlexDirection::Column),
+            width: Some(runtime_core::Length::Percent(100.0).into()),
+            height: Some(runtime_core::Length::Percent(100.0).into()),
+            min_height: Some(runtime_core::Length::Px(0.0).into()),
+            ..Default::default()
+        }))
+    });
+    runtime_core::StyleApplication::new(sheet)
+}
+
+/// The outlet's growing wrapper: absorbs the column's remaining height
+/// so screens (whose own `scroll_view`s need a bounded box) fill below
+/// the mobile header.
+pub fn outlet_grow_style() -> runtime_core::StyleApplication {
+    static KEY: u8 = 0;
+    let sheet = runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
+        std::rc::Rc::new(runtime_core::StyleSheet::r#static(runtime_core::StyleRules {
+            flex_direction: Some(runtime_core::FlexDirection::Column),
+            flex_grow: Some(1.0f32.into()),
+            min_height: Some(runtime_core::Length::Px(0.0).into()),
+            ..Default::default()
+        }))
+    });
+    runtime_core::StyleApplication::new(sheet)
+}
+
+pub fn sidebar(active_route: NavSignal<&'static str>, is_dark: Signal<bool>) -> Element {
+    let frame_style = SidebarFrame();
+    let scroll_style = SidebarScroll();
     let body_style = SidebarBody();
     let header_style = SidebarHeader();
 
@@ -612,34 +668,48 @@ pub fn sidebar(slot: SlotProps, is_dark: Signal<bool>) -> Element {
     };
     let header_children: Vec<Element> = vec![brand_row];
 
-    let active_route = slot.active_route;
-
     // The whole sidebar is one `ui!` tree. Nested `for` loops over the
     // static route table emit flat siblings (no per-iteration wrapper
     // View); the section title is a `.then(...)` so title-less sections
     // (e.g. Home) add nothing; and `Spacer` / `ThemeToggle` sit inline
     // rather than being pushed onto a vector afterwards.
+    // The brand header stays pinned at the top of the frame; only the
+    // nav list below it lives in the `scroll_view`.
+    //
+    // `.safe_area(VERTICAL)`: the AppShell panel spans the full
+    // viewport height, so on notched phones the drawer's brand header
+    // would sit under the status bar and the theme toggle under the
+    // home indicator. The frame carries the surface background, so it
+    // still bleeds edge-to-edge; only the content insets. No-op on
+    // web/desktop.
     ui! {
-        view(style = body_style) {
+        view(style = frame_style) {
             view(style = header_style) { header_children }
-            for section in SECTIONS {
-                (!section.title.is_empty()).then(|| ui! {
-                    text(style = SidebarSection()) { section.title.to_string() }
-                })
-                for entry in section.entries {
-                    SidebarLink(
-                        route = entry.route,
-                        label = entry.label,
-                        active_route = active_route,
-                    )
+            scroll_view(style = scroll_style) {
+                view(style = body_style) {
+                    for section in SECTIONS {
+                        (!section.title.is_empty()).then(|| ui! {
+                            text(style = SidebarSection()) { section.title.to_string() }
+                        })
+                        for entry in section.entries {
+                            SidebarLink(
+                                route = entry.route,
+                                label = entry.label,
+                                active_route = active_route,
+                            )
+                        }
+                    }
+                    // `Spacer` grows to fill leftover vertical space,
+                    // pinning the footer to the bottom when nav content
+                    // is short; a taller nav list scrolls inside the
+                    // wrapping `scroll_view` (the AppShell panel itself
+                    // doesn't scroll).
+                    Spacer()
+                    ThemeToggle(is_dark = is_dark)
                 }
             }
-            // `Spacer` grows to fill leftover vertical space, pinning the
-            // footer to the bottom when nav content is short; when it
-            // overflows, the outer `.ui-nav-drawer-sidebar` div scrolls.
-            Spacer()
-            ThemeToggle(is_dark = is_dark)
         }
+        .safe_area(SafeAreaSides::VERTICAL)
     }
 }
 

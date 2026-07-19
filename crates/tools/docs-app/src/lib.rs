@@ -7,8 +7,8 @@
 //! entries by kind; each detail page is generated from the catalog
 //! record (docs, props/fields table, composes graph, methods,
 //! animations) using the same visual language as idea-ui-docs
-//! (drawer-navigator + idea-ui + codeblock + the `table` SDK +
-//! icons-lucide).
+//! (swap-navigator + idea-ui-nav's `AppShell` + idea-ui + codeblock +
+//! the `table` SDK + icons-lucide).
 //!
 //! ## How the catalog data flows in
 //!
@@ -35,13 +35,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use drawer_navigator::{
-    install_navigator_pin_width, DrawerBuilder, DrawerHandle, DrawerNavigator, DrawerScreenExt,
-    HeaderStyle,
-};
-use idea_ui::idea_color;
+use idea_ui_nav::AppShell;
 use runtime_core::primitives::navigator::Screen;
-use runtime_core::{component, ui, Element, Ref};
+use runtime_core::{component, effect, signal, ui, Breakpoint, Element, Ref, Signal};
+use swap_navigator::{MountPolicy, SwapBuilder, SwapHandle, SwapNavigator};
 
 mod catalog;
 mod icons;
@@ -114,21 +111,38 @@ pub fn register_extensions(_backend: &mut backend_terminal::TerminalBackend) {}
 // Recorder-side registration for the runtime-server sidecar.
 #[cfg(feature = "sidecar")]
 pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBackend) {
-    drawer_navigator::recording::register(backend);
+    swap_navigator::recording::register(backend);
 }
 
-/// Wrap a screen body with its display title for the iOS nav bar /
-/// Android toolbar.
+/// Wrap a screen body in a `Screen`. The `title` used to drive the drawer
+/// chrome's native header bar; the swap/outlet model has no navigator
+/// chrome (the app owns its layout), so the Screen carries no options —
+/// the helper is kept so screen closures still document their display
+/// title next to the body they build.
 fn titled(title: String, el: Element) -> Screen {
-    Screen::new(el).title(title)
+    let _ = title;
+    Screen::new(el)
 }
 
 #[component]
 pub fn app() -> Element {
     theme::install_initial_theme();
-    install_navigator_pin_width(960.0);
+    // Align the framework's `Lg` breakpoint with the sidebar pin width the
+    // old drawer chrome used (`install_navigator_pin_width(960.0)`), so
+    // `AppShell(pin_at = Lg)` and the mobile hamburger flip at the same
+    // 960-px width the drawer collapsed at. First-install wins — must run
+    // before any breakpoint-keyed sheet resolves.
+    let _ = runtime_core::install_breakpoints(runtime_core::Breakpoints {
+        lg_min: 960.0,
+        ..Default::default()
+    });
 
-    let nav: Ref<DrawerHandle> = Ref::new();
+    let nav: Ref<SwapHandle> = Ref::new();
+    // Drawer-open state for narrow viewports — author-owned now (the
+    // AppShell scrim closes it, the hamburger opens it, and the layout
+    // effect below closes it after a sidebar navigation). Pinned widths
+    // ignore it entirely.
+    let drawer_open: Signal<bool> = signal(false);
     let cat = model();
 
     // The overview screen lists every kind + count. Detail screens are
@@ -138,13 +152,7 @@ pub fn app() -> Element {
     let cat_overview = cat.clone();
     let cat_entry = cat.clone();
 
-    let builder = DrawerNavigator::new(&OVERVIEW_ROUTE)
-        .header(|| HeaderStyle {
-            background: Some((idea_color(|c| c.surface.clone()))()),
-            title: Some((idea_color(|c| c.text.clone()))()),
-            tint: Some((idea_color(|c| c.text.clone()))()),
-            body_background: Some((idea_color(|c| c.background.clone()))()),
-        })
+    let builder = SwapNavigator::new(&OVERVIEW_ROUTE)
         .screen(OVERVIEW_ROUTE, move |_| {
             titled("Catalog".to_string(), shell::overview_page(&cat_overview))
         })
@@ -159,8 +167,53 @@ pub fn app() -> Element {
                 .unwrap_or_else(|| "Not found".to_string());
             titled(title, shell::entry_page(&cat_entry, kind, &slug))
         })
-        .drawer_width(300.0)
-        .leading_with(move |slot| shell::sidebar(slot, model()));
+        // Legacy drawer-on-web behavior: one screen resident at a time;
+        // switching away disposes the screen's scope and a return rebuilds
+        // it fresh (matches browser semantics; screens are generated from
+        // the catalog so remounting is cheap).
+        .mount_policy(MountPolicy::LazyDisposing)
+        // The shell: AppShell packages pinned-sidebar ⇄ drawer around the
+        // one-shot outlet; the mobile hamburger bar collapses in at narrow
+        // widths. The sidebar builds ONCE and survives every navigation.
+        .layout(move |nav_ctx| {
+            // Auto-close the drawer when a sidebar link navigates while
+            // unpinned (the legacy web drawer engine did this in its
+            // Select arm; author-owned now). Watch `active_path` — not
+            // `active_route` — because every catalog entry shares the one
+            // parameterized `entry` route name, so only the path changes
+            // on entry→entry navigation.
+            let active_path = nav_ctx.active_path;
+            effect!({
+                let _ = active_path.get();
+                if !idea_ui_nav::sidebar_pinned(Breakpoint::Lg) {
+                    drawer_open.set(false);
+                }
+            });
+
+            let sidebar_el = shell::sidebar(active_path, model());
+            let header = shell::mobile_header(drawer_open);
+            let body: Element = ui! {
+                view(style = shell::outlet_grow_style) {
+                    { nav_ctx.outlet }
+                }
+            };
+            let content: Element = ui! {
+                view(style = shell::shell_column_style) {
+                    header
+                    body
+                }
+            };
+            ui! {
+                AppShell(
+                    sidebar = vec![sidebar_el],
+                    is_open = drawer_open,
+                    pin_at = Breakpoint::Lg,
+                    width = 300.0,
+                ) {
+                    { content }
+                }
+            }
+        });
 
     ui! { builder.bind(nav) }
 }

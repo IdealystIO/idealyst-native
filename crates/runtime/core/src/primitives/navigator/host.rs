@@ -193,6 +193,19 @@ pub struct NavigatorHost<N: Clone + 'static> {
     /// borrow contract.
     pub clear_children: Rc<dyn Fn(N /* parent */)>,
 
+    /// Read a node's scroll offset (backend `node_scroll`). Backend-
+    /// erased so a generic handler can hand the substrate's URL sync a
+    /// scroll accessor over its outlet
+    /// (`NavigatorControl::install_scroll_accessor`) without reaching
+    /// the backend. `(0, 0)` on backends without node-level scrolling.
+    /// Same must-run-outside-the-outer-borrow contract as `insert_node`.
+    pub get_node_scroll: Rc<dyn Fn(N) -> (f32, f32)>,
+
+    /// Set a node's scroll offset (backend `set_node_scroll`). Harmless
+    /// no-op on non-scrolling nodes. Same contract as
+    /// [`get_node_scroll`](Self::get_node_scroll).
+    pub set_node_scroll: Rc<dyn Fn(N, f32, f32)>,
+
     /// Build an author `.layout(|nav| …)` tree and return
     /// `(root, Option<outlet>)`: the root chrome node to use as the
     /// navigator's native view, plus the node of the
@@ -201,12 +214,20 @@ pub struct NavigatorHost<N: Clone + 'static> {
     /// screens into. `None` outlet means the layout omitted the outlet —
     /// an author error the handler should surface loudly.
     ///
-    /// Built inside a retained nav-chrome scope (effects live the
-    /// navigator's lifetime) with THIS navigator published as ambient, so
-    /// `link(route = …)` inside the layout dispatches through it. Same
-    /// must-run-outside-the-outer-borrow rule as `build_node`.
-    pub build_layout_with_outlet:
-        Rc<dyn Fn(crate::element::Element) -> (N /* root */, Option<N> /* outlet */)>,
+    /// Takes the layout *producer* (not a pre-built `Element`) so the
+    /// author's `.layout` closure itself runs inside the retained
+    /// nav-chrome scope — an `effect!` in author chrome is legal (it
+    /// lives the navigator's lifetime and is freed at teardown) instead
+    /// of panicking "no active reactive scope", exactly like a component
+    /// body. The closure also runs with THIS navigator published as
+    /// ambient, so `link(route = …)` inside the layout dispatches
+    /// through it. Same must-run-outside-the-outer-borrow rule as
+    /// `build_node`.
+    pub build_layout_with_outlet: Rc<
+        dyn Fn(
+            Box<dyn FnOnce() -> crate::element::Element>,
+        ) -> (N /* root */, Option<N> /* outlet */),
+    >,
 
     /// Screen-root style overlay slot, shared with the framework's
     /// `mount_screen`. When a handler fills it (via

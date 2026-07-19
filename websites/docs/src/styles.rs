@@ -7,7 +7,7 @@
 //! installed theme.
 
 use runtime_core::stylesheet;
-use runtime_core::{AlignItems, Color, FlexDirection, Length, Tokenized};
+use runtime_core::{AlignItems, Color, FlexDirection, JustifyContent, Length, Tokenized};
 use idea_ui::{IdeaTheme, IdeaThemeRef};
 
 stylesheet! {
@@ -164,6 +164,96 @@ stylesheet! {
         }
         transitions {
             color: 200ms EaseOut,
+        }
+    }
+}
+
+// ---- Mobile header (hamburger + title, narrow viewports) -------------------
+//
+// Visible only while the AppShell sidebar is collapsed into the drawer:
+// the `breakpoint lg` overlay zeroes the bar out at/above the pin width
+// (the framework's default `Lg`, matching the legacy drawer chrome's
+// default pin width). Static breakpoint styling — a real `@media` rule
+// on web + SSR — so the bar is correct on first paint and flips at
+// EXACTLY the width where the AppShell sidebar collapses (no navigation
+// dead zone).
+
+stylesheet! {
+    pub MobileHeader<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: 4.0,
+            width: Length::pct(100.0),
+            height: 56.0,
+            padding_horizontal: 8.0,
+            border_bottom_width: 1.0,
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            border_bottom_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            overflow: runtime_core::Overflow::Hidden,
+            flex_shrink: 0.0,
+        }
+        breakpoint lg(_t) {
+            height: 0.0,
+            padding_horizontal: 0.0,
+            border_bottom_width: 0.0,
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_bottom_color: 250ms EaseInOut,
+        }
+    }
+}
+
+// Pressable hamburger — square 40x40 touch target, rounded, subtle
+// hover dim.
+stylesheet! {
+    pub MobileHeaderButton<IdeaThemeRef> {
+        base(_t) {
+            width: 40.0,
+            height: 40.0,
+            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
+            background: Color("transparent".into()),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            font_size: 22.0,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            flex_shrink: 0.0,
+        }
+        state hovered(_t) {
+            background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
+        }
+        transitions {
+            background: 150ms EaseOut,
+        }
+    }
+}
+
+// Title wrapper — grows to fill the space after the menu button; the
+// title text inside is left-aligned.
+stylesheet! {
+    pub MobileHeaderTitleWrap<IdeaThemeRef> {
+        base(_t) {
+            flex_basis: 0.0,
+            flex_grow: 1.0,
+            min_width: 0.0,
+            padding_horizontal: 4.0,
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+        }
+    }
+}
+
+stylesheet! {
+    pub MobileHeaderTitle<IdeaThemeRef> {
+        base(_t) {
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            font_size: 17.0,
+            font_weight: runtime_core::FontWeight::SemiBold,
+            text_align: runtime_core::TextAlign::Left,
+        }
+        transitions {
+            color: 250ms EaseInOut,
         }
     }
 }

@@ -32,8 +32,10 @@ idea-ui-docs = { path = "../idea-ui-docs", default-features = false }
 render-wgpu = { workspace = true, features = ["headless"] }
 host-winit = { workspace = true }
 runtime-core = { workspace = true }
-# idea-ui-docs's entire shell is a DrawerNavigator. The GPU backend has no
-# wgpu-specific drawer handler, so we register the backend-neutral
-# primitive `chrome` handler — the wgpu renderer draws those primitives
-# natively.
-drawer-navigator = { workspace = true }
+# idea-ui-docs's entire shell is a SwapNavigator (outlet model) wrapped
+# in an idea-ui-nav AppShell. The swap handler is backend-neutral by
+# design — one handler serves every backend — so we register it on the
+# GPU backend through the generic `RegisterNavigator` path
+# (`swap_navigator::register_generic`); the wgpu renderer draws the
+# author chrome's primitives natively.
+swap-navigator = { workspace = true }

@@ -272,6 +272,15 @@ pub(crate) struct NodeAnim {
     pub(crate) transform_translate_pct_x: Option<f32>,
     pub(crate) transform_translate_pct_y: Option<f32>,
 
+    /// Last statically-applied transform, as (axis-write mask,
+    /// [tx_px, ty_px, sx, sy, rot_deg]). `None` before the first
+    /// `apply_transform`. Gates `transitions { transform: … }`: the
+    /// first apply snaps (CSS parity — transitions fire on *changes*)
+    /// and identical re-applies (theme toggles re-firing a cohort)
+    /// don't restart the slide. See
+    /// `crate::transform_transition_policy`.
+    pub(crate) last_static_transform: Option<(u8, [f32; 5])>,
+
     /// Radial gradient extent + radius factor, stashed when a
     /// `GradientKind::Radial` is applied. `GradientDrawable.setGradientRadius`
     /// takes pixels, but at apply-style time the view hasn't been
@@ -300,6 +309,15 @@ pub struct AndroidBackend {
     /// Entries created lazily on first `apply_style`; removed on
     /// `on_node_unstyled` via the framework's lifecycle hook.
     pub(crate) anim_state: HashMap<usize, NodeAnim>,
+    /// External single-axis scrollers (SDK leaves like `codeblock`) by node
+    /// key. `apply_style` diverts the author's `padding_*` on these to the
+    /// view's own `setPadding` (the widget sets `clipToPadding = false`, so
+    /// the padding scrolls with the content — web's `<pre> { padding }`
+    /// model) and strips it from the Taffy style; the generic
+    /// `View.measure` measure_fn already includes view padding. Populated
+    /// by [`Self::register_external_scroller`]. Mirrors the iOS/macOS
+    /// `external_content_measures` registries.
+    pub(crate) external_scrollers: std::collections::HashSet<usize>,
     /// ScrollView outer→inner mapping. Keyed by the outer
     /// (framework-visible) ScrollView's raw `JObject*` pointer; value
     /// is a `GlobalRef` to its inner LinearLayout, where child
@@ -886,6 +904,7 @@ impl AndroidBackend {
             context,
             root,
             anim_state: HashMap::new(),
+            external_scrollers: std::collections::HashSet::new(),
             scroll_view_inner: HashMap::new(),
             portal_instances: HashMap::new(),
             layout: runtime_layout::LayoutTree::new(),
@@ -984,6 +1003,15 @@ impl AndroidBackend {
     /// static fallback if the SDK isn't available on Android).
     pub fn has_external<T: 'static>(&self) -> bool {
         self.external_handlers.has::<T>()
+    }
+
+    /// SDK extension helper: mark an external content-measured scroller
+    /// (e.g. the `codeblock` SDK's `RustCodeBlock`) so `apply_style`
+    /// diverts the author's `padding_*` to the view's own `setPadding`
+    /// (paired with `clipToPadding = false` in the widget) instead of
+    /// Taffy padding. See the `external_scrollers` field doc.
+    pub fn register_external_scroller(&mut self, view: &GlobalRef) {
+        self.external_scrollers.insert(Self::node_key_of(view));
     }
 
     /// SDK extension entry point: run a closure with a JNI env and the
@@ -1871,6 +1899,35 @@ impl runtime_core::TextOps for AndroidTextOps {
     }
 }
 pub(crate) static ANDROID_TEXT_OPS: AndroidTextOps = AndroidTextOps;
+
+pub(crate) struct AndroidScrollViewOps;
+impl runtime_core::primitives::scroll_view::ScrollViewOps for AndroidScrollViewOps {
+    /// Programmatic scroll for the author `scroll_view().bind(r)` →
+    /// `scroll_to` path and the robot `set_scroll` action. Framework
+    /// units are dp; `View.scrollTo` takes px, so convert through the
+    /// view's own display density. `ScrollView`/`HorizontalScrollView`
+    /// clamp the target to the content extent, matching UIScrollView
+    /// and the web `scrollTo` behavior.
+    fn scroll_to(&self, node: &dyn std::any::Any, x: f32, y: f32) {
+        let Some(n) = node.downcast_ref::<GlobalRef>() else {
+            return;
+        };
+        with_env(|env| {
+            let view = n.as_obj();
+            let d = density_of(env, &view).unwrap_or(1.0);
+            let _ = env.call_method(
+                &view,
+                "scrollTo",
+                "(II)V",
+                &[
+                    JValue::Int((x * d).round() as i32),
+                    JValue::Int((y * d).round() as i32),
+                ],
+            );
+        });
+    }
+}
+pub(crate) static ANDROID_SCROLL_VIEW_OPS: AndroidScrollViewOps = AndroidScrollViewOps;
 
 // ---------------------------------------------------------------------------
 // Global self-handle. Mirrors `IOS_BACKEND_SELF` — host code installs
@@ -3140,6 +3197,24 @@ impl Backend for AndroidBackend {
         runtime_core::TextHandle::new(Rc::new(node.clone()), &ANDROID_TEXT_OPS)
     }
 
+    /// Same plumbing for programmatic scrolls — the author
+    /// `scroll_view().bind(r)` → `scroll_to` path and the robot
+    /// `set_scroll` action. The robot action routes through this handle
+    /// so no backend borrow is held across the native write (Android's
+    /// `scrollTo` fires `onScrollChanged` synchronously — the same
+    /// reentrancy hazard the walker's scroll-action comment describes
+    /// for AppKit). Without this override both paths were silent no-ops
+    /// on Android (the trait-default `NoopScrollViewOps`).
+    fn make_scroll_view_handle(
+        &self,
+        node: &Self::Node,
+    ) -> runtime_core::primitives::scroll_view::ScrollViewHandle {
+        runtime_core::primitives::scroll_view::ScrollViewHandle::new(
+            Rc::new(node.clone()),
+            &ANDROID_SCROLL_VIEW_OPS,
+        )
+    }
+
     fn clear_children(&mut self, node: &Self::Node) {
         // Drop any sticky bookkeeping for the entire subtree we're
         // about to remove BEFORE the native `removeAllViews` call.
@@ -3212,11 +3287,17 @@ impl Backend for AndroidBackend {
 
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
         let key = Self::node_key(node);
+        // External content-measured scroller (SDK leaf like `codeblock`):
+        // its `padding_*` goes to the view's own `setPadding` (widget sets
+        // `clipToPadding = false`) instead of Taffy padding, so the padding
+        // scrolls with the content and mid-scroll text reaches the node's
+        // edge. Mirrors the iOS/macOS external-scroller divert.
+        let is_external_scroller = self.external_scrollers.contains(&key);
         // Lazy-create per-node state on first apply.
         let state = self.anim_state.entry(key).or_default();
         let font_registry = &self.font_registry;
         with_env(|env| {
-            style::apply_rules(env, node, state, style, font_registry);
+            style::apply_rules(env, node, state, style, font_registry, is_external_scroller);
             // Image content-fit. `object_fit` maps to the ImageView's
             // `ScaleType`; `None` ⇒ the framework default `Contain`. A no-op
             // on non-image views (the helper guards). Kept out of `apply_rules`
@@ -3247,7 +3328,11 @@ impl Backend for AndroidBackend {
                 .and_then(|c| env.is_instance_of(&node.as_obj(), &c).ok())
                 .unwrap_or(false)
         });
-        if is_text_view {
+        // External scrollers strip for the same double-count reason: their
+        // padding is realized as the view's own `setPadding` (see
+        // `apply_rules`), and the generic `View.measure` measure_fn already
+        // includes the view's padding in its measured size.
+        if is_text_view || is_external_scroller {
             let mut text_style: runtime_core::StyleRules = (**style).clone();
             text_style.padding_left = None;
             text_style.padding_right = None;

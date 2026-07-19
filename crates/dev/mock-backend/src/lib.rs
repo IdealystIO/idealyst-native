@@ -110,6 +110,10 @@ pub struct MockNode {
     /// opt-in crossed the wire AND that a device-insets change re-applies.
     pub safe_area_sides: Option<runtime_core::SafeAreaSides>,
     pub safe_area_apply_count: u32,
+    /// Scroll offset written via `Backend::set_node_scroll` (read back by
+    /// `node_scroll`). The mock treats every node as scrollable so
+    /// navigator URL-sync scroll snapshot/restore is testable headlessly.
+    pub scroll: (f32, f32),
 }
 
 impl MockNode {
@@ -129,6 +133,7 @@ impl MockNode {
             animated: Vec::new(),
             safe_area_sides: None,
             safe_area_apply_count: 0,
+            scroll: (0.0, 0.0),
         }
     }
 }
@@ -219,6 +224,24 @@ impl MockBackend {
     /// Look up a node by id.
     pub fn node(&self, id: u64) -> Option<&MockNode> {
         self.nodes.get(&id)
+    }
+
+    /// Id of the first node whose text equals `needle`. Test helper for
+    /// locating a screen's content node before walking to its ancestors.
+    pub fn find_node_with_text(&self, needle: &str) -> Option<u64> {
+        self.nodes
+            .values()
+            .find(|n| n.text.as_deref() == Some(needle))
+            .map(|n| n.id)
+    }
+
+    /// Id of the node whose child list contains `id` (the rendered
+    /// parent). Linear scan — fine at test scale.
+    pub fn parent_of(&self, id: u64) -> Option<u64> {
+        self.nodes
+            .values()
+            .find(|n| n.children.contains(&id))
+            .map(|n| n.id)
     }
 
     /// The first node (if any) that had a safe-area opt-in applied, as
@@ -674,6 +697,18 @@ impl Backend for MockBackend {
     fn update_slider_value(&mut self, node: &u64, value: f32) {
         if let Some(n) = self.node_mut(*node) {
             n.slider_value = Some(value);
+        }
+    }
+
+    // ----- scroll ---------------------------------------------------------
+
+    fn node_scroll(&self, node: &u64) -> (f32, f32) {
+        self.nodes.get(node).map(|n| n.scroll).unwrap_or((0.0, 0.0))
+    }
+
+    fn set_node_scroll(&mut self, node: &u64, x: f32, y: f32) {
+        if let Some(n) = self.node_mut(*node) {
+            n.scroll = (x, y);
         }
     }
 

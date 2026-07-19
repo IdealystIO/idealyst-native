@@ -75,6 +75,12 @@ pub(crate) struct AnimatedTransformState {
     /// into `translate_x` / `translate_y` so `compose()` sees it.
     pub static_translate_pct_x: Option<f32>,
     pub static_translate_pct_y: Option<f32>,
+    /// True after the first `apply_static_transform` on this view.
+    /// Gates `transform_transition`: the initial apply always snaps
+    /// (CSS parity — transitions fire on *changes*, not the initial
+    /// style), later applies animate. See
+    /// `transform_transition_policy::should_animate_static_transform`.
+    pub static_transform_seen: bool,
 }
 
 impl AnimatedTransformState {
@@ -181,6 +187,52 @@ pub(crate) fn sync_static_transform_percent(
     let _: () = unsafe { msg_send![view, setTransform: matrix] };
 }
 
+/// Componentwise equality for the composed affine matrix. Exact
+/// comparison is right here: both sides come from the same
+/// deterministic `compose()` math over style values, so an unchanged
+/// style produces bit-identical output — and any real change (a
+/// drawer's `-260` → `0`) differs by whole pixels.
+fn matrix_eq(a: &CGAffineTransform, b: &CGAffineTransform) -> bool {
+    a.a == b.a && a.b == b.b && a.c == b.c && a.d == b.d && a.tx == b.tx && a.ty == b.ty
+}
+
+/// Set `view.transform = matrix` inside a `UIView
+/// animateWithDuration:delay:options:animations:completion:` block —
+/// UIKit's implicit animation drives the interpolation (including
+/// retargeting mid-flight when the drawer reverses direction, which
+/// `BeginFromCurrentState` semantics cover by default on the
+/// block-based API). Easing maps per
+/// [`crate::transform_transition_policy::easing_to_uiview_options`].
+fn animate_set_transform(
+    view: &UIView,
+    matrix: CGAffineTransform,
+    transition: &runtime_core::Transition,
+) {
+    use block2::StackBlock;
+    // Retain the view into the animations block — UIKit may invoke it
+    // after this frame returns.
+    let view_for_block: Retained<UIView> =
+        unsafe { Retained::retain(view as *const UIView as *mut UIView) }
+            .expect("non-null UIView");
+    let animations = StackBlock::new(move || {
+        let _: () = unsafe { msg_send![&*view_for_block, setTransform: matrix] };
+    })
+    .copy();
+    let duration = transition.duration_ms as f64 / 1000.0;
+    let options: usize =
+        crate::transform_transition_policy::easing_to_uiview_options(transition.easing);
+    let _: () = unsafe {
+        msg_send![
+            UIView::class(),
+            animateWithDuration: duration,
+            delay: 0.0f64,
+            options: options,
+            animations: &*animations,
+            completion: Option::<&block2::Block<dyn Fn(objc2::runtime::Bool)>>::None
+        ]
+    };
+}
+
 impl IosBackend {
     /// Walk a stylesheet's `transform` Vec and apply each op to the
     /// view via the cached [`AnimatedTransformState`]. Px translates,
@@ -206,6 +258,14 @@ impl IosBackend {
         let key = node.view_key();
         let view = node.as_view();
         let state = self.animated_states.entry(key).or_default();
+
+        // Snapshot for the `transitions { transform: … }` path: the
+        // matrix BEFORE this apply (the tween's implicit "from") and
+        // whether this view has been statically transformed before
+        // (first apply snaps — CSS parity).
+        let old_matrix = state.compose();
+        let seen_before = state.static_transform_seen;
+        state.static_transform_seen = true;
 
         // Pre-scan: which axes does the style's transform block
         // ACTUALLY drive? Only those get cleared+overwritten below.
@@ -338,7 +398,26 @@ impl IosBackend {
         }
 
         let matrix = state.compose();
-        let _: () = unsafe { msg_send![&*view, setTransform: matrix] };
+        // `transitions { transform: … }` — animate the change via
+        // UIKit's block-based implicit animation instead of snapping,
+        // matching web's CSS `transition: transform` (the AppShell
+        // drawer slide). First apply and no-change re-applies snap;
+        // see `transform_transition_policy` for the rules.
+        let changed = !matrix_eq(&matrix, &old_matrix);
+        match style.transform_transition.as_ref() {
+            Some(t)
+                if crate::transform_transition_policy::should_animate_static_transform(
+                    seen_before,
+                    true,
+                    changed,
+                ) =>
+            {
+                animate_set_transform(&view, matrix, t);
+            }
+            _ => {
+                let _: () = unsafe { msg_send![&*view, setTransform: matrix] };
+            }
+        }
     }
 
     pub(crate) fn impl_set_animated_f32(

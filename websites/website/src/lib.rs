@@ -1,23 +1,23 @@
 //! `website` — the idealyst-native marketing site.
 //!
-//! Web is the primary target. The shell is a `DrawerNavigator` — its
-//! sidebar slot mounts ONCE and survives every navigation; the
-//! navigator only swaps the screen-body. The sidebar reads
-//! `DrawerSlotProps::active_route` so the active-link highlight is
-//! reactive without any per-screen wiring.
+//! Web is the primary target. The shell is a swap navigator (outlet
+//! model) wrapped in an `idea_ui_nav::AppShell`: the sidebar builds
+//! ONCE and survives every navigation; the navigator swaps only the
+//! outlet's screen. Pinned-sidebar ⇄ off-canvas drawer is static
+//! breakpoint styling (real `@media` on web + SSR, viewport-correct
+//! first paint), and the sidebar reads the navigator's reactive
+//! `active_route` for the active-link highlight.
 //!
-//! iOS/Android: the same drawer SDK drives a slide-in side panel
-//! using native chrome (`UINavigationController` / Android's
-//! drawer). Terminal: drawer SDK no-ops the sidebar (per the
-//! repo's terminal-minimalism convention).
+//! Every backend renders the SAME author chrome — no per-platform
+//! navigator chrome (CLAUDE.md §7).
 
-use runtime_core::{component, effect, signal, ui, Color, Element, Ref, Route, Signal, Tokenized};
-use runtime_core::primitives::navigator::Screen;
-use drawer_navigator::{
-    DrawerBuilder, DrawerHandle, DrawerNavigator, DrawerScreenExt, HeaderStyle, MountPolicy,
-    TopSlot,
+use idea_ui_nav::AppShell;
+use runtime_core::{
+    component, effect, signal, ui, Breakpoint, Color, Element, Ref, Route, Signal, Tokenized,
 };
-use idea_ui::{idea_color, install_idea_theme, light_theme};
+use runtime_core::primitives::navigator::Screen;
+use swap_navigator::{MountPolicy, SwapBuilder, SwapHandle, SwapNavigator};
+use idea_ui::{install_idea_theme, light_theme};
 
 /// Wrap a page's `Element` in a `Screen` whose nav-bar title is the
 /// sidebar label resolved via [`routes::label_for_route`] (which
@@ -27,7 +27,11 @@ use idea_ui::{idea_color, install_idea_theme, light_theme};
 /// without this the bar renders empty since iOS no longer falls
 /// back to `route.name()`.
 fn titled(route: &'static Route<()>, el: Element) -> Screen {
-    Screen::new(el).title(routes::label_for_route(route.name()))
+    // The label is drawn by the shell's own header (`shell::mobile_header`
+    // derives it reactively from `active_route`), so the Screen carries no
+    // navigator-chrome options anymore.
+    let _ = route;
+    Screen::new(el)
 }
 
 // `#[macro_use]` lifts the `#[component]`-generated invocation macros
@@ -70,7 +74,11 @@ pub fn app() -> Element {
     theme.typography.body_lg_size = 19.0;
     install_idea_theme(theme);
 
-    let nav: Ref<DrawerHandle> = Ref::new();
+    let nav: Ref<SwapHandle> = Ref::new();
+    // Drawer-open state for narrow viewports — author-owned now (the
+    // AppShell scrim + the sidebar links close it; the hamburger opens
+    // it). Pinned widths ignore it entirely.
+    let drawer_open: Signal<bool> = signal(false);
     // App-level theme-toggle state — lives here (not inside a
     // per-screen scope) so flipping dark mode persists across
     // navigation. Captured by the sidebar builder closure below.
@@ -89,46 +97,28 @@ pub fn app() -> Element {
     // bg follows.
     sync_body_background_to_theme();
 
-    // Pin the drawer sidebar's modal↔pinned breakpoint to the site's
-    // existing collapse point. This is the SINGLE threshold now: the
-    // navigator's shared stylesheet (web + SSR) carries the responsive
-    // `@media` query, so the collapse is correct on the static first
-    // paint — and it matches the mobile-header collapse
-    // (`collapse_responsive_style`, also keyed off `SIDEBAR_COLLAPSE_PX`).
-    // Must run before the navigator registers its sheet below — and on
-    // EVERY target (not just web), since SSR ships the same sheet.
-    drawer_navigator::install_navigator_pin_width(responsive::SIDEBAR_COLLAPSE_PX as f32);
+    // Align the framework's `Lg` breakpoint with the site's collapse
+    // point so `AppShell(pin_at = Lg)`, the mobile-header collapse
+    // (`collapse_responsive_style`), and the sidebar all flip at the
+    // SAME width. The AppShell's pin/drawer split is static breakpoint
+    // styling (`@media` on web + SSR), so the collapse is correct on the
+    // static first paint. First-install wins — must run before any
+    // breakpoint-keyed sheet resolves, on EVERY target (SSR included).
+    let _ = runtime_core::install_breakpoints(runtime_core::Breakpoints {
+        lg_min: responsive::SIDEBAR_COLLAPSE_PX as f32,
+        ..Default::default()
+    });
 
-    // Site-only responsive chrome: the backdrop overlay + narrow-screen
-    // `<pre>` wrapping (the sidebar collapse itself is now navigator-owned,
-    // above). The CSS injection is a no-op on non-web targets.
+    // Site-only responsive chrome: narrow-screen `<pre>` wrapping (the
+    // sidebar collapse + scrim are AppShell-owned now). No-op off web.
     responsive::install_responsive_css();
 
-    let builder = DrawerNavigator::new(&HOME_ROUTE)
-        // Navigator-level header theming: closures re-resolve their
-        // token reads every time the iOS slot-style Effect / Android
-        // slot_styles dispatcher re-fires on `set_idea_theme` token
-        // swaps. Without this the iOS UINavigationController bar /
-        // Android Toolbar keeps the platform default that was
-        // installed once at create_drawer time and never re-tints.
-        .header(|| HeaderStyle {
-            background: Some((idea_color(|c| c.surface.clone()))()),
-            title: Some((idea_color(|c| c.text.clone()))()),
-            tint: Some((idea_color(|c| c.text.clone()))()),
-            body_background: Some((idea_color(|c| c.background.clone()))()),
-        })
-        // Home embeds a wgpu-backed `Simulator` running the welcome
-        // demo. Mark it `LazyDisposing` so navigating away tears
-        // down the home screen's reactive scope (and with it the
-        // `IosHostHandle` driving the embedded wgpu device + render
-        // loop + welcome's `raf_loop`). Navigating back rebuilds
-        // the screen from scratch — a fresh `Graphics::on_ready`
-        // mounts a new host, and the welcome timeline replays from
-        // initial state. Models the intended pattern for any
-        // graphics-heavy screen in a multi-screen navigator.
-        .screen(HOME_ROUTE, move |_| {
-            titled(&HOME_ROUTE, pages::home::page()).mount_policy(MountPolicy::LazyDisposing)
-        })
+    let builder = SwapNavigator::new(&HOME_ROUTE)
+        // Home embeds a wgpu-backed `Simulator`; the navigator-wide
+        // `LazyDisposing` mount policy below tears its scope (and the
+        // render loop) down on navigate-away, exactly as the legacy
+        // per-screen policy did.
+        .screen(HOME_ROUTE, move |_| titled(&HOME_ROUTE, pages::home::page()))
         .screen(FEATURES_ROUTE, move |_| titled(&FEATURES_ROUTE, pages::features::page()))
         .screen(CROSS_PLATFORM_ROUTE, move |_| titled(&CROSS_PLATFORM_ROUTE, pages::cross_platform::page()))
         .screen(PERFORMANCE_ROUTE, move |_| titled(&PERFORMANCE_ROUTE, pages::performance::page()))
@@ -158,27 +148,52 @@ pub fn app() -> Element {
         .screen(COMPARE_FLUTTER_ROUTE, move |_| titled(&COMPARE_FLUTTER_ROUTE, pages::comparisons::flutter::page()))
         .screen(COMPARE_WEB_FRAMEWORKS_ROUTE, move |_| titled(&COMPARE_WEB_FRAMEWORKS_ROUTE, pages::comparisons::web_frameworks::page()))
         .screen(COMPARE_WHEN_NOT_ROUTE, move |_| titled(&COMPARE_WHEN_NOT_ROUTE, pages::comparisons::when_not::page()))
-        .drawer_width(260.0)
-        // Leading slot — the persistent sidebar. Runs ONCE at
-        // navigator init; survives every screen swap.
-        .leading_with(move |slot| {
-            // The slot builder runs inside an active reactive scope
-            // (the navigator's leading-slot scope). Install the
-            // backdrop class-toggle observer here so it anchors to
-            // a scope that lives as long as the navigator does.
-            responsive::install_drawer_open_observer(slot.is_open, nav);
-            shell::sidebar(slot, is_dark)
-        })
-        // Top slot — mobile header. Persistent across screens, so
-        // the menu icon, title, etc. don't rebuild on every nav.
-        // The closure renders a reactive `when()` that mounts the
-        // header only at narrow widths and empty otherwise.
-        .top_with(TopSlot::Custom(Box::new(|slot| shell::mobile_header(slot))));
-    // No `bottom_with(...)`: the site footer is no longer a pinned
-    // navigator slot. The drawer navigator no longer owns scroll, so
-    // the footer lives as the last child of each page's own
-    // `scroll_view` (see `shell::layout` / `layout_with_toc`) and
-    // scrolls with the page content.
+        // Legacy web behavior: one screen resident at a time; switching
+        // away disposes the screen's scope (which is also what tears
+        // down Home's embedded wgpu Simulator + its render loop) and a
+        // return rebuilds it fresh. Matches browser semantics and the
+        // old drawer-on-web engine exactly.
+        .mount_policy(MountPolicy::LazyDisposing)
+        // The shell: AppShell packages pinned-sidebar ⇄ drawer around
+        // the one-shot outlet; the mobile header (hamburger + reactive
+        // title) collapses in at narrow widths.
+        .layout(move |nav_ctx| {
+            // Auto-close the drawer when a sidebar link navigates while
+            // unpinned (the legacy web drawer engine did this in its
+            // Select arm; author-owned now). Reading `active_route`
+            // inside the effect subscribes it to every navigation.
+            let active_route = nav_ctx.active_route;
+            effect!({
+                let _ = active_route.get();
+                if !idea_ui_nav::sidebar_pinned(Breakpoint::Lg) {
+                    drawer_open.set(false);
+                }
+            });
+
+            let sidebar_el = shell::sidebar(active_route, is_dark);
+            let header = shell::mobile_header(active_route, drawer_open);
+            let body: Element = ui! {
+                view(style = shell::outlet_grow_style) {
+                    { nav_ctx.outlet }
+                }
+            };
+            let content: Element = ui! {
+                view(style = shell::shell_column_style) {
+                    header
+                    body
+                }
+            };
+            ui! {
+                AppShell(
+                    sidebar = vec![sidebar_el],
+                    is_open = drawer_open,
+                    pin_at = Breakpoint::Lg,
+                    width = 260.0,
+                ) {
+                    { content }
+                }
+            }
+        });
 
     ui! { builder.bind(nav) }
 }
@@ -257,12 +272,11 @@ pub fn register_extensions(_backend: &mut backend_terminal::TerminalBackend) {}
 // Recorder-side registration for the runtime-server sidecar. Distinct fn
 // name (not an overload of `register_extensions`) so it never collides
 // with the host target's per-backend overload when both compile in the
-// sidecar build. Only the drawer navigator needs a recording handler.
-// Gated by `sidecar` (set only by the generated sidecar wrapper) so
-// device/web builds never pull `dev-server`.
+// sidecar build. Gated by `sidecar` (set only by the generated sidecar
+// wrapper) so device/web builds never pull `dev-server`.
 #[cfg(feature = "sidecar")]
 pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBackend) {
-    drawer_navigator::recording::register(backend);
+    swap_navigator::recording::register(backend);
 }
 
 /// SSR build path. The CLI's `idealyst dev --ssr` / `--static` wrapper
@@ -274,5 +288,5 @@ pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBacke
 /// above without a cfg-collision on the wrapper's host triple.
 #[cfg(feature = "ssr")]
 pub fn register_ssr_extensions(backend: &mut backend_ssr::SsrBackend) {
-    drawer_navigator::chrome::register(backend);
+    swap_navigator::register_generic(backend);
 }

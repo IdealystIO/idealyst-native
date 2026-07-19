@@ -103,8 +103,6 @@ pub enum ElementKind {
     Virtualizer,
     Graphics,
     Navigator,
-    TabNavigator,
-    DrawerNavigator,
     Link,
     Overlay,
     Presence,
@@ -142,6 +140,11 @@ pub(crate) struct ElementActions {
     pub focus: Option<Rc<dyn Fn()>>,
     /// Blur the element.
     pub blur: Option<Rc<dyn Fn()>>,
+    /// Set the element's scroll offset (scroll views). Wraps
+    /// `Backend::set_node_scroll`; lets e2e drives bring off-screen
+    /// content into view on backends with no OS-level input synthesis
+    /// (the iOS simulator has no scriptable touch injection).
+    pub set_scroll: Option<Rc<dyn Fn(f32, f32)>>,
     /// Read the element's rect in **parent** coordinates. Wraps
     /// `Backend::frame`. Returns `None` if the node isn't mounted in
     /// a layout yet.
@@ -169,6 +172,7 @@ impl ElementActions {
             set_slider: None,
             focus: None,
             blur: None,
+            set_scroll: None,
             frame: None,
             absolute_frame: None,
             device_frame: None,
@@ -593,6 +597,21 @@ impl Robot {
         })
     }
 
+    /// Set a scroll view's scroll offset (logical px/points). The
+    /// programmatic analogue of the user panning — used by e2e drives
+    /// to bring off-screen content into view on platforms with no
+    /// scriptable input synthesis (e.g. the iOS simulator).
+    pub fn set_scroll(&self, element: &Element, x: f32, y: f32) -> Result<(), RobotError> {
+        self.with_actions(element.id, |actions| {
+            let set = actions
+                .set_scroll
+                .clone()
+                .ok_or(RobotError::ActionNotAvailable("set_scroll"))?;
+            set(x, y);
+            Ok(())
+        })
+    }
+
     /// Type text into an input element. This replaces the current
     /// value entirely (like a paste). For character-by-character
     /// simulation, call `type_text` per character.
@@ -941,6 +960,18 @@ pub(crate) fn register(entry: RegistryEntry) -> ElementId {
 /// happens *before* the backend has produced a node), then calls
 /// this with closures that capture the built node so positions can
 /// be read on demand.
+/// Attach the scroll-offset action to a mounted scroll view. Called by the
+/// walker after dispatch (the backend node exists only then), mirroring
+/// [`attach_frame_actions`].
+pub(crate) fn attach_scroll_action(id: ElementId, set_scroll: Rc<dyn Fn(f32, f32)>) {
+    REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        if let Some(Some(entry)) = reg.entries.get_mut(id.0 as usize) {
+            entry.actions.set_scroll = Some(set_scroll);
+        }
+    });
+}
+
 pub(crate) fn attach_frame_actions(
     id: ElementId,
     frame: Rc<dyn Fn() -> Option<crate::primitives::portal::ViewportRect>>,

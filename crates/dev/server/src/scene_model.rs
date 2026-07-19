@@ -79,22 +79,13 @@ pub struct SceneModel {
     /// navigator's stack to mutate.
     scope_to_navigator: HashMap<u64, NodeId>,
     /// Per-navigator style-slot applications. Header / title /
-    /// button / drawer-sidebar / etc.
+    /// button / body.
     nav_style_slots: HashMap<NodeId, NavStyleSlots>,
-    /// Per-drawer-navigator sidebar attachment.
-    drawer_sidebars: HashMap<NodeId, NodeId>,
     /// Per-navigator layout attachment (root + outlet). Carries the
     /// pair the wire client needs to wire up a serialized
     /// `.layout(...)` subtree — root is inserted into the navigator
     /// container, outlet records where subsequent screens mount.
     nav_layouts: HashMap<NodeId, (NodeId, NodeId)>,
-    /// Per-drawer-navigator open state. Updated on every
-    /// `OpenDrawer`/`CloseDrawer`/`ToggleDrawer` command so a late-
-    /// joining client (or a post-rebuild resnap of an existing one)
-    /// can observe the live drawer state instead of always defaulting
-    /// to closed. Stored separately from `nav_layouts` because tab
-    /// navigators don't have a drawer.
-    drawer_open: HashMap<NodeId, bool>,
     /// Latest installed theme tokens (`InstallThemeVariables`). Stored so
     /// the snapshot replays them FIRST — before any create that resolves
     /// a token. A fresh runtime-server client replays the snapshot on a
@@ -152,7 +143,7 @@ pub struct ScreenEntry {
     pub url: String,
 }
 
-/// Captures the eight style-slot Apply* commands a navigator can
+/// Captures the four style-slot Apply* commands a navigator can
 /// receive. Each slot stores at most one command (last-write-wins).
 #[derive(Default)]
 struct NavStyleSlots {
@@ -160,11 +151,6 @@ struct NavStyleSlots {
     title: Option<Command>,
     button: Option<Command>,
     body: Option<Command>,
-    drawer_sidebar: Option<Command>,
-    drawer_scrim: Option<Command>,
-    tab_bar: Option<Command>,
-    tab_icon: Option<Command>,
-    tab_label: Option<Command>,
 }
 
 impl SceneModel {
@@ -203,9 +189,7 @@ impl SceneModel {
             | Command::CreateVirtualizer { id, .. } => {
                 self.node_create.insert(*id, cmd.clone());
             }
-            Command::CreateNavigator { id, .. }
-            | Command::CreateTabNavigator { id, .. }
-            | Command::CreateDrawerNavigator { id, .. } => {
+            Command::CreateNavigator { id, .. } => {
                 self.node_create.insert(*id, cmd.clone());
                 self.navigators.entry(*id).or_default();
             }
@@ -483,10 +467,10 @@ impl SceneModel {
             } => {
                 // Select replaces the navigator's single visible screen
                 // without draining a stack — semantically a single-slot
-                // swap for tab/drawer navigators. We model this the
-                // same as a one-entry reset: drop the previous active
-                // entry, push the new one. (Tab navigators don't carry
-                // a multi-entry stack in this model.)
+                // swap. We model this the same as a one-entry reset:
+                // drop the previous active entry, push the new one.
+                // (Select-style navigators don't carry a multi-entry
+                // stack in this model.)
                 let entry = ScreenEntry {
                     screen: *screen,
                     scope: *scope,
@@ -500,32 +484,12 @@ impl SceneModel {
                 stack.push(entry);
                 self.scope_to_navigator.insert(scope.0, *navigator);
             }
-            Command::NavigatorMountTab { .. } => {
-                // Tab mounting is currently surfaced as a Push when
-                // replayed by the runtime-server client; the live broadcast
-                // handles the mount itself. No model state to track
-                // for the demo, and tab navigators don't appear in
-                // the current example. Revisit when adding tabs.
-            }
-            Command::DrawerAttachSidebar { navigator, sidebar } => {
-                self.drawer_sidebars.insert(*navigator, *sidebar);
-            }
             Command::AttachNavigatorLayout {
                 navigator,
                 root,
                 outlet,
             } => {
                 self.nav_layouts.insert(*navigator, (*root, *outlet));
-            }
-            Command::OpenDrawer { navigator } => {
-                self.drawer_open.insert(*navigator, true);
-            }
-            Command::CloseDrawer { navigator } => {
-                self.drawer_open.insert(*navigator, false);
-            }
-            Command::ToggleDrawer { navigator } => {
-                let entry = self.drawer_open.entry(*navigator).or_insert(false);
-                *entry = !*entry;
             }
             Command::ApplyNavigatorHeaderStyle { navigator, .. } => {
                 self.nav_style_slots.entry(*navigator).or_default().header = Some(cmd.clone());
@@ -538,23 +502,6 @@ impl SceneModel {
             }
             Command::ApplyNavigatorBodyStyle { navigator, .. } => {
                 self.nav_style_slots.entry(*navigator).or_default().body = Some(cmd.clone());
-            }
-            Command::ApplyDrawerSidebarStyle { navigator, .. } => {
-                self.nav_style_slots.entry(*navigator).or_default().drawer_sidebar =
-                    Some(cmd.clone());
-            }
-            Command::ApplyDrawerScrimStyle { navigator, .. } => {
-                self.nav_style_slots.entry(*navigator).or_default().drawer_scrim =
-                    Some(cmd.clone());
-            }
-            Command::ApplyTabBarStyle { navigator, .. } => {
-                self.nav_style_slots.entry(*navigator).or_default().tab_bar = Some(cmd.clone());
-            }
-            Command::ApplyTabIconStyle { navigator, .. } => {
-                self.nav_style_slots.entry(*navigator).or_default().tab_icon = Some(cmd.clone());
-            }
-            Command::ApplyTabLabelStyle { navigator, .. } => {
-                self.nav_style_slots.entry(*navigator).or_default().tab_label = Some(cmd.clone());
             }
 
             Command::VirtualizerDataChanged { .. }
@@ -582,10 +529,6 @@ impl SceneModel {
                 // Releasing this node may have removed the last referent of
                 // a retired style — collect any now-unreferenced rules.
                 self.gc_retired_styles();
-                // Released drawer navigator: clear its open-state so a
-                // post-release snapshot doesn't replay `OpenDrawer` for
-                // a node the client side no longer has.
-                self.drawer_open.remove(node);
             }
             Command::InstallThemeVariables { .. } => {
                 // Store the latest theme tokens so the snapshot can replay
@@ -689,8 +632,7 @@ impl SceneModel {
     ///      presence, icon stroke / animation, overlay backdrop
     ///      style.
     ///   5. Per-navigator: `NavigatorAttachInitial` + `NavigatorPush`,
-    ///      then drawer sidebar attachment, then style-slot
-    ///      applications.
+    ///      then style-slot applications.
     ///   6. `Finish { root }` if a root was set.
     /// StyleIds a single `ApplyStyle`/`ApplyStyledStates` command
     /// references (the base style plus any overlay styles). Empty for
@@ -935,43 +877,18 @@ impl SceneModel {
                     });
                 }
             }
-            if let Some(sidebar) = self.drawer_sidebars.get(nav_id) {
-                out.push(Command::DrawerAttachSidebar {
-                    navigator: *nav_id,
-                    sidebar: *sidebar,
-                });
-            }
             if let Some(slots) = self.nav_style_slots.get(nav_id) {
                 for slot in [
                     &slots.header,
                     &slots.title,
                     &slots.button,
                     &slots.body,
-                    &slots.drawer_sidebar,
-                    &slots.drawer_scrim,
-                    &slots.tab_bar,
-                    &slots.tab_icon,
-                    &slots.tab_label,
                 ] {
                     if let Some(cmd) = slot {
                         out.push(cmd.clone());
                     }
                 }
             }
-        }
-
-        // 5b. Replay live drawer-open state so a reconnecting client
-        // sees the same open drawer the producer side has — sidecar
-        // respawn or epoch-advance resnap otherwise resets every
-        // drawer to closed.
-        let mut drawer_navs: Vec<NodeId> = self
-            .drawer_open
-            .iter()
-            .filter_map(|(nav, open)| if *open { Some(*nav) } else { None })
-            .collect();
-        drawer_navs.sort_by_key(|n| n.0);
-        for nav in drawer_navs {
-            out.push(Command::OpenDrawer { navigator: nav });
         }
 
         // 6. Finish.
@@ -1003,11 +920,7 @@ impl SceneModel {
                 stack.push(entry.screen);
             }
         }
-        for sidebar in self.drawer_sidebars.values() {
-            stack.push(*sidebar);
-        }
-        // Navigator layouts: the layout's root + its subtree (which
-        // typically embeds the drawer's sidebar Element) only
+        // Navigator layouts: the layout's root + its subtree only
         // reach the snapshot via this stash. Without it the layout
         // is pruned and `AttachNavigatorLayout` ships with NodeIds
         // the client has never seen → `UnknownNode` on replay.

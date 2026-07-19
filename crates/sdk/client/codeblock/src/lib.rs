@@ -31,12 +31,28 @@
 //! - **Android** — a `RustCodeBlock` (HorizontalScrollView + TextView)
 //!   that sets a `SpannableString` with one `ForegroundColorSpan` per
 //!   run. One TextView per code block, regardless of token count.
-//! - **iOS** — a `UIScrollView` (horizontal) containing a `UILabel`
-//!   whose `attributedText` is an `NSAttributedString` with per-run
+//! - **iOS** — a `UIScrollView` (horizontal) containing an inset-honoring
+//!   label whose `attributedText` is an `NSAttributedString` with per-run
 //!   `NSForegroundColorAttributeName` ranges. One label per block.
-//! - **macOS / terminal / gpu** — fall through to the framework's
+//! - **macOS** — an `NSScrollView` (horizontal) wrapping an `NSTextField`
+//!   label with per-run `NSColor` ranges. Same shape as iOS.
+//! - **terminal / gpu** — fall through to the framework's
 //!   external-not-registered placeholder. Adding handlers there
 //!   follows the same shape as iOS/Android.
+//!
+//! ## Padding is author-driven
+//!
+//! Handlers apply NO padding of their own. The author's `padding_*` (via
+//! `.with_style` on the `code_block`) lands on the outer node; each
+//! backend realizes it INSIDE the scroll region (CSS padding on the web
+//! `<pre>`, label `textInsets` on iOS, documentView offset on macOS,
+//! `setPadding` + `clipToPadding=false` on Android), so the padding
+//! scrolls WITH the content — text sits inset at rest and reaches the
+//! block's own edge mid-scroll, the `<pre> { padding }` observable model.
+//! Handlers previously hard-coded a 20pt/dp inset; combined with author
+//! padding on a wrapping panel that doubled the visible padding and
+//! clipped scrolled content before the block's edge (and made overlay
+//! use-cases like the fiddle editor impossible to align).
 //!
 //! ## Usage
 //!

@@ -104,6 +104,12 @@ pub struct BuildArtifact {
     /// Path to the staged static-site bundle, when `bundle_out_dir`
     /// was set on the build options. `None` otherwise.
     pub bundle_dir: Option<PathBuf>,
+    /// File name (within the bundle's `pkg/`) of the content-hashed
+    /// entry-point JS shim, e.g. `website.3f9a12bc44d0e1a7.js`. Set
+    /// when a bundle was staged (staging fingerprints the pkg);
+    /// `None` on the dev-loop path, whose pkg keeps plain names and
+    /// is served with `Cache-Control: no-store`.
+    pub entry_js: Option<String>,
 }
 
 /// Build the user's project at `project_dir` for the web target.
@@ -170,7 +176,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         wasm_opt_pkg(&wrapper_pkg).with_context(|| "wasm-opt post-split")?;
     }
 
-    let (pkg_dir, bundle_dir) = if let Some(out) = opts.bundle_out_dir.as_ref() {
+    let (pkg_dir, bundle_dir, entry_js) = if let Some(out) = opts.bundle_out_dir.as_ref() {
         let default_index = default_index_html(&manifest.app.name, &manifest.lib_name);
         let staged = stage_bundle(
             &project_dir,
@@ -184,6 +190,15 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
             format!("sync {} → {}", wrapper_pkg.display(), staged_pkg.display())
         })?;
         strip_wasm_pack_metadata(&staged_pkg);
+        // Content-address the bundle: every pkg file is renamed to
+        // carry the build digest and index.html is pointed at the
+        // hashed entry, so a redeploy can never be half-served from a
+        // stale HTTP cache. Runs after metadata stripping (so junk
+        // files don't feed the digest) and before gzip (which rewrites
+        // bytes in place under the final names).
+        let fp = fingerprint_pkg(&staged_pkg, &manifest.lib_name)
+            .with_context(|| format!("fingerprint {}", staged_pkg.display()))?;
+        rewrite_index_bundle_ref(&staged.join("index.html"), &manifest.lib_name, &fp.entry_js)?;
         // Rewrite the staged `index.html` to preload the project's
         // declared fonts. Has to run BEFORE `gzip_bundle` (which
         // overwrites `index.html` with gzipped bytes) so the gzipped
@@ -209,19 +224,20 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         if opts.gzip {
             gzip_bundle(&staged).with_context(|| format!("gzip bundle at {}", staged.display()))?;
         }
-        (staged_pkg, Some(staged))
+        (staged_pkg, Some(staged), Some(fp.entry_js))
     } else {
         let project_pkg = project_dir.join("pkg");
         sync_pkg_dir(&wrapper_pkg, &project_pkg).with_context(|| {
             format!("sync {} → {}", wrapper_pkg.display(), project_pkg.display())
         })?;
-        (project_pkg, None)
+        (project_pkg, None, None)
     };
 
     Ok(BuildArtifact {
         pkg_dir,
         wrapper_dir,
         bundle_dir,
+        entry_js,
     })
 }
 
@@ -489,6 +505,206 @@ fn strip_wasm_pack_metadata(staged_pkg: &Path) {
             }
         }
     }
+}
+
+/// Outcome of [`fingerprint_pkg`]'s content-hash pass over a staged
+/// `pkg/`.
+#[derive(Debug, Clone)]
+pub struct PkgFingerprint {
+    /// 16 lowercase hex chars of the SHA-256 digest over every file in
+    /// the pkg dir (path + bytes, path-sorted). Stable across
+    /// byte-identical rebuilds, different for any change.
+    pub hash: String,
+    /// File name (within `pkg/`) of the hashed entry-point JS shim,
+    /// e.g. `website.3f9a12bc44d0e1a7.js`. Pages boot the app via
+    /// `/pkg/<entry_js>`.
+    pub entry_js: String,
+}
+
+/// Content-address a staged `pkg/`: rename every top-level `.js` /
+/// `.wasm` from `<stem>.<ext>` to `<stem>.<hash>.<ext>` and rewrite
+/// the references between them (ES import specifiers, the shim's
+/// `new URL('<lib>_bg.wasm')` boot path, the split loader's chunk
+/// fetch URLs). The point: a redeploy changes every filename, so an
+/// HTTP cache can never mix old and new bundle halves — the classic
+/// "index.html cached yesterday's <lib>.js which fetches today's
+/// wasm" failure is structurally impossible, and hosts can serve
+/// `pkg/` with `Cache-Control: immutable`. `index.html` itself is
+/// rewritten separately ([`rewrite_index_bundle_ref`]) because it
+/// lives in the bundle root, not in `pkg/`.
+///
+/// # Why one build-wide hash, not per-file content hashes
+///
+/// `<lib>.js` and `__wasm_split.js` import each other (the shim's
+/// `import * as importN from "./__wasm_split.js"` vs the loader's
+/// `import { initSync } from "./<lib>.js"`), so per-file hashing is
+/// circular: each file's final bytes depend on the other's final
+/// name. One digest over all pre-rewrite bytes breaks the cycle and
+/// loses nothing real — any Rust change perturbs the main wasm,
+/// whose function-table layout is baked into every chunk, so
+/// "only one chunk changed, keep the others cached" essentially
+/// never happens for split wasm output anyway.
+///
+/// # The import-object-key trap (why `.js` renames only rewrite
+/// `from "…"` specifiers)
+///
+/// The main wasm imports its chunk loaders from the literal module
+/// string `./__wasm_split.js` (`#[link(wasm_import_module = …)]` in
+/// wasm-split-macro), and that string appears in the shim twice: as
+/// an ES import specifier (a real URL — MUST follow the rename) and
+/// as the wasm import-object key (`"./__wasm_split.js": import1` —
+/// MUST stay byte-identical to the string inside the wasm binary,
+/// which we can't rewrite without corrupting LEB128 section
+/// lengths). So `.js` references are rewritten only in
+/// `from "…"` / `from '…'` position, never as bare strings; `.wasm`
+/// names are only ever fetch URLs and are replaced anywhere.
+pub fn fingerprint_pkg(pkg_dir: &Path, lib_name: &str) -> Result<PkgFingerprint> {
+    use sha2::{Digest, Sha256};
+
+    // Digest every file under pkg/ (recursive, so snippet dirs count),
+    // path-sorted so the hash is deterministic across filesystems.
+    fn collect(dir: &Path, root: &Path, out: &mut Vec<(String, PathBuf)>) -> Result<()> {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_type()?.is_dir() {
+                collect(&path, root, out)?;
+            } else {
+                let rel = path
+                    .strip_prefix(root)
+                    .expect("walk stays under root")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.push((rel, path));
+            }
+        }
+        Ok(())
+    }
+    let mut files: Vec<(String, PathBuf)> = Vec::new();
+    collect(pkg_dir, pkg_dir, &mut files)
+        .with_context(|| format!("walk {}", pkg_dir.display()))?;
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut hasher = Sha256::new();
+    for (rel, path) in &files {
+        hasher.update(rel.as_bytes());
+        hasher.update([0u8]);
+        hasher.update(fs::read(path).with_context(|| format!("read {}", path.display()))?);
+    }
+    let digest = hasher.finalize();
+    let hash: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
+
+    // Rename plan: top-level `.js` / `.wasm` only. `snippets/…` (from
+    // `#[wasm_bindgen(inline_js)]`) stays put — wasm-bindgen already
+    // names those dirs by a per-crate identifier AND their bytes feed
+    // the digest above, so a snippet change still rotates the shim
+    // that imports it.
+    let mut renames: Vec<(String, String)> = Vec::new();
+    for (rel, _) in &files {
+        if rel.contains('/') {
+            continue;
+        }
+        let Some((stem, ext)) = rel.rsplit_once('.') else {
+            continue;
+        };
+        if ext != "js" && ext != "wasm" {
+            continue;
+        }
+        renames.push((rel.clone(), format!("{stem}.{hash}.{ext}")));
+    }
+
+    // Rewrite references inside each top-level JS file, writing the
+    // result under its new name.
+    for (old, new) in &renames {
+        if !old.ends_with(".js") {
+            continue;
+        }
+        let src = pkg_dir.join(old);
+        let mut content =
+            fs::read_to_string(&src).with_context(|| format!("read {}", src.display()))?;
+        for (o, n) in &renames {
+            if o.ends_with(".wasm") {
+                content = content.replace(o, n);
+            } else {
+                content = content.replace(&format!("from \"./{o}\""), &format!("from \"./{n}\""));
+                content = content.replace(&format!("from './{o}'"), &format!("from './{n}'"));
+            }
+        }
+        fs::write(pkg_dir.join(new), content)
+            .with_context(|| format!("write {}", pkg_dir.join(new).display()))?;
+        fs::remove_file(&src).with_context(|| format!("remove {}", src.display()))?;
+    }
+    for (old, new) in &renames {
+        if old.ends_with(".wasm") {
+            fs::rename(pkg_dir.join(old), pkg_dir.join(new))
+                .with_context(|| format!("rename {old} → {new}"))?;
+        }
+    }
+
+    let entry_old = format!("{lib_name}.js");
+    let entry_js = renames
+        .iter()
+        .find(|(o, _)| *o == entry_old)
+        .map(|(_, n)| n.clone())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "fingerprint: expected {entry_old} in {} (wasm-bindgen output shape changed?)",
+                pkg_dir.display(),
+            )
+        })?;
+    eprintln!(
+        "[build-web] fingerprint {hash}: {} pkg file(s) content-addressed (entry {entry_js})",
+        renames.len(),
+    );
+    Ok(PkgFingerprint { hash, entry_js })
+}
+
+/// Point the staged `index.html` at the fingerprinted entry shim:
+/// `pkg/<lib>.js` → `pkg/<entry_js>`. Covers `/pkg/…`, `./pkg/…`, and
+/// bare `pkg/…` spellings (the replacement is on the common
+/// substring). A user-authored index.html that doesn't reference the
+/// bundle by the conventional name gets a loud warning instead of a
+/// silent stale-cache footgun.
+fn rewrite_index_bundle_ref(index_path: &Path, lib_name: &str, entry_js: &str) -> Result<()> {
+    let html = fs::read_to_string(index_path)
+        .with_context(|| format!("read {}", index_path.display()))?;
+    let old = format!("pkg/{lib_name}.js");
+    let new = format!("pkg/{entry_js}");
+    if !html.contains(&old) {
+        eprintln!(
+            "[build-web] ⚠ {} doesn't reference {old}; the fingerprinted entry is /{new} — \
+             point your script tag at it (or at {old}, which the build rewrites) or browsers \
+             may cache a stale bundle",
+            index_path.display(),
+        );
+        return Ok(());
+    }
+    fs::write(index_path, html.replace(&old, &new))
+        .with_context(|| format!("write {}", index_path.display()))?;
+    Ok(())
+}
+
+/// Locate the fingerprinted entry shim (`<lib>.<16 hex>.js`) in a
+/// previously staged `pkg/`, for callers that need the entry name
+/// without re-running the build — e.g. `idealyst build --ssg` against
+/// a `dist/web` staged by an earlier `--web` run. Returns the bare
+/// file name. `backend_ssr::resolve_bundle_module` is the runtime
+/// twin of this for the generated SSR wrapper; keep their matching
+/// rules in sync.
+pub fn find_hashed_entry(pkg_dir: &Path, lib_name: &str) -> Option<String> {
+    let prefix = format!("{lib_name}.");
+    for entry in fs::read_dir(pkg_dir).ok()?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(mid) = name
+            .strip_prefix(&prefix)
+            .and_then(|rest| rest.strip_suffix(".js"))
+        else {
+            continue;
+        };
+        if mid.len() == 16 && mid.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            return Some(name);
+        }
+    }
+    None
 }
 
 /// Top-level entries that never belong in a deployable bundle when no
@@ -1614,6 +1830,8 @@ mod regression_tests {
                 targets: Vec::new(),
                 server_bin: None,
                 server_manifest: None,
+                worker_bin: None,
+                worker_manifest: None,
                 server_port: 3000,
                 web: Default::default(),
                 macos: Default::default(),
@@ -2196,5 +2414,213 @@ mod bundle_tests {
         assert!(!is_already_compressed(Path::new("a.js")));
         assert!(!is_already_compressed(Path::new("a.html")));
         assert!(!is_already_compressed(Path::new("a.ttf")));
+    }
+}
+
+#[cfg(test)]
+mod fingerprint_tests {
+    //! Coverage for the content-hash cache-busting pass. Synthetic
+    //! pkg dirs shaped like real wasm-bindgen + wasm-split output —
+    //! no wasm toolchain needed. The shim/loader fixtures mirror the
+    //! exact reference shapes observed in a real build (see the
+    //! `fingerprint_pkg` doc comment for why each shape matters).
+
+    use super::*;
+
+    /// A pkg/ shaped like real `wasm-bindgen --target web` +
+    /// wasm-split output for a lib named `demo`. The shim carries the
+    /// three reference kinds the rewrite has to treat differently:
+    /// an ES import specifier, a wasm import-object key (same string,
+    /// MUST NOT change), and the `new URL` wasm boot path.
+    fn fake_pkg(tmp: &Path) -> PathBuf {
+        let pkg = tmp.join("pkg");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(
+            pkg.join("demo.js"),
+            concat!(
+                "import * as import1 from \"./__wasm_split.js\"\n",
+                "function __wbg_get_imports() {\n",
+                "    const imports = {\n",
+                "        \"./__wasm_split.js\": import1,\n",
+                "    };\n",
+                "    return imports;\n",
+                "}\n",
+                "module_or_path = new URL('demo_bg.wasm', import.meta.url);\n",
+                "export { initSync };\n",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            pkg.join("__wasm_split.js"),
+            concat!(
+                "import { initSync } from \"./demo.js\";\n",
+                "export const __wasm_split_load_chunk_0 = ",
+                "makeLoad(\"./chunk_0_split.wasm\", [], fusedImports, initSync);\n",
+                "export const __wasm_split_load_lazy = ",
+                "makeLoad(\"./module_0_lazy.wasm\", [__wasm_split_load_chunk_0], fusedImports, initSync);\n",
+            ),
+        )
+        .unwrap();
+        fs::write(pkg.join("demo_bg.wasm"), b"\0asm-main").unwrap();
+        fs::write(pkg.join("chunk_0_split.wasm"), b"\0asm-chunk").unwrap();
+        fs::write(pkg.join("module_0_lazy.wasm"), b"\0asm-module").unwrap();
+        // Snippet dirs must feed the digest but keep their paths.
+        fs::create_dir_all(pkg.join("snippets/demo-abc123")).unwrap();
+        fs::write(pkg.join("snippets/demo-abc123/inline0.js"), b"export {};").unwrap();
+        pkg
+    }
+
+    fn hashed(name: &str, hash: &str) -> String {
+        let (stem, ext) = name.rsplit_once('.').unwrap();
+        format!("{stem}.{hash}.{ext}")
+    }
+
+    #[test]
+    fn fingerprint_renames_every_bundle_file_and_rewrites_references() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = fake_pkg(tmp.path());
+        let fp = fingerprint_pkg(&pkg, "demo").unwrap();
+
+        assert_eq!(fp.hash.len(), 16, "16 hex chars, got {:?}", fp.hash);
+        assert_eq!(fp.entry_js, hashed("demo.js", &fp.hash));
+
+        for old in [
+            "demo.js",
+            "demo_bg.wasm",
+            "__wasm_split.js",
+            "chunk_0_split.wasm",
+            "module_0_lazy.wasm",
+        ] {
+            assert!(!pkg.join(old).exists(), "{old} must be renamed away");
+            assert!(
+                pkg.join(hashed(old, &fp.hash)).is_file(),
+                "{} must exist",
+                hashed(old, &fp.hash),
+            );
+        }
+        // Snippets stay path-stable (wasm-bindgen names those dirs).
+        assert!(pkg.join("snippets/demo-abc123/inline0.js").is_file());
+
+        let shim = fs::read_to_string(pkg.join(&fp.entry_js)).unwrap();
+        let split_new = hashed("__wasm_split.js", &fp.hash);
+        assert!(
+            shim.contains(&format!("from \"./{split_new}\"")),
+            "ES import specifier must follow the loader rename:\n{shim}",
+        );
+        assert!(
+            shim.contains("\"./__wasm_split.js\": import1"),
+            "wasm import-object key must stay byte-identical to the string \
+             baked into the wasm binary:\n{shim}",
+        );
+        assert!(
+            shim.contains(&format!("new URL('{}'", hashed("demo_bg.wasm", &fp.hash))),
+            "wasm boot URL must point at the hashed main wasm:\n{shim}",
+        );
+
+        let loader = fs::read_to_string(pkg.join(&split_new)).unwrap();
+        assert!(
+            loader.contains(&format!("from \"./{}\"", fp.entry_js)),
+            "loader's initSync import must follow the shim rename:\n{loader}",
+        );
+        assert!(
+            loader.contains(&format!(
+                "makeLoad(\"./{}\"",
+                hashed("chunk_0_split.wasm", &fp.hash),
+            )),
+            "chunk fetch URL must be hashed:\n{loader}",
+        );
+        assert!(
+            loader.contains(&format!(
+                "makeLoad(\"./{}\"",
+                hashed("module_0_lazy.wasm", &fp.hash),
+            )),
+            "module fetch URL must be hashed:\n{loader}",
+        );
+    }
+
+    #[test]
+    fn fingerprint_is_deterministic_and_change_sensitive() {
+        let tmp_a = tempfile::tempdir().unwrap();
+        let tmp_b = tempfile::tempdir().unwrap();
+        let a = fingerprint_pkg(&fake_pkg(tmp_a.path()), "demo").unwrap();
+        let b = fingerprint_pkg(&fake_pkg(tmp_b.path()), "demo").unwrap();
+        assert_eq!(
+            a.hash, b.hash,
+            "byte-identical pkgs must fingerprint identically (redeploy of an \
+             unchanged app keeps caches valid)",
+        );
+
+        let tmp_c = tempfile::tempdir().unwrap();
+        let pkg_c = fake_pkg(tmp_c.path());
+        fs::write(pkg_c.join("chunk_0_split.wasm"), b"\0asm-chunk-CHANGED").unwrap();
+        let c = fingerprint_pkg(&pkg_c, "demo").unwrap();
+        assert_ne!(
+            a.hash, c.hash,
+            "any byte change anywhere in pkg/ must rotate every filename",
+        );
+
+        // A snippet-only change must rotate names too — snippet paths
+        // stay stable, so the cache-bust has to come from the digest.
+        let tmp_d = tempfile::tempdir().unwrap();
+        let pkg_d = fake_pkg(tmp_d.path());
+        fs::write(
+            pkg_d.join("snippets/demo-abc123/inline0.js"),
+            b"export {}; // changed",
+        )
+        .unwrap();
+        let d = fingerprint_pkg(&pkg_d, "demo").unwrap();
+        assert_ne!(a.hash, d.hash, "snippet bytes must feed the digest");
+    }
+
+    #[test]
+    fn index_rewrite_points_every_spelling_at_hashed_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let index = tmp.path().join("index.html");
+        fs::write(
+            &index,
+            "<script type=\"module\">import init from \"/pkg/demo.js\"; init();</script>\n\
+             <link rel=\"modulepreload\" href=\"./pkg/demo.js\" />",
+        )
+        .unwrap();
+        rewrite_index_bundle_ref(&index, "demo", "demo.0123456789abcdef.js").unwrap();
+        let html = fs::read_to_string(&index).unwrap();
+        assert!(html.contains("/pkg/demo.0123456789abcdef.js"), "{html}");
+        assert!(html.contains("./pkg/demo.0123456789abcdef.js"), "{html}");
+        assert!(!html.contains("pkg/demo.js"), "{html}");
+    }
+
+    #[test]
+    fn index_without_conventional_ref_is_left_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let index = tmp.path().join("index.html");
+        let original = "<script src=\"/custom/boot.js\"></script>";
+        fs::write(&index, original).unwrap();
+        rewrite_index_bundle_ref(&index, "demo", "demo.0123456789abcdef.js").unwrap();
+        assert_eq!(fs::read_to_string(&index).unwrap(), original);
+    }
+
+    #[test]
+    fn find_hashed_entry_matches_only_the_fingerprinted_shim() {
+        // Decoys only — nothing matching `<lib>.<16 lower hex>.js`.
+        // The uppercase twin lives in its own dir because on a
+        // case-insensitive filesystem (macOS default) it would share
+        // a directory entry with the real lowercase name.
+        let decoys = tempfile::tempdir().unwrap();
+        let pkg = decoys.path();
+        fs::write(pkg.join("demo.js"), b"").unwrap();
+        fs::write(pkg.join("demo.notahash.js"), b"").unwrap();
+        fs::write(pkg.join("demo.0123456789ABCDEF.js"), b"").unwrap(); // uppercase = not ours
+        fs::write(pkg.join("demo_bg.0123456789abcdef.wasm"), b"").unwrap();
+        assert_eq!(find_hashed_entry(pkg, "demo"), None);
+
+        let real = tempfile::tempdir().unwrap();
+        let pkg = real.path();
+        fs::write(pkg.join("demo.notahash.js"), b"").unwrap();
+        fs::write(pkg.join("demo_bg.0123456789abcdef.wasm"), b"").unwrap();
+        fs::write(pkg.join("demo.0123456789abcdef.js"), b"").unwrap();
+        assert_eq!(
+            find_hashed_entry(pkg, "demo").as_deref(),
+            Some("demo.0123456789abcdef.js"),
+        );
     }
 }

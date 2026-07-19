@@ -18,11 +18,10 @@ use std::rc::Rc;
 use std::sync::mpsc::Sender;
 
 
-use runtime_core::{AlignItems, Backend, ColorScheme, FlexDirection, Length, StateBits, StyleRules};
+use runtime_core::{Backend, ColorScheme, StateBits, StyleRules};
 use wire::{
     AppToDev, Command, EventArgs, HandlerId, NodeId, ScopeId, StyleId, WireColorScheme,
-    WireDrawerSide, WireDrawerType, WireItemSize, WireMountPolicy, WireTabPlacement,
-    WireTabRegistration,
+    WireItemSize,
 };
 
 pub mod convert;
@@ -185,8 +184,7 @@ where
     styles: HashMap<StyleId, Rc<StyleRules>>,
     outbound: OutboundSender,
     graphics_registry: GraphicsRegistry,
-    /// Per-navigator state. Populated on `CreateNavigator` /
-    /// `CreateTabNavigator` / `CreateDrawerNavigator` and consulted
+    /// Per-navigator state. Populated on `CreateNavigator` and consulted
     /// by the navigator control-plane commands.
     navigators: HashMap<NodeId, Rc<navigators::NavigatorAppState<B::Node>>>,
     /// Edges already realized in the backend's tree. Used by
@@ -194,16 +192,6 @@ where
     /// reconnect) doesn't reorder or duplicate existing children.
     /// Set of `(parent, child)` pairs.
     inserted_edges: std::collections::HashSet<(NodeId, NodeId)>,
-    /// `(navigator, sidebar)` pairs that have already been attached
-    /// via [`Command::DrawerAttachSidebar`]. Re-attaching is fatal —
-    /// `androidx.drawerlayout.widget.DrawerLayout.onMeasure` throws
-    /// `IllegalStateException("Child drawer has absolute gravity LEFT
-    /// but this DrawerLayout already has a drawer view along that
-    /// edge")` if a second child with the same edge gravity is added.
-    /// Sidecar respawns re-emit the initial command stream (Identity
-    /// dedup makes the NodeIds match the previously-attached ones),
-    /// so we dedup at the command layer.
-    drawer_sidebars_attached: std::collections::HashSet<(NodeId, NodeId)>,
     /// Text content currently rendered for each text node — lets
     /// idempotent `CreateText` skip `update_text` calls when the
     /// content hasn't changed.
@@ -216,7 +204,7 @@ where
     /// reconnect; without this guard, the backend would stack a fresh
     /// listener closure on top of the existing one and every state
     /// transition would fire the wire callback twice (or N times after
-    /// N reconnects). Same shape as `drawer_sidebars_attached`.
+    /// N reconnects). Same shape as `inserted_edges`.
     attached_states: std::collections::HashSet<NodeId>,
     /// Nodes that opted into safe-area insets over the wire
     /// (`ApplySafeAreaPadding` / `ApplyScrollViewSafeAreaInset`), with the
@@ -265,7 +253,6 @@ where
             graphics_registry: GraphicsRegistry::new(),
             navigators: HashMap::new(),
             inserted_edges: std::collections::HashSet::new(),
-            drawer_sidebars_attached: std::collections::HashSet::new(),
             text_content: HashMap::new(),
             button_labels: HashMap::new(),
             attached_states: std::collections::HashSet::new(),
@@ -782,35 +769,6 @@ where
             Command::CreateNavigator { id, initial_route, initial_path, a11y } => {
                 self.apply_create_navigator(id, initial_route, initial_path, a11y);
             }
-            Command::CreateTabNavigator {
-                id,
-                initial_route,
-                initial_path,
-                tabs,
-                placement,
-                mount_policy,
-                a11y,
-            } => {
-                self.apply_create_tab_navigator(
-                    id, initial_route, initial_path, tabs, placement, mount_policy, a11y,
-                );
-            }
-            Command::CreateDrawerNavigator {
-                id,
-                initial_route,
-                initial_path,
-                side,
-                drawer_type,
-                drawer_width,
-                swipe_to_open,
-                mount_policy,
-                a11y,
-            } => {
-                self.apply_create_drawer_navigator(
-                    id, initial_route, initial_path, side, drawer_type,
-                    drawer_width, swipe_to_open, mount_policy, a11y,
-                );
-            }
 
             // --- Tree mutation ---
             Command::Insert { parent, child } => {
@@ -1041,7 +999,7 @@ where
                 // closure on top of the existing one and every state
                 // transition would fire the wire callback twice (or N
                 // times after N reconnects). Same shape as
-                // `inserted_edges` / `drawer_sidebars_attached`.
+                // `inserted_edges`.
                 if !self.attached_states.insert(node) {
                     return Ok(());
                 }
@@ -1189,11 +1147,11 @@ where
                 url,
             } => {
                 // Select is dispatched as `NavCommand::Select` to the
-                // tab/drawer navigator. Pre-fix this was conflated with
-                // `Reset`, which drained the snapshot model's per-screen
-                // state for tab navigators (a Reset means "discard
+                // select-style (swap) navigator. Pre-fix this was
+                // conflated with `Reset`, which drained the snapshot
+                // model's per-screen state (a Reset means "discard
                 // stack and mount new root"; a Select means "switch
-                // active tab"). The dev-server now emits
+                // active screen"). The dev-server now emits
                 // `NavigatorSelect` for the select-flavored push-like.
                 self.dispatch_push_like(
                     navigator, screen, scope, options, NavOp::Select, url, false,
@@ -1227,25 +1185,6 @@ where
                     backend.insert(&mut outlet, top_node);
                 }
             }
-            Command::NavigatorMountTab {
-                navigator,
-                index: _,
-                screen,
-                scope,
-            } => {
-                // Tab activation that needed a new mount. Same path
-                // as Push from the backend's perspective: stage the
-                // pre-built screen and trigger a Select dispatch.
-                self.dispatch_push_like(
-                    navigator,
-                    screen,
-                    scope,
-                    wire::WireScreenOptions::default(),
-                    NavOp::Select,
-                    String::new(),
-                    false,
-                )?;
-            }
 
             // --- Layout attach (web-only effectively) ---
             Command::AttachNavigatorLayout {
@@ -1256,37 +1195,6 @@ where
                 // Dev wire layout attach stubbed pending protocol
                 // redesign; legacy Backend trait method removed.
                 let _ = (navigator, root, outlet);
-            }
-
-            // --- Drawer control plane ---
-            Command::DrawerAttachSidebar { navigator, sidebar } => {
-                // Insert the (floating) sidebar subtree into the
-                // navigator's persistent sidebar column. Dedup via
-                // `inserted_edges`: sidecar respawns re-emit this with
-                // the same Identity-deduped ids, and re-inserting would
-                // re-order the sidebar into the slot twice.
-                let state = self
-                    .navigators
-                    .get(&navigator)
-                    .cloned()
-                    .ok_or(ReplayError::UnknownNode(navigator))?;
-                if let Some(slot) = state.sidebar_slot.clone() {
-                    if !self.inserted_edges.contains(&(navigator, sidebar)) {
-                        let sidebar_node = self.lookup_node(sidebar)?;
-                        let mut slot = slot;
-                        self.backend.borrow_mut().insert(&mut slot, sidebar_node);
-                        self.inserted_edges.insert((navigator, sidebar));
-                    }
-                }
-            }
-            Command::OpenDrawer { navigator } => {
-                self.dispatch_drawer_state(navigator, wire::DrawerStateVerb::Open)?;
-            }
-            Command::CloseDrawer { navigator } => {
-                self.dispatch_drawer_state(navigator, wire::DrawerStateVerb::Close)?;
-            }
-            Command::ToggleDrawer { navigator } => {
-                self.dispatch_drawer_state(navigator, wire::DrawerStateVerb::Toggle)?;
             }
 
             // --- Navigator chrome styles ---
@@ -1301,12 +1209,7 @@ where
             Command::ApplyNavigatorHeaderStyle { .. }
             | Command::ApplyNavigatorTitleStyle { .. }
             | Command::ApplyNavigatorButtonStyle { .. }
-            | Command::ApplyNavigatorBodyStyle { .. }
-            | Command::ApplyDrawerSidebarStyle { .. }
-            | Command::ApplyDrawerScrimStyle { .. }
-            | Command::ApplyTabBarStyle { .. }
-            | Command::ApplyTabIconStyle { .. }
-            | Command::ApplyTabLabelStyle { .. } => {
+            | Command::ApplyNavigatorBodyStyle { .. } => {
                 // no-op: dev wire navigator chrome TBD post-SDK migration
             }
 
@@ -1341,8 +1244,7 @@ where
                 // re-creates the same logical primitive doesn't leak the
                 // old node's bookkeeping. Pre-fix, only `self.nodes` was
                 // cleared, leaving `text_content` / `button_labels` /
-                // `inserted_edges` / `navigators` /
-                // `drawer_sidebars_attached` to accumulate forever.
+                // `inserted_edges` / `navigators` to accumulate forever.
                 self.nodes.remove(&node);
                 self.text_content.remove(&node);
                 self.button_labels.remove(&node);
@@ -1350,8 +1252,6 @@ where
                 self.attached_states.remove(&node);
                 self.inserted_edges
                     .retain(|(parent, child)| *parent != node && *child != node);
-                self.drawer_sidebars_attached
-                    .retain(|(nav, sidebar)| *nav != node && *sidebar != node);
                 self.safe_area_nodes
                     .borrow_mut()
                     .retain(|(id, ..)| *id != node);
@@ -1359,8 +1259,8 @@ where
             Command::InstallThemeVariables { tokens } => {
                 // Populate THIS (wire-replay) thread's thread-local token
                 // registry so device-side token resolution works. Native
-                // SDK handlers run on the client over the wire — e.g. the
-                // drawer handler's chrome resolves `color-background` via
+                // SDK handlers run on the client over the wire — e.g. a
+                // handler's chrome resolves `color-background` via
                 // `Tokenized::resolve()`. The token registry is
                 // thread-local and the app's `install_theme` ran on the
                 // HOST, not here; without installing the forwarded tokens
@@ -1592,7 +1492,6 @@ where
             // Stack reconstruction is Phase 7; mount screens straight
             // into the nav node for now so the active screen renders.
             outlet: nav_node.clone(),
-            sidebar_slot: None,
             screen_stack: Rc::new(RefCell::new(Vec::new())),
             control,
             pending_mount: Rc::new(RefCell::new(None)),
@@ -1608,479 +1507,6 @@ where
 
         self.nodes.insert(id, nav_node);
         self.navigators.insert(id, final_state);
-    }
-
-    fn apply_create_tab_navigator(
-        &mut self,
-        id: NodeId,
-        initial_route: String,
-        initial_path: String,
-        tabs: Vec<WireTabRegistration>,
-        placement: WireTabPlacement,
-        mount_policy: WireMountPolicy,
-        a11y: wire::WireAccessibilityProps,
-    ) {
-        if let Some(state) = self.navigators.get(&id) {
-            *state.replay_pos.borrow_mut() = 0;
-            return;
-        }
-
-        // Reconstruct a content outlet + a tab bar built from the
-        // registrations (labels are data on the wire, so no closures
-        // needed). The active tab's screen mounts into the outlet;
-        // Select swaps it (dispatch_push_like). `mount_policy` is a
-        // native-persistence concern the thin client doesn't model.
-        let _ = (initial_route, mount_policy);
-        let a11y_props = self.a11y_props(a11y);
-
-        let (container, outlet) = self.build_tab_layout(&tabs, placement, &a11y_props);
-
-        let control = Rc::new(runtime_core::primitives::navigator::NavigatorControl::new());
-        let mounted_urls = Rc::new(RefCell::new(Vec::new()));
-        let replay_pos = Rc::new(RefCell::new(0usize));
-
-        let final_state = Rc::new(navigators::NavigatorAppState {
-            kind: navigators::NavigatorKind::Tab,
-            node: container.clone(),
-            outlet,
-            sidebar_slot: None,
-            screen_stack: Rc::new(RefCell::new(Vec::new())),
-            control,
-            pending_mount: Rc::new(RefCell::new(None)),
-            suppress_release: Rc::new(RefCell::new(false)),
-            outbound: self.outbound.clone(),
-            navigator_id: id,
-            initial_path,
-            mounted_urls,
-            replay_pos,
-            native: false,
-            chrome_scopes: Rc::new(RefCell::new(Vec::new())),
-        });
-
-        self.nodes.insert(id, container);
-        self.navigators.insert(id, final_state);
-    }
-
-    /// Build the tab chrome — `Column[outlet, tab-bar]` (or
-    /// `[tab-bar, outlet]` for `Top` placement) — and return
-    /// `(container, outlet)`. The tab bar is a flex row of one text
-    /// label per registration; the outlet flex-grows to fill. This is
-    /// the thin-client reconstruction: a visible tab bar + the active
-    /// tab's screen, no native UITabBarController.
-    fn build_tab_layout(
-        &mut self,
-        tabs: &[WireTabRegistration],
-        placement: WireTabPlacement,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> (B::Node, B::Node) {
-        let mut backend = self.backend.borrow_mut();
-
-        let mut container = backend.create_view(a11y);
-        let mut container_style = StyleRules::default();
-        container_style.flex_direction = Some(FlexDirection::Column);
-        container_style.width = Some(Length::pct(100.0).into());
-        container_style.height = Some(Length::pct(100.0).into());
-        backend.apply_style(&container, &Rc::new(container_style));
-
-        let outlet = backend.create_view(a11y);
-        let mut outlet_style = StyleRules::default();
-        outlet_style.flex_grow = Some(1.0f32.into());
-        outlet_style.flex_basis = Some(Length::Px(0.0).into());
-        outlet_style.width = Some(Length::pct(100.0).into());
-        outlet_style.flex_direction = Some(FlexDirection::Column);
-        backend.apply_style(&outlet, &Rc::new(outlet_style));
-
-        let mut tab_bar = backend.create_view(a11y);
-        let mut bar_style = StyleRules::default();
-        bar_style.flex_direction = Some(FlexDirection::Row);
-        bar_style.width = Some(Length::pct(100.0).into());
-        bar_style.flex_shrink = Some(0.0f32.into());
-        backend.apply_style(&tab_bar, &Rc::new(bar_style));
-        for reg in tabs {
-            let label = backend.create_text(&reg.label, a11y);
-            backend.insert(&mut tab_bar, label);
-        }
-
-        match placement {
-            WireTabPlacement::Top => {
-                backend.insert(&mut container, tab_bar);
-                backend.insert(&mut container, outlet.clone());
-            }
-            WireTabPlacement::Bottom => {
-                backend.insert(&mut container, outlet.clone());
-                backend.insert(&mut container, tab_bar);
-            }
-        }
-
-        (container, outlet)
-    }
-
-    fn apply_create_drawer_navigator(
-        &mut self,
-        id: NodeId,
-        initial_route: String,
-        initial_path: String,
-        side: WireDrawerSide,
-        drawer_type: WireDrawerType,
-        drawer_width: f32,
-        swipe_to_open: bool,
-        mount_policy: WireMountPolicy,
-        a11y: wire::WireAccessibilityProps,
-    ) {
-        if let Some(state) = self.navigators.get(&id) {
-            *state.replay_pos.borrow_mut() = 0;
-            return;
-        }
-
-        let a11y_props = self.a11y_props(a11y);
-
-        // Native path: if an SDK registered a drawer factory on this
-        // client backend (via `register_extensions` → e.g.
-        // `drawer_navigator::register`), drive the client's REAL
-        // `create_navigator` so the registered handler builds native
-        // chrome (UIKit slide-over, web `ui-nav-drawer-*` CSS, …). The
-        // factory rebuilds the SDK's `DrawerPresentation` from the wire
-        // config; everything else (the generic `NavigatorHost`, the
-        // sidebar holder, command routing) lives here. Falls back to
-        // structural reconstruction below when no factory is registered
-        // (headless backends, apps without the SDK, the mock-backend
-        // tests).
-        let cfg = wire::WireDrawerConfig {
-            side,
-            drawer_type,
-            drawer_width,
-            swipe_to_open,
-            mount_policy,
-        };
-        if let Some(build) = wire::build_drawer_presentation(cfg) {
-            self.create_drawer_navigator_native(id, build, initial_path, &a11y_props);
-            return;
-        }
-
-        // `drawer_type` / `swipe_to_open` / `mount_policy` describe the
-        // *modal* slide-in behavior of the real per-platform drawer. The
-        // wire client reconstructs a **persistent sidebar + outlet**
-        // layout instead (the macOS-navigator / wide-web shape — see
-        // [[project_macos_navigator_design]]): the sidebar is always
-        // visible, no scrim, no animation. That's the right rendering for
-        // a thin replay/headless-screenshot client — you see the
-        // navigation — and it matches rule #7 (backends converge in
-        // observable behavior; the dev client is one such backend).
-        let _ = (initial_route, drawer_type, swipe_to_open, mount_policy);
-
-        let (container, sidebar, outlet) =
-            self.build_drawer_layout(drawer_width, side, &a11y_props);
-
-        let control = Rc::new(runtime_core::primitives::navigator::NavigatorControl::new());
-        let mounted_urls = Rc::new(RefCell::new(Vec::new()));
-        let replay_pos = Rc::new(RefCell::new(0usize));
-
-        let final_state = Rc::new(navigators::NavigatorAppState {
-            kind: navigators::NavigatorKind::Drawer,
-            node: container.clone(),
-            outlet,
-            sidebar_slot: Some(sidebar),
-            screen_stack: Rc::new(RefCell::new(Vec::new())),
-            control,
-            pending_mount: Rc::new(RefCell::new(None)),
-            suppress_release: Rc::new(RefCell::new(false)),
-            outbound: self.outbound.clone(),
-            navigator_id: id,
-            initial_path,
-            mounted_urls,
-            replay_pos,
-            native: false,
-            chrome_scopes: Rc::new(RefCell::new(Vec::new())),
-        });
-
-        self.nodes.insert(id, container);
-        self.navigators.insert(id, final_state);
-    }
-
-    /// Drive the client's REAL `Backend::create_navigator` so the SDK's
-    /// registered native drawer handler builds real chrome.
-    ///
-    /// The handler expects a `NavigatorHost` whose closures *pull*
-    /// screens by route and *materialize* the sidebar from an `Element`.
-    /// The wire model is the opposite — content arrives pre-materialized
-    /// as primitive subtrees. We bridge with **colluding closures we
-    /// fully own**:
-    ///
-    /// - `build_node` ignores the `Element` it's handed and returns a
-    ///   stable **holder** view. The handler's `build_content` calls
-    ///   `build_node(sidebar_element)`, so the helper mounts the holder
-    ///   as the sidebar. `DrawerAttachSidebar` then inserts the wire
-    ///   sidebar subtree into that holder — timing-independent, since
-    ///   the holder is created here and the helper builds the sidebar in
-    ///   a microtask.
-    /// - `mount_screen` is never used to pull the initial screen
-    ///   (`defer_initial_mount = true`); the wire's `NavigatorAttachInitial`
-    ///   drives it via `Backend::navigator_attach_initial`. A stray
-    ///   deep-link probe just gets a fresh empty view.
-    ///
-    /// `build.presentation` is the SDK's real `DrawerPresentation`,
-    /// rebuilt from the wire config by the factory registered in
-    /// `wire`. We only construct the generic `NavigatorHost<B::Node>`.
-    fn create_drawer_navigator_native(
-        &mut self,
-        id: NodeId,
-        build: wire::WireNavBuild,
-        initial_path: String,
-        a11y_props: &runtime_core::accessibility::AccessibilityProps,
-    ) {
-        use runtime_core::primitives::navigator::{
-            MountResult, NavState, NavigatorControl, NavigatorHost,
-        };
-
-        // Stable holder the handler mounts as the sidebar; the wire
-        // sidebar subtree is inserted into it by `DrawerAttachSidebar`.
-        let holder = self.backend.borrow_mut().create_view(a11y_props);
-
-        // Reactive scopes for chrome subtrees `build_node` materializes
-        // via `build_detached` — retained on the nav state so their
-        // cleanup Effects / theme subscriptions survive.
-        let chrome_scopes: Rc<RefCell<Vec<runtime_core::DetachedScope>>> =
-            Rc::new(RefCell::new(Vec::new()));
-
-        let control = Rc::new(NavigatorControl::new());
-        let nav_state = NavState {
-            active_route: runtime_core::Signal::new(""),
-            active_path: runtime_core::Signal::new(initial_path.clone()),
-            depth: runtime_core::Signal::new(0usize),
-            can_go_back: runtime_core::Signal::new(false),
-        };
-
-        let backend_for_mount = self.backend.clone();
-        let backend_for_screen = self.backend.clone();
-
-        // Staging slot for wire-driven screen swaps. `dispatch_push_like`
-        // sets the pre-built (wire-shipped) screen node here, then
-        // dispatches a `NavCommand` to `control`; the registered handler's
-        // installed dispatcher calls `mount_screen` (below), which hands
-        // back the staged node. This reuses the handler's REAL
-        // navigate-and-auto-close logic — the same path local (non-wire)
-        // mode drives — instead of dev-client re-implementing screen swaps
-        // by stuffing the structural outlet (which native handlers ignore).
-        // `None` until the first select; the empty-view fallback keeps the
-        // handler sane if a dispatch ever arrives without a staged node.
-        let pending_mount: Rc<RefCell<Option<MountResult<B::Node>>>> =
-            Rc::new(RefCell::new(None));
-
-        // `build_node` is the REAL materializer: it walks the `Element`
-        // the handler hands it (e.g. iOS's `scroll_view` wrapper around
-        // the sidebar slot) via `runtime_core::build_detached`, threading
-        // the holder as the adopt node for the SDK's `WireSidebarAdopt`
-        // sentinel leaf. So the handler's wrapper materializes for real
-        // AROUND the holder, and the leaf adopts the holder (the wire
-        // sidebar subtree is later inserted into it by
-        // `DrawerAttachSidebar`). On web the slot IS the bare sentinel,
-        // so `build_detached` returns the holder directly (same
-        // observable result as the 1b shortcut, but generic). The
-        // adopt is threaded inside runtime-core (no cross-crate global),
-        // so it stays coherent across wasm-split chunks.
-        let build_node: Rc<dyn Fn(runtime_core::Element) -> B::Node> = {
-            let backend = self.backend.clone();
-            let holder = holder.clone();
-            let scopes = chrome_scopes.clone();
-            Rc::new(move |element| {
-                let adopt = Some((
-                    std::any::TypeId::of::<wire::WireSidebarAdopt>(),
-                    holder.clone(),
-                ));
-                let (node, scope) = runtime_core::build_detached(&backend, element, adopt);
-                scopes.borrow_mut().push(scope);
-                node
-            })
-        };
-
-        // Builder-taking variant (see `NavigatorHost::build_node_scoped`). The
-        // wire client builds detached chrome; run the builder, then build +
-        // adopt as usual. The scope retention is via `chrome_scopes`.
-        let build_node_scoped: Rc<dyn Fn(Box<dyn FnOnce() -> runtime_core::Element>) -> B::Node> = {
-            let backend = self.backend.clone();
-            let holder = holder.clone();
-            let scopes = chrome_scopes.clone();
-            Rc::new(move |builder| {
-                let adopt = Some((
-                    std::any::TypeId::of::<wire::WireSidebarAdopt>(),
-                    holder.clone(),
-                ));
-                let element = builder();
-                let (node, scope) = runtime_core::build_detached(&backend, element, adopt);
-                scopes.borrow_mut().push(scope);
-                node
-            })
-        };
-
-        let host = NavigatorHost {
-            initial_route: "",
-            initial_path: "",
-            defer_initial_mount: true,
-            mount_screen: {
-                let pending = pending_mount.clone();
-                Rc::new(move |_name, _params, _state| {
-                    // Hand back the screen node `dispatch_push_like` staged
-                    // for this dispatch. The wire ships pre-built screen
-                    // subtrees, so the client never builds from a route
-                    // registry — it just surfaces the staged node.
-                    if let Some(staged) = pending.borrow_mut().take() {
-                        return staged;
-                    }
-                    let node = backend_for_mount
-                        .borrow_mut()
-                        .create_view(&runtime_core::accessibility::AccessibilityProps::default());
-                    MountResult {
-                        node,
-                        scope_id: 0,
-                        options: Box::new(()),
-                    }
-                })
-            },
-            release_screen: Rc::new(|_| {}),
-            match_path: Rc::new(|_| None),
-            // The wire ships pre-built screens and drives mounting via
-            // `NavigatorAttachInitial` (`defer_initial_mount = true`), so the
-            // client never resolves routes itself — deep-link resolution
-            // happens host-side. Mirror `match_path`'s no-op, and carry no
-            // hierarchy base (this proxy is base-agnostic).
-            resolve_entry: Rc::new(|_| None),
-            base: String::new(),
-            nav_state: nav_state.clone(),
-            // Wire proxy: a plain signal is fine (the recorder replays chrome
-            // state host-side; this client doesn't render author headers).
-            screen_chrome: runtime_core::Signal::new(None),
-            depth_changed: Rc::new(|_| {}),
-            active_changed: Rc::new(|_, _| {}),
-            control: control.clone(),
-            build_node,
-            build_node_scoped,
-            build_node_into: Rc::new(|_, _| {}),
-            build_in_screen: Rc::new(move |_scope, _el| {
-                backend_for_screen
-                    .borrow_mut()
-                    .create_view(&runtime_core::accessibility::AccessibilityProps::default())
-            }),
-            // Node-splice ops for backend-neutral native handlers — the
-            // wire client builds real backend nodes, so honor them.
-            insert_node: {
-                let backend = self.backend.clone();
-                Rc::new(move |mut parent, child| {
-                    backend.borrow_mut().insert(&mut parent, child);
-                })
-            },
-            clear_children: {
-                let backend = self.backend.clone();
-                Rc::new(move |parent| {
-                    backend.borrow_mut().clear_children(&parent);
-                })
-            },
-            // Author-layout + outlet capture is a single-process (`--local`)
-            // path; the wire client drives screen swaps via staged
-            // `pending_mount` nodes and `WireSidebarAdopt`, not the structural
-            // outlet (see the note above). Build the layout root for real but
-            // report no captured outlet — the outlet-over-wire path is scoped
-            // to the wire phase, not the web/macOS-local swap navigator.
-            build_layout_with_outlet: {
-                let backend = self.backend.clone();
-                let scopes = chrome_scopes.clone();
-                Rc::new(move |element| {
-                    let (node, scope) = runtime_core::build_detached(&backend, element, None);
-                    scopes.borrow_mut().push(scope);
-                    (node, None)
-                })
-            },
-            // The wire ships pre-built screens (mount_screen just surfaces
-            // staged nodes), so a handler-set overlay has nothing to apply
-            // to on this proxy — screen styling was baked in host-side by
-            // the recording backend's own walker (whose handler sets the
-            // same overlay there). A fresh, unread slot keeps the contract
-            // honest.
-            screen_style_overlay: Rc::new(RefCell::new(None)),
-        };
-
-        let nav_node = self.backend.borrow_mut().create_navigator(
-            build.type_id,
-            build.type_name,
-            build.presentation,
-            host,
-            a11y_props,
-        );
-
-        let final_state = Rc::new(navigators::NavigatorAppState {
-            kind: navigators::NavigatorKind::Drawer,
-            node: nav_node.clone(),
-            // Unused in native mode — the handler owns the body outlet;
-            // initial screens flow through `navigator_attach_initial`.
-            outlet: nav_node.clone(),
-            sidebar_slot: Some(holder),
-            screen_stack: Rc::new(RefCell::new(Vec::new())),
-            control,
-            pending_mount,
-            suppress_release: Rc::new(RefCell::new(false)),
-            outbound: self.outbound.clone(),
-            navigator_id: id,
-            initial_path,
-            mounted_urls: Rc::new(RefCell::new(Vec::new())),
-            replay_pos: Rc::new(RefCell::new(0usize)),
-            native: true,
-            chrome_scopes,
-        });
-
-        self.nodes.insert(id, nav_node);
-        self.navigators.insert(id, final_state);
-    }
-
-    /// Build the persistent drawer chrome — `Row[sidebar, outlet]` (or
-    /// `Row[outlet, sidebar]` for `DrawerSide::Right`) — and return
-    /// `(container, sidebar, outlet)`. Layout mirrors the terminal/macOS
-    /// drawer handlers: a fixed-width, non-shrinking sidebar column and a
-    /// flex-grow outlet. `flex_shrink: 0` on the sidebar + `flex_basis: 0`
-    /// on the outlet keep wide screen content from squashing the sidebar
-    /// to nothing (the bug the terminal handler documents).
-    fn build_drawer_layout(
-        &mut self,
-        drawer_width: f32,
-        side: WireDrawerSide,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> (B::Node, B::Node, B::Node) {
-        let mut backend = self.backend.borrow_mut();
-
-        let mut container = backend.create_view(a11y);
-        let mut container_style = StyleRules::default();
-        container_style.flex_direction = Some(FlexDirection::Row);
-        container_style.align_items = Some(AlignItems::Stretch);
-        container_style.width = Some(Length::pct(100.0).into());
-        container_style.height = Some(Length::pct(100.0).into());
-        backend.apply_style(&container, &Rc::new(container_style));
-
-        let sidebar = backend.create_view(a11y);
-        let mut sidebar_style = StyleRules::default();
-        sidebar_style.width = Some(Length::Px(drawer_width).into());
-        sidebar_style.height = Some(Length::pct(100.0).into());
-        sidebar_style.flex_direction = Some(FlexDirection::Column);
-        sidebar_style.flex_shrink = Some(0.0f32.into());
-        backend.apply_style(&sidebar, &Rc::new(sidebar_style));
-
-        let outlet = backend.create_view(a11y);
-        let mut outlet_style = StyleRules::default();
-        outlet_style.flex_grow = Some(1.0f32.into());
-        outlet_style.flex_basis = Some(Length::Px(0.0).into());
-        outlet_style.height = Some(Length::pct(100.0).into());
-        outlet_style.flex_direction = Some(FlexDirection::Column);
-        backend.apply_style(&outlet, &Rc::new(outlet_style));
-
-        match side {
-            WireDrawerSide::Left => {
-                backend.insert(&mut container, sidebar.clone());
-                backend.insert(&mut container, outlet.clone());
-            }
-            WireDrawerSide::Right => {
-                backend.insert(&mut container, outlet.clone());
-                backend.insert(&mut container, sidebar.clone());
-            }
-        }
-
-        (container, sidebar, outlet)
     }
 
     fn apply_create_virtualizer(
@@ -2165,43 +1591,6 @@ where
         }));
     }
 
-    /// Drive a programmatic drawer open/close/toggle (`drawer.open()` etc.
-    /// on the dev side, arriving as `Command::OpenDrawer`/`CloseDrawer`/
-    /// `ToggleDrawer`) into the native handler. Like navigation, this goes
-    /// through the navigator's own `NavigatorControl` so the registered
-    /// handler runs its real animation — dev-client stays SDK-agnostic by
-    /// asking the SDK-registered translator (see
-    /// `wire::register_drawer_state_translator`) to build the
-    /// `NavCommand::Custom` payload the handler downcasts.
-    ///
-    /// Navigation auto-close does NOT come through here — the client closes
-    /// itself off the `Select` dispatch (see `dispatch_push_like`), so the
-    /// server no longer emits a redundant wire close on select. These
-    /// commands are purely author-initiated drawer control.
-    ///
-    /// No-op for a structural (non-native) drawer — it has no animated
-    /// open/close model — and when no SDK translator is registered.
-    fn dispatch_drawer_state(
-        &mut self,
-        navigator: NodeId,
-        verb: wire::DrawerStateVerb,
-    ) -> Result<(), ReplayError> {
-        let state = self
-            .navigators
-            .get(&navigator)
-            .cloned()
-            .ok_or(ReplayError::UnknownNode(navigator))?;
-        if !state.native {
-            return Ok(());
-        }
-        if let Some(payload) = wire::translate_drawer_state(verb) {
-            state
-                .control
-                .dispatch(runtime_core::primitives::navigator::NavCommand::Custom(payload));
-        }
-        Ok(())
-    }
-
     fn dispatch_push_like(
         &mut self,
         navigator: NodeId,
@@ -2234,17 +1623,15 @@ where
             // which native handlers ignore (mirrors the `state.native`
             // branch in `NavigatorAttachInitial`). Stage the wire-built
             // screen node; the handler's `mount_screen` (wired to
-            // `pending_mount`) hands it back, and for a drawer the Select
-            // dispatcher closes the drawer on its own — no wire
-            // OpenDrawer/CloseDrawer needed for navigation.
+            // `pending_mount`) hands it back; any handler-side reaction
+            // to the Select (chrome updates etc.) runs on its own — no
+            // kind-specific wire command needed for navigation.
             use runtime_core::primitives::navigator::{MountResult, NavCommand};
             let screen_node = self.lookup_node(screen)?;
             // The server rebuilds + ships a fresh node per select and owns
             // screen lifecycle, so the client must not reuse a cached view.
             // The interned URL is a stable route key for active-route
-            // bookkeeping; the wire drawer factory pins `LazyDisposing`, so
-            // the handler's persistence cache is never populated and the
-            // key can't trigger a stale cache-hit.
+            // bookkeeping.
             let name: &'static str = Box::leak(url.clone().into_boxed_str());
             *state.pending_mount.borrow_mut() = Some(MountResult {
                 node: screen_node,
@@ -2355,7 +1742,7 @@ where
                 *state.replay_pos.borrow_mut() = state.mounted_urls.borrow().len();
             }
             NavOp::Select => {
-                // Drawer/tab single-slot swap: the stack is always one
+                // Single-slot swap: the stack is always one
                 // entry (the selected screen).
                 let mut st = state.screen_stack.borrow_mut();
                 st.clear();

@@ -1001,6 +1001,17 @@ pub struct NavigatorControl {
     /// across backends (root-first, current last); only the mechanism
     /// differs (CLAUDE.md §7).
     stack_snapshot: RefCell<Option<Box<dyn Fn() -> Vec<(String, String)>>>>,
+    /// URL-sync context parked here by the walker (kind-agnostically) so a
+    /// handler can OPT IN to substrate URL synchronization via
+    /// [`enable_url_sync`](Self::enable_url_sync). `None` after opt-in
+    /// (the context moves into the url_sync registry) or when the walker
+    /// never provided one (hand-built controls in tests).
+    url_sync_ctx: RefCell<Option<super::url_sync::UrlSyncContext>>,
+    /// The url_sync registry id once [`enable_url_sync`](Self::enable_url_sync)
+    /// activated; `dispatch` routes its before/after hooks through it.
+    /// `None` for legacy handlers (which own their URL work) and on
+    /// platforms without an installed URL provider.
+    url_sync_id: std::cell::Cell<Option<u64>>,
 }
 
 impl NavigatorControl {
@@ -1015,6 +1026,44 @@ impl NavigatorControl {
             owning_scope: RefCell::new(None),
             nav_id: RefCell::new(None),
             stack_snapshot: RefCell::new(None),
+            url_sync_ctx: RefCell::new(None),
+            url_sync_id: std::cell::Cell::new(None),
+        }
+    }
+
+    /// Park the URL-sync context for a possible handler opt-in. Called
+    /// once by the navigator walker at build; kind-agnostic and inert
+    /// until [`enable_url_sync`](Self::enable_url_sync).
+    pub(crate) fn set_url_sync_context(&self, ctx: super::url_sync::UrlSyncContext) {
+        *self.url_sync_ctx.borrow_mut() = Some(ctx);
+    }
+
+    /// Opt this navigator into substrate URL synchronization (browser
+    /// pushState/popstate mirroring, deep links, scroll restore). Called
+    /// by outlet-model handlers (`swap-navigator`, `stack-navigator`)
+    /// in `init`. No-op on platforms without an installed URL provider,
+    /// and for controls the walker gave no context (tests). Legacy
+    /// class-based handlers must NOT call this — they do their own URL
+    /// work and would double-write history.
+    pub fn enable_url_sync(self: &Rc<Self>) {
+        if self.url_sync_id.get().is_some() {
+            return;
+        }
+        let Some(ctx) = self.url_sync_ctx.borrow_mut().take() else { return };
+        self.url_sync_id.set(super::url_sync::register(self, ctx));
+    }
+
+    /// Install the outlet scroll accessors used for scroll snapshot /
+    /// restore across navigation. Handlers call this once their outlet
+    /// node exists (the deferred layout microtask). No-op unless
+    /// [`enable_url_sync`](Self::enable_url_sync) activated first.
+    pub fn install_scroll_accessor(
+        &self,
+        get: Rc<dyn Fn() -> (f32, f32)>,
+        set: Rc<dyn Fn(f32, f32)>,
+    ) {
+        if let Some(id) = self.url_sync_id.get() {
+            super::url_sync::install_scroll_accessor(id, get, set);
         }
     }
 
@@ -1166,6 +1215,16 @@ impl NavigatorControl {
         // single-navigator app is unaffected.
         let base = self.base.borrow().clone();
         let cmd = self.compose_url(&base, cmd);
+        // Substrate URL sync (opt-in): mirror the command into browser
+        // history + snapshot the outgoing screen's scroll BEFORE the
+        // handler swaps the outlet (the outlet still shows the old
+        // screen here). No-op for legacy handlers / URL-less platforms.
+        // The kind tag is captured now because `cmd` moves into the
+        // handler closure below; `after_command` only needs the shape.
+        let url_sync_kind = super::url_sync::CommandKind::of(&cmd);
+        if let Some(url_sync) = self.url_sync_id.get() {
+            super::url_sync::before_command(url_sync, &cmd);
+        }
         // Update the active route/path signals before the SDK sees
         // the command, so any effect reading them re-fires while the
         // SDK is still committing the change. Pop and Custom don't
@@ -1210,6 +1269,12 @@ impl NavigatorControl {
             if let Some(f) = self.request_layout.borrow().as_ref() {
                 f();
             }
+            // URL-sync post-commit: the outlet now shows the new screen,
+            // so scroll adjustments (reset-to-top on forward, restore on
+            // pop) land on the right surface.
+            if let Some(url_sync) = self.url_sync_id.get() {
+                super::url_sync::after_command(url_sync, url_sync_kind);
+            }
         });
     }
 
@@ -1236,6 +1301,20 @@ impl NavigatorControl {
 impl Default for NavigatorControl {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Drop for NavigatorControl {
+    fn drop(&mut self) {
+        // Tear the URL-sync entry down WITH the navigator. The entry
+        // owns author-reachable `Rc`s (route resolver, scroll accessors
+        // over handler state); leaving it in the thread-local registry
+        // until thread death would run those destructors after the
+        // reactive arena's TLS is gone — an abort, not a leak. See
+        // `url_sync::deregister`.
+        if let Some(id) = self.url_sync_id.get() {
+            super::url_sync::deregister(id);
+        }
     }
 }
 

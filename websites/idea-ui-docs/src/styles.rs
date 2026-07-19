@@ -153,6 +153,13 @@ stylesheet! {
             border_right_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
             flex_direction: FlexDirection::Column,
             width: Length::pct(100.0),
+            // Fill the AppShell panel's height: a short nav list still
+            // draws the divider full-height, and a tall one is clamped
+            // here so THIS node overflows and scrolls. An author style
+            // replaces the scroll_view's default grow seed, so it must
+            // be restated.
+            flex_grow: 1.0,
+            flex_basis: Length::Px(0.0),
         }
         transitions {
             background: 250ms EaseInOut,

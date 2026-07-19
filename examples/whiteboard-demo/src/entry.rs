@@ -17,7 +17,7 @@ use std::rc::Rc;
 use camera::MediaStream;
 use runtime_core::primitives::navigator::use_can_go_back;
 use runtime_core::{component, node_ref, signal, ui, Element, Ref, Screen, Signal};
-use stack_navigator::{Navigator, StackBuilder, StackHandle, StackScreenExt};
+use stack_navigator::{StackBuilder, StackHandle, StackNavigator, StackScreenExt};
 
 use crate::settings::{CameraShape, CameraSize, CanvasBg};
 use crate::{BoardScreen, CanvasDoc, CanvasStore, PreviewScreen, SettingsScreen, Strokes};
@@ -368,7 +368,7 @@ pub fn app() -> Element {
     // Settings/Preview screens carry their own in-content header (a back button
     // that `pop`s) so they're navigable on every backend, including macOS where
     // the stack handler renders no native chrome.
-    let builder = Navigator::new(&crate::BOARD)
+    let builder = StackNavigator::new(&crate::BOARD)
         .screen(crate::BOARD, {
             let strokes = strokes.clone();
             let rec_handle = rec_handle.clone();
@@ -401,7 +401,7 @@ pub fn app() -> Element {
                         focused = focused,
                     )
                 })
-                .header_shown(false)
+                .hide_header(true)
                 // The board IS the drawing surface — an edge-swipe-back
                 // mid-stroke is exactly the accidental gesture we want to
                 // suppress (on Android root it would otherwise background
@@ -425,14 +425,14 @@ pub fn app() -> Element {
                 Screen::new(ui! {
                     SettingsScreen(state = state, strokes = strokes.clone(), canvases = canvases.clone(), version = version)
                 })
-                .header_shown(false)
+                .hide_header(true)
             }
         })
         .screen(crate::PREVIEW, move |_| {
             Screen::new(ui! {
                 PreviewScreen(rec_path = state.rec_path, playback_url = preview_url, aspect = state.aspect, nav = nav)
             })
-            .header_shown(false)
+            .hide_header(true)
         });
 
     ui! { builder.bind(nav) }

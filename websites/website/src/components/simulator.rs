@@ -21,16 +21,16 @@ use runtime_core::{
     StyleSheet,
 };
 // `DeviceProfile` + `Painter` come through the `host-wgpu` umbrella,
-// which cfg-routes internally to `host-web` on wasm and
-// `host-ios-mobile` on iOS. Author code names one symbol per
-// concept and the right backend is picked at link time.
+// which cfg-routes internally to `host-web` on wasm, `host-ios-mobile`
+// on iOS, and `host-macos-desktop` on macOS. Author code names one
+// symbol per concept and the right backend is picked at link time.
 //
 // Why this isn't behind a `cfg(target_arch)` here: per §7 of
 // CLAUDE.md and `[[feedback_cfg_hack_signals_missing_backend_method]]`,
 // platform variance belongs in the backend layer (the host crates),
 // not in author code. `host-wgpu` is that backend abstraction —
 // `mount` returns `Err(MountError::Unsupported)` on targets without
-// a wgpu host wired (macOS-AppKit, terminal, …) so the consumer can
+// a wgpu host wired (terminal, headless, …) so the consumer can
 // fall back without target gates.
 //
 // Code-reachability cost on web: `host_wgpu` transitively pulls the

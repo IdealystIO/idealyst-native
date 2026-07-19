@@ -983,6 +983,13 @@ fn dispatch(robot: &Robot, cmd: &str, args: &serde_json::Value) -> Result<String
             robot.set_slider(&el, value).map_err(|e| e.to_string())?;
             Ok("\"ok\"".into())
         }
+        "set_scroll" => {
+            let el = resolve_element(args)?;
+            let x = args["x"].as_f64().unwrap_or(0.0) as f32;
+            let y = args["y"].as_f64().unwrap_or(0.0) as f32;
+            robot.set_scroll(&el, x, y).map_err(|e| e.to_string())?;
+            Ok("\"ok\"".into())
+        }
         "focus" => {
             let el = resolve_element(args)?;
             robot.focus(&el).map_err(|e| e.to_string())?;
@@ -1302,8 +1309,6 @@ fn parse_element_kind(s: &str) -> Option<ElementKind> {
         "Virtualizer" => Some(ElementKind::Virtualizer),
         "Graphics" => Some(ElementKind::Graphics),
         "Navigator" => Some(ElementKind::Navigator),
-        "TabNavigator" => Some(ElementKind::TabNavigator),
-        "DrawerNavigator" => Some(ElementKind::DrawerNavigator),
         "Link" => Some(ElementKind::Link),
         "Overlay" => Some(ElementKind::Overlay),
         "Presence" => Some(ElementKind::Presence),

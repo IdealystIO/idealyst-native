@@ -33,7 +33,8 @@
 // is the link-for-side-effects idiom — the same mechanism the scaffolded
 // `catalog` bin uses via `use <lib> as _`.
 extern crate idea_ui as _;
-extern crate drawer_navigator as _;
+extern crate swap_navigator as _;
+extern crate idea_ui_nav as _;
 extern crate table as _;
 extern crate codeblock as _;
 // icons-lucide (catalog feature) self-registers its `IconSetEntry`; link
@@ -133,8 +134,11 @@ fn main() {
             ) else {
                 continue;
             };
-            // Only crates this app links and whose recipe fns are `pub`.
-            if !module_path.starts_with("idea_ui") {
+            // Only crates this app links and whose recipe fns are `pub` —
+            // the `idea_ui` crate exactly. A bare `starts_with("idea_ui")`
+            // would also match `idea_ui_nav` (linked for the AppShell
+            // chrome), whose recipe fns aren't guaranteed `pub`.
+            if !(module_path == "idea_ui" || module_path.starts_with("idea_ui::")) {
                 continue;
             }
             // Skip portal/overlay recipes — they can't be previewed inline.
