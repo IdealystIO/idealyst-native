@@ -2168,6 +2168,87 @@ mod tests {
         );
     }
 
+    /// Regression: a `scroll_view` with an explicit `height` inside a
+    /// hug-content column parent must honor that height — NOT collapse to ~0.
+    ///
+    /// Every native backend seeds a scroll node with `flex_grow:1 /
+    /// flex_basis:0` (the "fill a bounded parent" shape) via
+    /// `set_overflow_scroll`. An author's explicit `height` alone doesn't clear
+    /// that seed: with `flex_basis:0` the scroll node contributes 0 to a
+    /// hug-content parent's main size, so the parent hugs to its OTHER children
+    /// and the scroll node's `flex_grow:1` then finds no free space — it
+    /// collapses. Web has no such seed, so `height:160` "just works" there —
+    /// the exact native/web divergence seen on the primitives-demo scroll cell
+    /// once the wrapping grid put it alone in a line (no taller sibling to
+    /// stretch the cell and accidentally feed `flex_grow`). The fix an author
+    /// applies (mirroring idea-ui's `modal_scroll_sheet`, and now
+    /// `PrimScrollBox`) is `flex_grow:0 + flex_basis:auto`, which lets `height`
+    /// drive the box on both engines. This pins the Taffy half of both states.
+    #[test]
+    fn regression_fixed_height_scroll_box_in_hug_parent_honors_height() {
+        // `cell` = a hug-content column (the demo grid's card). `scroller` =
+        // a `scroll_view` seed + explicit height 160, optionally with the
+        // seed-undo. `label` = a fixed 40px stand-in for the card's tag/blurb.
+        fn scroller_height(seed_undo: bool) -> (f32, f32) {
+            let mut t = LayoutTree::new();
+            let root = t.new_node();
+            let mut rr = StyleRules::default();
+            rr.height = Some(px(400.0));
+            rr.flex_direction = Some(FwFlexDirection::Column);
+            t.set_style(root, &rr);
+
+            // Hug-content cell — no height, so its main size is its content.
+            let cell = t.new_node();
+            let mut cr = StyleRules::default();
+            cr.flex_direction = Some(FwFlexDirection::Column);
+            cr.width = Some(px(250.0));
+            t.set_style(cell, &cr);
+
+            let label = t.new_node();
+            let mut lr = StyleRules::default();
+            lr.height = Some(px(40.0));
+            t.set_style(label, &lr);
+
+            // Scroller: real path — `set_overflow_scroll` seeds
+            // grow:1/basis:0 + overflow.y scroll, then the author style sets
+            // height:160 (and, in the fixed state, undoes the seed).
+            let scroller = t.new_node();
+            t.set_overflow_scroll(scroller, false);
+            let mut sr = StyleRules::default();
+            sr.flex_direction = Some(FwFlexDirection::Column);
+            sr.height = Some(px(160.0));
+            if seed_undo {
+                sr.flex_grow = Some(f32t(0.0));
+                sr.flex_basis = Some(autol());
+            }
+            t.set_style(scroller, &sr);
+
+            t.add_child(root, cell);
+            t.add_child(cell, label);
+            t.add_child(cell, scroller);
+            t.compute(root, 500.0, 400.0);
+            (t.frame_of(cell).height, t.frame_of(scroller).height)
+        }
+
+        // The bug: the seed makes the scroller collapse and the cell hug only
+        // its label.
+        let (cell, scroller) = scroller_height(false);
+        assert!(
+            scroller < 1.0,
+            "seeded scroll box collapses in a hug parent (the divergence), got {scroller}"
+        );
+        assert!((cell - 40.0).abs() < 1.0, "cell hugs only its label, got {cell}");
+
+        // The fix: `flex_grow:0 + flex_basis:auto` lets `height:160` drive the
+        // box, and the cell hugs label + box.
+        let (cell, scroller) = scroller_height(true);
+        assert!(
+            (scroller - 160.0).abs() < 1.0,
+            "seed-undo makes the scroll box honor height:160 (web parity), got {scroller}"
+        );
+        assert!((cell - 200.0).abs() < 1.0, "cell hugs label + box (40+160), got {cell}");
+    }
+
     /// The AppShell-sidebar shape: a `scroll_view` (flex column, definite
     /// height) whose single body child sets `min_height: 100%` (so a short
     /// nav list still fills the viewport and a `Spacer` can pin its footer)

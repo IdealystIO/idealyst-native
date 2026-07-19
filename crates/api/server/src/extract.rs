@@ -1,6 +1,6 @@
 //! Extractor parameters: the keystone that lets a `#[server]` function
 //! declare injected server-side dependencies (app state, request
-//! headers, cookies, middleware-set values) as *parameters* instead of
+//! headers, cookies, hook-set values) as *parameters* instead of
 //! fetching them ad-hoc inside the body.
 //!
 //! ```ignore
@@ -8,7 +8,6 @@
 //! async fn create_todo(
 //!     input: CreateTodo,      // wire arg — serialized, present in the client stub
 //!     db: State<Db>,          // injected server-side, absent from the client stub
-//!     user: Auth<Principal>,  // injected by an auth guard (middleware)
 //! ) -> Result<Todo, ServerError<E>> { ... }
 //! ```
 //!
@@ -18,6 +17,12 @@
 //! `Headers`, `Extension`, `Auth`, `Cookies`); otherwise it is a **wire
 //! arg**. Injected params are resolved on the server via [`FromContext`]
 //! and stripped from the client stub's signature.
+//!
+//! The reserved-name match is purely syntactic (final path segment), so
+//! wrappers need not live in this crate: `Auth<T>` — the 401-on-missing
+//! auth convention — is defined by the `server-kit` policy crate, and any
+//! crate can define its own wrapper by implementing [`FromContext`]
+//! (pairing it with `#[ctx]`, or one of the reserved spellings).
 //!
 //! # Build split
 //!
@@ -47,25 +52,13 @@ impl<T> Deref for State<T> {
     }
 }
 
-/// A value placed into the per-request [`Context`] by middleware. Derefs
-/// to `T`. Missing → HTTP 500 (the middleware that should have inserted
-/// it didn't run).
+/// A value placed into the per-request [`Context`] by the dispatch hook
+/// (or a policy layer built on it, e.g. server-kit middleware). Derefs
+/// to `T`. Missing → HTTP 500 (the layer that should have inserted it
+/// didn't run).
 pub struct Extension<T>(pub T);
 
 impl<T> Deref for Extension<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        &self.0
-    }
-}
-
-/// An authenticated principal placed into the [`Context`] by an auth
-/// guard (middleware). Like [`Extension`], but a missing value is HTTP
-/// **401** — the request is unauthenticated — rather than 500. Derefs to
-/// `T`.
-pub struct Auth<T>(pub T);
-
-impl<T> Deref for Auth<T> {
     type Target = T;
     fn deref(&self) -> &T {
         &self.0
@@ -108,7 +101,7 @@ pub struct Headers;
 
 #[cfg(feature = "server")]
 mod server_impl {
-    use super::{Auth, Cookies, Extension, Headers, State};
+    use super::{Cookies, Extension, Headers, State};
 
     use std::any::{Any, TypeId};
     use std::collections::HashMap;
@@ -120,14 +113,14 @@ mod server_impl {
     use crate::error::TransportError;
 
     /// Per-request context handed to every [`FromContext`] resolver and
-    /// to middleware.
+    /// to the dispatch hook.
     ///
     /// Holds the request headers, the matched wire path, and a typed
-    /// extension map (an `anymap` keyed by `TypeId`). Middleware mutates
-    /// the map via [`Context::insert`] before the handler resolves its
-    /// extractors. Cloning clones the (small) extension map plus two
-    /// `Arc`s — cheap enough for the batch dispatcher to re-enter the
-    /// same context per entry.
+    /// extension map (an `anymap` keyed by `TypeId`). The dispatch hook
+    /// mutates the map via [`Context::insert`] before the handler
+    /// resolves its extractors. Cloning clones the (small) extension map
+    /// plus two `Arc`s — cheap enough for the batch dispatcher to
+    /// re-enter the same context per entry.
     #[derive(Clone)]
     pub struct Context {
         headers: Arc<HeaderMap>,
@@ -157,7 +150,7 @@ mod server_impl {
             &self.headers
         }
 
-        /// The matched wire path (e.g. `"todos::list"`). Lets middleware
+        /// The matched wire path (e.g. `"todos::list"`). Lets a hook
         /// scope itself to particular endpoints.
         pub fn path(&self) -> &str {
             &self.path
@@ -168,7 +161,7 @@ mod server_impl {
         }
 
         /// Insert a value into the extension map, keyed by its type. The
-        /// primary tool for middleware: an auth guard validates the
+        /// primary tool for the dispatch hook: an auth guard validates the
         /// request and `ctx.insert(principal)`, which a downstream
         /// `Auth<Principal>` / `Extension<Principal>` extractor reads.
         pub fn insert<T: Send + Sync + 'static>(&mut self, value: T) {
@@ -285,25 +278,7 @@ mod server_impl {
                 found.map(Extension).ok_or_else(|| TransportError::Server {
                     status: 500,
                     message: format!(
-                        "Extension<{}> not present in request context (no middleware inserted it)",
-                        std::any::type_name::<T>()
-                    ),
-                })
-            }
-        }
-    }
-
-    impl<T: Clone + Send + Sync + 'static> FromContext for Auth<T> {
-        fn from_context(
-            ctx: &Context,
-        ) -> impl Future<Output = Result<Self, TransportError>> + Send {
-            let found = ctx.get::<T>();
-            async move {
-                // Missing principal = unauthenticated → 401, not 500.
-                found.map(Auth).ok_or_else(|| TransportError::Server {
-                    status: 401,
-                    message: format!(
-                        "Auth<{}>: request is not authenticated (no guard inserted a principal)",
+                        "Extension<{}> not present in request context (no hook/policy layer inserted it)",
                         std::any::type_name::<T>()
                     ),
                 })
@@ -399,21 +374,6 @@ mod tests {
             panic!("missing extension must fail");
         };
         assert!(matches!(err, TransportError::Server { status: 500, .. }));
-    }
-
-    #[tokio::test]
-    async fn auth_missing_is_401() {
-        #[derive(Clone)]
-        struct User(u64);
-        let ctx = ContextBuilder::new().build();
-        let result = <Auth<User> as FromContext>::from_context(&ctx).await;
-        let Err(err) = result else {
-            panic!("missing auth must fail");
-        };
-        assert!(
-            matches!(err, TransportError::Server { status: 401, .. }),
-            "expected 401, got {err:?}"
-        );
     }
 
     #[tokio::test]

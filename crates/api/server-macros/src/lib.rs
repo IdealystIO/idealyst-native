@@ -527,7 +527,7 @@ fn expand_channel(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
                 ws: WebSocketUpgrade,
             ) -> Response {
                 let mut __ctx = ::server::__private::ws_open_context(headers, #wire_path);
-                if let Err(__resp) = ::server::__private::ws_run_middlewares(&mut __ctx).await {
+                if let Err(__resp) = ::server::__private::ws_open_hook(&mut __ctx).await {
                     return __resp;
                 }
                 let ( #( #wire_binds, )* ): ( #( #wire_tys, )* ) =
@@ -695,7 +695,7 @@ fn expand_subscription(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStrea
                 ws: WebSocketUpgrade,
             ) -> Response {
                 let mut __ctx = ::server::__private::ws_open_context(headers, #wire_path);
-                if let Err(__resp) = ::server::__private::ws_run_middlewares(&mut __ctx).await {
+                if let Err(__resp) = ::server::__private::ws_open_hook(&mut __ctx).await {
                     return __resp;
                 }
                 let ( #( #wire_binds, )* ): ( #( #wire_tys, )* ) =
@@ -831,7 +831,7 @@ fn expand_sse(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
                 Query(__q): Query<::server::__private::WsArgsQuery>,
             ) -> Response {
                 let mut __ctx = ::server::__private::ws_open_context(headers, #wire_path);
-                if let Err(__resp) = ::server::__private::ws_run_middlewares(&mut __ctx).await {
+                if let Err(__resp) = ::server::__private::ws_open_hook(&mut __ctx).await {
                     return __resp;
                 }
                 let ( #( #wire_binds, )* ): ( #( #wire_tys, )* ) =

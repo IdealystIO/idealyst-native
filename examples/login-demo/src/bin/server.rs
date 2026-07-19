@@ -21,7 +21,7 @@ async fn main() {
     // CSRF defense-in-depth: reject any request whose Origin isn't this
     // dev host. (The SameSite=Lax cookie is the primary defense; this is
     // belt-and-suspenders.) In production, list your real web origin(s).
-    server::install_middleware(server::csrf_guard([
+    server_kit::install_middleware(server_kit::csrf_guard([
         "http://127.0.0.1:3000",
         "http://localhost:3000",
     ]));

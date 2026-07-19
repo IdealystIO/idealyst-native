@@ -6450,6 +6450,7 @@ dependencies = [
  "runtime-core",
  "serde",
  "server",
+ "server-kit",
  "tokio",
  "tower-http",
  "web-sys",
@@ -9765,6 +9766,19 @@ dependencies = [
  "tokio",
  "tower-http",
  "web-sys",
+]
+
+[[package]]
+name = "server-kit"
+version = "0.0.1"
+dependencies = [
+ "axum",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "server",
+ "tokio",
 ]
 
 [[package]]

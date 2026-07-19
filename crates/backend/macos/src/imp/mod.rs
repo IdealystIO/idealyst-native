@@ -2349,6 +2349,20 @@ impl MacosBackend {
             // Taffy-child bounding box. Sizing it here to the (empty) child
             // bbox would clamp it to the clip and kill scroll-past-cap.
             .filter(|(v, _)| is_scroll_view(v))
+            // Skip external content-measured scrollers (SDK leaves like the
+            // `codeblock`): their content (the code label) lives inside a
+            // handler-built documentView container and is NOT a Taffy child of
+            // the scroll node (the node is a measure_fn LEAF). Its Taffy-child
+            // bbox is therefore (0,0), and clamping the documentView to that =
+            // the clip width — which kills horizontal scroll for code wider
+            // than the viewport (the reported bug). The handler's `build` sizes
+            // the container to the content, and `sync_external_scroller_padding`
+            // keeps it in sync on inset changes, so this pass must leave it be.
+            .filter(|(v, _)| {
+                !self
+                    .external_content_measures
+                    .contains_key(&(&**v as *const NSView as usize))
+            })
             .map(|(v, n)| (v.clone(), *n))
             .collect();
         for (scroll_view, scroll_layout) in scrolls {

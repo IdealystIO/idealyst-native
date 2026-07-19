@@ -19,9 +19,12 @@ async fn add(a: i32, b: i32) -> Result<i32, ServerError> {
 let sum = add(2, 3).await?;
 ```
 
-The system lives in [`crates/api/server`](../crates/api/server) (runtime SDK)
-and [`crates/api/server-macros`](../crates/api/server-macros) (the attribute
-macros). The architecture rationale is
+The system lives in [`crates/api/server`](../crates/api/server) (the
+primitive: runtime SDK + the `DispatchHook` policy seam),
+[`crates/api/server-macros`](../crates/api/server-macros) (the attribute
+macros), and [`crates/api/server-kit`](../crates/api/server-kit) (the
+conventional policy layer — middleware chain, `Auth`, guards — built on the
+seam; see §5). The architecture rationale is
 [`crates/api/server/DESIGN.md`](../crates/api/server/DESIGN.md); this document
 is the author-facing guide.
 
@@ -121,7 +124,8 @@ described in §1. The Cargo.toml plumbing is the same either way:
 ```toml
 [features]
 default = []
-server = ["server/server", "dep:axum", "dep:tokio", "dep:tower-http"]
+# Forward `server-kit/server` too if you use the kit's middleware/guards.
+server = ["server/server", "server-kit/server", "dep:axum", "dep:tokio", "dep:tower-http"]
 
 [dependencies]
 server = { workspace = true }
@@ -202,7 +206,7 @@ Built-in extractors:
 | `State<T>` | process-wide state registry (`server::install_state(t)` at boot) | 500 |
 | `Headers` | the request's `HeaderMap` | — |
 | `Extension<T>` | `ctx.get::<T>()`, set by middleware | 500 |
-| `Auth<T>` | like `Extension<T>`, set by an auth guard | **401** |
+| `Auth<T>` (from `server-kit`) | like `Extension<T>`, set by an auth guard | **401** |
 | `Cookies` | parsed request cookies (`cookies.0` is the map) | — |
 
 `FromContext` is an open trait — implement it on your own type and annotate
@@ -255,13 +259,55 @@ the infrastructure variants.
 
 ---
 
-## 5. Middleware and auth
+## 5. Policy: the dispatch hook, and server-kit
 
-`Middleware` runs server-side around every dispatch (single calls, each batch
-entry, and streaming upgrades). Install at boot:
+The primitive holds **no policy**. Its single interception surface is the
+[`DispatchHook`](../crates/api/server/src/hook.rs) slot — one hook, installed
+once at boot, that wraps every entry point into author code:
+
+- `around(ctx, next)` wraps each **unary** invocation — the single
+  `POST /_srv/<path>` dispatch and *each entry* of a batched request. Mutate
+  `ctx` (insert principals/extensions), call `next.run(ctx)` to proceed, or
+  return `Err(TransportError::Server { status, .. })` without running `next`
+  to short-circuit with that status.
+- `on_open(ctx)` gates each **stream** before it is accepted (`#[channel]` /
+  `#[subscription]` upgrades, `#[sse]` requests).
+
+The slot is deliberately singular — a list with ordering semantics *is* a
+middleware system, which is exactly the opinion the primitive refuses to
+hold. Composition belongs to the layer above; two claimants panic loudly at
+boot instead of silently ordering themselves. With no hook installed,
+handlers run directly.
 
 ```rust
-server::install_middleware(server::from_fn(|ctx| {
+struct ApiKeyGate;
+impl server::DispatchHook for ApiKeyGate {
+    fn around<'a>(&'a self, ctx: &'a mut server::Context, next: server::Next)
+        -> server::HookFuture<'a>
+    {
+        Box::pin(async move {
+            match verify(ctx.headers().get("x-api-key")) {
+                Some(caller) => { ctx.insert(caller); next.run(ctx).await }
+                None => Err(server::TransportError::Server {
+                    status: 401, message: "bad api key".into(),
+                }),
+            }
+        })
+    }
+}
+server::install_dispatch_hook(ApiKeyGate);   // once, at boot
+```
+
+### server-kit: the conventional layer
+
+Most apps don't write a hook — they use
+[`server-kit`](../crates/api/server-kit/), the conventional policy crate
+built entirely on that seam (proof the seam is sufficient: the kit uses only
+public `server` APIs). It provides the ordered **middleware chain**, and its
+first `install_middleware` claims the hook slot for the chain:
+
+```rust
+server_kit::install_middleware(server_kit::from_fn(|ctx| {
     let session = ctx.headers().get("cookie") /* … extract session id … */;
     Box::pin(async move {
         if let Some(user) = lookup(session) {
@@ -272,8 +318,15 @@ server::install_middleware(server::from_fn(|ctx| {
 }));
 ```
 
-Two roles fall out of one trait: **context-producing** (the auth guard above)
-and **wrapping/short-circuiting** (rate limits, logging, `csrf_guard`).
+Middleware runs in registration order before every handler — single calls,
+each batch entry, and stream opens. Two roles fall out of one trait:
+**context-producing** (the auth guard above) and **short-circuiting** (rate
+limits, `server_kit::csrf_guard`). The kit also owns `Auth<T>` — the
+401-on-missing extractor — and the `require::<T>(prefix)` perimeter guard.
+
+Because the slot is singular, "my custom `DispatchHook` + the kit's chain"
+panics at boot: pick one policy owner. A custom hook that wants the kit's
+guards can call `server_kit::run_chain(ctx)` inside itself instead.
 
 ### Protecting a set of routes with a guard
 
@@ -287,6 +340,8 @@ protected automatically: when no guard inserted a `T`, extraction fails with
 marker type only for qualifying sessions — the type system becomes the ACL:
 
 ```rust
+use server_kit::Auth;
+
 // Shared types — plain data, defined on both builds (they appear in
 // extractor positions of shared signatures; the client names them but
 // never constructs one).
@@ -296,7 +351,7 @@ pub struct Principal { pub username: String }
 pub struct Admin(pub Principal);   // present in ctx only for admin sessions
 
 // Server boot — the session guard: validate, insert, NEVER reject.
-server::install_middleware(server::from_fn(|ctx| {
+server_kit::install_middleware(server_kit::from_fn(|ctx| {
     // Read headers synchronously, then move owned data into the future.
     let session = ctx.headers().get("cookie")
         .and_then(|v| v.to_str().ok())
@@ -337,21 +392,10 @@ async fn delete_user(id: u64, admin: Auth<Admin>) -> Result<(), ServerError> { �
 #[server(path = "admin/rotate_keys")]
 async fn rotate_keys(admin: Auth<Admin>) -> Result<(), ServerError> { … }
 
-// Server boot, AFTER the session guard (registration order = run order):
-server::install_middleware(server::from_fn(|ctx| {
-    let blocked = ctx.path().starts_with("admin/") && ctx.get::<Admin>().is_none();
-    Box::pin(async move {
-        if blocked {
-            // 403: authenticated-or-not, this caller may not enter the group.
-            // (Missing Auth<T> yields 401 — unauthenticated — by contrast.)
-            return Err(server::TransportError::Server {
-                status: 403,
-                message: "admin only".into(),
-            });
-        }
-        Ok(())
-    })
-}));
+// Server boot, AFTER the session guard (registration order = run order).
+// 403: authenticated-or-not, this caller may not enter the group.
+// (Missing Auth<T> yields 401 — unauthenticated — by contrast.)
+server_kit::install_middleware(server_kit::require::<Admin>("admin/"));
 ```
 
 Now the perimeter rejects *every* `admin/*` call from a non-admin — including
@@ -369,28 +413,12 @@ Notes that make this robust:
   `ServerError::Server { status: 401 | 403, .. }` — infrastructure, distinct
   from the body's domain `Failed`, so the app can route it to a login screen
   generically.
-- **Reusable guards.** Package a parameterized guard as a value, mirroring
-  the built-in `csrf_guard`:
+- **Reusable guards.** `require` and `csrf_guard` are values returning
+  `impl Middleware` — package your own parameterized guards the same way:
 
   ```rust
-  pub fn require<T: Clone + Send + Sync + 'static>(prefix: &'static str)
-      -> impl server::Middleware
-  {
-      server::from_fn(move |ctx| {
-          let blocked = ctx.path().starts_with(prefix) && ctx.get::<T>().is_none();
-          Box::pin(async move {
-              if blocked {
-                  return Err(server::TransportError::Server {
-                      status: 403, message: format!("{prefix}: forbidden"),
-                  });
-              }
-              Ok(())
-          })
-      })
-  }
-
-  server::install_middleware(require::<Admin>("admin/"));
-  server::install_middleware(require::<Principal>("account/"));
+  server_kit::install_middleware(server_kit::require::<Admin>("admin/"));
+  server_kit::install_middleware(server_kit::require::<Principal>("account/"));
   ```
 
 The prefix is a naming convention today — there is no module-level grouping
@@ -412,7 +440,7 @@ The blessed shapes, both implemented end-to-end in
 
 - **Web — BFF/cookie**: `login` sets an httpOnly session cookie; the browser
   attaches it to same-origin `/_srv/*` calls automatically; the secret never
-  enters JS. Pair with `server::csrf_guard([origins])` + SameSite.
+  enters JS. Pair with `server_kit::csrf_guard([origins])` + SameSite.
 - **Native — bearer**: no cookie jar, so `login` returns a token the client
   stores in the `credentials` SDK (Keychain / Android Keystore) and replays
   via a credential provider (§6). One server, one guard, accepts either.
@@ -628,9 +656,9 @@ Honest limitations of today's implementation, in priority order:
    raw `#[cfg(feature = "server")]`; letting `#[server]` annotate `mod`/`use`
    items would keep authors inside one vocabulary. Relatedly, route *groups*
    have no syntax — protecting a set of routes rides a path-prefix naming
-   convention plus `ctx.path()` matching (§5) rather than an
-   `#[api(prefix = …, guard = …)]` module attribute or per-fn metadata tags
-   that middleware could read.
+   convention plus `ctx.path()` matching (`server_kit::require`, §5) rather
+   than an `#[api(prefix = …, guard = …)]` module attribute or per-fn
+   metadata tags a hook could read.
 3. **No CLI scaffolding for the layered shape** (DESIGN.md Phase 6). The
    recommended api/ui/server-bin split and the Cargo feature plumbing are
    hand-assembled today, which is why the examples are colocated.

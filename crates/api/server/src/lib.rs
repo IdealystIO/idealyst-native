@@ -64,7 +64,7 @@ pub use server_macros::sse;
 // =============================================================================
 
 mod extract;
-pub use extract::{Auth, Cookies, Extension, Headers, State};
+pub use extract::{Cookies, Extension, Headers, State};
 
 // Typed streaming transport (WebSocket). The `Socket<In, Out>` type +
 // `SocketError` exist on both builds (client wraps `net::WebSocket`,
@@ -107,23 +107,23 @@ pub use client::{
 #[cfg(feature = "server")]
 mod cookie;
 #[cfg(feature = "server")]
-mod csrf;
-#[cfg(feature = "server")]
 mod extractors;
 #[cfg(feature = "server")]
-mod middleware;
+mod hook;
 #[cfg(feature = "server")]
 mod runtime;
 #[cfg(feature = "server")]
 pub use cookie::{clear_cookie, set_cookie, Cookie, SameSite};
 #[cfg(feature = "server")]
-pub use csrf::csrf_guard;
-#[cfg(feature = "server")]
 pub use extract::{Context, ContextBuilder, FromContext};
 #[cfg(feature = "server")]
 pub use extractors::{install_state, use_request_header, use_request_headers, use_state};
+// The dispatch hook — the primitive's single interception seam. Policy
+// layers (middleware chains, guards, auth conventions) are NOT part of
+// this crate; they are built on this hook (see the `server-kit` crate
+// for the conventional implementation).
 #[cfg(feature = "server")]
-pub use middleware::{from_fn, install_middleware, FnMiddleware, Middleware, MiddlewareFuture};
+pub use hook::{install_dispatch_hook, DispatchHook, HookFuture, Next, OpenFuture};
 #[cfg(feature = "server")]
 pub use runtime::{router, schema_for, serve};
 
@@ -223,7 +223,7 @@ pub mod __private {
 
     #[cfg(feature = "server")]
     pub use crate::runtime::{
-        decode_ws_args, sse_response, ws_error_response, ws_open_context, ws_run_middlewares,
+        decode_ws_args, sse_response, ws_error_response, ws_open_context, ws_open_hook,
         WsArgsQuery,
     };
 

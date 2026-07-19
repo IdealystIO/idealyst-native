@@ -202,6 +202,17 @@ data stops being a one-off field.
 
 ## 4. Middleware
 
+> **2026-07 update — middleware extracted from the primitive.** The
+> middleware system described below shipped in Phase 2 *inside* this crate,
+> and has since been split out: the `server` crate now exposes a single
+> `DispatchHook` slot (`install_dispatch_hook`, `around` for unary calls +
+> per-batch-entry, `on_open` for channel/subscription/SSE opens) as its only
+> policy seam, and the chain / `install_middleware` / `from_fn` /
+> `csrf_guard` / `Auth<T>` moved to the `server-kit` crate, built entirely on
+> that public seam. Rationale: the primitive stays unopinionated; an app can
+> replace the whole policy model by installing its own hook. See
+> `docs/server-functions.md` §5.
+
 ```rust
 pub trait Middleware: Send + Sync {
     async fn handle(&self, ctx: &mut Context, next: Next<'_>) -> Result<Vec<u8>, ServerError>;
@@ -558,12 +569,18 @@ Each phase is independently shippable and lands with tests (repo rules §1, §8)
   (`impl Future + Send`), `State<T>`/`Headers`/`Extension<T>`, `#[ctx]` +
   reserved-name macro classification, extraction-failure → HTTP status. Tested
   both modes + extractor unit tests. (items 2, 7)
-- **Phase 2 — Middleware + guards. ✅ DONE.** `Middleware` trait + `from_fn` +
-  `install_middleware`; the dispatcher runs the chain (single + per batch entry)
-  before the handler, short-circuiting on error with its HTTP status. `Context`
-  gained mutable `insert` + the matched `path` (for guard scoping). Added
-  `Auth<T>` (missing → 401) and `Cookies` extractors. Tested both modes + unit
-  tests. Post-handler wrapping (timing/logging) noted as a follow-on. (item 4)
+- **Phase 2 — Middleware + guards. ✅ DONE, then extracted.** `Middleware`
+  trait + `from_fn` + `install_middleware`; the dispatcher runs the chain
+  (single + per batch entry) before the handler, short-circuiting on error
+  with its HTTP status. `Context` gained mutable `insert` + the matched
+  `path` (for guard scoping). Added `Auth<T>` (missing → 401) and `Cookies`
+  extractors. Tested both modes + unit tests. **2026-07: the chain, guards,
+  and `Auth<T>` moved out of the primitive into `server-kit`, rebuilt on the
+  new single `DispatchHook` slot (`around` + `on_open`) that is now the
+  `server` crate's only policy surface — see the §4 update note. `Cookies`
+  (mechanism, not policy) stayed. Both crates tested both modes; the kit's
+  e2e suite runs against public seams only.** Post-handler wrapping now
+  falls out of `around` naturally (the hook holds the reply). (item 4)
 - **Phase 3 — Identity + versioning. ✅ DONE (core).** Boot-time collision
   detection (`router()` builds a path→entry `HashMap`, panics on duplicate;
   dedup logic unit-tested). Per-fn schema hash (macro hashes wire arg + return

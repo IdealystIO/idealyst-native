@@ -147,10 +147,13 @@ members = [
     "crates/sdk/client/haptics",
     "crates/sdk/client/audio",
 
-    # API — full-stack server-functions layer (server fns, transport,
-    # auth/middleware, storage). See crates/api/server/DESIGN.md.
+    # API — full-stack server-functions layer. `server` is the primitive
+    # (server fns + transport + the DispatchHook seam); `server-kit` is
+    # the conventional policy layer (middleware chain, Auth, guards)
+    # built on that seam. See crates/api/server/DESIGN.md.
     "crates/api/server",
     "crates/api/server-macros",
+    "crates/api/server-kit",
     "crates/api/server-aws",
 
     # SDK — server-tier capabilities (run in the server / worker binary,
@@ -444,6 +447,7 @@ haptics = { path = "crates/sdk/client/haptics" }
 audio = { path = "crates/sdk/client/audio" }
 server = { path = "crates/api/server" }
 server-macros = { path = "crates/api/server-macros" }
+server-kit = { path = "crates/api/server-kit" }
 server-aws = { path = "crates/api/server-aws" }
 jobs = { path = "crates/sdk/server/jobs" }
 jobs-macros = { path = "crates/sdk/server/jobs/macros" }

@@ -19,7 +19,6 @@ use serde::{Deserialize, Serialize};
 use crate::__private::ServerFnEntry;
 use crate::error::{ServerError, TransportError, VersionMismatch};
 use crate::extract::Context;
-use crate::extractors::CURRENT_CONTEXT;
 
 /// Request/response header carrying the wire schema hash (hex). Mirrors
 /// the client's `batch::SCHEMA_HEADER`.
@@ -137,8 +136,8 @@ pub fn router() -> Router {
 
 // ---------------------------------------------------------------------------
 // #[channel] (WebSocket) upgrade helpers, used by the macro's generated
-// handler. They reuse the same Context / middleware / extractor machinery
-// as the HTTP dispatch, run at upgrade time.
+// handler. They reuse the same Context / hook / extractor machinery as
+// the HTTP dispatch, run at upgrade time.
 // ---------------------------------------------------------------------------
 
 /// Build the request [`Context`] for a channel upgrade from its headers.
@@ -146,12 +145,14 @@ pub fn ws_open_context(headers: HeaderMap, path: &'static str) -> Context {
     Context::new(Arc::new(headers), path)
 }
 
-/// Run the middleware chain at upgrade; a short-circuit becomes the HTTP
-/// response (so e.g. an auth guard rejects with 401 *without* upgrading).
-pub async fn ws_run_middlewares(ctx: &mut Context) -> Result<(), Response> {
-    crate::middleware::run_middlewares(ctx)
-        .await
-        .map_err(transport_error_response)
+/// Run the dispatch hook's `on_open` gate at upgrade; a refusal becomes
+/// the HTTP response (so e.g. a guard rejects with 401 *without*
+/// upgrading). No installed hook = accept.
+pub async fn ws_open_hook(ctx: &mut Context) -> Result<(), Response> {
+    match crate::hook::installed() {
+        Some(hook) => hook.on_open(ctx).await.map_err(transport_error_response),
+        None => Ok(()),
+    }
 }
 
 /// Map an extractor-resolution failure at upgrade to an HTTP response.
@@ -248,18 +249,19 @@ async fn dispatch(headers: HeaderMap, Path(path): Path<String>, body: Bytes) -> 
 
     // Seed the per-request cookie jar so handler `set_cookie` calls have
     // somewhere to land; keep a handle to drain into response headers.
+    // Inserted before the hook runs so hook-level policy can set cookies.
     let jar = crate::cookie::CookieJar::default();
     ctx.insert(jar.clone());
 
-    // Run the middleware chain (auth guards, etc.) before the handler.
-    // A short-circuit becomes the HTTP response; the handler never runs.
-    if let Err(e) = crate::middleware::run_middlewares(&mut ctx).await {
-        return transport_error_response(e);
-    }
-
-    let result = CURRENT_CONTEXT
-        .scope(ctx, (entry.handler)(body_vec))
-        .await;
+    // Invoke through the dispatch hook when one is installed (policy
+    // layers — guards, middleware chains — live there, not here). A
+    // hook `Err` becomes the HTTP response; without a hook the handler
+    // runs directly.
+    let next = crate::hook::Next::new(entry.handler, body_vec);
+    let result = match crate::hook::installed() {
+        Some(hook) => hook.around(&mut ctx, next).await,
+        None => next.run(&ctx).await,
+    };
 
     match result {
         Ok(bytes) => {
@@ -314,10 +316,6 @@ fn transport_error_response(e: TransportError) -> Response {
         TransportError::Codec(message) => (StatusCode::BAD_REQUEST, message).into_response(),
         other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()).into_response(),
     }
-}
-
-async fn not_found() -> Response {
-    (StatusCode::NOT_FOUND, "not a server fn route").into_response()
 }
 
 /// Build a path → entry map, rejecting duplicate paths. Factored out of
@@ -469,7 +467,7 @@ async fn batch_dispatch(headers: HeaderMap, body: Bytes) -> Response {
 
     // Share the headers across entries; each entry gets its own
     // `Context` (its own matched path + a fresh extension map for
-    // middleware to populate independently).
+    // the hook to populate independently).
     let headers = Arc::new(headers);
 
     let mut results: Vec<BatchOutputEntry> = Vec::with_capacity(calls.len());
@@ -511,19 +509,18 @@ async fn batch_dispatch(headers: HeaderMap, body: Bytes) -> Response {
             }
         };
 
-        // Run the middleware chain for this entry; a short-circuit is
-        // this slot's failure, not the whole batch's.
+        // Invoke this entry through the dispatch hook (its own Context +
+        // jar, so policy runs per entry — a call can't dodge the hook by
+        // riding a batch). A hook `Err` is this slot's failure, not the
+        // whole batch's.
         let mut ctx = Context::new(headers.clone(), call.path.clone());
         let jar = crate::cookie::CookieJar::default();
         ctx.insert(jar.clone());
-        if let Err(e) = crate::middleware::run_middlewares(&mut ctx).await {
-            results.push(BatchOutputEntry::Result(Err(e.into_domain())));
-            continue;
-        }
-
-        let handler_outcome = CURRENT_CONTEXT
-            .scope(ctx, (entry.handler)(arg_bytes))
-            .await;
+        let next = crate::hook::Next::new(entry.handler, arg_bytes);
+        let handler_outcome = match crate::hook::installed() {
+            Some(hook) => hook.around(&mut ctx, next).await,
+            None => next.run(&ctx).await,
+        };
         batch_cookies.extend(jar.take());
         let slot = match handler_outcome {
             Ok(result_bytes) => {

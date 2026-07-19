@@ -14,9 +14,10 @@
 //!     .data(db)
 //!     .finish();
 //!
-//! // Run it through a server function (reuses auth/CSRF/credentials):
+//! // Run it through a server function (reuses auth/CSRF/credentials —
+//! // `Auth` is server-kit's 401-on-missing extractor):
 //! #[server]
-//! pub async fn graphql(req: graphql::GraphqlRequest, schema: State<MySchema>, who: Auth<User>)
+//! pub async fn graphql(req: graphql::GraphqlRequest, schema: State<MySchema>, who: server_kit::Auth<User>)
 //!     -> Result<graphql::GraphqlResponse, ServerError> {
 //!     // Inject the authenticated principal into the GraphQL context so
 //!     // resolvers can read `ctx.data::<User>()`.

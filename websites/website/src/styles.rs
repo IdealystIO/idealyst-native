@@ -1366,6 +1366,19 @@ stylesheet! {
             flex_direction: FlexDirection::Column,
             background: Tokenized::token("color-surface-alt", Color("#f4eedb".into())),
             overflow: Overflow::Hidden,
+            // Undo the native scroll-view flex seed. Backends seed a
+            // scroll node with `flex_grow:1 / flex_basis:0` (the
+            // "fill a bounded parent" shape) via `set_overflow_scroll`.
+            // Our explicit `height` alone doesn't clear it, so in a
+            // hug-content column parent (the wrapping demo grid's cell,
+            // once it wraps to stand alone) the seeded `flex_basis:0`
+            // contributes 0 to the cell's content height and the box
+            // collapses to ~0 on native — while web, which has no seed,
+            // just honors `height:160`. `flex_grow:0 + flex_basis:auto`
+            // makes `height` drive the box, matching web. Same fix as
+            // idea-ui's `modal_scroll_sheet`.
+            flex_grow: 0.0,
+            flex_basis: Length::Auto,
         }
     }
 }

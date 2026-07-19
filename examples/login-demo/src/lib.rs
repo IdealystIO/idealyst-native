@@ -8,7 +8,7 @@
 //!    injects a `Principal`, which protected fns receive via
 //!    `Auth<Principal>`.
 //! 3. **CSRF defense**: the cookie is `SameSite=Lax` (browsers won't send it
-//!    on cross-site POSTs) *and* a [`server::csrf_guard`] rejects untrusted
+//!    on cross-site POSTs) *and* a [`server_kit::csrf_guard`] rejects untrusted
 //!    origins — belt and suspenders.
 //! 4. `logout` clears the cookie and drops the server session.
 //!
@@ -124,7 +124,7 @@ pub mod srv {
 /// `Auth<Principal>`).
 #[cfg(feature = "server")]
 pub fn install_auth_guard() {
-    server::install_middleware(server::from_fn(|ctx| {
+    server_kit::install_middleware(server_kit::from_fn(|ctx| {
         // Read the session id synchronously, before mutating ctx. Accept it
         // from the cookie (web) OR an `Authorization: Bearer` header (native).
         let session = {
@@ -194,7 +194,7 @@ pub async fn login(creds: Credentials) -> Result<LoginOk, ServerError> {
 /// `Auth<Principal>` resolves the principal the guard injected from the
 /// session cookie.
 #[server]
-pub async fn me(user: server::Auth<Principal>) -> Result<String, ServerError> {
+pub async fn me(user: server_kit::Auth<Principal>) -> Result<String, ServerError> {
     Ok(user.username.clone())
 }
 

@@ -96,7 +96,15 @@ pub struct IosBackend {
     /// of Taffy padding (which would inset + clip the scroll viewport itself).
     /// Populated by [`Self::install_external_content_measure`]; cleaned up in
     /// `release_external`.
-    external_content_measures: HashMap<usize, Retained<UIView>>,
+    ///
+    /// The `Cell` caches the content's natural (unbounded) `sizeThatFits:`,
+    /// written by the measure_fn each time Taffy re-measures the node. The
+    /// post-layout `contentSize` sync reads it instead of re-running
+    /// `sizeThatFits:` per pass — a full text layout over the highlighted
+    /// attributed string, which turned every layout pass O(codeblocks) of text
+    /// measurement and tanked scroll perf on codeblock-heavy pages.
+    external_content_measures:
+        HashMap<usize, (Retained<UIView>, std::rc::Rc<std::cell::Cell<(f32, f32)>>)>,
     /// Cache of rasterized icon UIImages keyed by (icon identity, size).
     /// Icon identity = pointer address of the `paths` static slice.
     /// Size = point size as u16 (half-point granularity is enough).
@@ -1014,8 +1022,14 @@ impl IosBackend {
             objc2::rc::Retained::retain(content as *const _ as *mut objc2_ui_kit::UIView)
                 .unwrap()
         };
-        self.external_content_measures
-            .insert(node as *const UIView as usize, content.clone());
+        // Cache of the content's natural size, written here by the measure_fn
+        // and read by the post-layout `contentSize` sync — so the sync never
+        // re-measures. See the field doc.
+        let content_size = std::rc::Rc::new(std::cell::Cell::new((0.0f32, 0.0f32)));
+        self.external_content_measures.insert(
+            node as *const UIView as usize,
+            (content.clone(), content_size.clone()),
+        );
         self.layout.set_measure_fn(
             layout,
             std::rc::Rc::new(move |known_dimensions, available_space| {
@@ -1027,6 +1041,10 @@ impl IosBackend {
                     unsafe { msg_send![&content, sizeThatFits: probe] };
                 let content_w = (fit.width as f32).max(0.0).ceil();
                 let content_h = (fit.height as f32).max(0.0).ceil();
+                // Publish the natural size for the contentSize sync. Constant
+                // across probe kinds (unbounded `sizeThatFits:`), so the last
+                // write in a pass is authoritative.
+                content_size.set((content_w, content_h));
                 // Fill the parent's offered width (so the scroller spans
                 // the column and scrolls content wider than it); report ~0 for
                 // MIN-content (a single-axis scroller can shrink to nothing —
@@ -3157,8 +3175,10 @@ impl Backend for IosBackend {
                 text_style.padding_top = None;
                 text_style.padding_bottom = None;
                 self.layout.set_style(layout_node, &text_style);
-            } else if let Some(content) =
-                self.external_content_measures.get(&view_key_for_style).cloned()
+            } else if let Some(content) = self
+                .external_content_measures
+                .get(&view_key_for_style)
+                .map(|(c, _)| c.clone())
             {
                 // External scroller (SDK leaf like `codeblock`): divert the
                 // author's `padding_*` to the content label's `textInsets`
@@ -4189,6 +4209,65 @@ impl IosBackend {
                 || (current.height - size.height).abs() > 0.5
             {
                 let _: () = unsafe { msg_send![&scroll_view, setContentSize: size] };
+            }
+        }
+
+        // Sync contentSize for external content-measured scrollers (SDK
+        // leaves like the `codeblock`). These build their OWN UIScrollView +
+        // content label in the handler and register via
+        // `install_external_content_measure`, so their content is NOT a Taffy
+        // child of the scroll node (the node is a measure_fn LEAF). The loop
+        // above therefore never sizes them — its extent walk reads Taffy
+        // children and finds none — leaving `contentSize` at (0,0) so code
+        // wider than the viewport can't scroll horizontally (the reported
+        // bug). Drive contentSize from the content's natural size — the
+        // widest line + full height, cached from the measure_fn's unbounded
+        // `sizeThatFits:` (single-axis scrollers never wrap; the inset label
+        // already folds in the diverted `padding_*`). Reading the CACHE, not
+        // re-measuring here, keeps this pass O(codeblocks) of cheap frame
+        // writes rather than O(codeblocks) of full text layout every pass.
+        {
+            let entries: Vec<(usize, Retained<UIView>, (f32, f32))> = self
+                .external_content_measures
+                .iter()
+                .map(|(k, (v, sz))| (*k, v.clone(), sz.get()))
+                .collect();
+            for (scroll_ptr, content, (cw, ch)) in entries {
+                let (cw, ch) = (cw as f64, ch as f64);
+                let scroll_view: Retained<UIScrollView> = unsafe {
+                    Retained::retain(scroll_ptr as *mut UIScrollView).unwrap()
+                };
+                // Frame the content label to its natural size at the scroll
+                // origin so the full width is laid out (UIScrollView clips
+                // subviews to its bounds otherwise, hiding the overflow). Skip
+                // the write when the frame already matches — the common case
+                // once content has settled.
+                let cur_frame: objc2_foundation::CGRect = unsafe { msg_send![&content, frame] };
+                if (cur_frame.size.width - cw).abs() > 0.5
+                    || (cur_frame.size.height - ch).abs() > 0.5
+                    || cur_frame.origin.x.abs() > 0.5
+                    || cur_frame.origin.y.abs() > 0.5
+                {
+                    let content_frame = objc2_foundation::CGRect {
+                        origin: objc2_foundation::CGPoint { x: 0.0, y: 0.0 },
+                        size: objc2_foundation::CGSize { width: cw, height: ch },
+                    };
+                    let _: () = unsafe { msg_send![&content, setFrame: content_frame] };
+                }
+                // contentSize at least the viewport (short content still fills
+                // edge-to-edge); wider content enables the horizontal scroll.
+                let bounds: objc2_foundation::CGRect = unsafe { msg_send![&scroll_view, bounds] };
+                let size = objc2_foundation::CGSize {
+                    width: cw.max(bounds.size.width),
+                    height: ch.max(bounds.size.height),
+                };
+                let current: objc2_foundation::CGSize =
+                    unsafe { msg_send![&scroll_view, contentSize] };
+                if (current.width - size.width).abs() > 0.5
+                    || (current.height - size.height).abs() > 0.5
+                {
+                    let _: () = unsafe { msg_send![&scroll_view, setContentSize: size] };
+                }
             }
         }
 

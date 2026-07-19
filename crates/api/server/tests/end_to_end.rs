@@ -137,7 +137,7 @@ pub async fn reserve_stock(qty: u32) -> Result<u32, ServerError<StockError>> {
 // -----------------------------------------------------------------------------
 
 #[cfg(feature = "server")]
-use server::{Auth, Cookies, Headers, State};
+use server::{Cookies, Extension, Headers, State};
 
 #[cfg(feature = "server")]
 #[derive(Debug, Clone)]
@@ -229,7 +229,13 @@ mod custom_extractor {
 }
 
 // -----------------------------------------------------------------------------
-// Middleware / Auth / Cookies fixtures (Phase 2).
+// Dispatch-hook / Cookies fixtures.
+//
+// The primitive's policy seam is the single DispatchHook slot; the
+// middleware chain + `Auth<T>` 401 convention built on it live in (and
+// are e2e-tested by) the `server-kit` crate. Here we exercise the seam
+// itself: a hook that guards a path and injects a principal read back
+// via the neutral `Extension<T>` extractor.
 // -----------------------------------------------------------------------------
 
 #[cfg(feature = "server")]
@@ -239,10 +245,10 @@ pub struct Principal {
     pub name: String,
 }
 
-/// `Auth<Principal>` reads a principal an auth guard (middleware) put
+/// `Extension<Principal>` reads a principal the test DispatchHook put
 /// into the context. Only a ctx param → client stub is `secure_whoami()`.
 #[server]
-pub async fn secure_whoami(user: Auth<Principal>) -> Result<String, ServerError> {
+pub async fn secure_whoami(user: Extension<Principal>) -> Result<String, ServerError> {
     Ok(format!("{}#{}", user.name, user.id))
 }
 
@@ -704,43 +710,60 @@ mod server_side {
         assert_eq!(response.status(), 400);
     }
 
-    #[tokio::test]
-    async fn regression_auth_guard_injects_principal_and_rejects() {
-        // A path-scoped guard: only enforces on `secure_whoami`, so the
-        // other server-mode tests' endpoints (which share this global
-        // middleware chain) pass straight through.
-        server::install_middleware(server::from_fn(|ctx| {
-            Box::pin(async move {
-                if ctx.path() != "secure_whoami" {
-                    return Ok(());
+    /// The process-wide test hook, installed at most once (the slot is
+    /// singular by design). Path-scoped to `secure_whoami` so every
+    /// other endpoint in this shared suite passes straight through the
+    /// default `next.run` path.
+    fn install_test_hook_once() {
+        use std::sync::OnceLock;
+        static ONCE: OnceLock<()> = OnceLock::new();
+        ONCE.get_or_init(|| {
+            struct TestGuard;
+            impl server::DispatchHook for TestGuard {
+                fn around<'a>(
+                    &'a self,
+                    ctx: &'a mut server::Context,
+                    next: server::Next,
+                ) -> server::HookFuture<'a> {
+                    Box::pin(async move {
+                        if ctx.path() != "secure_whoami" {
+                            return next.run(ctx).await;
+                        }
+                        // Own the token before mutating ctx, so the header
+                        // borrow is released before `ctx.insert`.
+                        let token = ctx
+                            .headers()
+                            .get("authorization")
+                            .and_then(|v| v.to_str().ok())
+                            .map(|s| s.to_string());
+                        match token.as_deref() {
+                            Some("Bearer good") => {
+                                ctx.insert(Principal {
+                                    id: 42,
+                                    name: "alice".to_string(),
+                                });
+                                next.run(ctx).await
+                            }
+                            _ => Err(server::TransportError::Server {
+                                status: 401,
+                                message: "unauthorized".into(),
+                            }),
+                        }
+                    })
                 }
-                // Own the token before mutating ctx, so the header borrow
-                // is released before `ctx.insert`.
-                let token = ctx
-                    .headers()
-                    .get("authorization")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|s| s.to_string());
-                match token.as_deref() {
-                    Some("Bearer good") => {
-                        ctx.insert(Principal {
-                            id: 42,
-                            name: "alice".to_string(),
-                        });
-                        Ok(())
-                    }
-                    _ => Err(server::TransportError::Server {
-                        status: 401,
-                        message: "unauthorized".into(),
-                    }),
-                }
-            })
-        }));
+            }
+            server::install_dispatch_hook(TestGuard);
+        });
+    }
 
+    #[tokio::test]
+    async fn regression_dispatch_hook_guards_and_injects() {
+        install_test_hook_once();
         let addr = boot().await;
         let client = net::Client::new();
 
-        // Authenticated → guard injects the principal, handler reads it.
+        // Authenticated → the hook inserts the principal *before*
+        // `next.run`, and the handler's `Extension<Principal>` sees it.
         let response = client
             .post(format!("http://{addr}/_srv/secure_whoami"))
             .body(net::Json(&()))
@@ -752,7 +775,8 @@ mod server_side {
         let result: Result<String, ServerError> = response.json().await.unwrap();
         assert_eq!(result, Ok("alice#42".to_string()));
 
-        // Unauthenticated → guard short-circuits 401; handler never runs.
+        // Unauthenticated → the hook short-circuits 401 without calling
+        // `next`; the handler never runs.
         let response = client
             .post(format!("http://{addr}/_srv/secure_whoami"))
             .body(net::Json(&()))
@@ -760,6 +784,35 @@ mod server_side {
             .await
             .unwrap();
         assert_eq!(response.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn regression_dispatch_hook_runs_per_batch_entry() {
+        // The hook must wrap EACH batch entry (its own Context), so a
+        // guarded call can't dodge policy by riding a batch — and one
+        // entry's rejection must not poison its siblings.
+        install_test_hook_once();
+        let addr = boot().await;
+        let client = net::Client::new();
+        let body = serde_json::json!([
+            {"path": "secure_whoami", "args": null},
+            {"path": "add",           "args": [1, 2]},
+        ]);
+        let response = client
+            .post(format!("http://{addr}/_srv/_batch"))
+            .body(net::Json(&body))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let results: Vec<Result<serde_json::Value, ServerError>> =
+            response.json().await.unwrap();
+        assert_eq!(results.len(), 2);
+        match &results[0] {
+            Err(ServerError::Server { status: 401, .. }) => {}
+            other => panic!("guarded entry must 401 in its slot, got {other:?}"),
+        }
+        assert_eq!(results[1], Ok(serde_json::json!(3)));
     }
 
     #[tokio::test]
