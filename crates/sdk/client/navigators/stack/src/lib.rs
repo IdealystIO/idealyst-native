@@ -51,9 +51,10 @@
 
 use runtime_core::accessibility::AccessibilityProps;
 use runtime_core::primitives::navigator::{
-    navigator_fill_rules, navigator_outlet, HeaderButton, MountResult, NavCommand,
-    NavigatorConfig, NavigatorControl, NavigatorHandle, NavigatorHandler, NavigatorHost,
-    NavigatorOps, Route, RouteEntry, RouteParams, Screen, ScreenBuilder, StackHeaderState,
+    navigator_fill_rules, navigator_outlet, screen_flow_fill_rules, HeaderButton, MountResult,
+    NavCommand, NavigatorConfig, NavigatorControl, NavigatorHandle, NavigatorHandler,
+    NavigatorHost, NavigatorOps, Route, RouteEntry, RouteParams, Screen, ScreenBuilder,
+    StackHeaderState,
 };
 use runtime_core::{Backend, Bound, Element, IdealystSchema, Ref, RefFill, Signal, StyleSource};
 use std::any::{Any, TypeId};
@@ -774,6 +775,12 @@ impl<B: Backend + 'static> NavigatorHandler<B> for StackHandler<B> {
         // `.with_style(...)` on the navigator element is applied by the
         // walker AFTER init, so it overrides this.
         backend.apply_style(&root, &navigator_fill_rules());
+        // Every mounted screen stretches to the outlet's box (the outlet-model
+        // `.ui-nav-screen` successor — see `screen_flow_fill_rules`): without
+        // it a `flex_grow`-based screen (a canvas board, a fill-the-viewport
+        // editor) collapses to content height on web. Rides the screen root's
+        // style OVERRIDE layer, composing with the screen's own styles.
+        host.set_screen_style_overlay(screen_flow_fill_rules());
 
         let NavigatorHost {
             initial_route,

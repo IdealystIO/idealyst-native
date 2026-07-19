@@ -1690,11 +1690,21 @@ pub struct SwapContext {
 /// Authors override by styling the navigator element itself
 /// (`.with_style(...)` on the SDK builder) — the walker applies that style
 /// AFTER `init`, onto the same root node, so it wins.
+///
+/// The explicit `flex_direction: Column` is **load-bearing on web**: the CSS
+/// emitter only promotes a class to `display: flex` when the rules carry a
+/// flex-CONTAINER property (`rules_to_css`), and everything else here is a
+/// size/item property. Without it the navigator root lowers to a plain block
+/// `div`, so the outlet's `flex: 1 1 0` inside it is inert and the outlet
+/// collapses to content height ("the board area renders as an empty void").
+/// Native backends are unaffected — taffy's default display is already flex
+/// column, which is exactly why the collapse only reproduced on web.
 pub fn navigator_fill_rules() -> Rc<crate::style::StyleRules> {
     use crate::style::Length;
     Rc::new(crate::style::StyleRules {
         width: Some(Length::Percent(100.0).into()),
         height: Some(Length::Percent(100.0).into()),
+        flex_direction: Some(crate::style::FlexDirection::Column),
         flex_grow: Some(1.0.into()),
         min_height: Some(Length::Px(0.0).into()),
         ..Default::default()
@@ -1781,6 +1791,30 @@ pub fn stack_screen_fill_rules() -> Rc<crate::style::StyleRules> {
         right: Some(Length::Px(0.0).into()),
         bottom: Some(Length::Px(0.0).into()),
         left: Some(Length::Px(0.0).into()),
+        ..Default::default()
+    })
+}
+
+/// Flow-fill placement for a screen mounted as the outlet's sole child (the
+/// outlet-model handlers' `clear_children` + `insert_node` swap): stretch to
+/// exactly the outlet's box — `flex: 1 1 0` fills when the content is
+/// smaller AND pins the screen to the outlet height when it's taller (its
+/// own scroll surfaces then scroll), `min-height: 0` keeps tall content from
+/// blowing the column open, `width: 100%` covers the cross axis. This is the
+/// outlet-model successor of the legacy `.ui-nav-screen { width/height:100% }`
+/// class: without it a screen that sizes itself with `flex_grow` (a canvas
+/// board, a fill-the-viewport editor) collapses to content height inside the
+/// outlet. Applied through the screen root's style OVERRIDE layer
+/// ([`NavigatorHost::set_screen_style_overlay`](super::host::NavigatorHost::set_screen_style_overlay)),
+/// so it composes with the screen's own styles and wins deterministically.
+pub fn screen_flow_fill_rules() -> Rc<crate::style::StyleRules> {
+    use crate::style::Length;
+    Rc::new(crate::style::StyleRules {
+        width: Some(Length::Percent(100.0).into()),
+        flex_grow: Some(1.0.into()),
+        flex_shrink: Some(1.0.into()),
+        flex_basis: Some(Length::Px(0.0).into()),
+        min_height: Some(Length::Px(0.0).into()),
         ..Default::default()
     })
 }
