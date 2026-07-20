@@ -22,6 +22,7 @@ pub(crate) mod node;
 pub(crate) mod portal;
 pub(crate) mod presence;
 pub(crate) mod screenshot;
+pub(crate) mod sticky;
 pub(crate) mod styled_text;
 pub(crate) mod text_style;
 pub(crate) mod transitions;
@@ -125,6 +126,14 @@ pub struct MacosBackend {
     /// doesn't destroy the others (CALayer's `transform` is a single
     /// matrix). Mirrors the iOS `animated_states` map.
     pub(crate) animated_states: animated::AnimatedStateMap,
+    /// `Position::Sticky` bookkeeping: scroll view → registered sticky
+    /// children + the clip-view bounds-change observer that reticks
+    /// them. Mirrors iOS `sticky_registry`.
+    pub(crate) sticky_registry: sticky::StickyRegistry,
+    /// Sticky views whose `apply_style` ran before `insert` gave them a
+    /// scroll ancestor (walker ordering). `insert` retries these;
+    /// value = pin threshold (`top`). Mirrors iOS `pending_sticky`.
+    pub(crate) pending_sticky: HashMap<usize, f32>,
     /// Per-view cached gradient state. Keyed by view pointer; holds
     /// the gradient `CAGradientLayer` retained handle plus the
     /// current sRGB stop colors so `AnimProp::GradientStopColor(idx)`
@@ -312,6 +321,22 @@ thread_local! {
     /// comment at the call site in `finish` for why the mirror is deferred.
     static LAST_MIRRORED_VIEWPORT: std::cell::Cell<Option<(f32, f32)>> =
         const { std::cell::Cell::new(None) };
+}
+
+/// Run `f` against the installed global backend. Quietly no-ops when
+/// no backend is installed, it has been torn down, or it is already
+/// borrowed (the in-flight call sees fresh state on its next event).
+/// Same access pattern as [`set_animated_f32`] below; used by callback
+/// targets (sticky scroll observers) that fire outside any framework
+/// borrow.
+pub(crate) fn with_backend(f: impl FnOnce(&mut MacosBackend)) {
+    let weak = MACOS_BACKEND_SELF.with(|s| s.borrow().clone());
+    let Some(weak) = weak else { return };
+    let Some(rc) = weak.upgrade() else { return };
+    let borrow = rc.try_borrow_mut();
+    if let Ok(mut b) = borrow {
+        f(&mut b);
+    }
 }
 
 /// Install the backend's self-reference. Hosts call this once after
@@ -612,6 +637,8 @@ impl MacosBackend {
             callback_targets: Vec::new(),
             app_key_monitor: None,
             animated_states: HashMap::new(),
+            sticky_registry: HashMap::new(),
+            pending_sticky: HashMap::new(),
             gradient_states: HashMap::new(),
             styled_texts: HashMap::new(),
             external_content_measures: HashMap::new(),
@@ -1727,6 +1754,18 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
         }
     }
 
+    // Pointer events: `None` makes the subtree hit-transparent (with
+    // explicit-`Auto` descendants opting back in) — the AppShell scrim /
+    // overlay click-through pattern web gets from CSS `pointer-events`.
+    // Enforced by `FlippedView`'s `hitTest:` override; the verdict logic
+    // is shared with iOS (Rule #7). `Some` overwrites, unset leaves the
+    // prior apply (matching `cursor`).
+    if let Some(p) = style.pointer_events {
+        if let Some(fv) = as_flipped_view(view) {
+            fv.set_pointer_events(Some(p));
+        }
+    }
+
     // Text selection: macOS controls it per text widget via `setSelectable:`
     // (NSTextField / NSTextView respond; other views ignore it). `Auto` leaves
     // the widget default — labels are already non-selectable, so a button's
@@ -2727,6 +2766,18 @@ impl MacosBackend {
         // would be clipped and un-hit-testable (the "modal renders but nothing is
         // pressable" bug). Mirrors iOS's `contentSize` sync.
         self.sync_scroll_document_views();
+
+        // Refresh each sticky child's cached natural-y against the fresh
+        // Taffy frames, then re-tick so pins re-apply immediately (a
+        // route swap or content growth moves the natural position; the
+        // scroll observer alone only fires on actual scrolls). Mirrors
+        // the iOS layout-pass hook.
+        sticky::refresh_layout_positions(
+            &mut self.sticky_registry,
+            &self.layout,
+            &self.view_to_layout,
+        );
+        sticky::tick_all(self);
     }
 
     /// The host window's current content rect in SCREEN coordinates, or `None`
@@ -3178,6 +3229,12 @@ impl Backend for MacosBackend {
         // Keyboard half: a link is a tab stop that activates on Space/Return,
         // like web's focusable `<a href>`. See `FlippedView::set_activate`.
         flipped.set_activate(on_activate);
+        // Default hand cursor: web links get `a { cursor: pointer }` from the
+        // browser's UA stylesheet with zero author styling, so the backends
+        // must converge on the pointing hand (Rule #7). An author `cursor`
+        // style still overwrites this on `apply_style` (which runs after
+        // create).
+        flipped.set_cursor(view::cursor_for(runtime_core::Cursor::Pointer));
         let view: Retained<NSView> = Retained::into_super(flipped);
         let _ = self.layout_for_view(&view);
         let node = MacosNode::View(view);
@@ -4175,7 +4232,23 @@ impl Backend for MacosBackend {
         // (CSS pixels) and iOS (UIKit points), so author code reads
         // identical values across platforms.
         if let Some(cb) = on_scroll {
-            let target = crate::imp::callbacks::ScrollObserverTarget::new(self.mtm, cb);
+            // Deliver the author's `on_scroll` ASYNCHRONOUSLY (next
+            // main-queue turn), matching web: a programmatic scroll fires
+            // the scroll event after the current task, never on the
+            // caller's stack. AppKit's bounds notification is synchronous,
+            // so dispatching inline re-enters the reactive system while
+            // the scrolling caller may still hold the refs/arena borrow —
+            // `scroll_ref.with(|h| h.scroll_to(...))` in a click handler
+            // plus a scroll-spy `signal.set` inside `on_scroll` aborted
+            // with "RefCell already borrowed" in the non-unwinding
+            // notification callback (the website TOC-link crash). The
+            // sticky retick observer stays synchronous by design — it
+            // only writes frames and must track the scroll beat-for-beat.
+            let deferred: Rc<dyn Fn(f32, f32)> = Rc::new(move |x, y| {
+                let cb = cb.clone();
+                runtime_core::schedule_microtask(move || cb(x, y));
+            });
+            let target = crate::imp::callbacks::ScrollObserverTarget::new(self.mtm, deferred);
             let clip_view: *mut objc2::runtime::AnyObject =
                 unsafe { msg_send![&scroll_view, contentView] };
             if !clip_view.is_null() {
@@ -4366,6 +4439,27 @@ impl Backend for MacosBackend {
         let child_layout = self.layout_for_view(child_view);
         self.layout.add_child(parent_layout, child_layout);
 
+        // Retry sticky registrations that arrived before their scroll
+        // ancestor existed (`apply_style` runs before `insert` — see the
+        // Sticky arm there). The pending set is tiny (usually 0–1), so a
+        // retry-all here is simpler than the recursive subtree walk iOS
+        // does, with identical results.
+        if !self.pending_sticky.is_empty() {
+            let pending: Vec<(usize, f32)> =
+                self.pending_sticky.iter().map(|(k, v)| (*k, *v)).collect();
+            for (key, threshold) in pending {
+                let Some(view) = self.view_to_layout.get(&key).map(|(v, _)| v.clone()) else {
+                    // The view unmounted before ever gaining a scroll
+                    // ancestor — drop the stale entry.
+                    self.pending_sticky.remove(&key);
+                    continue;
+                };
+                if sticky::register(self.mtm, &mut self.sticky_registry, &view, threshold) {
+                    self.pending_sticky.remove(&key);
+                }
+            }
+        }
+
         // Presence placeholder hosting an OUT-OF-FLOW child: upgrade the
         // placeholder to fill its parent so the absolute child has real,
         // non-collapsed geometry (AppKit hit-test / cursor / hover all clip to
@@ -4510,6 +4604,18 @@ impl Backend for MacosBackend {
         transitions::forget_view(child_view);
         // Drop any in-flight presence tween (opacity/transform) on this view.
         presence::forget_view(child_view);
+        // Sticky bookkeeping: the removed child may itself be sticky, or be
+        // the scroll view a whole screen's sticky children registered against
+        // (screen swap removes the subtree wholesale, so the per-child
+        // deregisters never run — without this the registry leaks a retained
+        // subtree + a live notification observer per swapped-away screen).
+        sticky::deregister(&mut self.sticky_registry, child_view);
+        self.pending_sticky.remove(&child_key);
+        let is_scroll_child: bool =
+            unsafe { msg_send![child_view, isKindOfClass: objc2::class!(NSScrollView)] };
+        if is_scroll_child {
+            sticky::deregister_scroll_view(&mut self.sticky_registry, child_view);
+        }
         // Drop the cached text-measure signature so a recycled NSView at the
         // same address can't read a stale label sig.
         self.text_measure_sig.remove(&child_key);
@@ -4722,6 +4828,45 @@ impl Backend for MacosBackend {
             if let Some(state) = gradient::install_gradient(view, g) {
                 let key = view as *const NSView as usize;
                 self.gradient_states.insert(key, state);
+            }
+        }
+
+        // Position::Sticky → register against the enclosing
+        // NSScrollView so the clip-view bounds-change observer pins
+        // this view once scrolled past its `top` threshold. Any other
+        // Position (or unset) deregisters so a Sticky → Relative
+        // transition clears the carried translate. The walker fires
+        // `apply_style` BEFORE `insert`, so a first-mount register may
+        // find no scroll ancestor yet — record in `pending_sticky` and
+        // let `insert` retry (mirrors iOS).
+        {
+            let sticky_key = view as *const NSView as usize;
+            match style.position {
+                Some(runtime_core::Position::Sticky) => {
+                    let threshold_top = style
+                        .top
+                        .as_ref()
+                        .map(|t| match t.resolve() {
+                            runtime_core::Length::Px(v) => v,
+                            // Percent/Auto pin offsets aren't meaningful
+                            // for sticky (see the iOS twin). Treat as 0.
+                            _ => 0.0,
+                        })
+                        .unwrap_or(0.0);
+                    let registered = sticky::register(
+                        self.mtm,
+                        &mut self.sticky_registry,
+                        view,
+                        threshold_top,
+                    );
+                    if !registered {
+                        self.pending_sticky.insert(sticky_key, threshold_top);
+                    }
+                }
+                _ => {
+                    sticky::deregister(&mut self.sticky_registry, view);
+                    self.pending_sticky.remove(&sticky_key);
+                }
             }
         }
 

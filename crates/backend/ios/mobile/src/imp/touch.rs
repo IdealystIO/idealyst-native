@@ -14,7 +14,7 @@
 //!
 //! See `docs/native-touch-backends-plan.md` for the design.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -36,6 +36,17 @@ pub(crate) struct TouchViewIvars {
     /// delivers them to us (we won at `Began` by not calling super);
     /// the set lets us be explicit about per-touch consumption.
     active_touches: RefCell<HashSet<u64>>,
+    /// Explicit `StyleRules::pointer_events`, mapped by `apply_style`.
+    /// `None` = unset (default hit-testing). `Some(None)` makes this
+    /// view's subtree hit-transparent — the always-mounted AppShell
+    /// scrim / overlay click-through pattern — with `Some(Auto)`
+    /// descendants opting back in. Enforced by the `hitTest:withEvent:`
+    /// override; the verdict is shared with macOS via
+    /// `backend_apple_core::pointer_events_policy` (Rule #7). We use a
+    /// hit-test override rather than `userInteractionEnabled = NO`
+    /// because the UIKit flag disables the WHOLE subtree with no way
+    /// for a descendant `Auto` to re-enable.
+    pointer_events: Cell<Option<runtime_core::PointerEvents>>,
 }
 
 declare_class!(
@@ -81,6 +92,62 @@ declare_class!(
             }
         }
 
+        // `pointer-events: none` — this subtree is hit-transparent
+        // (return nil so UIKit resolves siblings underneath), EXCEPT
+        // descendants that explicitly re-enable with `Auto`. Verdict
+        // shared with macOS (Rule #7); see
+        // `backend_apple_core::pointer_events_policy`. Without this, an
+        // always-mounted full-window scrim styled inert via
+        // `PointerEvents::None` (idea-ui-nav's AppShell) captures every
+        // touch. Single tail expression (no early `return`):
+        // `declare_class!` wraps `#[method_id]` bodies.
+        #[method_id(hitTest:withEvent:)]
+        fn hit_test(&self, point: CGPoint, event: Option<&UIEvent>) -> Option<Retained<UIView>> {
+            let result: Option<Retained<UIView>> =
+                unsafe { msg_send_id![super(self), hitTest: point, withEvent: event] };
+            if matches!(
+                self.ivars().pointer_events.get(),
+                Some(runtime_core::PointerEvents::None)
+            ) {
+                result.and_then(|result| {
+                    let self_view: &UIView = self;
+                    if std::ptr::eq(&*result as *const UIView, self_view as *const UIView) {
+                        return None;
+                    }
+                    // Walk hit → … → (excluding) self, collecting each
+                    // framework host's explicit pointer_events for the
+                    // shared nearest-explicit-wins verdict.
+                    let mut chain: Vec<Option<runtime_core::PointerEvents>> = Vec::new();
+                    let mut cur: Option<Retained<UIView>> = Some(result.clone());
+                    while let Some(v) = cur {
+                        if std::ptr::eq(&*v as *const UIView, self_view as *const UIView) {
+                            break;
+                        }
+                        let is_host: bool = unsafe {
+                            msg_send![&*v, isKindOfClass: objc2::class!(IdealystTouchView)]
+                        };
+                        chain.push(if is_host {
+                            let tv = unsafe {
+                                &*(&*v as *const UIView as *const IdealystTouchView)
+                            };
+                            tv.ivars().pointer_events.get()
+                        } else {
+                            None
+                        });
+                        cur = unsafe { msg_send_id![&*v, superview] };
+                    }
+                    if backend_apple_core::pointer_events_policy::none_hit_stands(false, &chain)
+                    {
+                        Some(result)
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                result
+            }
+        }
+
         #[method(touchesCancelled:withEvent:)]
         fn touches_cancelled(&self, touches: &NSSet<UITouch>, event: Option<&UIEvent>) {
             // Always dispatch to the handler (it may need to reset
@@ -100,6 +167,7 @@ impl IdealystTouchView {
         let this = this.set_ivars(TouchViewIvars {
             handler: RefCell::new(None),
             active_touches: RefCell::new(HashSet::new()),
+            pointer_events: Cell::new(None),
         });
         let this: Retained<Self> = unsafe { msg_send_id![super(this), init] };
         // multipleTouchEnabled = YES so every finger reaches us, not
@@ -117,6 +185,13 @@ impl IdealystTouchView {
     /// `Backend::install_touch_handler` impl on `IosBackend`.
     pub(crate) fn set_handler(&self, handler: TouchHandler) {
         *self.ivars().handler.borrow_mut() = Some(handler);
+    }
+
+    /// Map `StyleRules::pointer_events` onto this host. Called by
+    /// `apply_style`; `Some` overwrites, unset leaves the prior apply.
+    /// Consulted by the `hitTest:withEvent:` override above.
+    pub(crate) fn set_pointer_events(&self, v: Option<runtime_core::PointerEvents>) {
+        self.ivars().pointer_events.set(v);
     }
 
     /// Whether an `on_touch` handler is currently installed. Every framework

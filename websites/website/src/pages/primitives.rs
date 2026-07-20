@@ -16,7 +16,10 @@ use runtime_core::primitives::activity_indicator::ActivityIndicatorSize;
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide, ViewportPlacement};
 use runtime_core::primitives::presence::PresenceAnim;
-use runtime_core::{component, signal, ui, Color, Easing, Element, Ref, ViewHandle};
+use runtime_core::{
+    component, signal, styled_text, ui, Color, Easing, Element, FontFamily, Ref, TextRun,
+    TextRunStyle, Tokenized, ViewHandle,
+};
 use idea_ui::{Stack, StackGap, Typography};
 
 use crate::branding::LIGHT_LOGO;
@@ -175,6 +178,9 @@ fn content_primitives() -> Element {
             PrimCell(tag = "text", blurb = "A run of text. Reactive when its child reads a signal.") {
                 text { "The quick brown fox jumps over the lazy dog." }
             }
+            PrimCell(tag = "styled_text", blurb = "One text node with inline-styled ranges \u{2014} per-run font, color, and background \u{2014} realized as attributed text on every backend.") {
+                { styled_runs_demo() }
+            }
             PrimCell(tag = "image", blurb = "A bitmap from a URL (here, an inline SVG data URI).") {
                 image(src = img_src, alt = "A purple square with a yellow dot")
             }
@@ -183,6 +189,24 @@ fn content_primitives() -> Element {
             }
         }
     }
+}
+
+/// Live demo for the `styled_text` cell: a paragraph mixing plain runs
+/// with a mono + background "chip" run, the same shape the site's own
+/// `Prose` component lowers backticks to.
+fn styled_runs_demo() -> Element {
+    let chip = TextRunStyle {
+        font_family: Some(FontFamily::System(
+            "ui-monospace, SFMono-Regular, Menlo, monospace".into(),
+        )),
+        background: Some(Tokenized::token("color-surface-alt", Color("#f4eedb".into()))),
+        ..Default::default()
+    };
+    runtime_core::IntoElement::into_element(styled_text(vec![
+        TextRun::plain("Inline runs like "),
+        TextRun::styled("code_chips", chip),
+        TextRun::plain(" live inside one text node, so the whole paragraph wraps as a unit."),
+    ]))
 }
 
 // =============================================================================

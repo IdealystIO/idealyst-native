@@ -2016,8 +2016,21 @@ impl Backend for IosBackend {
         // forwards `scrollViewDidScroll:` into the Rust closure with
         // (contentOffset.x, contentOffset.y) in UIKit points \u{2014}
         // same units as the web backend's CSS-pixel offset.
+        //
+        // Deliver the author callback ASYNCHRONOUSLY (next turn),
+        // matching web: `scrollViewDidScroll:` fires synchronously from
+        // `setContentOffset`, so a handler that scrolls inside a
+        // `Ref::with` (holding the refs/arena borrow) while `on_scroll`
+        // writes a signal would re-enter the reactive arena and abort
+        // with "RefCell already borrowed" — the exact crash the macOS
+        // twin hit via its bounds-change notification (website TOC
+        // links). Same fix both backends (Rule #7).
         if let Some(cb) = on_scroll {
-            let delegate = crate::imp::callbacks::ScrollDelegate::new(self.mtm, cb);
+            let deferred: Rc<dyn Fn(f32, f32)> = Rc::new(move |x, y| {
+                let cb = cb.clone();
+                runtime_core::schedule_microtask(move || cb(x, y));
+            });
+            let delegate = crate::imp::callbacks::ScrollDelegate::new(self.mtm, deferred);
             let _: () = unsafe { msg_send![&scroll, setDelegate: &*delegate] };
             self.retain_target(&delegate);
         }
@@ -3090,6 +3103,23 @@ impl Backend for IosBackend {
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
         let view = node.as_view();
         apply_style_to_view(view, style);
+
+        // Pointer events: `None` makes the subtree hit-transparent (with
+        // explicit-`Auto` descendants opting back in) — the AppShell
+        // scrim / overlay click-through pattern web gets from CSS
+        // `pointer-events`. Enforced by `IdealystTouchView`'s
+        // `hitTest:withEvent:` override; the verdict logic is shared
+        // with macOS (Rule #7). `Some` overwrites, unset leaves the
+        // prior apply.
+        if let Some(p) = style.pointer_events {
+            let is_touch_view: bool =
+                unsafe { msg_send![view, isKindOfClass: objc2::class!(IdealystTouchView)] };
+            if is_touch_view {
+                let touch_view: &touch::IdealystTouchView =
+                    unsafe { &*(view as *const UIView as *const touch::IdealystTouchView) };
+                touch_view.set_pointer_events(Some(p));
+            }
+        }
 
         // Image content-fit. `object_fit` maps to the image view's
         // `contentMode`; `None` ⇒ the framework default `Contain`. A no-op on

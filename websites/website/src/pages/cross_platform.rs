@@ -20,21 +20,20 @@ pub fn page() -> Element {
     let targets_ref: Ref<ViewHandle> = Ref::new();
 
     let toc = vec![
-        TocEntry { handle: one_tree_ref, label: "One author tree" },
-        TocEntry { handle: native_ref, label: "The platform's own widgets" },
-        TocEntry { handle: converge_ref, label: "The same behavior everywhere" },
-        TocEntry { handle: seam_ref, label: "The Backend trait is the only seam" },
-        TocEntry { handle: targets_ref, label: "See every target" },
+        TocEntry { handle: one_tree_ref, label: "One component tree" },
+        TocEntry { handle: native_ref, label: "Native widgets" },
+        TocEntry { handle: converge_ref, label: "Consistent behavior" },
+        TocEntry { handle: seam_ref, label: "The Backend trait" },
+        TocEntry { handle: targets_ref, label: "Targets" },
     ];
 
     let content = ui! {
         Stack(gap = StackGap::Xl) {
             PageHeader(
                 title = "Cross-platform",
-                blurb = "The same Rust code renders natively on phones, desktops, the browser, \
-                 a GPU surface, even a terminal. Each platform is one implementation of the \
-                 Backend trait \u{2014} implement it for a new target and the whole ecosystem \
-                 comes along.",
+                blurb = "The same Rust code renders natively on phones, desktops, the \
+                 browser, a GPU surface, and the terminal. Each platform is one \
+                 implementation of the Backend trait.",
             )
             PageSection(handle = one_tree_ref) { one_tree() }
             PageSection(handle = native_ref) { native_widgets() }
@@ -75,16 +74,13 @@ fn one_tree() -> Element {
                    //   idealyst run macos      \u{2192} AppKit";
     ui! {
         Section(
-            title = "One author tree".to_string(),
+            title = "One component tree".to_string(),
             paragraphs = vec![
-                "You write components against a single vocabulary of primitives \u{2014} \
-                 `view`, `text`, `button`, `scroll_view`, and the rest \u{2014} plus signals \
-                 for state. That tree knows nothing about the platform it will run on. The \
-                 CLI handles the per-target build pipeline and wrapper; your code stays \
-                 platform-agnostic.".to_string(),
-                "A screen is written once. Per-platform differences in layout, events, and \
-                 rendering are absorbed below the primitive layer, so the tree you author \
-                 is the tree every target runs.".to_string(),
+                "Components are written against a fixed set of primitives (`view`, `text`, \
+                 `button`, `scroll_view`, and the rest) plus signals for state. The CLI \
+                 builds and wraps the same code for each target.".to_string(),
+                "Per-platform differences in layout, events, and rendering are handled \
+                 below the primitive layer, not in application code.".to_string(),
             ],
             code = Some(example.to_string()),
         )
@@ -94,21 +90,15 @@ fn one_tree() -> Element {
 fn native_widgets() -> Element {
     ui! {
         Section(
-            title = "The platform's own widgets".to_string(),
+            title = "Native widgets".to_string(),
             paragraphs = vec![
-                "A `button` is a real `UIButton` on iOS, a real Android button view over \
-                 JNI, an `NSButton` on macOS, and a `<button>` in the DOM. A `scroll_view` \
-                 is a real `UIScrollView` with native scroll physics and bounce, a real \
-                 Android scroll container, an `NSScrollView` on macOS. The framework drives \
-                 the platform's own toolkit directly.".to_string(),
-                "That means the things users feel without thinking about \u{2014} momentum \
-                 scrolling, text selection, the system back gesture, accessibility focus, \
-                 keyboard handling \u{2014} are the platform's real implementations. The \
-                 app reads as belonging to the device it's running on.".to_string(),
-                "Where a target has no native toolkit to drive \u{2014} a bare GPU surface, \
-                 a microcontroller's framebuffer, a terminal grid \u{2014} the framework \
-                 renders the primitives itself through that backend. Same primitives, \
-                 different bottom layer.".to_string(),
+                "A `button` is a `UIButton` on iOS, an Android button view over JNI, an \
+                 `NSButton` on macOS, and a `<button>` in the DOM. A `scroll_view` is a \
+                 `UIScrollView`, an Android scroll container, an `NSScrollView`.".to_string(),
+                "Scroll physics, text selection, the system back gesture, accessibility \
+                 focus, and keyboard handling are the platform's own implementations.".to_string(),
+                "Targets without a native toolkit (a bare GPU surface, a terminal grid) \
+                 render the primitives through their own drawing layer instead.".to_string(),
             ],
         )
     }
@@ -117,19 +107,14 @@ fn native_widgets() -> Element {
 fn convergent_behavior() -> Element {
     ui! {
         Section(
-            title = "The same behavior everywhere".to_string(),
+            title = "Consistent behavior".to_string(),
             paragraphs = vec![
-                "Backends diverge in mechanism but converge in observable behavior. A scale \
-                 animation uses `UIView.transform` on iOS, a `CALayer` transform on macOS, \
-                 and a CSS `transform` on web \u{2014} three different mechanisms, one \
-                 identical visual result. The Backend trait is where the toolkit \
-                 differences get absorbed.".to_string(),
-                "A design rule keeps this true: when a primitive renders differently on \
-                 one backend, that backend gets fixed at the root so every target \
-                 benefits. The fix lands in the backend implementation, never as a fudge \
-                 factor at the call site.".to_string(),
-                "The payoff for you: what you verify on the web preview is what ships on \
-                 the phone.".to_string(),
+                "Backends differ in mechanism and converge on the same result. A scale \
+                 animation uses `UIView.transform` on iOS, a `CALayer` transform on \
+                 macOS, and CSS `transform` on web.".to_string(),
+                "When a primitive renders differently on one backend, the fix goes into \
+                 that backend. There are no per-platform adjustments in application code \
+                 or in the framework's call sites.".to_string(),
             ],
         )
     }
@@ -146,21 +131,16 @@ fn backend_seam() -> Element {
                    }";
     ui! {
         Section(
-            title = "The Backend trait is the only seam".to_string(),
+            title = "The Backend trait".to_string(),
             paragraphs = vec![
-                "Every platform is one implementation of the `Backend` trait. The trait is \
-                 the framework's single seam to the outside world \u{2014} it knows about \
-                 primitives (create / update / insert / remove), style application, layout, \
-                 refs, and animated values, and nothing higher-level. Routing, theming, \
-                 components, and reactivity all sit above it and work unchanged on any \
-                 backend that satisfies the contract.".to_string(),
-                "Cross-platform here means an open contract: get the primitive surface \
-                 right for a new target \u{2014} a proprietary display, a server-side \
-                 renderer, a games console \u{2014} and everything the framework already \
-                 does comes along for free.".to_string(),
-                "Peripheral, platform-specific capabilities (maps, video, web views) plug \
-                 in as third-party extensions through `Element::External` and a \
-                 per-backend registry, which keeps the core contract small.".to_string(),
+                "The trait covers primitives (create / update / insert / remove), style \
+                 application, layout, refs, and animated values. Routing, theming, \
+                 components, and reactivity sit above it and are backend-independent.".to_string(),
+                "Adding a target (a proprietary display, a server-side renderer, a games \
+                 console) means implementing this one trait.".to_string(),
+                "Platform-specific capabilities like maps, video, and web views register \
+                 as third-party extensions through `Element::External` instead of \
+                 growing the trait. The Extensibility page covers that mechanism.".to_string(),
             ],
             code = Some(example.to_string()),
         )
@@ -170,11 +150,10 @@ fn backend_seam() -> Element {
 fn see_targets() -> Element {
     ui! {
         Stack(gap = StackGap::Md) {
-            Typography(content = "See every target".to_string(), kind = idea_ui::typography_kind::H2)
-            Typography(content = "The full list of platforms idealyst runs on \u{2014} phones, \
-                desktops, browsers, GPU surfaces, embedded devices, the terminal \u{2014} lives \
-                on the Targets page. The per-primitive implementation status for each backend \
-                (what's working, in progress, or planned) lives on the Backends page.".to_string())
+            Typography(content = "Targets".to_string(), kind = idea_ui::typography_kind::H2)
+            Typography(content = "The full platform list is on the Targets page. \
+                Per-primitive implementation status for each backend is on the Backends \
+                page.".to_string())
             link(route = &TARGETS_ROUTE, params = ()) {
                 Typography(content = "Browse every target \u{2192}".to_string())
             }

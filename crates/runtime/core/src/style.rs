@@ -426,6 +426,16 @@ pub enum Position {
     ///   Vertical (`top`) only in v1; horizontal (`left`) is a
     ///   follow-up. Falls back to `Relative` when no enclosing
     ///   scroll view exists (matches CSS).
+    /// - **macOS** — same registry model as iOS, but scroll-driven
+    ///   instead of vsync-polled: an `NSViewBoundsDidChangeNotification`
+    ///   observer on the scroll view's clip view reticks the pin, and
+    ///   the pin moves the view's FRAME (`setFrameOrigin:` = Taffy y +
+    ///   translate) rather than a layer transform — AppKit culls/purges
+    ///   scroll-view drawing by frame, so a transform-pinned view's
+    ///   drawn text goes blank once its frame scrolls out of the
+    ///   prepared content rect. Vertical (`top`) only in v1; falls
+    ///   back to `Relative` with no enclosing `NSScrollView`. See
+    ///   `backend-macos/src/imp/sticky.rs`.
     /// - **wgpu** — walks up to the enclosing `ScrollView` at
     ///   `apply_style` time, registers the node in a per-backend
     ///   sticky registry, and the render walker applies the pin

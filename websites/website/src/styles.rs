@@ -485,10 +485,10 @@ stylesheet! {
             flex_shrink: 0.0,
             padding_top: 8.0,
             // Sticky positioning so the TOC stays in view as the
-            // page content scrolls. Web honours this directly; on
-            // native targets the SDK will fall back to Relative
-            // until the scroll-listener implementation lands (see
-            // `Position::Sticky` doc comment in runtime-core).
+            // page content scrolls. Web emits CSS `sticky`; iOS,
+            // macOS, Android, and wgpu pin via their per-backend
+            // sticky registries (see the `Position::Sticky` doc
+            // comment in runtime-core for the coverage list).
             position: Position::Sticky,
             top: Length::Px(32.0),
         }

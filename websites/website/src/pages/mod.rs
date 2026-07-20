@@ -4,14 +4,17 @@
 pub mod agentic;
 pub mod architecture;
 pub mod backends;
+pub mod cli;
 pub mod code_splitting;
 pub mod comparisons;
 pub mod concepts;
 pub mod cross_platform;
 pub mod demo;
+pub mod extensibility;
 pub mod features;
 pub mod further_reading;
 pub mod home;
+pub mod idea_ui;
 pub mod install;
 pub mod navigation;
 pub mod performance;

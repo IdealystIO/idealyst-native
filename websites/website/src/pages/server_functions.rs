@@ -15,6 +15,8 @@ pub fn page() -> Element {
     let wire_ref: Ref<ViewHandle> = Ref::new();
     let project_ref: Ref<ViewHandle> = Ref::new();
     let extractors_ref: Ref<ViewHandle> = Ref::new();
+    let tags_ref: Ref<ViewHandle> = Ref::new();
+    let kit_ref: Ref<ViewHandle> = Ref::new();
     let batching_ref: Ref<ViewHandle> = Ref::new();
     let cancellation_ref: Ref<ViewHandle> = Ref::new();
     let reactive_ref: Ref<ViewHandle> = Ref::new();
@@ -26,7 +28,9 @@ pub fn page() -> Element {
         TocEntry { handle: how_it_works_ref, label: "How the macro splits" },
         TocEntry { handle: wire_ref, label: "The wire" },
         TocEntry { handle: project_ref, label: "Project layout" },
-        TocEntry { handle: extractors_ref, label: "App state & request data" },
+        TocEntry { handle: extractors_ref, label: "Injected parameters" },
+        TocEntry { handle: tags_ref, label: "Route tags" },
+        TocEntry { handle: kit_ref, label: "The API kit" },
         TocEntry { handle: batching_ref, label: "Batching, for free" },
         TocEntry { handle: cancellation_ref, label: "Cancellation, end-to-end" },
         TocEntry { handle: reactive_ref, label: "Wiring into the UI" },
@@ -49,6 +53,8 @@ pub fn page() -> Element {
             PageSection(handle = wire_ref) { wire_protocol() }
             PageSection(handle = project_ref) { project_layout() }
             PageSection(handle = extractors_ref) { extractors() }
+            PageSection(handle = tags_ref) { route_tags() }
+            PageSection(handle = kit_ref) { api_kit() }
             PageSection(handle = batching_ref) { batching() }
             PageSection(handle = cancellation_ref) { cancellation() }
             PageSection(handle = reactive_ref) { reactive_integration() }
@@ -66,16 +72,15 @@ pub fn page() -> Element {
 fn pitch() -> Element {
     let snippet = "// In your app crate, alongside your UI code:\n\
                    \n\
-                   use server::{server, ServerError};\n\
+                   use server::{server, ServerError, State};\n\
                    \n\
                    #[server]\n\
-                   async fn list_todos(user_id: u64) -> Result<Vec<Todo>, ServerError> {\n    \
-                       let db = server::use_state::<Arc<Db>>()\n        \
-                           .ok_or_else(|| ServerError::failed(\"Db not installed\"))?;\n    \
+                   async fn list_todos(user_id: u64, db: State<Db>) -> Result<Vec<Todo>, ServerError> {\n    \
                        db.query(\"SELECT * FROM todos WHERE user_id = $1\", &[&user_id]).await\n\
                    }\n\
                    \n\
-                   // In the very same crate, in your UI component:\n\
+                   // In the very same crate, in your UI component. The injected\n\
+                   // `db` param never appears at the call site:\n\
                    let todos = list_todos(current_user.id).await?;";
     ui! {
         Stack(gap = StackGap::Md) {
@@ -191,36 +196,130 @@ fn project_layout() -> Element {
 
 fn extractors() -> Element {
     let state_snippet = "// At server startup:\n\
-                         server::install_state(Arc::new(Db::connect().await));\n\
+                         server::install_state(Db::connect().await);\n\
                          \n\
-                         // Inside any server fn body:\n\
+                         // Declared as a parameter, resolved per request on the server:\n\
                          #[server]\n\
-                         async fn list_todos(user_id: u64) -> Result<Vec<Todo>, ServerError> {\n    \
-                             let db = server::use_state::<Arc<Db>>()\n        \
-                                 .ok_or_else(|| ServerError::failed(\"Db not installed\"))?;\n    \
-                             db.query(...).await\n\
-                         }";
-    let header_snippet = "#[server]\n\
-                          async fn whoami() -> Result<String, ServerError> {\n    \
-                              let auth = server::use_request_header(\"authorization\")\n        \
-                                  .ok_or_else(|| ServerError::failed(\"missing Authorization\"))?;\n    \
-                              Ok(format!(\"authenticated as: {auth}\"))\n\
-                          }";
+                         async fn list_todos(filter: Filter, db: State<Db>) -> Result<Vec<Todo>, ServerError> {\n    \
+                             db.query(...).await          // State<T> derefs to T\n\
+                         }\n\
+                         \n\
+                         // The client stub's signature: list_todos(filter) \u{2014}\n\
+                         // injected params are stripped; only wire args cross the network.";
+    let ctx_snippet = "// Name the dependency as a domain type instead of State<PgPool>:\n\
+                       server_kit::context! {\n    \
+                           /// The app's database pool.\n    \
+                           pub struct Db(sqlx::PgPool);\n\
+                       }\n\
+                       \n\
+                       #[server]\n\
+                       async fn list_todos(filter: Filter, #[ctx] db: Db) -> Result<Vec<Todo>, ServerError> {\n    \
+                           db.query(\"select ...\").fetch_all().await    // Db derefs to PgPool\n\
+                       }";
     ui! {
         Stack(gap = StackGap::Md) {
-            Typography(content = "App state and per-request data".to_string(), kind = idea_ui::typography_kind::H2)
-            Typography(content = "Server-side code gets two flavors of context. \
-                App-level state (DB pool, config, S3 client) is registered once at \
-                startup and read with `use_state::<T>` \u{2014} the registry is \
-                `TypeId`-keyed, so install one of each type:".to_string())
+            Typography(content = "Injected parameters (extractors)".to_string(), kind = idea_ui::typography_kind::H2)
+            Typography(content = "A `#[server]` fn's parameters come in two kinds. Wire \
+                args serialize and cross the network. Injected params \u{2014} `State<T>`, \
+                `Headers`, `Cookies`, `Extension<T>`, and any parameter marked `#[ctx]` \
+                \u{2014} resolve on the server from the request context and are stripped \
+                from the client stub, so a handler's dependencies read as part of its \
+                signature:".to_string())
             CodePanel(src = state_snippet)
-            Typography(content = "Per-request data (headers today; authenticated user / \
-                trace id / extracted query params later) is set by the dispatcher into \
-                a `tokio::task_local!` scope before invoking the handler:".to_string())
-            CodePanel(src = header_snippet)
-            Typography(content = "Both extractors are server-only \u{2014} they don't \
-                exist in the client build, so importing them inside a `#[server]` body \
-                is safe; that body never reaches the wasm compilation.".to_string())
+            Typography(content = "The `context!` macro goes one step further: declare an \
+                app resource as a named domain type, and server fns ask for `db: Db` \
+                with the wrapper resolving from the same state registry:".to_string())
+            CodePanel(src = ctx_snippet)
+            Typography(content = "Extraction failures are status-accurate and separate \
+                from your domain errors: missing app state is a 500 that names the fix, \
+                a missing authenticated principal is a 401 (see the API kit below), and \
+                `Headers` / `Cookies` always resolve. The wrapper types exist on both \
+                builds \u{2014} they appear in the shared signature \u{2014} while the \
+                resolution machinery compiles server-only.".to_string())
+        }
+    }
+}
+
+fn route_tags() -> Element {
+    let snippet = "// Static route metadata: a bare marker, or key = \"value\".\n\
+                   #[server(tags(admin))]\n\
+                   async fn revoke_key(id: KeyId) -> Result<(), ServerError> { ... }\n\
+                   \n\
+                   #[server(tags(role = \"employer\"))]\n\
+                   async fn payroll(who: Role<Employer>) -> Result<Payroll, ServerError> { ... }\n\
+                   \n\
+                   #[server(tags(limit = \"30/min\"))]\n\
+                   async fn search(q: String) -> Result<Vec<Hit>, ServerError> { ... }";
+    ui! {
+        Stack(gap = StackGap::Md) {
+            Typography(content = "Route tags".to_string(), kind = idea_ui::typography_kind::H2)
+            Typography(content = "Routes describe themselves with `tags(...)` \u{2014} \
+                static metadata the dispatcher hands to the policy layer on every call. \
+                The primitive only carries the tags; what a tag means is decided by \
+                whatever middleware reads it.".to_string())
+            CodePanel(src = snippet)
+            Typography(content = "Tags ride everywhere a call does: single dispatches, \
+                every entry of a batch, and stream opens (`#[sse]`, `#[channel]`, \
+                `#[subscription]`) all present the same metadata. A guard written \
+                against a tag covers all transports at once.".to_string())
+        }
+    }
+}
+
+fn api_kit() -> Element {
+    let chain_snippet = "// Server boot: one ordered middleware chain runs before every handler.\n\
+                         server_kit::install_middleware(server_kit::from_fn(|ctx| {\n    \
+                             let session = read_session(ctx.headers());\n    \
+                             Box::pin(async move {\n        \
+                                 if let Some(user) = lookup(session).await {\n            \
+                                     ctx.insert(server_kit::Authenticated);\n            \
+                                     ctx.insert(user);              // Auth<Principal> now resolves\n        \
+                                 }\n        \
+                                 Ok(())\n    \
+                             })\n\
+                         }));\n\
+                         server_kit::install_middleware(server_kit::require_tag::<Principal>(\"admin\"));\n\
+                         server_kit::install_middleware(\n    \
+                             server_kit::role_guard()\n        \
+                                 .role::<Employer>(\"employer\")\n        \
+                                 .role::<Employee>(\"employee\"),\n\
+                         );\n\
+                         server_kit::install_middleware(server_kit::rate_limit().key_by(client_key));";
+    let roles_snippet = "// Auth<T>: 401 when the session guard inserted nothing.\n\
+                         #[server]\n\
+                         async fn me(user: Auth<Principal>) -> Result<Profile, ServerError> {\n    \
+                             Ok(user.profile())\n\
+                         }\n\
+                         \n\
+                         // Role<M>: 401 anonymous, 403 signed-in-without-the-capability,\n\
+                         // typed access when the right class is present.\n\
+                         #[server(tags(role = \"employer\"))]\n\
+                         async fn payroll(who: Role<Employer>) -> Result<Payroll, ServerError> {\n    \
+                             run_payroll(&who).await\n\
+                         }";
+    ui! {
+        Stack(gap = StackGap::Md) {
+            Typography(content = "The API kit".to_string(), kind = idea_ui::typography_kind::H2)
+            Typography(content = "The `server` crate holds no policy: its one \
+                interception surface is a single dispatch-hook slot. `server-kit` is \
+                the conventional occupant of that slot \u{2014} an ordered middleware \
+                chain plus the auth, role, session, CSRF, rate-limit, and observability \
+                helpers most APIs want.".to_string())
+            CodePanel(src = chain_snippet)
+            Typography(content = "Guards insert facts; extractors consume them. A \
+                session guard validates credentials and inserts the principal \u{2014} \
+                it never rejects on its own. Downstream, `Auth<T>` answers 401 when the \
+                fact is missing, and `Role<M>` distinguishes 401 (no session) from 403 \
+                (signed in, lacking this capability):".to_string())
+            CodePanel(src = roles_snippet)
+            Typography(content = "Perimeters make whole groups deny-by-default: \
+                `require::<Principal>(\"admin/\")` guards a path prefix and \
+                `require_tag::<Principal>(\"admin\")` guards a tag, so a route that \
+                forgot its `Auth` param is still blocked. Rate limits are declared on \
+                the route (`tags(limit = \"2/min\")`), keyed however you choose, and \
+                refusals carry `Retry-After`. Misconfiguration fails closed: an \
+                unregistered role value or a malformed limit is a 500 that names the \
+                fix, never an open door.".to_string())
         }
     }
 }
@@ -355,7 +454,9 @@ fn where_next() -> Element {
             Typography(content = "The example app at `crates/api/server/examples/server-fn-demo` is a \
                 runnable todo app exercising every concept on this page \u{2014} \
                 CRUD, batching, cancellation, extractors, the async_reducer pattern, \
-                all of it.".to_string())
+                all of it. For the policy layer, `crates/api/server-kit/tests/kit_e2e.rs` \
+                runs the full chain \u{2014} session guard, tag perimeters, roles, rate \
+                limits \u{2014} over real HTTP.".to_string())
         }
     }
 }

@@ -71,3 +71,9 @@ pub mod text_control_style;
 /// macOS backends. NOT OS-gated — pure `runtime_core` logic, host-testable,
 /// so both backends collapse the four CSS sides identically (Rule #7).
 pub mod border;
+
+/// CSS `pointer-events` hit-test verdict shared by the UIKit + AppKit
+/// hit-test overrides. NOT OS-gated — pure `runtime_core` logic,
+/// host-testable, so both backends decline/allow hits identically
+/// (Rule #7).
+pub mod pointer_events_policy;

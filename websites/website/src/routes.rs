@@ -17,10 +17,12 @@ pub const TYPE_SAFETY_ROUTE: Route<()> = Route::<()>::new("type-safety", "/featu
 pub const SSR_ROUTE: Route<()> = Route::<()>::new("ssr", "/features/ssr");
 pub const SERVER_FUNCTIONS_ROUTE: Route<()> = Route::<()>::new("server-functions", "/server-functions");
 pub const CODE_SPLITTING_ROUTE: Route<()> = Route::<()>::new("code-splitting", "/code-splitting");
+pub const EXTENSIBILITY_ROUTE: Route<()> = Route::<()>::new("extensibility", "/features/extensibility");
 
 // ---- Instructions ----
 pub const INSTALL_ROUTE: Route<()> = Route::<()>::new("install", "/install");
 pub const QUICKSTART_ROUTE: Route<()> = Route::<()>::new("quickstart", "/quickstart");
+pub const CLI_ROUTE: Route<()> = Route::<()>::new("cli", "/cli");
 pub const CONCEPTS_ROUTE: Route<()> = Route::<()>::new("concepts", "/concepts");
 pub const REACTIVITY_ROUTE: Route<()> = Route::<()>::new("reactivity", "/reactivity");
 pub const STYLING_ROUTE: Route<()> = Route::<()>::new("styling", "/styling");
@@ -32,6 +34,7 @@ pub const DEMO_ROUTE: Route<()> = Route::<()>::new("demo", "/demo");
 
 // ---- Reference ----
 pub const PRIMITIVES_ROUTE: Route<()> = Route::<()>::new("primitives", "/primitives");
+pub const IDEA_UI_ROUTE: Route<()> = Route::<()>::new("idea-ui", "/idea-ui");
 pub const ARCHITECTURE_ROUTE: Route<()> = Route::<()>::new("architecture", "/architecture");
 pub const BACKENDS_ROUTE: Route<()> = Route::<()>::new("backends", "/backends");
 pub const AGENTIC_ROUTE: Route<()> = Route::<()>::new("agentic", "/agentic");
@@ -127,6 +130,7 @@ pub const SECTIONS: &[IndexSection] = &[
             IndexEntry { route: &SSR_ROUTE, label: "Server-side rendering" },
             IndexEntry { route: &SERVER_FUNCTIONS_ROUTE, label: "Server functions" },
             IndexEntry { route: &CODE_SPLITTING_ROUTE, label: "Code splitting" },
+            IndexEntry { route: &EXTENSIBILITY_ROUTE, label: "Extensibility" },
         ],
     },
     IndexSection {
@@ -134,6 +138,7 @@ pub const SECTIONS: &[IndexSection] = &[
         entries: &[
             IndexEntry { route: &INSTALL_ROUTE, label: "Install the CLI" },
             IndexEntry { route: &QUICKSTART_ROUTE, label: "Quickstart" },
+            IndexEntry { route: &CLI_ROUTE, label: "CLI tooling" },
             IndexEntry { route: &CONCEPTS_ROUTE, label: "Core concepts" },
             IndexEntry { route: &REACTIVITY_ROUTE, label: "Reactivity & animation" },
             IndexEntry { route: &STYLING_ROUTE, label: "Styling & theming" },
@@ -146,6 +151,7 @@ pub const SECTIONS: &[IndexSection] = &[
         entries: &[
             IndexEntry { route: &DEMO_ROUTE, label: "Demo" },
             IndexEntry { route: &PRIMITIVES_ROUTE, label: "Primitives" },
+            IndexEntry { route: &IDEA_UI_ROUTE, label: "idea-ui" },
             IndexEntry { route: &ARCHITECTURE_ROUTE, label: "Architecture" },
             IndexEntry { route: &BACKENDS_ROUTE, label: "Backends" },
             IndexEntry { route: &AGENTIC_ROUTE, label: "Robot & MCP" },

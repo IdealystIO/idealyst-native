@@ -285,6 +285,30 @@ Author code never touches any of this. The two paths — declarative
 of the same author-side stylesheet declaration, and the backend
 opts into whichever it can support.
 
+### `pointer_events` — hit-transparency
+
+`StyleRules::pointer_events` follows CSS semantics: `None` makes the
+node *and its subtree* hit-transparent (clicks/touches resolve to
+whatever renders behind it), and a descendant with explicit `Auto`
+re-enables itself and its own subtree. The nearest explicit value on
+the ancestor chain wins, mirroring CSS inheritance.
+
+This is what makes the always-mounted overlay pattern safe: a
+full-viewport scrim or toast strip styled `pointer_events: None`
+stays inert until it flips to `Auto` (idea-ui-nav's `AppShell`
+drawer scrim, `overlay().click_through(true)` with interactive
+children opting back in).
+
+Per backend: web/SSR emit the CSS property verbatim; iOS and macOS
+enforce it in the framework host view's hit-test override
+(`hitTest:` returns `nil`), with the verdict logic shared —
+host-testable — in `backend_apple_core::pointer_events_policy`.
+UIKit's `userInteractionEnabled = NO` is deliberately NOT used: it
+disables the whole subtree with no way for a descendant `Auto` to
+re-enable. Android and the GPU backend do not implement
+`pointer_events` yet — an always-mounted `None` overlay will swallow
+input there.
+
 ---
 
 ## Shadows: box vs. text

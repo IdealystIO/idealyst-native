@@ -281,12 +281,14 @@ fn diagram() -> Element {
 // =============================================================================
 
 pub fn page() -> Element {
+    let principles_ref: Ref<ViewHandle> = Ref::new();
     let model_ref: Ref<ViewHandle> = Ref::new();
     let core_ref: Ref<ViewHandle> = Ref::new();
     let catalog_ref: Ref<ViewHandle> = Ref::new();
     let sdk_ref: Ref<ViewHandle> = Ref::new();
 
     let toc = vec![
+        TocEntry { handle: principles_ref, label: "Principles" },
         TocEntry { handle: model_ref, label: "The layered model" },
         TocEntry { handle: core_ref, label: "Core & the Backend interface" },
         TocEntry { handle: catalog_ref, label: "Catalog → docs & MCP" },
@@ -301,6 +303,34 @@ pub fn page() -> Element {
                     to every platform, and the tooling built around it. This page is the overview \
                     — the tutorial site walks each layer in depth.",
             )
+
+            PageSection(handle = principles_ref) {
+                Stack(gap = StackGap::Lg) {
+                    Typography(content = "Principles".to_string(), kind = typography_kind::H2)
+                    Typography(
+                        content = "Four rules shape every design decision in the framework. \
+                            First: structure, reactivity, styling, and rendering are \
+                            orthogonal concerns \u{2014} a new authoring syntax, a new \
+                            primitive, a new backend, or a new style strategy can each be \
+                            added without modifying the others.".to_string(),
+                    )
+                    Typography(
+                        content = "Second: the framework decides what to render and when to \
+                            update; the backend decides how that happens on its platform. \
+                            Third: backends diverge in mechanism but converge in observable \
+                            behavior \u{2014} when a primitive renders differently on one \
+                            platform, the fix lands in that backend's root, so every app \
+                            benefits and author code stays platform-agnostic.".to_string(),
+                    )
+                    Typography(
+                        content = "Fourth: the core stays minimal. It holds the reactive \
+                            system, the scene model, and the Backend interface \u{2014} \
+                            everything composable from primitives lives outside it, as a \
+                            component library, an SDK, or a third-party extension.".to_string(),
+                    )
+                    learn_more("How third-party primitives plug in.", &crate::routes::EXTENSIBILITY_ROUTE, "Extensibility")
+                }
+            }
 
             PageSection(handle = model_ref) {
                 Stack(gap = StackGap::Lg) {
@@ -379,7 +409,7 @@ pub fn page() -> Element {
                         content = "And they compose. The MediaStream / AudioStream abstractions \
                             that back the camera and recorder SDKs are the same building blocks \
                             you'd reach for to build, say, a cross-platform video compositor — \
-                            that's the intended way to extend the framework, not fork it.".to_string(),
+                            that's the intended way to extend the framework.".to_string(),
                         muted = true,
                     )
                 }

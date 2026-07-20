@@ -120,6 +120,15 @@ pub struct FlippedViewIvars {
     /// stay Tab-transparent (a bare container must not be a tab stop). Mirrors
     /// the `on_touch` click so keyboard and mouse converge on the same handler.
     activate: RefCell<Option<Rc<dyn Fn()>>>,
+    /// Explicit `StyleRules::pointer_events`, mapped by `apply_style`.
+    /// `None` = unset (default hit-testing). `Some(None)` makes this view's
+    /// subtree hit-transparent — the always-mounted AppShell scrim / overlay
+    /// click-through pattern — with `Some(Auto)` descendants opting back in
+    /// (verdict shared with iOS via
+    /// `backend_apple_core::pointer_events_policy`). AppKit has no native
+    /// equivalent (`NSView` has no `userInteractionEnabled`), so the
+    /// `hitTest:` override consults this directly.
+    pointer_events: Cell<Option<runtime_core::PointerEvents>>,
 }
 
 declare_class!(
@@ -166,7 +175,61 @@ declare_class!(
                 x: point.x - tx,
                 y: point.y - ty,
             };
-            unsafe { msg_send_id![super(self), hitTest: adjusted] }
+            let result: Option<Retained<NSView>> =
+                unsafe { msg_send_id![super(self), hitTest: adjusted] };
+            // `pointer-events: none` — this subtree is hit-transparent
+            // (return nil so AppKit resolves whatever renders behind it),
+            // EXCEPT descendants that explicitly re-enable with `Auto`.
+            // The verdict is shared with iOS (Rule #7); see
+            // `backend_apple_core::pointer_events_policy` for the CSS
+            // semantics being modeled. Without this, an always-mounted
+            // full-window scrim styled inert via `PointerEvents::None`
+            // (idea-ui-nav's AppShell) captured EVERY mouse click on
+            // macOS — content links dead while robot (handler-level)
+            // clicks kept working.
+            // Single tail expression (no early `return`): `declare_class!`
+            // wraps `#[method_id]` bodies, so the branching lives in a
+            // closure.
+            if matches!(
+                self.ivars().pointer_events.get(),
+                Some(runtime_core::PointerEvents::None)
+            ) {
+                result.and_then(|result| {
+                    let self_view: &NSView = self;
+                    if std::ptr::eq(&*result as *const NSView, self_view as *const NSView) {
+                        return None;
+                    }
+                    // Walk hit → … → (excluding) self, collecting each
+                    // framework host's explicit pointer_events for the
+                    // shared nearest-explicit-wins verdict.
+                    let mut chain: Vec<Option<runtime_core::PointerEvents>> = Vec::new();
+                    let mut cur: Option<Retained<NSView>> = Some(result.clone());
+                    while let Some(v) = cur {
+                        if std::ptr::eq(&*v as *const NSView, self_view as *const NSView) {
+                            break;
+                        }
+                        let is_host: bool = unsafe {
+                            msg_send![&*v, isKindOfClass: objc2::class!(IdealystFlippedView)]
+                        };
+                        chain.push(if is_host {
+                            let fv =
+                                unsafe { &*(&*v as *const NSView as *const FlippedView) };
+                            fv.ivars().pointer_events.get()
+                        } else {
+                            None
+                        });
+                        cur = unsafe { msg_send_id![&*v, superview] };
+                    }
+                    if backend_apple_core::pointer_events_policy::none_hit_stands(false, &chain)
+                    {
+                        Some(result)
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                result
+            }
         }
 
         #[method(mouseDown:)]
@@ -525,8 +588,17 @@ impl FlippedView {
             tracking_area: RefCell::new(None),
             file_drop_handler: RefCell::new(None),
             activate: RefCell::new(None),
+            pointer_events: Cell::new(None),
         });
         unsafe { msg_send_id![super(this), init] }
+    }
+
+    /// Map `StyleRules::pointer_events` onto this host. Called by
+    /// `apply_style`; `Some` overwrites, unset leaves the prior apply
+    /// (the same convention `cursor` uses). Consulted by the `hitTest:`
+    /// override above.
+    pub(crate) fn set_pointer_events(&self, v: Option<runtime_core::PointerEvents>) {
+        self.ivars().pointer_events.set(v);
     }
 
     /// Mark this host as keyboard-interactive (a `pressable` / `link`): store the
