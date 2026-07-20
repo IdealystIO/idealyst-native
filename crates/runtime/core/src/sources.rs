@@ -41,6 +41,19 @@ pub enum TextSource {
     /// framework picks the fast or fallback path based on the
     /// active backend's capabilities.
     JsBinding(JsBindingSpec),
+    /// Static styled runs — one paragraph mixing per-range style
+    /// deltas (inline code chips, emphasis) realized through the
+    /// backend's own attributed-text mechanism so mixed-style text
+    /// wraps as a single paragraph. See [`crate::styled_text`] for
+    /// the model and scope. `Rc` because the walker hands the runs to
+    /// the backend at create time AND captures them in a theme-cohort
+    /// closure for native re-realization on theme swaps.
+    ///
+    /// Only `Element::Text` realizes runs richly. Other `TextSource`
+    /// consumers (button labels, the batched view path, robot labels)
+    /// lower to the concatenated plain text via
+    /// [`crate::styled_text::plain_text_of`].
+    Styled(std::rc::Rc<Vec<crate::styled_text::TextRun>>),
 }
 
 /// Pre-decomposed reactive text binding shipped via

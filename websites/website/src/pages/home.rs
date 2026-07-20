@@ -183,31 +183,30 @@ fn pillars_section() -> Element {
     // (title, blurb, destination)
     let pillars: [(&str, &str, &'static Route<()>); 5] = [
         (
-            "Truly cross-platform",
+            "Cross-platform",
             "Idealyst comes with premade platform implementations and is designed to \
              extend to any platform through the Backend Interface.",
             &TARGETS_ROUTE,
         ),
         (
-            "Reactive without a virtual DOM",
-            "Fine-grained signals mutate exactly the primitives that depend on them. \
-             No tree-diffing, no reconciliation, no re-render cycle.",
+            "Fine-grained reactivity",
+            "Signals mutate exactly the primitives that depend on them, one update at \
+             a time \u{2014} no virtual DOM overhead.",
             &CONCEPTS_ROUTE,
         ),
         (
             "Native-class performance",
-            "On every target, idealyst drives the platform's own toolkit directly \u{2014} \
-             not a re-rendered abstraction over the top.",
+            "On every target, idealyst drives the platform's own toolkit directly.",
             &BACKENDS_ROUTE,
         ),
         (
-            "No bundled runtime",
-            "WASM for the web, native binaries everywhere else. No JavaScript engine, no \
-             platform VM, no embedded runtime to ship.",
+            "Ships as compiled code",
+            "WASM for the web, native binaries everywhere else. The runtime is Rust \
+             code linked into your app, so the download is your app and nothing more.",
             &WHY_RUST_ROUTE,
         ),
         (
-            "AI-forward",
+            "Built for AI tooling",
             "Documentation generators and MCP support are built in. As you define \
              components, your LLMs can read live metadata to enrich their context.",
             &AGENTIC_ROUTE,

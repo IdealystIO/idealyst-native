@@ -457,6 +457,41 @@ pub fn tokenized_color_css(t: &runtime_core::Tokenized<runtime_core::Color>) -> 
     }
 }
 
+/// CSS declaration body for one styled-text run's deltas
+/// (`runtime_core::TextRunStyle`) — the inline `style` attribute the
+/// web + SSR backends stamp on a run's `<span>`. Shared here so both
+/// emit byte-identical declarations (the same reason `rules_to_css`
+/// lives in this crate). Tokenized values emit as `var(--token,
+/// fallback)`, so run colors ride the CSS cascade on theme swaps —
+/// no per-node re-realization needed on web (see
+/// `Backend::update_styled_text`).
+pub fn text_run_style_css(style: &runtime_core::TextRunStyle) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(ff) = &style.font_family {
+        match ff {
+            runtime_core::FontFamily::System(name) => {
+                parts.push(format!("font-family: {}", name));
+            }
+            runtime_core::FontFamily::Typeface(tf) => {
+                parts.push(format!("font-family: \"{}\"", tf.family_name));
+            }
+        }
+    }
+    if let Some(w) = style.font_weight {
+        parts.push(format!("font-weight: {}", font_weight_css(w)));
+    }
+    if let Some(s) = &style.font_size {
+        parts.push(format!("font-size: {}", tokenized_length_css(s)));
+    }
+    if let Some(c) = &style.color {
+        parts.push(format!("color: {}", tokenized_color_css(c)));
+    }
+    if let Some(b) = &style.background {
+        parts.push(format!("background-color: {}", tokenized_color_css(b)));
+    }
+    parts.join("; ")
+}
+
 /// Render a `Gradient` as a CSS `linear-gradient(...)` / `radial-gradient(...)`
 /// value suitable for the `background-image` property.
 pub fn gradient_css(g: &runtime_core::Gradient) -> String {

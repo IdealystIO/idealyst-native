@@ -516,6 +516,10 @@ fn enqueue_primitive<B: Backend + 'static>(
                 // treatment as `Bound` once the binding lowering
                 // lands. For now, bail to the slow path.
                 TextSource::JsBinding(_) => return None,
+                // Styled runs need `create_styled_text` + the theme
+                // cohort entry, which only the walker's slow path
+                // wires up. Bail out.
+                TextSource::Styled(_) => return None,
             };
             let id = batch.next_id();
             batch.ops.push(BatchOp::CreateText {

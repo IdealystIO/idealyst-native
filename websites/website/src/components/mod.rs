@@ -9,3 +9,7 @@
 // promotes it to crate-root scope where `ui!` can find it.
 #[macro_use]
 pub mod simulator;
+
+pub mod prose;
+
+pub use prose::{Prose, ProseProps};

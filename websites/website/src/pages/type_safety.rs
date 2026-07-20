@@ -1,4 +1,4 @@
-//! Absolute type safety — the concrete compile-time guarantees the
+//! Type safety end to end — the concrete compile-time guarantees the
 //! framework leans on. This is the "what you get" companion to Why Rust
 //! (which makes the deeper language-shape argument); this page stays
 //! focused on enumerable guarantees and links out for the philosophy.
@@ -30,12 +30,11 @@ pub fn page() -> Element {
     let content = ui! {
         Stack(gap = StackGap::Xl) {
             PageHeader(
-                title = "Absolute type safety",
+                title = "Type safety end to end",
                 blurb = "The same type system that makes Rust safe makes idealyst apps hard to \
                  get wrong. The function signature is the contract \u{2014} across the \
-                 network, across the component boundary, across a theme switch. Whole \
-                 categories of UI bug stop being runtime surprises and start being \
-                 compile errors.",
+                 network, across the component boundary, across a theme switch \u{2014} and \
+                 whole categories of UI bug surface as compile errors before the app runs.",
             )
             PageSection(handle = contract_ref) { contract() }
             PageSection(handle = invalid_ref) { invalid_states() }
@@ -55,7 +54,7 @@ pub fn page() -> Element {
 
 fn contract() -> Element {
     let example = "// A component's props are a typed struct. The compiler checks\n\
-                   // every call site against it \u{2014} no untyped prop bags.\n\
+                   // every call site against it.\n\
                    ui! { button(label = \"Save\".to_string(), on_click = on_save) }\n\
                    \n\
                    // A server function's signature is the wire contract. The same\n\
@@ -68,15 +67,14 @@ fn contract() -> Element {
             title = "The signature is the contract".to_string(),
             paragraphs = vec![
                 "Everything you pass across a boundary is typed, and the compiler enforces \
-                 it on both sides of that boundary. Component props are a real struct, not a \
-                 stringly-typed bag \u{2014} pass the wrong type, misspell a field, or omit \
-                 a required one and the build fails with a precise message.".to_string(),
+                 it on both sides of that boundary. Component props are a struct: pass the \
+                 wrong type, misspell a field, or omit a required one and the build fails \
+                 with a precise message.".to_string(),
                 "The same idea scales up to the network. A server function's signature is \
                  the wire contract: the client call site and the server handler are \
                  generated from one declaration, so a request and its handler can never \
-                 disagree about argument or return shape. You don't maintain a client API, a \
-                 server API, and a DTO crate in lockstep \u{2014} there's one source of \
-                 truth and it's type-checked.".to_string(),
+                 disagree about argument or return shape. One declaration is the source of \
+                 truth for both sides, type-checked on both.".to_string(),
             ],
             code = Some(example.to_string()),
         )
@@ -84,10 +82,10 @@ fn contract() -> Element {
 }
 
 fn invalid_states() -> Element {
-    let example = "// In a dynamically-typed world, every combination is constructible:\n\
-                   { loading: true,  data: result, error: \"oops\" }  // ...valid?!\n\
+    let example = "// State as independent flags admits contradictory combinations:\n\
+                   { loading: true,  data: result, error: \"oops\" }\n\
                    \n\
-                   // With a sum type, the nonsense states simply don't exist:\n\
+                   // As a sum type, the state is exactly one variant:\n\
                    enum FetchState<T> {\n    \
                        Idle,\n    \
                        Loading,\n    \
@@ -101,10 +99,9 @@ fn invalid_states() -> Element {
                 "UI state modeled as a bag of optional flags admits combinations that should \
                  never happen \u{2014} loading and loaded at once, data and error together. \
                  Each of those is a latent bug waiting for the wrong sequence of events.".to_string(),
-                "Modeled as a sum type, the state is exactly one of its variants. \"Loading \
-                 and loaded simultaneously\" isn't a bug you guard against; it's a value the \
-                 type system won't let you construct. The impossible states are gone before \
-                 you write a single guard.".to_string(),
+                "Modeled as a sum type, the state is exactly one of its variants \u{2014} \
+                 \"loading and loaded at once\" is a value the type system rules out at \
+                 construction, before you write a single guard.".to_string(),
             ],
             code = Some(example.to_string()),
         )
@@ -145,8 +142,8 @@ fn refs() -> Element {
                    btn_ref.with(|handle| handle.focus());\n\
                    \n\
                    // Returns Option<R> \u{2014} None when the button isn't mounted.\n\
-                   // There's no way to stash a handle and call .focus() later,\n\
-                   // after the component might already be gone.";
+                   // The closure is the only access \u{2014} the handle can't\n\
+                   // outlive the mounted node.";
     ui! {
         Section(
             title = "Refs you can't misuse".to_string(),
@@ -165,8 +162,7 @@ fn refs() -> Element {
 }
 
 fn styles() -> Element {
-    let example = "// Variants and states are typed axes on the stylesheet,\n\
-                   // not magic strings the compiler can't see.\n\
+    let example = "// Variants and states are typed axes on the stylesheet.\n\
                    let style = NavLink().active(derived(move || {\n        \
                        if is_current.get() { NavLinkActive::On } else { NavLinkActive::Off }\n    \
                    }));";
@@ -175,13 +171,11 @@ fn styles() -> Element {
             title = "Styles and themes are typed".to_string(),
             paragraphs = vec![
                 "Styling goes through `stylesheet!`, which gives each style a typed surface: \
-                 variants and states are enums, not class-name strings you hope match \
-                 something. Select the wrong variant and it's a compile error, not a \
-                 silently-missing rule at runtime.".to_string(),
+                 variants and states are enums the compiler checks. Select a variant that \
+                 doesn't exist and the build fails.".to_string(),
                 "Theme tokens are typed too. A token resolves to a concrete `Color`, \
                  `Length`, or scalar, and reading one subscribes the surrounding reactive \
-                 scope so a theme switch re-resolves it automatically \u{2014} no untyped \
-                 CSS-variable lookups that fail quietly when a name drifts.".to_string(),
+                 scope so a theme switch re-resolves it automatically.".to_string(),
             ],
             code = Some(example.to_string()),
         )

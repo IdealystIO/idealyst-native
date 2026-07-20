@@ -90,28 +90,38 @@ pub(crate) fn install_core_bridge() {}
 #[cfg(feature = "debug-stats")]
 pub(crate) fn take_and_dump(label: &str) {
     let counters = runtime_core::debug::take_phase_counters();
-    if counters.is_empty() {
-        return;
+    if !counters.is_empty() {
+        let mut snapshot: Vec<_> = counters.into_iter().collect();
+        snapshot.sort_by_key(|(_, p)| std::cmp::Reverse(p.total_us));
+        backend_ios_core::ios_log(&format!("[phase-timer] {} ───────────────", label));
+        for (phase, counter) in snapshot {
+            let total_ms = (counter.total_us as f64) / 1000.0;
+            let avg_us = if counter.call_count == 0 {
+                0.0
+            } else {
+                (counter.total_us as f64) / (counter.call_count as f64)
+            };
+            let max_us = counter.max_us as f64;
+            backend_ios_core::ios_log(&format!(
+                "[phase-timer]   {phase:<32} {count:>6}× avg {avg:>7.1}us  max {max:>7.1}us  total {total:>7.2}ms",
+                phase = phase,
+                count = counter.call_count,
+                avg = avg_us,
+                max = max_us,
+                total = total_ms,
+            ));
+        }
     }
-    let mut snapshot: Vec<_> = counters.into_iter().collect();
-    snapshot.sort_by_key(|(_, p)| std::cmp::Reverse(p.total_us));
-    backend_ios_core::ios_log(&format!("[phase-timer] {} ───────────────", label));
-    for (phase, counter) in snapshot {
-        let total_ms = (counter.total_us as f64) / 1000.0;
-        let avg_us = if counter.call_count == 0 {
-            0.0
-        } else {
-            (counter.total_us as f64) / (counter.call_count as f64)
-        };
-        let max_us = counter.max_us as f64;
-        backend_ios_core::ios_log(&format!(
-            "[phase-timer]   {phase:<32} {count:>6}× avg {avg:>7.1}us  max {max:>7.1}us  total {total:>7.2}ms",
-            phase = phase,
-            count = counter.call_count,
-            avg = avg_us,
-            max = max_us,
-            total = total_ms,
-        ));
+
+    // Reactive profile: which signal caused a long render. Drained from the
+    // same window as the phase counters. Logged line-by-line so it survives
+    // the platform log's line handling.
+    let events = runtime_core::debug::take_events();
+    let profile = runtime_core::debug::format_reactive_profile(&events, 15);
+    if !profile.is_empty() {
+        for line in profile.lines() {
+            backend_ios_core::ios_log(&format!("[reactive] {line}"));
+        }
     }
 }
 

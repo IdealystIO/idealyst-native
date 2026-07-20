@@ -58,7 +58,7 @@ pub fn resolve_uifont(
 /// recognize the name (e.g. registration failed silently or the
 /// caller passed a freeform family from `FontFamily::System` that
 /// doesn't match an installed face).
-fn ui_font_with_name(name: &str, size: CGFloat) -> Option<Retained<NSObject>> {
+pub fn ui_font_with_name(name: &str, size: CGFloat) -> Option<Retained<NSObject>> {
     let ns_name = NSString::from_str(name);
     let font: Option<Retained<NSObject>> = unsafe {
         msg_send_id![
@@ -105,7 +105,7 @@ fn resolve_system_fallback(
 
 /// `+[UIFont systemFontOfSize:weight:]` — same call the existing
 /// system-font path uses.
-fn system_font(weight: FontWeight, size: CGFloat) -> Retained<NSObject> {
+pub fn system_font(weight: FontWeight, size: CGFloat) -> Retained<NSObject> {
     let w = crate::style::font_weight_to_uikit(weight);
     let font: Retained<NSObject> = unsafe {
         msg_send_id![

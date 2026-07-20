@@ -80,6 +80,9 @@ enum Command {
     /// editor tooling. First run compiles the catalog wrapper.
     #[command(name = "catalog-json")]
     CatalogJson(cmd::catalog_json::Args),
+    /// Configure a project aspect. Currently: `devcontainer` (initialize or
+    /// update a devcontainer + its idealyst-managed sidecar services).
+    Configure(cmd::configure::Args),
     /// Diagnose the local toolchain (Rust, web, iOS, Android; Roku pending).
     Doctor(cmd::doctor::Args),
     /// Regenerate icons, splash, and other derived assets.
@@ -153,6 +156,7 @@ fn main() -> anyhow::Result<()> {
         Command::Lint(args) => cmd::lint::run(args),
         Command::Clean(args) => cmd::clean::run(args),
         Command::CatalogJson(args) => cmd::catalog_json::run(args),
+        Command::Configure(args) => cmd::configure::run(args),
         Command::Doctor(args) => cmd::doctor::run(args),
         Command::Sync(args) => cmd::sync::run(args),
         Command::Icon(args) => cmd::icon::run(args),

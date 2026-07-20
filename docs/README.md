@@ -61,10 +61,25 @@ If you're new to the codebase, read the docs in this order:
 9. [`server-functions.md`](./server-functions.md). The full-stack layer:
    `#[server]` fns (one function, two compilations), the `server` cargo
    feature split and what does/doesn't need cfg-gating, extractors
-   (`State`/`Auth`/`Cookies`), typed `ServerError<E>`, middleware + the
+   (`State`/`Auth`/`Cookies`), typed `ServerError<E>`, the `DispatchHook`
+   policy seam + the `server-kit` middleware/guard layer built on it, the
    cookie/bearer auth patterns, streaming (`#[subscription]` /
    `#[channel]` / `#[sse]`), schema versioning, batching, and serving.
    Read this when your app grows a backend.
+
+## Tooling
+
+- [`devcontainer.md`](./devcontainer.md). `idealyst configure devcontainer` —
+  initialize or update a project's Dev Container and toggle idealyst-managed
+  sidecar services (Postgres/MySQL, Redis, MinIO). The two-file ownership model
+  (we own `docker-compose.idealyst.yml`, never your `docker-compose.yml`), the
+  interactive wizard vs. the non-interactive flags, the shared `configure`
+  engine behind the MCP `configure_devcontainer` tool, and how to add a service.
+- [`vscode.md`](./vscode.md). `idealyst configure vscode` — set up a project's
+  `.vscode/` workspace: recommend the editor extensions and wire the idealyst
+  linter into rust-analyzer (inline squiggles via a generated `ra-check.sh`).
+  The surgical settings/extensions merge, the aspect model, the non-interactive
+  flags, and the shared MCP `configure_vscode` tool.
 
 ## Migrating
 

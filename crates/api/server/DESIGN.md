@@ -210,7 +210,12 @@ data stops being a one-off field.
 > policy seam, and the chain / `install_middleware` / `from_fn` /
 > `csrf_guard` / `Auth<T>` moved to the `server-kit` crate, built entirely on
 > that public seam. Rationale: the primitive stays unopinionated; an app can
-> replace the whole policy model by installing its own hook. See
+> replace the whole policy model by installing its own hook. The primitive
+> additionally carries **endpoint metadata**: `tags(...)` on all four
+> attribute macros (`("admin", "")` bare / `("limit", "30/min")` valued),
+> stored on `ServerFnEntry` and copied onto the request `Context`
+> (`has_tag`/`tag`/`route_tags`) — mechanism only; `server-kit`'s
+> `require_tag` is the first policy consumer. See
 > `docs/server-functions.md` §5.
 
 ```rust

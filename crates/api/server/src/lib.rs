@@ -111,6 +111,8 @@ mod extractors;
 #[cfg(feature = "server")]
 mod hook;
 #[cfg(feature = "server")]
+mod response;
+#[cfg(feature = "server")]
 mod runtime;
 #[cfg(feature = "server")]
 pub use cookie::{clear_cookie, set_cookie, Cookie, SameSite};
@@ -124,6 +126,12 @@ pub use extractors::{install_state, use_request_header, use_request_headers, use
 // for the conventional implementation).
 #[cfg(feature = "server")]
 pub use hook::{install_dispatch_hook, DispatchHook, HookFuture, Next, OpenFuture};
+// Response headers (the generalized cookie jar): hooks/middleware append
+// via the jar on the Context; handler bodies via the free fn. Drained on
+// success AND error paths so a short-circuiting policy layer can
+// annotate its rejection (e.g. Retry-After on a 429).
+#[cfg(feature = "server")]
+pub use response::{append_response_header, ResponseHeaderJar};
 #[cfg(feature = "server")]
 pub use runtime::{router, schema_for, serve};
 
@@ -164,6 +172,11 @@ pub mod __private {
         /// `#[server(strict_version)]`: reject a mismatched client schema
         /// up front, before decoding.
         pub strict: bool,
+        /// `#[server(tags(...))]` metadata — `("admin", "")` for a bare
+        /// tag, `("limit", "30/min")` for key/value. Carried onto the
+        /// request `Context` so a dispatch hook can read the endpoint's
+        /// self-description instead of maintaining path lists.
+        pub tags: &'static [(&'static str, &'static str)],
         pub handler: fn(
             Vec<u8>,
         )

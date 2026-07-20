@@ -26,6 +26,7 @@ pub mod session;
 pub mod time;
 mod sources;
 mod style;
+pub mod styled_text;
 pub mod text_defaults;
 mod touch;
 pub mod wheel;
@@ -86,6 +87,22 @@ pub mod debug {
     /// No-op counterpart to [`record_component_enter`].
     #[inline(always)]
     pub fn record_component_exit(_name: &'static str) {}
+
+    // Reactive-identity + transaction no-ops. Called UNCONDITIONALLY from
+    // `reactive.rs` (always compiled), so they must resolve regardless of the
+    // feature. Each inlines to nothing when `debug-stats` is off, preserving
+    // the zero-overhead contract. Mirrors the real fns in `debug.rs`.
+    #[inline(always)]
+    pub fn record_signal_created(_id: u32, _location: &'static std::panic::Location<'static>) {}
+    #[inline(always)]
+    pub fn record_effect_created(
+        _id: u32,
+        _location: &'static std::panic::Location<'static>,
+        _component: Option<&'static str>,
+    ) {
+    }
+    #[inline(always)]
+    pub fn label_effect(_id: u32, _label: &str) {}
 }
 
 #[cfg(feature = "robot")]
@@ -204,8 +221,8 @@ pub use handles::{
     StateBits, TextHandle, TextOps, ViewHandle, ViewOps,
 };
 pub use builder::{
-    button, dynamic, each_keyed, fragment, one_or_view, pressable, switch, text, view, when,
-    Bindable, Bound, BuildElement, ChildList, IntoDisabledSource, IntoElement, ReactiveCond,
+    button, dynamic, each_keyed, fragment, one_or_view, pressable, styled_text, switch, text, view,
+    when, Bindable, Bound, BuildElement, ChildList, IntoDisabledSource, IntoElement, ReactiveCond,
     ReactiveForEach, ReactiveListKeyed, StaticCond, StaticForEach,
 };
 pub use derive::{Action, Derived, IntoAction, IntoDerived};
@@ -341,6 +358,8 @@ pub use text_defaults::{
     effective_text_color, THEME_TEXT_COLOR_FALLBACK, THEME_TEXT_COLOR_TOKEN,
 };
 
+pub use styled_text::{TextRun, TextRunStyle};
+
 pub use runtime_macros::{
     component, doc_scope, jsx, lazy, props, recipe, stylesheet, ui,
 };
@@ -441,6 +460,7 @@ pub use mcp_catalog as __mcp;
 /// signals over non-`Debug` types (closures, handles, `Option<MediaStream>`,
 /// …) — and the "use Debug if present" trick is not inference-safe (it
 /// fails to compile for inference-deferred sites like `signal(None)`).
+#[track_caller]
 pub fn signal<T: Clone + 'static>(value: T) -> Signal<T> {
     Signal::new(value)
 }

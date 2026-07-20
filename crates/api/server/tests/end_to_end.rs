@@ -228,6 +228,38 @@ mod custom_extractor {
     }
 }
 
+/// `tags(...)` fixture: static endpoint metadata must reach both the
+/// inventory entry and the request `Context`. The extractor echoes the
+/// context's tags back through the wire so the test observes exactly
+/// what a dispatch hook would.
+#[cfg(feature = "server")]
+mod tagged {
+    use super::{server, ServerError};
+    use server::{Context, FromContext, TransportError};
+
+    #[derive(Debug, Clone)]
+    pub struct TagEcho(pub String);
+
+    impl FromContext for TagEcho {
+        fn from_context(
+            ctx: &Context,
+        ) -> impl std::future::Future<Output = Result<Self, TransportError>> + Send {
+            let joined = ctx
+                .route_tags()
+                .iter()
+                .map(|(n, v)| format!("{n}={v}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            async move { Ok(TagEcho(joined)) }
+        }
+    }
+
+    #[server(tags(reporting, limit = "5/min"))]
+    pub async fn tagged_echo(#[ctx] t: TagEcho) -> Result<String, ServerError> {
+        Ok(t.0)
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Dispatch-hook / Cookies fixtures.
 //
@@ -266,6 +298,15 @@ pub async fn current_theme(cookies: Cookies) -> Result<String, ServerError> {
 pub async fn issue_session(token: String) -> Result<(), ServerError> {
     server::set_cookie(server::Cookie::new("session", token));
     Ok(())
+}
+
+/// Attaches an arbitrary response header from the handler body via the
+/// task-local jar (the non-cookie sibling of `issue_session`).
+#[cfg(feature = "server")]
+#[server]
+pub async fn note_header() -> Result<String, ServerError> {
+    server::append_response_header("x-note", "from-handler");
+    Ok("ok".to_string())
 }
 
 // -----------------------------------------------------------------------------
@@ -744,10 +785,18 @@ mod server_side {
                                 });
                                 next.run(ctx).await
                             }
-                            _ => Err(server::TransportError::Server {
-                                status: 401,
-                                message: "unauthorized".into(),
-                            }),
+                            _ => {
+                                // Annotate the rejection — proves the
+                                // response-header jar is drained on the
+                                // short-circuit path too.
+                                if let Some(jar) = ctx.get::<server::ResponseHeaderJar>() {
+                                    jar.append("x-guard-note", "denied");
+                                }
+                                Err(server::TransportError::Server {
+                                    status: 401,
+                                    message: "unauthorized".into(),
+                                })
+                            }
                         }
                     })
                 }
@@ -813,6 +862,60 @@ mod server_side {
             other => panic!("guarded entry must 401 in its slot, got {other:?}"),
         }
         assert_eq!(results[1], Ok(serde_json::json!(3)));
+    }
+
+    #[tokio::test]
+    async fn regression_response_headers_reach_success_and_short_circuit() {
+        install_test_hook_once();
+        let addr = boot().await;
+        let client = net::Client::new();
+
+        // Handler-set header rides the success response.
+        let response = client
+            .post(format!("http://{addr}/_srv/note_header"))
+            .body(net::Json(&()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.header("x-note"), Some("from-handler"));
+
+        // Hook-set header rides the SHORT-CIRCUIT response — the property
+        // a rate limiter's Retry-After depends on.
+        let response = client
+            .post(format!("http://{addr}/_srv/secure_whoami"))
+            .body(net::Json(&()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 401);
+        assert_eq!(response.header("x-guard-note"), Some("denied"));
+    }
+
+    #[tokio::test]
+    async fn regression_tags_reach_entry_and_request_context() {
+        // Entry side: the inventory registration carries the parsed tags
+        // (bare → ("name", ""), valued → ("name", "value")).
+        let entry = server::__private::inventory::iter::<server::__private::ServerFnEntry>
+            .into_iter()
+            .find(|e| e.path == "tagged_echo")
+            .expect("tagged_echo must be registered");
+        assert_eq!(entry.tags, &[("reporting", ""), ("limit", "5/min")]);
+
+        // Request side: the dispatcher copies the entry's tags onto the
+        // Context, where the extractor (standing in for a hook) reads them.
+        install_test_hook_once();
+        let addr = boot().await;
+        let client = net::Client::new();
+        let response = client
+            .post(format!("http://{addr}/_srv/tagged_echo"))
+            .body(net::Json(&()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let result: Result<String, ServerError> = response.json().await.unwrap();
+        assert_eq!(result, Ok("reporting=,limit=5/min".to_string()));
     }
 
     #[tokio::test]

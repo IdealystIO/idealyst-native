@@ -47,6 +47,37 @@ fn build_text<B: Backend + 'static>(
         TextSource::Static(content) => {
             time_backend_create(pkind!(Text), || backend.borrow_mut().create_text(&content, a11y))
         }
+        TextSource::Styled(runs) => {
+            let n = time_backend_create(pkind!(Text), || {
+                backend.borrow_mut().create_styled_text(&runs, a11y)
+            });
+            // Native backends resolve run tokens (`Tokenized<Color>` etc.)
+            // to concrete values at realize time, so a theme swap must
+            // re-realize the runs. Ride the same shared theme cohort the
+            // static-style path uses: one driver Effect for the whole app,
+            // one closure per styled node. Web never pays the fan-out —
+            // its runs emit `var(--token)` CSS and the cohort driver
+            // short-circuits on cascade-capable backends.
+            //
+            // Registered BEFORE `attach_style` runs (the caller applies
+            // style after create), so on a swap the runs re-realize first
+            // and the style entry re-applies after — backends whose
+            // style-apply re-merges stored runs (Apple) stay consistent
+            // in either order.
+            super::theme_cohort::install_theme_cohort_driver(backend);
+            let backend_for_reapply = backend.clone();
+            let node_for_reapply = n.clone();
+            let runs_for_reapply = runs.clone();
+            let cohort_id = super::theme_cohort::theme_cohort_register(Box::new(move || {
+                backend_for_reapply
+                    .borrow_mut()
+                    .update_styled_text(&node_for_reapply, &runs_for_reapply);
+            }));
+            crate::on_cleanup(move || {
+                super::theme_cohort::theme_cohort_unregister(cohort_id);
+            });
+            n
+        }
         TextSource::Bound(d) => {
             // Fast path: backends that return `Some(id)` from
             // `create_text_with_id` get a batched effect closure
@@ -117,12 +148,21 @@ fn build_text<B: Backend + 'static>(
             // the per-fire HashSet churn on signals with thousands
             // of subscribers.
             let _e = match text_id {
-                Some(id) => Effect::new_with_stable_deps(move || {
-                    let value = (compute)();
-                    backend_for_effect
-                        .borrow_mut()
-                        .update_text_by_id(id, value);
-                }),
+                Some(id) => {
+                    let e = Effect::new_with_stable_deps(move || {
+                        let value = (compute)();
+                        backend_for_effect
+                            .borrow_mut()
+                            .update_text_by_id(id, value);
+                    });
+                    // Reactive-profile: name the node this text effect drives,
+                    // so a slow transaction reads "text#<id>" instead of an
+                    // anonymous closure site. `id` is Copy, still usable after
+                    // the move into the closure.
+                    #[cfg(feature = "debug-stats")]
+                    crate::debug::label_effect(e.raw_id(), &format!("text#{id}"));
+                    e
+                }
                 None => {
                     let node_for_effect = node.clone();
                     Effect::new_with_stable_deps(move || {

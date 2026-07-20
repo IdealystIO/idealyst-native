@@ -16,6 +16,10 @@ mcp-catalog = { workspace = true }
 # project's un-expanded Rust source.
 lint = { workspace = true }
 
+# Project configuration engine — backs the `configure_devcontainer` tool with
+# the exact same plan→apply core as the `idealyst configure devcontainer` CLI.
+configure = { workspace = true }
+
 # rmcp 1.x — the official Rust MCP SDK. Features:
 # - `server` enables the ServerHandler + ServiceExt machinery
 # - `macros` enables `#[tool_router]` / `#[tool]` / `#[tool_handler]`

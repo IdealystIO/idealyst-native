@@ -142,7 +142,7 @@ fn apply_text_shadow(view: &NSView, style: &StyleRules) {
 /// typefaces registered via `register_asset`); falls through to
 /// `+[NSFont fontWithName:size:]` for `FontFamily::System(name)`;
 /// falls through finally to `+[NSFont systemFontOfSize:weight:]`.
-fn resolve_nsfont(
+pub(crate) fn resolve_nsfont(
     registry: &FontRegistry,
     family: Option<&FontFamily>,
     weight: FontWeight,
@@ -168,7 +168,7 @@ fn resolve_nsfont(
 
 /// `+[NSFont fontWithName:size:]` — returns `None` if AppKit
 /// doesn't recognize the name.
-fn ns_font_with_name(name: &str, size: CGFloat) -> Option<Retained<NSObject>> {
+pub(crate) fn ns_font_with_name(name: &str, size: CGFloat) -> Option<Retained<NSObject>> {
     let ns_name = NSString::from_str(name);
     let font: Option<Retained<NSObject>> = unsafe {
         msg_send_id![
@@ -183,7 +183,7 @@ fn ns_font_with_name(name: &str, size: CGFloat) -> Option<Retained<NSObject>> {
 /// `+[NSFont systemFontOfSize:weight:]`. The weight axis is the
 /// same -1.0..1.0 NSFontWeight as `UIFont.Weight` (both bridge to
 /// `CGFloat`), so the iOS weight mapping is reusable here.
-fn system_font(weight: FontWeight, size: CGFloat) -> Retained<NSObject> {
+pub(crate) fn system_font(weight: FontWeight, size: CGFloat) -> Retained<NSObject> {
     let w = font_weight_to_nsfont(weight);
     let font: Retained<NSObject> = unsafe {
         msg_send_id![
@@ -215,7 +215,7 @@ fn resolve_system_fallback(
 
 /// Map framework `FontWeight` to NSFontWeight (same -1.0..1.0 axis
 /// UIFont uses). Mirrors `backend_ios_core::style::font_weight_to_uikit`.
-fn font_weight_to_nsfont(weight: FontWeight) -> CGFloat {
+pub(crate) fn font_weight_to_nsfont(weight: FontWeight) -> CGFloat {
     match weight {
         FontWeight::Thin => -0.6,
         FontWeight::ExtraLight => -0.5,
@@ -241,7 +241,7 @@ fn text_shadow_offset(x: f32, y: f32) -> (CGFloat, CGFloat) {
     (x as CGFloat, -(y as CGFloat))
 }
 
-fn length_to_px(len: &runtime_core::Length) -> CGFloat {
+pub(crate) fn length_to_px(len: &runtime_core::Length) -> CGFloat {
     match len {
         runtime_core::Length::Px(v) => *v as CGFloat,
         runtime_core::Length::Percent(_) | runtime_core::Length::Auto => 0.0,

@@ -151,9 +151,6 @@ fn no_vdom() -> Element {
                 inside a thousand-node screen updates one text node. There is no \
                 reconciler to budget for, and a heavy screen doesn't make a small update \
                 slower.".to_string())
-            Typography(content = "The Performance page has the head-to-head benchmark \
-                numbers against React, Vue, and Svelte on identical screens.".to_string(),
-                muted = true)
         }
     }
 }

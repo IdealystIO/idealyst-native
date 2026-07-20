@@ -77,17 +77,15 @@ fn pitch() -> Element {
                    \n\
                    // In the very same crate, in your UI component:\n\
                    let todos = list_todos(current_user.id).await?;";
-    let children: Vec<Element> = vec![
-        ui! { Typography(content = "What server functions are".to_string(), kind = idea_ui::typography_kind::H2) },
-        ui! {
+    ui! {
+        Stack(gap = StackGap::Md) {
+            Typography(content = "What server functions are".to_string(), kind = idea_ui::typography_kind::H2)
             Typography(content = "You write the function once. The body runs database \
                 queries, reads request headers, touches whatever server-side state your \
                 handler needs \u{2014} all expressed in plain Rust. The call site \u{2014} \
                 in your UI component, on the same `await` you'd use for a local async \
                 fn \u{2014} reads as if the client itself were running that body.".to_string())
-        },
-        ui! { CodePanel(src = snippet) },
-        ui! {
+            CodePanel(src = snippet)
             Typography(content = "Under the hood, the `#[server]` macro splits the \
                 function based on the build target. On the SERVER build, the body \
                 compiles verbatim and a handler gets auto-registered at `/_srv/list_todos`. \
@@ -95,16 +93,11 @@ fn pitch() -> Element {
                 becomes a POST that ships `[user_id]` to the server, awaits the response, \
                 and decodes it back into `Result<Vec<Todo>, ServerError>`. The signature \
                 you wrote IS the wire contract; the compiler checks it on both sides.".to_string())
-        },
-        ui! {
-            Typography(content = "The result is one mental model. You're not maintaining \
-                a client API and a server API and a DTO crate in lockstep \u{2014} you're \
-                writing one Rust function that happens to execute across a network \
-                boundary. The boundary is a compile-time decision, not a code-organization \
-                tax.".to_string())
-        },
-    ];
-    ui! { Stack(gap = StackGap::Md) { children } }
+            Typography(content = "The result is one mental model: one Rust function \
+                that happens to execute across a network boundary, with the boundary \
+                decided at compile time.".to_string())
+        }
+    }
 }
 
 fn how_macro_splits() -> Element {
@@ -119,23 +112,20 @@ fn how_macro_splits() -> Element {
                           async fn add(a: i32, b: i32) -> Result<i32, ServerError> {\n    \
                               server::__private::call::<(i32, i32), _>(\"add\", &(a, b)).await\n\
                           }";
-    let children: Vec<Element> = vec![
-        ui! { Typography(content = "How the macro splits".to_string(), kind = idea_ui::typography_kind::H2) },
-        ui! {
+    ui! {
+        Stack(gap = StackGap::Md) {
+            Typography(content = "How the macro splits".to_string(), kind = idea_ui::typography_kind::H2)
             Typography(content = "`#[server]` is an attribute macro. It expands the \
                 async fn into two cfg-gated halves and keys off the `server` cargo \
                 feature to decide which half each build sees.".to_string())
-        },
-        ui! { CodePanel(src = server_snippet) },
-        ui! { CodePanel(src = client_snippet) },
-        ui! {
+            CodePanel(src = server_snippet)
+            CodePanel(src = client_snippet)
             Typography(content = "Both halves see the same source file. Only one ends \
                 up compiled into each artifact \u{2014} the server-only body (and any \
                 imports it uses: Diesel, tokio, your DB pool type) never reach the \
                 client bundle.".to_string())
-        },
-    ];
-    ui! { Stack(gap = StackGap::Md) { children } }
+        }
+    }
 }
 
 fn wire_protocol() -> Element {
@@ -149,23 +139,20 @@ fn wire_protocol() -> Element {
                    POST /_srv/_batch\n\
                    [{\"path\": \"add\",     \"args\": [2, 3]},\n \
                     {\"path\": \"v1/ping\", \"args\": null}]   →  [{\"Ok\": 5}, {\"Ok\": \"pong\"}]";
-    let children: Vec<Element> = vec![
-        ui! { Typography(content = "The wire".to_string(), kind = idea_ui::typography_kind::H2) },
-        ui! {
+    ui! {
+        Stack(gap = StackGap::Md) {
+            Typography(content = "The wire".to_string(), kind = idea_ui::typography_kind::H2)
             Typography(content = "JSON over HTTP. Two routes: single and batched. The \
                 framework picks single vs batch automatically based on how many calls \
                 you fire in the same tick.".to_string())
-        },
-        ui! { CodePanel(src = snippet) },
-        ui! {
+            CodePanel(src = snippet)
             Typography(content = "Status codes are reserved for dispatcher-level \
                 failures \u{2014} 404 for unknown path, 400 for malformed args. A \
                 function that returned `Err(...)` still gets a 200 response with \
                 `{\"Err\": ...}` in the body. That keeps domain errors and transport \
                 errors visibly separate on the client side.".to_string())
-        },
-    ];
-    ui! { Stack(gap = StackGap::Md) { children } }
+        }
+    }
 }
 
 fn project_layout() -> Element {
@@ -183,26 +170,23 @@ fn project_layout() -> Element {
                        // \u{2705} clean: cfg-gated import, only compiled with the server half\n\
                        #[cfg(feature = \"server\")]\n\
                        use diesel::prelude::*;";
-    let children: Vec<Element> = vec![
-        ui! { Typography(content = "Project layout".to_string(), kind = idea_ui::typography_kind::H2) },
-        ui! {
+    ui! {
+        Stack(gap = StackGap::Md) {
+            Typography(content = "Project layout".to_string(), kind = idea_ui::typography_kind::H2)
             Typography(content = "The recommended layout is three crates. The `shared/` \
                 crate is the dual-feature one \u{2014} it compiles twice, once with \
                 `--features server` (the body runs, with access to your DB / state / \
                 imports), once without (the body is replaced with the RPC stub).".to_string())
-        },
-        ui! { CodePanel(src = snippet) },
-        ui! {
+            CodePanel(src = snippet)
             Typography(content = "Server-only deps (Diesel, Redis, tokio, anything that \
                 has no business in a wasm bundle) are declared `optional = true` and \
                 activated only by the `server` feature. The macro discards server fn \
                 bodies on the client side entirely \u{2014} so references to Diesel \
                 inside those bodies never reach the client compilation. Import shape \
                 matters too:".to_string())
-        },
-        ui! { CodePanel(src = cfg_snippet) },
-    ];
-    ui! { Stack(gap = StackGap::Md) { children } }
+            CodePanel(src = cfg_snippet)
+        }
+    }
 }
 
 fn extractors() -> Element {
@@ -222,28 +206,23 @@ fn extractors() -> Element {
                                   .ok_or_else(|| ServerError::failed(\"missing Authorization\"))?;\n    \
                               Ok(format!(\"authenticated as: {auth}\"))\n\
                           }";
-    let children: Vec<Element> = vec![
-        ui! { Typography(content = "App state and per-request data".to_string(), kind = idea_ui::typography_kind::H2) },
-        ui! {
+    ui! {
+        Stack(gap = StackGap::Md) {
+            Typography(content = "App state and per-request data".to_string(), kind = idea_ui::typography_kind::H2)
             Typography(content = "Server-side code gets two flavors of context. \
                 App-level state (DB pool, config, S3 client) is registered once at \
                 startup and read with `use_state::<T>` \u{2014} the registry is \
                 `TypeId`-keyed, so install one of each type:".to_string())
-        },
-        ui! { CodePanel(src = state_snippet) },
-        ui! {
+            CodePanel(src = state_snippet)
             Typography(content = "Per-request data (headers today; authenticated user / \
                 trace id / extracted query params later) is set by the dispatcher into \
                 a `tokio::task_local!` scope before invoking the handler:".to_string())
-        },
-        ui! { CodePanel(src = header_snippet) },
-        ui! {
+            CodePanel(src = header_snippet)
             Typography(content = "Both extractors are server-only \u{2014} they don't \
                 exist in the client build, so importing them inside a `#[server]` body \
                 is safe; that body never reaches the wasm compilation.".to_string())
-        },
-    ];
-    ui! { Stack(gap = StackGap::Md) { children } }
+        }
+    }
 }
 
 fn batching() -> Element {
@@ -255,26 +234,23 @@ fn batching() -> Element {
                    );\n\
                    \n\
                    // → one POST /_srv/_batch on the wire, not three.";
-    let children: Vec<Element> = vec![
-        ui! { Typography(content = "Batching, for free".to_string(), kind = idea_ui::typography_kind::H2) },
-        ui! {
+    ui! {
+        Stack(gap = StackGap::Md) {
+            Typography(content = "Batching, for free".to_string(), kind = idea_ui::typography_kind::H2)
             Typography(content = "Multiple server-fn calls fired in the same tick \
                 coalesce into a single HTTP request. The mechanism is inline microtask \
                 coalescing: each call enqueues, the first one becomes the flusher, \
                 yields once for siblings to enqueue, then drains the queue into one \
                 `POST /_srv/_batch`.".to_string())
-        },
-        ui! { CodePanel(src = snippet) },
-        ui! {
+            CodePanel(src = snippet)
             Typography(content = "On a typical app-load fan-out \u{2014} \
                 `use_query(get_user)` + `use_query(list_todos)` + \
                 `use_query(list_projects)` \u{2014} you go from three round-trips to \
-                one. Authors don't opt in. Open the network tab in any app that uses \
+                one. Batching is automatic. Open the network tab in any app that uses \
                 server functions and you'll see `_srv/_batch` lines for every \
                 page mount.".to_string())
-        },
-    ];
-    ui! { Stack(gap = StackGap::Md) { children } }
+        }
+    }
 }
 
 fn cancellation() -> Element {
@@ -289,25 +265,22 @@ fn cancellation() -> Element {
                    //   2. the in-flight HTTP request (net::CancelToken)\n\
                    //   3. the actual network read (reqwest drops / browser aborts / iOS \n\
                    //      task.cancel / Android conn.disconnect)";
-    let children: Vec<Element> = vec![
-        ui! { Typography(content = "Cancellation, end-to-end".to_string(), kind = idea_ui::typography_kind::H2) },
-        ui! {
+    ui! {
+        Stack(gap = StackGap::Md) {
+            Typography(content = "Cancellation, end-to-end".to_string(), kind = idea_ui::typography_kind::H2)
             Typography(content = "When a `resource` fetcher's deps change, the \
-                in-flight server-fn call should actually abort \u{2014} not just have \
-                its result discarded. `server::with_cancel(...)` bridges the reactive \
-                system's `ResourceCancel` token to the HTTP transport's cancel \
-                primitive, all the way down to the per-platform stack.".to_string())
-        },
-        ui! { CodePanel(src = snippet) },
-        ui! {
+                in-flight server-fn call aborts for real: `server::with_cancel(...)` \
+                bridges the reactive system's `ResourceCancel` token to the HTTP \
+                transport's cancel primitive, all the way down to the per-platform \
+                network stack.".to_string())
+            CodePanel(src = snippet)
             Typography(content = "Cancellation interop with batching: if a cancellable \
                 call is still queued when its token fires, the flusher removes it from \
                 the batch before sending. If it's already in flight, the HTTP completes \
                 (the other calls in the batch deserve their results) but the cancelled \
                 caller still returns `Cancelled`.".to_string())
-        },
-    ];
-    ui! { Stack(gap = StackGap::Md) { children } }
+        }
+    }
 }
 
 fn reactive_integration() -> Element {
@@ -326,24 +299,21 @@ fn reactive_integration() -> Element {
                        |input| async move { create_todo(input).await },\n    \
                        |list, new_todo| list.push(new_todo),\n\
                    );";
-    let children: Vec<Element> = vec![
-        ui! { Typography(content = "Wiring into the UI".to_string(), kind = idea_ui::typography_kind::H2) },
-        ui! {
+    ui! {
+        Stack(gap = StackGap::Md) {
+            Typography(content = "Wiring into the UI".to_string(), kind = idea_ui::typography_kind::H2)
             Typography(content = "Server functions are async fns. They compose with \
                 every reactive async primitive: `resource()` for dep-driven reads, \
                 `mutation()` for fire-and-forget writes, `async_reducer()` for writes \
                 that fold their response into local state \u{2014} the workhorse \
                 pattern for any mutation that updates a list / map / record.".to_string())
-        },
-        ui! { CodePanel(src = snippet) },
-        ui! {
+            CodePanel(src = snippet)
             Typography(content = "Each reducer exposes loading / error state via its \
                 own `AsyncStatus<E>` signal, so UI bindings get spinners + error \
                 rendering for free. The data lives in your `Signal<S>`; the lifecycle \
                 lives on the handle.".to_string())
-        },
-    ];
-    ui! { Stack(gap = StackGap::Md) { children } }
+        }
+    }
 }
 
 fn cli_flow() -> Element {
@@ -354,46 +324,38 @@ fn cli_flow() -> Element {
                    \n\
                    # one command — builds wasm, runs the server bin, watches src/ for changes:\n\
                    idealyst dev --web --local my-app";
-    let children: Vec<Element> = vec![
-        ui! { Typography(content = "Running it".to_string(), kind = idea_ui::typography_kind::H2) },
-        ui! {
+    ui! {
+        Stack(gap = StackGap::Md) {
+            Typography(content = "Running it".to_string(), kind = idea_ui::typography_kind::H2)
             Typography(content = "Declare `server_bin = \"<name>\"` in your manifest \
                 and the CLI runs the full stack with one command \u{2014} builds the \
                 wasm bundle into `pkg/`, launches `cargo run --bin <name> --features \
                 server`, and watches your source for changes. Every edit triggers a \
                 fresh wasm build + a server restart.".to_string())
-        },
-        ui! { CodePanel(src = snippet) },
-        ui! {
+            CodePanel(src = snippet)
             Typography(content = "The server bin serves both the API (at `/_srv/*`) \
                 AND the wasm bundle (at `/` and `/pkg/*`) on one port. Open the URL it \
                 prints and the whole app \u{2014} UI + API \u{2014} comes from one \
                 process.".to_string())
-        },
-    ];
-    ui! { Stack(gap = StackGap::Md) { children } }
+        }
+    }
 }
 
 fn where_next() -> Element {
-    let children: Vec<Element> = vec![
-        ui! { Typography(content = "Where to go from here".to_string(), kind = idea_ui::typography_kind::H2) },
-        ui! {
+    ui! {
+        Stack(gap = StackGap::Md) {
+            Typography(content = "Where to go from here".to_string(), kind = idea_ui::typography_kind::H2)
             Typography(content = "Server functions plug into the rest of the framework \
                 through the same reactive primitives you'd use for any async work. If \
                 you haven't read the Core concepts page yet, the signals + components \
                 model is the foundation everything here builds on.".to_string())
-        },
-        ui! {
             link(route = &CONCEPTS_ROUTE, params = ()) {
                 Typography(content = "Read \u{2192} Core concepts".to_string())
             }
-        },
-        ui! {
             Typography(content = "The example app at `crates/api/server/examples/server-fn-demo` is a \
                 runnable todo app exercising every concept on this page \u{2014} \
                 CRUD, batching, cancellation, extractors, the async_reducer pattern, \
                 all of it.".to_string())
-        },
-    ];
-    ui! { Stack(gap = StackGap::Md) { children } }
+        }
+    }
 }

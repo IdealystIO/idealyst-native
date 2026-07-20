@@ -40,5 +40,11 @@ objc2-foundation = { version = "0.2", features = [
     # parsing helper needs it to coerce sRGB floats into the platform's
     # native CGFloat (f32 on 32-bit, f64 on 64-bit).
     "NSGeometry",
+    # Styled text runs (`styled_text` module): fragment assembly +
+    # attribute dictionaries for `Backend::create_styled_text`.
+    "NSAttributedString",
+    "NSDictionary",
+    "NSEnumerator",
+    "NSRange",
 ] }
 block2 = "0.5"

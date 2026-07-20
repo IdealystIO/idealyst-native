@@ -22,6 +22,7 @@ pub(crate) mod node;
 pub(crate) mod portal;
 pub(crate) mod presence;
 pub(crate) mod screenshot;
+pub(crate) mod styled_text;
 pub(crate) mod text_style;
 pub(crate) mod transitions;
 pub(crate) mod view;
@@ -129,6 +130,12 @@ pub struct MacosBackend {
     /// current sRGB stop colors so `AnimProp::GradientStopColor(idx)`
     /// can rewrite a single stop without rebuilding the sublayer.
     pub(crate) gradient_states: HashMap<usize, gradient::GradientState>,
+    /// Styled-text labels (`Backend::create_styled_text`), keyed by view
+    /// pointer. Holds the run list + last paragraph style so `apply_style`
+    /// and `update_styled_text` can re-realize the attributed string with
+    /// base + deltas merged. Evicted on pointer reuse in `layout_for_view`
+    /// (same recycling defense as `external_content_measures`).
+    pub(crate) styled_texts: HashMap<usize, styled_text::StyledTextEntry>,
     /// External single-axis scrollers (SDK leaves like `codeblock`) keyed by
     /// scroll-view pointer. `apply_style` diverts the author's `padding_*`
     /// on these nodes to the content's offset inside the scroller's
@@ -606,6 +613,7 @@ impl MacosBackend {
             app_key_monitor: None,
             animated_states: HashMap::new(),
             gradient_states: HashMap::new(),
+            styled_texts: HashMap::new(),
             external_content_measures: HashMap::new(),
             image_cache: HashMap::new(),
             external_handlers: runtime_core::ExternalRegistry::new(),
@@ -884,6 +892,9 @@ impl MacosBackend {
         // recycled pointer that used to be a content-measured scroller must
         // not divert the new view's padding to a dead label.
         self.external_content_measures.remove(&key);
+        // ...and for styled-text runs: a recycled pointer must not make the
+        // new label re-realize a dead label's attributed runs on theme swap.
+        self.styled_texts.remove(&key);
         self.view_to_layout.insert(key, (retained, node));
         node
     }
@@ -3281,6 +3292,46 @@ impl Backend for MacosBackend {
         node
     }
 
+    fn create_styled_text(
+        &mut self,
+        runs: &[runtime_core::TextRun],
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        // Reuse the full `create_text` path (label subclass, wrap
+        // config, theme text color, measure_fn — `cellSizeForBounds:`
+        // measures the attributed string once it's set), then replace
+        // the plain string with the attributed realization. The
+        // paragraph style arrives via `apply_style` right after and
+        // re-realizes with the real base.
+        let plain = runtime_core::styled_text::plain_text_of(runs);
+        let node = self.create_text(&plain, a11y);
+        if let MacosNode::Label(label) = &node {
+            styled_text::realize(label, runs, None, &self.font_registry);
+            let key = &**label as *const NSTextField as *const NSView as usize;
+            self.styled_texts.insert(
+                key,
+                styled_text::StyledTextEntry { runs: runs.to_vec(), para: None },
+            );
+        }
+        node
+    }
+
+    fn update_styled_text(&mut self, node: &Self::Node, runs: &[runtime_core::TextRun]) {
+        // Theme-cohort re-realization (and any direct caller): keep the
+        // stored runs current and rebuild against the last-applied
+        // paragraph style so run token colors resolve on the NEW theme.
+        let MacosNode::Label(label) = node else { return };
+        let key = &**label as *const NSTextField as *const NSView as usize;
+        let para = match self.styled_texts.get_mut(&key) {
+            Some(entry) => {
+                entry.runs = runs.to_vec();
+                entry.para.clone()
+            }
+            None => None,
+        };
+        styled_text::realize(label, runs, para.as_deref(), &self.font_registry);
+    }
+
     fn create_button(
         &mut self,
         label: &str,
@@ -4742,6 +4793,25 @@ impl Backend for MacosBackend {
         match node {
             MacosNode::Label(_) => {
                 text_style::apply_text_style(view, style, true, &self.font_registry);
+                // Styled-text labels: the paragraph style is the BASE the run
+                // deltas layer over, so a (re)style must rebuild the attributed
+                // string. Ordering matters: property writes first (above),
+                // attributed string last — never the reverse (property writes
+                // after `setAttributedStringValue:` stomp per-range fonts).
+                let styled_key = view as *const NSView as usize;
+                if let Some(entry) = self.styled_texts.get_mut(&styled_key) {
+                    entry.para = Some(style.clone());
+                    let runs = entry.runs.clone();
+                    let para = entry.para.clone();
+                    if let MacosNode::Label(label) = node {
+                        styled_text::realize(
+                            label,
+                            &runs,
+                            para.as_deref(),
+                            &self.font_registry,
+                        );
+                    }
+                }
                 // Author `padding_*` on a `text()` node: Taffy reserves the
                 // padding (sizing the outer label frame), but the glyphs would
                 // paint flush in a corner without an inset. Push the same per-

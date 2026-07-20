@@ -646,6 +646,39 @@ pub trait Backend {
         content: &str,
         a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node;
+
+    /// Text node whose content is a list of inline-styled runs (one
+    /// paragraph mixing per-range font/color/background deltas — see
+    /// [`crate::styled_text`]). Backends realize runs through their
+    /// platform's own attributed-text mechanism so mixed-style text
+    /// wraps as a single paragraph: nested `<span>`s on web/SSR,
+    /// `NSAttributedString` on Apple, `SpannableString` on Android,
+    /// cosmic-text rich spans on the GPU engine.
+    ///
+    /// Default impl lowers to [`Backend::create_text`] with the
+    /// concatenated plain text — every word still renders on backends
+    /// without a styled realization (terminal, scaffolds); only the
+    /// per-run styling degrades. Override to realize runs richly.
+    fn create_styled_text(
+        &mut self,
+        runs: &[crate::styled_text::TextRun],
+        a11y: &crate::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        self.create_text(&crate::styled_text::plain_text_of(runs), a11y)
+    }
+
+    /// Re-realize a styled text node's runs. Called by the walker's
+    /// theme-cohort entry on theme/token swaps so natively-resolved
+    /// run colors (`Tokenized::resolve()` at realize time) track the
+    /// installed theme; web short-circuits at the cohort driver
+    /// because its runs emit `var(--token)` and ride the CSS cascade.
+    ///
+    /// Default impl mirrors the `create_styled_text` default:
+    /// re-writes the concatenated plain text via `update_text`.
+    fn update_styled_text(&mut self, node: &Self::Node, runs: &[crate::styled_text::TextRun]) {
+        self.update_text(node, &crate::styled_text::plain_text_of(runs));
+    }
+
     fn create_button(
         &mut self,
         label: &str,
@@ -2980,6 +3013,8 @@ mod tests {
         ExecuteBatch { node_count: u32, ops: usize },
         InsertMany { parent: u32, children: Vec<u32> },
         Insert { parent: u32, child: u32 },
+        CreateText { content: String },
+        UpdateText { node: u32, content: String },
     }
 
     /// Minimal `Backend` impl for default-impl coverage. Only the
@@ -3024,9 +3059,12 @@ mod tests {
         }
         fn create_text(
             &mut self,
-            _content: &str,
+            content: &str,
             _a11y: &crate::accessibility::AccessibilityProps,
         ) -> Self::Node {
+            self.calls.borrow_mut().push(Call::CreateText {
+                content: content.to_string(),
+            });
             self.mint()
         }
         fn create_button(
@@ -3045,7 +3083,12 @@ mod tests {
                 child,
             });
         }
-        fn update_text(&mut self, _node: &Self::Node, _content: &str) {}
+        fn update_text(&mut self, node: &Self::Node, content: &str) {
+            self.calls.borrow_mut().push(Call::UpdateText {
+                node: *node,
+                content: content.to_string(),
+            });
+        }
         fn clear_children(&mut self, _node: &Self::Node) {}
         fn apply_style(&mut self, _node: &Self::Node, _style: &Rc<StyleRules>) {}
 
@@ -3152,6 +3195,46 @@ mod tests {
             calls,
         );
         assert!(matches!(calls[0], Call::ExecuteBatch { .. }));
+    }
+
+    /// The `create_styled_text` trait default must lower to
+    /// `create_text` with the runs' concatenated plain text — the
+    /// graceful degradation every backend without a styled-text
+    /// realization (terminal, scaffolds) relies on: same words, no
+    /// per-run styling.
+    #[test]
+    fn default_create_styled_text_lowers_to_plain_concat() {
+        use crate::styled_text::{TextRun, TextRunStyle};
+        let mut backend = StubBackend::new();
+        let runs = vec![
+            TextRun::plain("the "),
+            TextRun::styled(
+                "ui!",
+                TextRunStyle { font_weight: Some(crate::FontWeight::Bold), ..Default::default() },
+            ),
+            TextRun::plain(" macro"),
+        ];
+        let _ = backend
+            .create_styled_text(&runs, &crate::accessibility::AccessibilityProps::default());
+        assert_eq!(
+            backend.calls(),
+            vec![Call::CreateText { content: "the ui! macro".to_string() }],
+        );
+    }
+
+    /// Same for the `update_styled_text` default: re-writes the
+    /// concatenated plain text through `update_text`.
+    #[test]
+    fn default_update_styled_text_lowers_to_plain_concat() {
+        use crate::styled_text::TextRun;
+        let mut backend = StubBackend::new();
+        let node = backend.mint();
+        let runs = vec![TextRun::plain("a"), TextRun::plain("b")];
+        backend.update_styled_text(&node, &runs);
+        assert_eq!(
+            backend.calls(),
+            vec![Call::UpdateText { node, content: "ab".to_string() }],
+        );
     }
 
     /// `Platform` helper predicates must agree on every variant —

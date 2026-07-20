@@ -617,6 +617,31 @@ pub fn text<T: IntoTextSource>(source: T) -> Bound<TextHandle> {
     })
 }
 
+/// Text node built from inline-styled runs — one paragraph mixing
+/// per-range font/color/background deltas that wraps as a single
+/// unit on every backend (see [`crate::styled_text`]). The node's own
+/// style (via `.with_style(...)`) is the paragraph style; each run's
+/// [`crate::TextRunStyle`] layers deltas over it.
+///
+/// ```ignore
+/// styled_text(vec![
+///     TextRun::plain("the "),
+///     TextRun::styled("ui!", code_style.clone()),
+///     TextRun::plain(" macro"),
+/// ])
+/// .with_style(paragraph_style)
+/// ```
+pub fn styled_text(runs: Vec<crate::styled_text::TextRun>) -> Bound<TextHandle> {
+    Bound::new(Element::Text {
+        source: crate::sources::TextSource::Styled(Rc::new(runs)),
+        style: None,
+        ref_fill: None,
+        accessibility: crate::accessibility::AccessibilityProps::default(),
+        #[cfg(feature = "robot")]
+        test_id: None,
+    })
+}
+
 pub fn button<L, A>(label: L, on_click: A) -> Bound<ButtonHandle>
 where
     L: IntoTextSource,

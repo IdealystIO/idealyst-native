@@ -11,6 +11,7 @@ pub(crate) mod phase_timer;
 pub(crate) mod keyboard;
 pub(crate) mod screenshot;
 pub(crate) mod sticky;
+pub(crate) mod styled_text;
 pub(crate) mod text_inset;
 pub(crate) mod touch;
 pub(crate) mod virtualizer;
@@ -142,6 +143,12 @@ pub struct IosBackend {
     /// `UINavigationController`'s top VC view, which only gets added
     /// on UIKit's first layout pass, after our `finish()` returns).
     pub(crate) view_to_layout: HashMap<usize, (Retained<UIView>, runtime_layout::LayoutNode)>,
+    /// Styled-text labels (`Backend::create_styled_text`), keyed by view
+    /// pointer. Holds the run list + last paragraph style so `apply_style`
+    /// and `update_styled_text` re-realize the attributed string with base
+    /// + deltas merged. Evicted on pointer reuse alongside
+    /// `layout_style_keys` (same recycling defense).
+    pub(crate) styled_texts: HashMap<usize, styled_text::StyledTextEntry>,
     /// Last-applied Taffy frame per view, keyed by the same view
     /// pointer that keys `view_to_layout`. `apply_frames` consults
     /// this and skips the `setBounds:` / `setCenter:` / gradient /
@@ -603,6 +610,7 @@ impl IosBackend {
             portal_instances: HashMap::new(),
             layout: runtime_layout::LayoutTree::new(),
             view_to_layout: HashMap::new(),
+            styled_texts: HashMap::new(),
             applied_frames: HashMap::new(),
             layout_style_keys: HashMap::new(),
             last_viewport: None,
@@ -700,6 +708,9 @@ impl IosBackend {
         // recycled pointer that used to be a content-measured scroller
         // must not divert the new view's padding to a dead label.
         self.external_content_measures.remove(&key);
+        // ...and for styled-text runs: a recycled pointer must not make
+        // the new label re-realize a dead label's runs on theme swap.
+        self.styled_texts.remove(&key);
         node
     }
 
@@ -1508,6 +1519,45 @@ impl Backend for IosBackend {
         // identifier / live_region label still apply.
         a11y::apply(&node, a11y, None);
         node
+    }
+
+    fn create_styled_text(
+        &mut self,
+        runs: &[runtime_core::TextRun],
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        // Reuse the full `create_text` path (inset label subclass, wrap
+        // config, measure_fn — `sizeThatFits:` measures the attributed
+        // string once it's set), then replace the plain string with the
+        // attributed realization. The paragraph style arrives via
+        // `apply_style` right after and re-realizes with the real base.
+        let plain = runtime_core::styled_text::plain_text_of(runs);
+        let node = self.create_text(&plain, a11y);
+        if let IosNode::Label(label) = &node {
+            styled_text::realize(label, runs, None, &self.font_registry);
+            let key = &**label as *const UILabel as *const UIView as usize;
+            self.styled_texts.insert(
+                key,
+                styled_text::StyledTextEntry { runs: runs.to_vec(), para: None },
+            );
+        }
+        node
+    }
+
+    fn update_styled_text(&mut self, node: &Self::Node, runs: &[runtime_core::TextRun]) {
+        // Theme-cohort re-realization (and any direct caller): keep the
+        // stored runs current and rebuild against the last-applied
+        // paragraph style so run token colors resolve on the NEW theme.
+        let IosNode::Label(label) = node else { return };
+        let key = &**label as *const UILabel as *const UIView as usize;
+        let para = match self.styled_texts.get_mut(&key) {
+            Some(entry) => {
+                entry.runs = runs.to_vec();
+                entry.para.clone()
+            }
+            None => None,
+        };
+        styled_text::realize(label, runs, para.as_deref(), &self.font_registry);
     }
 
     fn create_button(
@@ -3247,7 +3297,28 @@ impl Backend for IosBackend {
         }
 
         match node {
-            IosNode::Label(_) => apply_text_style(view, style, true, &self.font_registry),
+            IosNode::Label(_) => {
+                apply_text_style(view, style, true, &self.font_registry);
+                // Styled-text labels: the paragraph style is the BASE the
+                // run deltas layer over, so a (re)style must rebuild the
+                // attributed string AFTER the property writes above —
+                // never the reverse (`setFont:` after `attributedText`
+                // stomps per-range fonts on UIKit).
+                let styled_key = view as *const UIView as usize;
+                if let Some(entry) = self.styled_texts.get_mut(&styled_key) {
+                    entry.para = Some(style.clone());
+                    let runs = entry.runs.clone();
+                    let para = entry.para.clone();
+                    if let IosNode::Label(label) = node {
+                        styled_text::realize(
+                            label,
+                            &runs,
+                            para.as_deref(),
+                            &self.font_registry,
+                        );
+                    }
+                }
+            }
             IosNode::Button(button) => {
                 if let Some(color) = &style.color {
                     let color_val = color.resolve();

@@ -41,6 +41,53 @@ pub struct BufferEntry {
     pub font_size: f32,
     pub content: String,
     pub attrs: TextAttrs,
+    /// `Some` for styled-text nodes (`Backend::create_styled_text`):
+    /// the resolved per-run deltas, kept so every re-shape path
+    /// (`set_attrs` base change, theme re-realize) rebuilds the buffer
+    /// via `set_rich_text` instead of flattening to plain text. The
+    /// span index is stamped into each glyph's `metadata`, which is
+    /// how the renderer finds run background rects at stage time.
+    pub rich: Option<Vec<RichSpan>>,
+}
+
+/// One resolved styled-run for the GPU text engine. Colors are
+/// resolved sRGB at realize time (theme swaps re-realize through
+/// `Backend::update_styled_text`).
+#[derive(Clone, Debug)]
+pub struct RichSpan {
+    pub text: String,
+    pub family: Option<RichFamily>,
+    pub weight: Option<FontWeight>,
+    pub size: Option<f32>,
+    /// Foreground, resolved sRGB 0-255.
+    pub color: Option<[u8; 4]>,
+    /// Background, resolved sRGB 0.0-1.0 — painted by the renderer as
+    /// a rect behind the span's glyphs (cosmic-text has no background
+    /// attribute).
+    pub background: Option<[f32; 4]>,
+}
+
+/// Family choice for one rich span. First classifiable entry of the
+/// author's font stack wins: generics map to cosmic-text's built-in
+/// roles, a leading named face passes through (cosmic-text falls back
+/// per-glyph if the name isn't loaded).
+#[derive(Clone, Debug)]
+pub enum RichFamily {
+    Monospace,
+    SansSerif,
+    Serif,
+    Named(String),
+}
+
+impl RichFamily {
+    fn to_glyphon<'a>(&'a self) -> Family<'a> {
+        match self {
+            RichFamily::Monospace => Family::Monospace,
+            RichFamily::SansSerif => Family::SansSerif,
+            RichFamily::Serif => Family::Serif,
+            RichFamily::Named(n) => Family::Name(n.as_str()),
+        }
+    }
 }
 
 /// Render-side projection of font attributes derived from the
@@ -173,14 +220,62 @@ impl TextStore {
                 font_size,
                 content: content.to_string(),
                 attrs,
+                rich: None,
             },
         );
+    }
+
+    /// Build a new RICH buffer for `id`: one shaped paragraph whose
+    /// spans carry per-run family/weight/size/color deltas over the
+    /// node's base attrs. Replaces any existing entry. Mirrors
+    /// [`TextStore::create`]; `apply_style` swaps the base attrs in
+    /// right after via `set_attrs`, which re-shapes rich-aware.
+    pub fn create_rich(
+        &mut self,
+        font_system: &mut FontSystem,
+        id: LayoutNode,
+        spans: Vec<RichSpan>,
+        font_size: f32,
+    ) {
+        let attrs = TextAttrs::default();
+        let mut buffer = Buffer::new(font_system, Metrics::new(font_size, font_size * 1.3));
+        buffer.set_size(font_system, None, None);
+        shape_rich(&mut buffer, font_system, &spans, &attrs, font_size);
+        apply_buffer_align(&mut buffer, attrs.align);
+        buffer.shape_until_scroll(font_system, false);
+        let content: String = spans.iter().map(|sp| sp.text.as_str()).collect();
+        self.buffers.insert(
+            id,
+            BufferEntry { buffer, font_size, content, attrs, rich: Some(spans) },
+        );
+    }
+
+    /// Replace a rich buffer's spans (theme re-realize / direct
+    /// update). No-op for ids that were never rich-created — a plain
+    /// text node's content updates route through `set_text`.
+    pub fn set_rich(
+        &mut self,
+        font_system: &mut FontSystem,
+        id: LayoutNode,
+        spans: Vec<RichSpan>,
+    ) {
+        if let Some(entry) = self.buffers.get_mut(&id) {
+            entry.content = spans.iter().map(|sp| sp.text.as_str()).collect();
+            shape_rich(&mut entry.buffer, font_system, &spans, &entry.attrs, entry.font_size);
+            entry.rich = Some(spans);
+            apply_buffer_align(&mut entry.buffer, entry.attrs.align);
+            entry.buffer.shape_until_scroll(font_system, false);
+        }
     }
 
     /// Replace the text of `id`'s buffer. No-op if `id` isn't in
     /// the store (the node was dropped before this update fired).
     pub fn set_text(&mut self, font_system: &mut FontSystem, id: LayoutNode, content: &str) {
         if let Some(entry) = self.buffers.get_mut(&id) {
+            // A plain-text write onto a rich node replaces the runs
+            // wholesale (robot `set_text`, etc.) — matching the DOM
+            // backend, where `set_text_content` drops the run spans.
+            entry.rich = None;
             entry.content = content.to_string();
             entry.buffer.set_text(
                 font_system,
@@ -238,14 +333,26 @@ impl TextStore {
                 // Font family / weight / style affect glyph
                 // selection — re-shape the text against the new
                 // attrs. Re-stamp alignment afterwards (set_text
-                // resets it).
-                entry.buffer.set_text(
-                    font_system,
-                    &entry.content,
-                    &entry.attrs.to_glyphon(),
-                    Shaping::Advanced,
-                    None,
-                );
+                // resets it). Rich buffers re-shape through their
+                // spans so run deltas survive a base-style change.
+                if let Some(spans) = entry.rich.take() {
+                    shape_rich(
+                        &mut entry.buffer,
+                        font_system,
+                        &spans,
+                        &entry.attrs,
+                        entry.font_size,
+                    );
+                    entry.rich = Some(spans);
+                } else {
+                    entry.buffer.set_text(
+                        font_system,
+                        &entry.content,
+                        &entry.attrs.to_glyphon(),
+                        Shaping::Advanced,
+                        None,
+                    );
+                }
             }
             // Alignment is a per-line property — re-stamp it
             // whether or not the text was re-shaped above.
@@ -332,6 +439,122 @@ impl TextStore {
         // recomputed once the real width is known).
         (w.ceil(), line_h.ceil())
     }
+}
+
+/// Resolve a framework `TextRun` list into engine [`RichSpan`]s:
+/// tokenized colors resolve against the CURRENT theme (which is why
+/// theme swaps re-enter here via `Backend::update_styled_text`),
+/// families classify to cosmic-text roles, sizes flatten to px.
+pub fn resolve_rich_spans(runs: &[runtime_core::TextRun]) -> Vec<RichSpan> {
+    runs.iter()
+        .map(|run| {
+            let style = run.style.as_ref();
+            let family = style
+                .and_then(|s| s.font_family.as_ref())
+                .and_then(RichFamily::classify);
+            let color = style.and_then(|s| s.color.as_ref()).map(|t| {
+                let [r, g, b, a] = crate::style_convert::parse_color(&t.resolve());
+                [
+                    (r * 255.0) as u8,
+                    (g * 255.0) as u8,
+                    (b * 255.0) as u8,
+                    (a * 255.0) as u8,
+                ]
+            });
+            let background = style
+                .and_then(|s| s.background.as_ref())
+                .map(|t| crate::style_convert::parse_color(&t.resolve()));
+            let size = style
+                .and_then(|s| s.font_size.as_ref())
+                .and_then(|t| match t.resolve() {
+                    runtime_core::Length::Px(px) if px > 0.0 => Some(px),
+                    _ => None,
+                });
+            RichSpan {
+                text: run.text.clone(),
+                family,
+                weight: style.and_then(|s| s.font_weight),
+                size,
+                color,
+                background,
+            }
+        })
+        .collect()
+}
+
+impl RichFamily {
+    /// First classifiable entry of the stack wins. `Typeface` custom
+    /// fonts pass their family name through — cosmic-text matches it
+    /// against faces loaded via `register_asset` and falls back
+    /// per-glyph otherwise.
+    pub fn classify(f: &runtime_core::FontFamily) -> Option<RichFamily> {
+        match f {
+            runtime_core::FontFamily::Typeface(tf) => {
+                Some(RichFamily::Named(tf.family_name.to_string()))
+            }
+            runtime_core::FontFamily::System(stack) => {
+                for entry in stack.split(',') {
+                    let entry = entry.trim().trim_matches('"').trim_matches('\'');
+                    if entry.is_empty() {
+                        continue;
+                    }
+                    return Some(match entry.to_ascii_lowercase().as_str() {
+                        "monospace" | "ui-monospace" => RichFamily::Monospace,
+                        "sans-serif" | "system-ui" | "ui-sans-serif" => RichFamily::SansSerif,
+                        "serif" | "ui-serif" => RichFamily::Serif,
+                        _ => RichFamily::Named(entry.to_string()),
+                    });
+                }
+                None
+            }
+        }
+    }
+}
+
+/// Shape a rich buffer: base attrs for plain spans, deltas layered
+/// for styled ones. The span INDEX rides each glyph's `metadata` so
+/// the renderer can find run boundaries (background rects) in the
+/// laid-out glyphs.
+fn shape_rich(
+    buffer: &mut Buffer,
+    font_system: &mut FontSystem,
+    spans: &[RichSpan],
+    base: &TextAttrs,
+    base_size: f32,
+) {
+    let base_attrs = base.to_glyphon();
+    let glyphon_spans: Vec<(&str, Attrs<'_>)> = spans
+        .iter()
+        .enumerate()
+        .map(|(i, sp)| {
+            let mut a = base.to_glyphon().metadata(i);
+            if let Some(f) = &sp.family {
+                a = a.family(f.to_glyphon());
+            }
+            if let Some(w) = sp.weight {
+                a = a.weight(font_weight_to_glyphon(w));
+            }
+            if let Some(px) = sp.size {
+                a = a.metrics(Metrics::new(px, px * 1.3));
+            } else if sp.family.is_some() || sp.weight.is_some() {
+                // A font-delta span keeps the node's size explicitly —
+                // per-span metrics also pin the line height so a mono
+                // chip doesn't stretch its line.
+                a = a.metrics(Metrics::new(base_size, base_size * 1.3));
+            }
+            if let Some([r, g, b, alpha]) = sp.color {
+                a = a.color(GColor::rgba(r, g, b, alpha));
+            }
+            (sp.text.as_str(), a)
+        })
+        .collect();
+    buffer.set_rich_text(
+        font_system,
+        glyphon_spans,
+        &base_attrs,
+        Shaping::Advanced,
+        None,
+    );
 }
 
 /// GPU-side text infrastructure: the atlas, the wgpu pipeline, and
@@ -434,4 +657,129 @@ pub fn render_text<'a>(
     )?;
     ctx.renderer.render(&ctx.atlas, &ctx.viewport, pass)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn layout_node() -> LayoutNode {
+        runtime_layout::LayoutTree::new().new_node()
+    }
+
+    /// Rich creation shapes the full concatenated paragraph and stamps
+    /// each glyph's `metadata` with its span index — the invariant the
+    /// renderer's background-rect pass depends on. Headless: cosmic's
+    /// FontSystem shapes without a GPU.
+    #[test]
+    fn create_rich_stamps_span_metadata_on_glyphs() {
+        let mut fs = FontSystem::new();
+        let mut store = TextStore::new();
+        let id = layout_node();
+        store.create_rich(
+            &mut fs,
+            id,
+            vec![
+                RichSpan {
+                    text: "the ".into(),
+                    family: None,
+                    weight: None,
+                    size: None,
+                    color: None,
+                    background: None,
+                },
+                RichSpan {
+                    text: "ui!".into(),
+                    family: Some(RichFamily::Monospace),
+                    weight: None,
+                    size: None,
+                    color: None,
+                    background: Some([0.9, 0.9, 0.9, 1.0]),
+                },
+                RichSpan {
+                    text: " macro".into(),
+                    family: None,
+                    weight: None,
+                    size: None,
+                    color: None,
+                    background: None,
+                },
+            ],
+            14.0,
+        );
+        let entry = store.buffers.get(&id).expect("entry created");
+        assert_eq!(entry.content, "the ui! macro");
+        assert!(entry.rich.is_some());
+        let metas: Vec<usize> = entry
+            .buffer
+            .layout_runs()
+            .flat_map(|r| r.glyphs.iter().map(|g| g.metadata).collect::<Vec<_>>())
+            .collect();
+        // 13 glyphs, spans 0 (4 glyphs), 1 (3 glyphs), 2 (6 glyphs).
+        assert_eq!(metas.len(), 13, "one glyph per char: {metas:?}");
+        assert_eq!(&metas[0..4], &[0, 0, 0, 0]);
+        assert_eq!(&metas[4..7], &[1, 1, 1]);
+        assert_eq!(&metas[7..13], &[2, 2, 2, 2, 2, 2]);
+    }
+
+    /// A plain `set_text` onto a rich node drops the runs (robot
+    /// set_text parity with the DOM backend), and a base-attrs change
+    /// re-shapes THROUGH the stored spans so run deltas survive.
+    #[test]
+    fn set_text_drops_rich_and_set_attrs_preserves_it() {
+        let mut fs = FontSystem::new();
+        let mut store = TextStore::new();
+        let id = layout_node();
+        store.create_rich(
+            &mut fs,
+            id,
+            vec![RichSpan {
+                text: "chip".into(),
+                family: Some(RichFamily::Monospace),
+                weight: None,
+                size: None,
+                color: None,
+                background: None,
+            }],
+            14.0,
+        );
+        // Base-attrs change keeps the rich spans.
+        store.set_attrs(
+            &mut fs,
+            id,
+            TextAttrs { weight: FontWeight::Bold, ..Default::default() },
+        );
+        assert!(store.buffers.get(&id).unwrap().rich.is_some());
+        // Plain-text write drops them.
+        store.set_text(&mut fs, id, "plain");
+        let entry = store.buffers.get(&id).unwrap();
+        assert!(entry.rich.is_none());
+        assert_eq!(entry.content, "plain");
+    }
+
+    /// `resolve_rich_spans` maps framework runs into engine spans:
+    /// tokenized colors resolve to sRGB, the family stack classifies
+    /// via its first entry, sizes flatten to px.
+    #[test]
+    fn resolve_rich_spans_resolves_colors_and_families() {
+        use runtime_core::{Color, Tokenized, TextRun, TextRunStyle};
+        let spans = resolve_rich_spans(&[
+            TextRun::plain("a "),
+            TextRun::styled(
+                "b",
+                TextRunStyle {
+                    font_family: Some(runtime_core::FontFamily::System(
+                        "ui-monospace, Menlo, monospace".into(),
+                    )),
+                    background: Some(Tokenized::Literal(Color("#ff0000".into()))),
+                    ..Default::default()
+                },
+            ),
+        ]);
+        assert_eq!(spans.len(), 2);
+        assert!(spans[0].family.is_none() && spans[0].background.is_none());
+        assert!(matches!(spans[1].family, Some(RichFamily::Monospace)));
+        let bg = spans[1].background.unwrap();
+        assert!(bg[0] > 0.99 && bg[1] < 0.01 && bg[2] < 0.01, "red bg, got {bg:?}");
+    }
 }

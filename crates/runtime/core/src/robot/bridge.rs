@@ -1263,6 +1263,22 @@ fn dispatch(robot: &Robot, cmd: &str, args: &serde_json::Value) -> Result<String
         "clear_perf_counters" => Err(
             "perf disabled: rebuild the target app with the `debug-stats` feature".into(),
         ),
+        // Reactive profile: drain the transaction event stream and render the
+        // "which signal caused a long render" report. Draining is destructive
+        // (like `get_perf_counters`), so each call reports the flushes since
+        // the previous call. Returned as a JSON string of the formatted text.
+        #[cfg(feature = "debug-stats")]
+        "reactive_profile" => {
+            let events = crate::debug::take_events();
+            let text = crate::debug::format_reactive_profile(&events, 20);
+            Ok(serde_json::to_string(&text).unwrap_or_else(|_| "\"\"".into()))
+        }
+        #[cfg(not(feature = "debug-stats"))]
+        "reactive_profile" => Err(
+            "reactive_profile disabled: rebuild the target app with the `debug-stats` \
+             feature to capture reactive transactions"
+                .into(),
+        ),
         // Fall back to a dev-mode-registered custom verb (e.g.
         // "screenshot") before declaring the command unknown.
         _ => match try_custom_command(cmd, args) {

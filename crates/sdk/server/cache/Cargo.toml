@@ -1,0 +1,34 @@
+[package]
+name = "cache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Server-tier cache SDK — a byte-oriented KV-with-TTL abstraction
+# (`Cache` trait) with in-memory and Redis backends.
+#
+# The connection is APP-PROVIDED CONTEXT, like a database: the app opens
+# one `redis::Client`, installs it via `server::install_state`, and every
+# consumer — this cache, server-kit sessions (built ON this trait),
+# server-kit's RedisLimitStore — reads the same instance. One connection
+# config, many consumers, none owning it.
+#
+# Backends:
+#   - memory   always available (tests, single-instance dev)
+#   - redis    feature `redis` (shared across instances)
+
+[features]
+default = []
+redis = ["dep:redis", "dep:tokio", "dep:server"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# `redis` feature only — mirrors jobs/pubsub/server-kit.
+redis = { version = "0.27", default-features = false, features = ["tokio-comp", "connection-manager"], optional = true }
+tokio = { version = "1", features = ["sync"], optional = true }
+# For RedisCache::from_installed (reads the app-installed client).
+server = { workspace = true, features = ["server"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

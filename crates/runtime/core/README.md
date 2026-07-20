@@ -51,8 +51,13 @@ in app code.
 
 - **`async-driver`**. Pulls in the cross-platform per-frame driver +
   `resource()` async-data primitive. Off by default.
-- **`debug-stats`**. Enables the `debug` module's thread-local phase
-  counters. Used by backend `PhaseTimer` calls (see project CLAUDE.md §6).
+- **`debug-stats`**. Enables the `debug` module's thread-local telemetry:
+  the phase counters used by backend `PhaseTimer` calls (see project
+  CLAUDE.md §6) **and** the reactive profiler (`txn_report` /
+  `slow_signals` / `format_reactive_profile`) that attributes render cost
+  to the triggering signal / effect / component. See
+  [`docs/reactivity.md`](../../../docs/reactivity.md) → "Profiling reactive
+  updates". Compiled out entirely when off.
 - **`robot`**. Enables the [`robot::`](./src/robot) module: the
   introspection registry that exposes every mounted primitive (`test_id`,
   label, kind, control handle) plus the component-method registry that

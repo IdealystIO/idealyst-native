@@ -506,6 +506,36 @@ impl Backend for SsrBackend {
         nref(node)
     }
 
+    fn create_styled_text(
+        &mut self,
+        runs: &[runtime_core::TextRun],
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        // Same structure the web backend builds live (outer <span>,
+        // one child <span> per run, inline style from the shared css
+        // emitter) so hydration adopts it as-is. Run colors emit as
+        // `var(--token, fallback)` and resolve against the `:root`
+        // token block this backend emits — the SSR first paint is
+        // theme-correct without any JS.
+        let mut outer = HtmlNode::new("span");
+        outer.is_text = true;
+        for run in runs {
+            let mut child = HtmlNode::new("span");
+            child.text = Some(run.text.clone());
+            child.is_text = true;
+            if let Some(style) = &run.style {
+                if !style.is_empty() {
+                    let decl = css::text_run_style_css(style);
+                    if !decl.is_empty() {
+                        child.style = Some(decl);
+                    }
+                }
+            }
+            outer.children.push(nref(child));
+        }
+        nref(outer)
+    }
+
     fn create_button(
         &mut self,
         label: &str,
@@ -1424,6 +1454,41 @@ mod tests {
         let backend = Rc::new(RefCell::new(SsrBackend::new()));
         let _owner = render(backend.clone(), view(vec![text("hi").into()]).into());
         assert_eq!(backend.borrow().into_html(), "<div><span>hi</span></div>");
+    }
+
+    /// A styled-text node serializes to the nested-span structure the
+    /// live web backend builds (outer `<span>`, one child `<span>` per
+    /// run) with each styled run's deltas as an inline style whose
+    /// tokenized colors emit as `var(--token, fallback)` — so the SSR
+    /// first paint is theme-correct and hydration adopts the DOM
+    /// as-is.
+    #[test]
+    fn styled_text_renders_run_spans_with_inline_var_styles() {
+        use runtime_core::{styled_text, IntoElement, TextRun, TextRunStyle};
+        let backend = Rc::new(RefCell::new(SsrBackend::new()));
+        let runs = vec![
+            TextRun::plain("the "),
+            TextRun::styled(
+                "ui!",
+                TextRunStyle {
+                    font_family: Some(runtime_core::FontFamily::System(
+                        "ui-monospace, monospace".into(),
+                    )),
+                    background: Some(Tokenized::token("color-surface-alt", Color("#eee".into()))),
+                    ..Default::default()
+                },
+            ),
+            TextRun::plain(" macro"),
+        ];
+        let _owner = render(backend.clone(), styled_text(runs).into_element());
+        let html = backend.borrow().into_html();
+        assert_eq!(
+            html,
+            "<span><span>the </span>\
+             <span style=\"font-family: ui-monospace, monospace; \
+             background-color: var(--color-surface-alt, #eee)\">ui!</span>\
+             <span> macro</span></span>",
+        );
     }
 
     /// Text content is HTML-escaped so author strings can't inject

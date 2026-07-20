@@ -1664,6 +1664,57 @@ fn walk<'a>(
                         }
                     };
                     let tb = intersect_rect((x, y, w, h), clip);
+                    // Run background chips for rich (styled-runs) text:
+                    // cosmic-text has no background attribute, so paint a
+                    // rect per contiguous same-metadata glyph group whose
+                    // span declares one. Pushed BEFORE the barrier below so
+                    // they render beneath this text's glyphs. Geometry comes
+                    // from the shaped buffer itself (glyph x/w per layout
+                    // run), so wrapping mid-chip paints one rect per line —
+                    // the same visual web's inline spans produce.
+                    if let Some(rich) = &entry.rich {
+                        if rich.iter().any(|sp| sp.background.is_some()) {
+                            for lrun in entry.buffer.layout_runs() {
+                                let glyphs = lrun.glyphs;
+                                let mut i = 0;
+                                while i < glyphs.len() {
+                                    let meta = glyphs[i].metadata;
+                                    let start_gx = glyphs[i].x;
+                                    let mut end_gx = glyphs[i].x + glyphs[i].w;
+                                    let mut j = i + 1;
+                                    while j < glyphs.len() && glyphs[j].metadata == meta {
+                                        end_gx = glyphs[j].x + glyphs[j].w;
+                                        j += 1;
+                                    }
+                                    if let Some(bg) =
+                                        rich.get(meta).and_then(|sp| sp.background)
+                                    {
+                                        rects.push(RectInstance {
+                                            rect: [
+                                                text_x + start_gx,
+                                                text_y + lrun.line_top,
+                                                end_gx - start_gx,
+                                                lrun.line_height,
+                                            ],
+                                            bg: srgb_rgba_to_linear([
+                                                bg[0],
+                                                bg[1],
+                                                bg[2],
+                                                bg[3] * node_opacity,
+                                            ]),
+                                            corner_radius: [0.0; 4],
+                                            border_color: [0.0; 4],
+                                            border_width: 0.0,
+                                            rotation: local_rot,
+                                            shadow_blur: 0.0,
+                                            ..no_gradient_fields()
+                                        });
+                                    }
+                                    i = j;
+                                }
+                            }
+                        }
+                    }
                     // Record the rect count BEFORE this text — the
                     // renderer uses this to draw rects[0..barrier]
                     // beneath the text and rects[barrier..] above.

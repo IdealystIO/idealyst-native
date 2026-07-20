@@ -29,14 +29,6 @@ pub mod log;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))]
 pub mod scheduler;
 
-/// Debug-only frame-pacing trace for diagnosing animation stutter. iOS/tvOS
-/// use `CADisplayLink.displayLinkWithTarget:selector:` (UIKit); macOS uses
-/// `NSScreen.displayLinkWithTarget:selector:` (AppKit, macOS 14+). Both give a
-/// main-thread, common-mode vsync clock for measuring scroll-tracking stalls.
-/// Self-installs from `install_scheduler`; compiled out of release builds.
-#[cfg(all(any(target_os = "ios", target_os = "tvos", target_os = "macos"), debug_assertions))]
-pub mod perf_trace;
-
 /// Cooperative main-thread async executor — drives `spawn_async` futures
 /// on the main run loop instead of `runtime-core`'s blocking `pollster`
 /// fallback, so long-running futures (SSE / WebSocket `recv` loops) don't
@@ -61,6 +53,13 @@ pub mod icon_path;
 // shape so the iOS-core re-export stays a one-line `pub use`.
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))]
 pub use log::apple_log;
+
+/// Shared attributed-string assembly for styled text runs — the
+/// toolkit-agnostic half of `Backend::create_styled_text` on Apple
+/// (fragment appending + attribute dictionaries from finished
+/// platform objects). OS-gated: it constructs Foundation objects.
+#[cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))]
+pub mod styled_text;
 
 /// Pure style decisions for native editable text controls (UITextField /
 /// UITextView, NSTextField / NSTextView). NOT OS-gated — it's `runtime_core`

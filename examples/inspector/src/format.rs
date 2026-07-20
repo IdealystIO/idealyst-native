@@ -75,6 +75,18 @@ pub fn perf(s: &Snapshot) -> String {
     out
 }
 
+/// The reactive profile — the `reactive_profile` verb returns the fully
+/// rendered report as a string (or an error when the target lacks
+/// `debug-stats`), so this just surfaces it.
+pub fn reactive_profile(s: &Snapshot) -> String {
+    match (&s.reactive_profile, &s.reactive_profile_error) {
+        (Some(text), _) if !text.trim().is_empty() => text.clone(),
+        (Some(_), _) => "(no reactive transactions this interval)".to_string(),
+        (None, Some(err)) => err.clone(),
+        (None, None) => "(unavailable)".to_string(),
+    }
+}
+
 pub fn signals(s: &Snapshot) -> String {
     if s.signals.is_empty() {
         return "(none — values from `signal!`/`watch_signal` appear here)".to_string();

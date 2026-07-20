@@ -10,15 +10,17 @@ crate-type = ["rlib"]
 
 [features]
 default = []
-server = ["server/server", "server-kit/server", "dep:axum", "dep:tokio", "dep:tower-http"]
+server = ["server/server", "server-kit/server", "dep:cache", "dep:axum", "dep:tokio", "dep:tower-http"]
 # Enabled only by the CLI-generated native sidecar wrapper.
 sidecar = ["dep:dev-server"]
 
 [dependencies]
 server = { workspace = true }
-# Conventional policy layer (middleware chain, Auth, csrf_guard) over the
-# server-fn primitive's dispatch hook.
+# Conventional policy layer (middleware chain, Auth, csrf_guard, Sessions)
+# over the server-fn primitive's dispatch hook.
 server-kit = { workspace = true }
+# Session store provider (kit Sessions ride the Cache abstraction).
+cache = { workspace = true, optional = true }
 dev-server = { workspace = true, optional = true }
 net = { workspace = true }
 runtime-core = { workspace = true, features = ["async-driver"] }

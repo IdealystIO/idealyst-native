@@ -41,12 +41,12 @@ pub struct Credentials {
     pub password: String,
 }
 
-/// The authenticated user an auth guard injects into the request context,
-/// read back by protected fns via `Auth<Principal>`. Defined on BOTH builds
-/// because it appears in the shared `me` signature (the client stub names
-/// the type even though it never constructs one — `Auth<T>` is a
-/// server-injected extractor, absent from the client call site).
-#[derive(Clone)]
+/// The authenticated user the session guard injects into the request
+/// context, read back by protected fns via `Auth<Principal>`. Defined on
+/// BOTH builds because it appears in the shared `me` signature (the
+/// client stub names the type even though it never constructs one).
+/// Serde because kit sessions serialize it into the session store.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Principal {
     pub username: String,
 }
@@ -61,94 +61,28 @@ pub struct LoginOk {
 }
 
 // ===========================================================================
-// Server-only: the (demo) user check, the in-memory session store, and the
-// `Principal` an auth guard injects. Gated behind `feature = "server"` so the
-// wasm client never compiles any of it.
+// Server-only: the (demo) credential check + kit sessions. Gated behind
+// `feature = "server"` so the wasm client never compiles any of it.
 // ===========================================================================
 
+/// The demo's only valid credentials.
 #[cfg(feature = "server")]
-pub mod srv {
-    use std::collections::HashMap;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::{Mutex, OnceLock};
-
-    /// session id → username. In-memory and per-process: fine for a demo.
-    /// A real app uses a signed/encrypted cookie or a shared store
-    /// (Redis/DB), and a CSPRNG for the id.
-    fn sessions() -> &'static Mutex<HashMap<String, String>> {
-        static S: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
-        S.get_or_init(|| Mutex::new(HashMap::new()))
-    }
-
-    /// The demo's only valid credentials.
-    pub fn check_password(username: &str, password: &str) -> bool {
-        username == "demo" && password == "password"
-    }
-
-    /// Create a session for `username`, returning its opaque id.
-    pub fn new_session(username: &str) -> String {
-        static COUNTER: AtomicU64 = AtomicU64::new(1);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        // Demo id — unique per process. NOT unguessable; a real app uses a
-        // CSPRNG token (e.g. 32 random bytes, base64) or a signed cookie.
-        let id = format!("sess-{n}");
-        sessions()
-            .lock()
-            .unwrap()
-            .insert(id.clone(), username.to_string());
-        id
-    }
-
-    /// The username for a session id, if the session is live.
-    pub fn lookup(session_id: &str) -> Option<String> {
-        sessions().lock().unwrap().get(session_id).cloned()
-    }
-
-    /// Drop a session (logout).
-    pub fn end(session_id: &str) {
-        sessions().lock().unwrap().remove(session_id);
-    }
-
-    /// Pull the `session` cookie value out of a raw `Cookie` header.
-    pub fn session_from_cookie_header(cookie_header: &str) -> Option<String> {
-        cookie_header.split(';').find_map(|pair| {
-            let (k, v) = pair.split_once('=')?;
-            (k.trim() == "session").then(|| v.trim().to_string())
-        })
-    }
+fn check_password(username: &str, password: &str) -> bool {
+    username == "demo" && password == "password"
 }
 
-/// Install the auth guard. The server bin calls this at startup. The guard
-/// runs on every request: if a live `session` cookie is present it injects
-/// the `Principal`; otherwise it does nothing (and protected fns 401 via
-/// `Auth<Principal>`).
+/// Install kit sessions. The server bin calls this at startup.
+///
+/// Everything mechanical — CSPRNG tokens, the store, the cookie/bearer
+/// guard, `Authenticated` — is `server_kit::Sessions` over a `Cache`
+/// provider. `MemoryCache` here (per-process, fine for a demo); a real
+/// multi-instance app passes `cache::RedisCache::from_installed()` over
+/// its provided Redis client, with zero other changes.
 #[cfg(feature = "server")]
 pub fn install_auth_guard() {
-    server_kit::install_middleware(server_kit::from_fn(|ctx| {
-        // Read the session id synchronously, before mutating ctx. Accept it
-        // from the cookie (web) OR an `Authorization: Bearer` header (native).
-        let session = {
-            let headers = ctx.headers();
-            let from_cookie = headers
-                .get("cookie")
-                .and_then(|v| v.to_str().ok())
-                .and_then(srv::session_from_cookie_header);
-            from_cookie.or_else(|| {
-                headers
-                    .get("authorization")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|a| a.strip_prefix("Bearer ").map(|s| s.to_string()))
-            })
-        };
-        Box::pin(async move {
-            if let Some(id) = session {
-                if let Some(username) = srv::lookup(&id) {
-                    ctx.insert(Principal { username });
-                }
-            }
-            Ok(())
-        })
-    }));
+    let sessions = server_kit::Sessions::new(cache::MemoryCache::new());
+    server::install_state(sessions.clone());
+    server_kit::install_middleware(sessions.guard::<Principal>());
 }
 
 // ===========================================================================
@@ -163,31 +97,23 @@ pub fn install_auth_guard() {
 /// replaces it with an HTTP stub on the client), so it can freely name the
 /// server-only `srv` module and `server::set_cookie`.
 #[server]
-pub async fn login(creds: Credentials) -> Result<LoginOk, ServerError> {
-    if !srv::check_password(&creds.username, &creds.password) {
+pub async fn login(
+    creds: Credentials,
+    sessions: server::State<server_kit::Sessions>,
+) -> Result<LoginOk, ServerError> {
+    if !check_password(&creds.username, &creds.password) {
         return Err(ServerError::Failed("invalid username or password".into()));
     }
-    let session_id = srv::new_session(&creds.username);
-
-    // Native clients announce themselves with `x-idealyst-client: native`
-    // (set by their credential provider). They get the token in the body to
-    // store in the OS keystore — they have no cookie jar. Web clients get an
-    // httpOnly cookie and NO token in the body: the secret must never reach
-    // JS. The cookie defaults to HttpOnly + Secure + SameSite=Lax.
-    let is_native =
-        server::use_request_header("x-idealyst-client").as_deref() == Some("native");
-    if is_native {
-        Ok(LoginOk {
-            username: creds.username,
-            token: Some(session_id),
-        })
-    } else {
-        server::set_cookie(server::Cookie::new("session", session_id));
-        Ok(LoginOk {
-            username: creds.username,
-            token: None,
-        })
-    }
+    // Kit sessions handle the rest: CSPRNG token, the store write, and
+    // the transport branch — web callers get an httpOnly Secure
+    // SameSite=Lax cookie (token: None; the secret never reaches JS),
+    // native callers (`x-idealyst-client: native`, set by their
+    // credential provider) get the bearer in the body for the keystore.
+    let ticket = sessions
+        .start(&Principal { username: creds.username.clone() })
+        .await
+        .map_err(|e| ServerError::failed(e.to_string()))?;
+    Ok(LoginOk { username: creds.username, token: ticket.token })
 }
 
 /// A protected call: returns the current user, or 401 if unauthenticated.
@@ -198,19 +124,11 @@ pub async fn me(user: server_kit::Auth<Principal>) -> Result<String, ServerError
     Ok(user.username.clone())
 }
 
-/// End the session and clear the cookie.
+/// End the session and clear the cookie. Kit sessions find the token
+/// (cookie or bearer), delete the stored session, and clear the cookie.
 #[server]
-pub async fn logout(cookies: server::Cookies) -> Result<(), ServerError> {
-    // Find the session from the cookie (web) or the bearer header (native).
-    let id = cookies.0.get("session").cloned().or_else(|| {
-        server::use_request_header("authorization")
-            .and_then(|a| a.strip_prefix("Bearer ").map(String::from))
-    });
-    if let Some(id) = id {
-        srv::end(&id);
-    }
-    server::clear_cookie("session"); // harmless when there was no cookie
-    Ok(())
+pub async fn logout(sessions: server::State<server_kit::Sessions>) -> Result<(), ServerError> {
+    sessions.end().await.map_err(|e| ServerError::failed(e.to_string()))
 }
 
 // ===========================================================================

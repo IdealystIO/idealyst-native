@@ -537,6 +537,7 @@ pub fn StatsPanel(props: StatsPanelProps) -> Element {
     // `text(<expr with .get()>)` → reactive-wrapped, refreshes each poll.
     let navigators = text(move || navigators_text(&snapshot.get())).into_element();
     let perf = text(move || format::perf(&snapshot.get())).into_element();
+    let reactive = text(move || format::reactive_profile(&snapshot.get())).into_element();
     let signals = text(move || format::signals(&snapshot.get())).into_element();
     let raw = text(move || format::raw_elements(&snapshot.get())).into_element();
     ui! {
@@ -545,6 +546,8 @@ pub fn StatsPanel(props: StatsPanelProps) -> Element {
             navigators
             Typography(content = "ARENA / PERF", kind = typography_kind::Overline)
             perf
+            Typography(content = "REACTIVE PROFILE (which signal caused a long render)", kind = typography_kind::Overline)
+            reactive
             Typography(content = "WATCHED SIGNALS", kind = typography_kind::Overline)
             signals
             Typography(content = "RAW ELEMENTS (find_all)", kind = typography_kind::Overline)

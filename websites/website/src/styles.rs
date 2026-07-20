@@ -810,6 +810,11 @@ stylesheet! {
     }
 }
 
+// NB: inline-code chips in body copy are styled by
+// `components::prose::code_run_style()` (a `TextRunStyle` on the
+// framework's styled-text primitive), not by a stylesheet here — a
+// per-run style has no class to attach.
+
 // =============================================================================
 // Demo showcase card — one card split into two color regions: a clean
 // `color-surface` "preview" area on top and a tinted `color-surface-alt`

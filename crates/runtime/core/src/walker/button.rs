@@ -47,6 +47,10 @@ pub(super) fn build<B: Backend + 'static>(
             let initial = (compute)();
             (initial, Some(compute))
         }
+        // Styled runs are an `Element::Text` capability; a button
+        // label lowers to the concatenated plain text (same words,
+        // no per-range styling).
+        TextSource::Styled(runs) => (crate::styled_text::plain_text_of(&runs), None),
     };
     // `on_click` is an `Action` carrying both the runtime
     // callable (`fire`) and the structured metadata

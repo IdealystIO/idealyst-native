@@ -24,7 +24,7 @@
 //!   [`Context`] via `FromContext`, and *omitted* from the client stub.
 //!   A parameter is an extractor if it is annotated `#[ctx]` **or** its
 //!   type is one of the reserved wrapper names (`State`, `Headers`,
-//!   `Extension`, `Auth`, `Cookies`).
+//!   `Extension`, `Auth`, `Cookies`, `Role`).
 //!
 //! Because a proc-macro sees syntax, not resolved trait impls, the
 //! classification is syntactic: the reserved names cover the built-in
@@ -61,7 +61,8 @@ use syn::{
     PathArguments, ReturnType, Type, TypeParamBound,
 };
 
-/// Parses `#[server(path = "...", strict_version)]` attribute arguments.
+/// Parses `#[server(path = "...", strict_version, tags(...))]` attribute
+/// arguments.
 struct ServerAttr {
     path: Option<String>,
     /// When set, the server rejects any client whose wire schema hash
@@ -69,17 +70,24 @@ struct ServerAttr {
     /// `IncompatibleVersion` (426). For irreversible / money-movement
     /// endpoints where "it happened to deserialize" is not good enough.
     strict: bool,
+    /// `tags(admin, limit = "30/min")` — static endpoint metadata carried
+    /// on the registration entry and the request `Context`, readable by a
+    /// dispatch hook (`ctx.has_tag` / `ctx.tag`). A bare ident is
+    /// `(name, "")`; a name-value is `(name, value)`. The primitive
+    /// attaches no meaning to any tag — policy layers do.
+    tags: Vec<(String, String)>,
 }
 
 impl syn::parse::Parse for ServerAttr {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut path = None;
         let mut strict = false;
+        let mut tags: Vec<(String, String)> = Vec::new();
         if input.is_empty() {
-            return Ok(Self { path, strict });
+            return Ok(Self { path, strict, tags });
         }
-        // Comma-separated `Meta`: `path = "..."` (name-value) and the
-        // bare flag `strict_version` (path).
+        // Comma-separated `Meta`: `path = "..."` (name-value), the bare
+        // flag `strict_version` (path), and the `tags(...)` list.
         let metas =
             syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated(input)?;
         for meta in metas {
@@ -96,16 +104,71 @@ impl syn::parse::Parse for ServerAttr {
                 syn::Meta::Path(p) if p.is_ident("strict_version") => {
                     strict = true;
                 }
+                syn::Meta::List(ml) if ml.path.is_ident("tags") => {
+                    let entries = ml.parse_args_with(
+                        syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+                    )?;
+                    for entry in entries {
+                        match entry {
+                            // Bare tag: `tags(admin)` → ("admin", "").
+                            syn::Meta::Path(p) => {
+                                let Some(ident) = p.get_ident() else {
+                                    return Err(syn::Error::new_spanned(
+                                        p,
+                                        "tag names must be plain identifiers",
+                                    ));
+                                };
+                                tags.push((ident.to_string(), String::new()));
+                            }
+                            // Valued tag: `tags(limit = "30/min")`.
+                            syn::Meta::NameValue(nv) => {
+                                let Some(ident) = nv.path.get_ident() else {
+                                    return Err(syn::Error::new_spanned(
+                                        &nv.path,
+                                        "tag names must be plain identifiers",
+                                    ));
+                                };
+                                let syn::Expr::Lit(lit) = &nv.value else {
+                                    return Err(syn::Error::new_spanned(
+                                        &nv.value,
+                                        "tag values must be string literals",
+                                    ));
+                                };
+                                let syn::Lit::Str(s) = &lit.lit else {
+                                    return Err(syn::Error::new_spanned(
+                                        &nv.value,
+                                        "tag values must be string literals",
+                                    ));
+                                };
+                                tags.push((ident.to_string(), s.value()));
+                            }
+                            other => {
+                                return Err(syn::Error::new_spanned(
+                                    other,
+                                    "expected `tags(name, name = \"value\", ...)`",
+                                ));
+                            }
+                        }
+                    }
+                }
                 other => {
                     return Err(syn::Error::new_spanned(
                         other,
-                        "unknown attribute; supported: `path = \"...\"`, `strict_version`",
+                        "unknown attribute; supported: `path = \"...\"`, `strict_version`, \
+                         `tags(...)`",
                     ));
                 }
             }
         }
-        Ok(Self { path, strict })
+        Ok(Self { path, strict, tags })
     }
+}
+
+/// The `&'static [(&'static str, &'static str)]` slice literal for the
+/// parsed `tags(...)`, embedded into the entry / open-context call.
+fn tags_tokens(tags: &[(String, String)]) -> TokenStream2 {
+    let pairs = tags.iter().map(|(name, value)| quote!((#name, #value)));
+    quote!(&[ #( #pairs ),* ])
 }
 
 #[proc_macro_attribute]
@@ -125,15 +188,17 @@ fn has_ctx_attr(attrs: &[Attribute]) -> bool {
 }
 
 /// `true` if the parameter's type names a reserved built-in extractor
-/// wrapper (`State`, `Headers`, `Extension`) — recognised by its final
-/// path segment so both `State<T>` and `server::State<T>` match. These
-/// are injected without needing `#[ctx]`.
+/// wrapper — recognised by its final path segment so both `State<T>` and
+/// `server::State<T>` match. These are injected without needing `#[ctx]`.
+/// `Auth` and `Role` are defined by the `server-kit` policy crate; the
+/// match is purely syntactic, so any crate's type with a reserved name
+/// participates (which is what lets the kit own them).
 fn is_reserved_extractor(ty: &Type) -> bool {
     if let Type::Path(tp) = ty {
         if let Some(seg) = tp.path.segments.last() {
             return matches!(
                 seg.ident.to_string().as_str(),
-                "State" | "Headers" | "Extension" | "Auth" | "Cookies"
+                "State" | "Headers" | "Extension" | "Auth" | "Cookies" | "Role"
             );
         }
     }
@@ -256,6 +321,7 @@ fn expand(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
         h.finish()
     };
     let strict = attr.strict;
+    let tags = tags_tokens(&attr.tags);
 
     // Fresh ident for the handler module, avoids colliding with any
     // user-defined item of the same name.
@@ -299,6 +365,7 @@ fn expand(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
                     path: #wire_path,
                     schema: #schema_hash,
                     strict: #strict,
+                    tags: #tags,
                     handler: |__body_bytes| ::std::boxed::Box::pin(async move {
                         let ( #( #wire_binds, )* ): ( #( #wire_tys, )* ) =
                             ::server::__private::decode_args(&__body_bytes)?;
@@ -477,6 +544,7 @@ fn expand_channel(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
     let inputs = &sig.inputs;
 
     let wire_path = attr.path.unwrap_or_else(|| ident.to_string());
+    let tags = tags_tokens(&attr.tags);
     let route = format!("/_srv/_ws/{wire_path}");
 
     let mut params = inputs.iter();
@@ -526,7 +594,7 @@ fn expand_channel(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
                 Query(__q): Query<::server::__private::WsArgsQuery>,
                 ws: WebSocketUpgrade,
             ) -> Response {
-                let mut __ctx = ::server::__private::ws_open_context(headers, #wire_path);
+                let mut __ctx = ::server::__private::ws_open_context(headers, #wire_path, #tags);
                 if let Err(__resp) = ::server::__private::ws_open_hook(&mut __ctx).await {
                     return __resp;
                 }
@@ -655,6 +723,7 @@ fn expand_subscription(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStrea
     let inputs = &sig.inputs;
 
     let wire_path = attr.path.unwrap_or_else(|| ident.to_string());
+    let tags = tags_tokens(&attr.tags);
     let route = format!("/_srv/_ws/{wire_path}");
     let item_ty = parse_stream_item(output)?;
 
@@ -694,7 +763,7 @@ fn expand_subscription(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStrea
                 Query(__q): Query<::server::__private::WsArgsQuery>,
                 ws: WebSocketUpgrade,
             ) -> Response {
-                let mut __ctx = ::server::__private::ws_open_context(headers, #wire_path);
+                let mut __ctx = ::server::__private::ws_open_context(headers, #wire_path, #tags);
                 if let Err(__resp) = ::server::__private::ws_open_hook(&mut __ctx).await {
                     return __resp;
                 }
@@ -794,6 +863,7 @@ fn expand_sse(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
     let inputs = &sig.inputs;
 
     let wire_path = attr.path.unwrap_or_else(|| ident.to_string());
+    let tags = tags_tokens(&attr.tags);
     let route = format!("/_srv/_sse/{wire_path}");
     let _item_ty = parse_stream_item(output)?;
 
@@ -830,7 +900,7 @@ fn expand_sse(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
                 headers: HeaderMap,
                 Query(__q): Query<::server::__private::WsArgsQuery>,
             ) -> Response {
-                let mut __ctx = ::server::__private::ws_open_context(headers, #wire_path);
+                let mut __ctx = ::server::__private::ws_open_context(headers, #wire_path, #tags);
                 if let Err(__resp) = ::server::__private::ws_open_hook(&mut __ctx).await {
                     return __resp;
                 }

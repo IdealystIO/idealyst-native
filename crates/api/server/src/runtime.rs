@@ -140,17 +140,40 @@ pub fn router() -> Router {
 // the HTTP dispatch, run at upgrade time.
 // ---------------------------------------------------------------------------
 
-/// Build the request [`Context`] for a channel upgrade from its headers.
-pub fn ws_open_context(headers: HeaderMap, path: &'static str) -> Context {
-    Context::new(Arc::new(headers), path)
+/// Build the request [`Context`] for a channel upgrade from its headers,
+/// carrying the endpoint's `tags(...)` metadata (streams have no
+/// `ServerFnEntry` to read tags from at dispatch, so the macro passes
+/// its own tags here).
+pub fn ws_open_context(
+    headers: HeaderMap,
+    path: &'static str,
+    tags: &'static [(&'static str, &'static str)],
+) -> Context {
+    let mut ctx = Context::new(Arc::new(headers), path).with_tags(tags);
+    // Response-header jar so a refusing policy layer can annotate its
+    // rejection (e.g. Retry-After on a rate-limited open). Drained only
+    // on the refusal path — an accepted stream's upgrade response is
+    // built by the transport.
+    ctx.insert(crate::response::ResponseHeaderJar::default());
+    ctx
 }
 
 /// Run the dispatch hook's `on_open` gate at upgrade; a refusal becomes
 /// the HTTP response (so e.g. a guard rejects with 401 *without*
-/// upgrading). No installed hook = accept.
+/// upgrading), carrying any headers the policy layer put in the jar.
+/// No installed hook = accept.
 pub async fn ws_open_hook(ctx: &mut Context) -> Result<(), Response> {
     match crate::hook::installed() {
-        Some(hook) => hook.on_open(ctx).await.map_err(transport_error_response),
+        Some(hook) => match hook.on_open(ctx).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let mut resp = transport_error_response(e);
+                if let Some(jar) = ctx.get::<crate::response::ResponseHeaderJar>() {
+                    apply_response_headers(&mut resp, jar.take());
+                }
+                Err(resp)
+            }
+        },
         None => Ok(()),
     }
 }
@@ -245,13 +268,15 @@ async fn dispatch(headers: HeaderMap, Path(path): Path<String>, body: Bytes) -> 
     }
 
     let body_vec = body.to_vec();
-    let mut ctx = Context::new(Arc::new(headers), path.clone());
+    let mut ctx = Context::new(Arc::new(headers), path.clone()).with_tags(entry.tags);
 
-    // Seed the per-request cookie jar so handler `set_cookie` calls have
-    // somewhere to land; keep a handle to drain into response headers.
-    // Inserted before the hook runs so hook-level policy can set cookies.
+    // Seed the per-request cookie + response-header jars so hook-level
+    // policy and handler `set_cookie` / `append_response_header` calls
+    // have somewhere to land; keep handles to drain into the response.
     let jar = crate::cookie::CookieJar::default();
     ctx.insert(jar.clone());
+    let header_jar = crate::response::ResponseHeaderJar::default();
+    ctx.insert(header_jar.clone());
 
     // Invoke through the dispatch hook when one is installed (policy
     // layers — guards, middleware chains — live there, not here). A
@@ -263,7 +288,7 @@ async fn dispatch(headers: HeaderMap, Path(path): Path<String>, body: Bytes) -> 
         None => next.run(&ctx).await,
     };
 
-    match result {
+    let mut resp = match result {
         Ok(bytes) => {
             let mut resp = (
                 StatusCode::OK,
@@ -285,7 +310,11 @@ async fn dispatch(headers: HeaderMap, Path(path): Path<String>, body: Bytes) -> 
             version_mismatch_response(&path, client_schema.unwrap_or(0), entry.schema)
         }
         Err(e) => transport_error_response(e),
-    }
+    };
+    // Response headers apply to success AND error paths — a rejecting
+    // policy layer must be able to annotate its response (Retry-After).
+    apply_response_headers(&mut resp, header_jar.take());
+    resp
 }
 
 /// Append accumulated `Set-Cookie` headers (one per cookie, never folded)
@@ -295,6 +324,20 @@ fn apply_set_cookies(resp: &mut Response, cookies: Vec<String>) {
         if let Ok(v) = HeaderValue::from_str(&c) {
             resp.headers_mut()
                 .append(axum::http::header::SET_COOKIE, v);
+        }
+    }
+}
+
+/// Append accumulated response headers (from the [`ResponseHeaderJar`])
+/// to a response. Appended, not inserted — multi-value semantics are the
+/// header's own business. Malformed names/values are skipped.
+fn apply_response_headers(resp: &mut Response, headers: Vec<(String, String)>) {
+    for (name, value) in headers {
+        if let (Ok(n), Ok(v)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(&value),
+        ) {
+            resp.headers_mut().append(n, v);
         }
     }
 }
@@ -375,6 +418,7 @@ mod tests {
             path,
             schema: 0,
             strict: false,
+            tags: &[],
             handler,
         }
     }
@@ -471,9 +515,10 @@ async fn batch_dispatch(headers: HeaderMap, body: Bytes) -> Response {
     let headers = Arc::new(headers);
 
     let mut results: Vec<BatchOutputEntry> = Vec::with_capacity(calls.len());
-    // Cookies from every entry's handler accumulate onto the single batch
-    // response (each entry runs in its own context + jar).
+    // Cookies + response headers from every entry accumulate onto the
+    // single batch response (each entry runs in its own context + jars).
     let mut batch_cookies: Vec<String> = Vec::new();
+    let mut batch_headers: Vec<(String, String)> = Vec::new();
     for call in calls {
         let entry = match find_entry(&call.path) {
             Some(e) => e,
@@ -513,15 +558,18 @@ async fn batch_dispatch(headers: HeaderMap, body: Bytes) -> Response {
         // jar, so policy runs per entry — a call can't dodge the hook by
         // riding a batch). A hook `Err` is this slot's failure, not the
         // whole batch's.
-        let mut ctx = Context::new(headers.clone(), call.path.clone());
+        let mut ctx = Context::new(headers.clone(), call.path.clone()).with_tags(entry.tags);
         let jar = crate::cookie::CookieJar::default();
         ctx.insert(jar.clone());
+        let header_jar = crate::response::ResponseHeaderJar::default();
+        ctx.insert(header_jar.clone());
         let next = crate::hook::Next::new(entry.handler, arg_bytes);
         let handler_outcome = match crate::hook::installed() {
             Some(hook) => hook.around(&mut ctx, next).await,
             None => next.run(&ctx).await,
         };
         batch_cookies.extend(jar.take());
+        batch_headers.extend(header_jar.take());
         let slot = match handler_outcome {
             Ok(result_bytes) => {
                 // The handler returned a JSON-encoded
@@ -571,5 +619,6 @@ async fn batch_dispatch(headers: HeaderMap, body: Bytes) -> Response {
     )
         .into_response();
     apply_set_cookies(&mut resp, batch_cookies);
+    apply_response_headers(&mut resp, batch_headers);
     resp
 }

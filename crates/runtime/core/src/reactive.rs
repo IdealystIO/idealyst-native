@@ -1093,11 +1093,19 @@ thread_local! {
     static USER_UNTRACK_DEPTH: Cell<u32> = const { Cell::new(0) };
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "debug-stats"))]
 thread_local! {
     /// Names of `#[component]` bodies currently executing (innermost
-    /// last). Pushed/popped by [`ComponentBuildProbe`].
+    /// last). Pushed/popped by [`ComponentBuildProbe`]. Compiled in debug
+    /// builds (for the hoisted-snapshot diagnostic) AND under `debug-stats`
+    /// in any build (so reactive-profile effect attribution can name the
+    /// owning component — see `current_build_component` /
+    /// `debug::record_effect_created`).
     static COMPONENT_BUILD_STACK: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
+}
+
+#[cfg(debug_assertions)]
+thread_local! {
     /// Dedup + test-observation record: (component name, signal id)
     /// pairs already warned this thread.
     static SNAPSHOT_WARNINGS: RefCell<(
@@ -1111,19 +1119,19 @@ thread_local! {
 /// hand.
 #[doc(hidden)]
 pub struct ComponentBuildProbe {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "debug-stats"))]
     _priv: (),
 }
 
 #[doc(hidden)]
 #[inline]
 pub fn __component_build_probe(name: &'static str) -> ComponentBuildProbe {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "debug-stats"))]
     {
         COMPONENT_BUILD_STACK.with(|s| s.borrow_mut().push(name));
         return ComponentBuildProbe { _priv: () };
     }
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(any(debug_assertions, feature = "debug-stats")))]
     {
         let _ = name;
         ComponentBuildProbe {}
@@ -1132,10 +1140,27 @@ pub fn __component_build_probe(name: &'static str) -> ComponentBuildProbe {
 
 impl Drop for ComponentBuildProbe {
     fn drop(&mut self) {
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "debug-stats"))]
         COMPONENT_BUILD_STACK.with(|s| {
             s.borrow_mut().pop();
         });
+    }
+}
+
+/// Innermost `#[component]` currently building, if any. `None` when the
+/// build stack is unavailable (neither `debug_assertions` nor `debug-stats`)
+/// or empty (an effect created outside any component body — app init, an
+/// event handler, a service install). Used by [`Effect::create`] to attribute
+/// an effect to its owning component in the reactive profile.
+#[inline]
+pub(crate) fn current_build_component() -> Option<&'static str> {
+    #[cfg(any(debug_assertions, feature = "debug-stats"))]
+    {
+        COMPONENT_BUILD_STACK.with(|s| s.borrow().last().copied())
+    }
+    #[cfg(not(any(debug_assertions, feature = "debug-stats")))]
+    {
+        None
     }
 }
 
@@ -1337,11 +1362,20 @@ impl<T: Clone + 'static> Signal<T> {
     /// Creates a signal in the global arena. The slot is freed when the
     /// surrounding render `Owner` drops. (For tests and ad-hoc usage outside
     /// a render tree, the slot leaks until the thread exits.)
+    #[track_caller]
     pub fn new(value: T) -> Self {
         let (id, gen) = ARENA.with(|a| {
             a.borrow_mut().insert_signal(SignalInner { value })
         });
         register_signal(id);
+        // Reactive-profile identity: stash the author-code creation site so a
+        // profile can name this signal. `#[track_caller]` resolves the
+        // `Location` at compile time — no runtime cost when `debug-stats` is
+        // off (the call inlines to nothing). Public `signal()` is also
+        // `#[track_caller]`, so the location points past the wrapper at author
+        // code. Internal callers (memo output, reducer state) record their own
+        // in-crate site, which is an accepted limit.
+        crate::debug::record_signal_created(id.0, std::panic::Location::caller());
         Self { id, gen, _phantom: PhantomData }
     }
 
@@ -1889,7 +1923,15 @@ fn with_signal_any<R>(sid: SignalId, f: impl FnOnce(&dyn Any) -> R) -> Option<R>
 /// subscribers, then fire its JS notifier. Matches the historical
 /// ordering (effects before JS notify).
 fn fan_out_now(sid: SignalId) {
-    run_effects(&collect_subscribers(sid));
+    let subs = collect_subscribers(sid);
+    // Reactive-profile: this write is one transaction; `run_effects` emits the
+    // per-effect and commit events between these markers. `txn_report` folds
+    // the bracketed span into a record keyed by this signal.
+    #[cfg(feature = "debug-stats")]
+    crate::debug::record_txn_enter(vec![sid.0 as u64], subs.len());
+    run_effects(&subs);
+    #[cfg(feature = "debug-stats")]
+    crate::debug::record_txn_exit();
     notify_js_subscriber(sid);
 }
 
@@ -1973,7 +2015,16 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
         }
 
         if !ordered.is_empty() {
+            // Reactive-profile: a batch flush is one transaction whose triggers
+            // are all the signals that net-changed in the window.
+            #[cfg(feature = "debug-stats")]
+            crate::debug::record_txn_enter(
+                changed_sids.iter().map(|s| s.0 as u64).collect(),
+                ordered.len(),
+            );
             run_effects(&ordered);
+            #[cfg(feature = "debug-stats")]
+            crate::debug::record_txn_exit();
         }
         // JS notifiers fire after the Rust fan-out, matching the
         // non-batched path, and once per net-changed signal.
@@ -2188,7 +2239,16 @@ impl Effect {
     ///
     /// Either way the effect runs once immediately and re-runs when a
     /// signal it read changes.
+    #[track_caller]
     pub(crate) fn create<F: FnMut() + 'static>(f: F, register: bool) -> Self {
+        // Reactive-profile identity: capture the author-code creation site
+        // AND the innermost `#[component]` building right now, BEFORE
+        // `run_effect` runs the closure (which could itself create nested
+        // effects and shift the build stack). `#[track_caller]` on this and
+        // the `new`/`scoped`/`new_with_stable_deps` wrappers propagates the
+        // location past them to author code; zero cost when `debug-stats` off.
+        let location = std::panic::Location::caller();
+        let component = current_build_component();
         // Capture the owner chain at creation time so re-runs can
         // restore it. `with_scope` keeps these pointers valid for as
         // long as each scope is held by an outer call frame.
@@ -2202,6 +2262,7 @@ impl Effect {
                 stable_deps: false,
             })
         });
+        crate::debug::record_effect_created(id.0, location, component);
         let registered = if register { register_effect(id) } else { false };
         run_effect(id);
         Effect { id, owns: !registered }
@@ -2221,8 +2282,18 @@ impl Effect {
     /// [`watch`] (caller-owned). Writing `Effect::new` in author code is a
     /// privacy error, which is the point: the tempting React/Solid-style name
     /// is unreachable.
+    #[track_caller]
     pub(crate) fn new<F: FnMut() + 'static>(f: F) -> Self {
         Self::create(f, true)
+    }
+
+    /// Raw arena slot index of this effect. Crate-internal, for the walker
+    /// to attach a reactive-profile binding label via `debug::label_effect`
+    /// (e.g. naming the node a text effect drives). Only needed under
+    /// `debug-stats`; gated to avoid a dead-code warning otherwise.
+    #[cfg(feature = "debug-stats")]
+    pub(crate) fn raw_id(&self) -> u32 {
+        self.id.0
     }
 
     /// Creates a **scope-owned** effect — the form behind `effect! { … }`.
@@ -2235,6 +2306,7 @@ impl Effect {
     ///
     /// Returns `()` — there is no handle to manage. The active scope owns
     /// the effect; it lives exactly as long as that scope.
+    #[track_caller]
     pub fn scoped<F: FnMut() + 'static>(f: F) {
         debug_assert!(
             ACTIVE_SCOPE.with(|s| !s.borrow().is_empty()),
@@ -2283,7 +2355,15 @@ impl Effect {
     ///
     /// Crate-internal perf fast-path used only by the framework's reactive
     /// text bindings — not part of the public API.
+    #[track_caller]
     pub(crate) fn new_with_stable_deps<F: FnMut() + 'static>(f: F) -> Self {
+        // Reactive-profile identity, same as `create`. This constructor is the
+        // walker's node-binding path (text/style effects), so the entry
+        // recorded here is what `debug::label_effect` later attaches
+        // "text#<id>" / "style#<id>" to — without it the label would have no
+        // slot and be silently dropped.
+        let location = std::panic::Location::caller();
+        let component = current_build_component();
         let owning_stack: Vec<*mut Scope> =
             ACTIVE_SCOPE.with(|s| s.borrow().clone());
         // Insert with `stable_deps: false` so the first `run_effect`
@@ -2298,6 +2378,7 @@ impl Effect {
                 stable_deps: false,
             })
         });
+        crate::debug::record_effect_created(id.0, location, component);
         let registered = register_effect(id);
         run_effect(id);
         ARENA.with(|a| {
@@ -2570,7 +2651,20 @@ fn run_effect(id: EffectId) {
         } else {
             CURRENT.with(|c| c.replace(Some(id)))
         };
+        // Reactive-profile: time the closure body only (compute + backend
+        // mutation calls). A nested flush this body triggers records its own
+        // effects/commit BEFORE this `record_effect_run`, so `us` here is
+        // inclusive of the nested work — the report's nested record gives the
+        // finer split. Not timing `Signal::get` individually is deliberate
+        // (it fires 10k+×/flush; the timer reads would swamp the measurement).
+        #[cfg(feature = "debug-stats")]
+        let _run_start = crate::debug::now_micros();
         f();
+        #[cfg(feature = "debug-stats")]
+        crate::debug::record_effect_run(
+            id.0,
+            crate::debug::now_micros().saturating_sub(_run_start),
+        );
         CURRENT.with(|c| *c.borrow_mut() = prev);
         if pushed > 0 {
             ACTIVE_SCOPE.with(|s| {
@@ -2619,6 +2713,21 @@ fn run_effects(ids: &[EffectId]) {
         });
         if alive {
             run_effect(id);
+        }
+    }
+    // Reactive-profile: the backend's idle hook (a synchronous layout/paint
+    // pass) fires from `_busy`'s Drop iff this drop closes the OUTERMOST
+    // window (`REACTIVE_BUSY == 1` right now → drop takes it to 0). Time that
+    // drop and attribute the cost to the enclosing transaction as its
+    // `Commit`. Only outermost so we don't emit ~0µs commits for nested
+    // flushes (and initial effect runs, which never come through here). The
+    // non-debug path just lets `_busy` drop at scope end, unchanged.
+    #[cfg(feature = "debug-stats")]
+    {
+        if REACTIVE_BUSY.with(|c| c.get()) == 1 {
+            let commit_start = crate::debug::now_micros();
+            drop(_busy);
+            crate::debug::record_commit(crate::debug::now_micros().saturating_sub(commit_start));
         }
     }
 }

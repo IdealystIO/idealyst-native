@@ -32,7 +32,7 @@ use crate::node::{
 };
 use crate::style_convert::parse_color;
 use crate::scheduler::request_redraw;
-use crate::text::TextStore;
+use crate::text::{resolve_rich_spans, TextStore};
 
 /// Bullet glyph rendered per character for `secure` (password) text
 /// inputs. One `•` per source char so the field width still tracks the
@@ -467,6 +467,45 @@ impl Backend for WgpuBackend {
         init_node_a11y(&node, a11y, PrimitiveKind::Text);
         self.roots.push(node.clone());
         node
+    }
+
+    fn create_styled_text(
+        &mut self,
+        runs: &[runtime_core::TextRun],
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        let layout = self.layout.new_node();
+        let plain = runtime_core::styled_text::plain_text_of(runs);
+        {
+            let mut text = self.text.borrow_mut();
+            let mut fs = self.font_system.borrow_mut();
+            text.create_rich(&mut fs, layout, resolve_rich_spans(runs), 14.0);
+        }
+        self.install_text_measure(layout);
+        let node = new_node(NodeKind::Text { content: plain }, layout);
+        init_node_a11y(&node, a11y, PrimitiveKind::Text);
+        self.roots.push(node.clone());
+        node
+    }
+
+    fn update_styled_text(&mut self, node: &Self::Node, runs: &[runtime_core::TextRun]) {
+        // Theme-cohort re-realization: run token colors resolve inside
+        // `resolve_rich_spans` against the NEW theme. Re-shape + mark
+        // dirty (a run font delta can move metrics) + repaint.
+        let layout = node.borrow().layout;
+        {
+            let mut data = node.borrow_mut();
+            if let NodeKind::Text { content } = &mut data.kind {
+                *content = runtime_core::styled_text::plain_text_of(runs);
+            }
+        }
+        {
+            let mut text = self.text.borrow_mut();
+            let mut fs = self.font_system.borrow_mut();
+            text.set_rich(&mut fs, layout, resolve_rich_spans(runs));
+        }
+        self.layout.mark_dirty(layout);
+        request_redraw();
     }
 
     fn create_button(

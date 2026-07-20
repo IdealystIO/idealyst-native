@@ -14,13 +14,14 @@
 //! The macro classifies each parameter (see `server-macros`): a
 //! parameter is an **injected extractor** if it is annotated `#[ctx]`
 //! *or* its type is one of the reserved wrapper names (`State`,
-//! `Headers`, `Extension`, `Auth`, `Cookies`); otherwise it is a **wire
-//! arg**. Injected params are resolved on the server via [`FromContext`]
+//! `Headers`, `Extension`, `Auth`, `Cookies`, `Role`); otherwise it is a
+//! **wire arg**. Injected params are resolved on the server via [`FromContext`]
 //! and stripped from the client stub's signature.
 //!
 //! The reserved-name match is purely syntactic (final path segment), so
-//! wrappers need not live in this crate: `Auth<T>` — the 401-on-missing
-//! auth convention — is defined by the `server-kit` policy crate, and any
+//! wrappers need not live in this crate: `Auth<T>` and `Role<M>` — the
+//! 401/403 auth conventions — are defined by the `server-kit` policy
+//! crate, and any
 //! crate can define its own wrapper by implementing [`FromContext`]
 //! (pairing it with `#[ctx]`, or one of the reserved spellings).
 //!
@@ -125,18 +126,33 @@ mod server_impl {
     pub struct Context {
         headers: Arc<HeaderMap>,
         path: Arc<str>,
+        /// The endpoint's static self-description, from
+        /// `#[server(tags(...))]` — `("admin", "")` for a bare tag,
+        /// `("limit", "30/min")` for a key/value tag. Mechanism only:
+        /// the primitive carries the tags to the hook; what a tag
+        /// *means* is the policy layer's business.
+        tags: &'static [(&'static str, &'static str)],
         extensions: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
     }
 
     impl Context {
         /// Build a context from request headers + the matched path, with
-        /// an empty extension map.
+        /// an empty extension map and no tags.
         pub fn new(headers: Arc<HeaderMap>, path: impl Into<Arc<str>>) -> Self {
             Self {
                 headers,
                 path: path.into(),
+                tags: &[],
                 extensions: HashMap::new(),
             }
+        }
+
+        /// Attach the endpoint's `tags(...)` metadata. Called by the
+        /// dispatcher (from the matched entry) and the macro-generated
+        /// stream handlers.
+        pub fn with_tags(mut self, tags: &'static [(&'static str, &'static str)]) -> Self {
+            self.tags = tags;
+            self
         }
 
         /// An empty context. Returned by `current_context()` when called
@@ -154,6 +170,24 @@ mod server_impl {
         /// scope itself to particular endpoints.
         pub fn path(&self) -> &str {
             &self.path
+        }
+
+        /// The endpoint's `#[server(tags(...))]` metadata, in declaration
+        /// order.
+        pub fn route_tags(&self) -> &'static [(&'static str, &'static str)] {
+            self.tags
+        }
+
+        /// `true` if the endpoint declared `name` as a tag (bare or
+        /// key/value).
+        pub fn has_tag(&self, name: &str) -> bool {
+            self.tags.iter().any(|(n, _)| *n == name)
+        }
+
+        /// The value of tag `name` — `Some("")` for a bare tag,
+        /// `Some(value)` for `name = "value"`, `None` when undeclared.
+        pub fn tag(&self, name: &str) -> Option<&'static str> {
+            self.tags.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
         }
 
         pub(crate) fn headers_arc(&self) -> Arc<HeaderMap> {
@@ -183,6 +217,7 @@ mod server_impl {
     pub struct ContextBuilder {
         headers: HeaderMap,
         path: String,
+        tags: Option<&'static [(&'static str, &'static str)]>,
         extensions: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
     }
 
@@ -218,10 +253,18 @@ mod server_impl {
             self
         }
 
+        /// Seed the endpoint tags (what `#[server(tags(...))]` would have
+        /// declared) for guard tests.
+        pub fn tags(mut self, tags: &'static [(&'static str, &'static str)]) -> Self {
+            self.tags = Some(tags);
+            self
+        }
+
         pub fn build(self) -> Context {
             Context {
                 headers: Arc::new(self.headers),
                 path: self.path.into(),
+                tags: self.tags.unwrap_or(&[]),
                 extensions: self.extensions,
             }
         }
@@ -374,6 +417,25 @@ mod tests {
             panic!("missing extension must fail");
         };
         assert!(matches!(err, TransportError::Server { status: 500, .. }));
+    }
+
+    #[test]
+    fn context_tags_accessors() {
+        let ctx = ContextBuilder::new()
+            .tags(&[("admin", ""), ("limit", "30/min")])
+            .build();
+        assert!(ctx.has_tag("admin"));
+        assert!(ctx.has_tag("limit"));
+        assert!(!ctx.has_tag("public"));
+        assert_eq!(ctx.tag("admin"), Some(""));
+        assert_eq!(ctx.tag("limit"), Some("30/min"));
+        assert_eq!(ctx.tag("public"), None);
+        assert_eq!(ctx.route_tags().len(), 2);
+
+        // Untagged context: everything absent.
+        let bare = ContextBuilder::new().build();
+        assert!(!bare.has_tag("admin"));
+        assert!(bare.route_tags().is_empty());
     }
 
     #[tokio::test]

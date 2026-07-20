@@ -191,7 +191,7 @@ pub use components::typography::{Typography, TypographyProps};
 // `use idea_ui::{tone, variant, size, shape, typography_kind}` for
 // the namespaces.
 pub use idea_theme::extensible::{
-    tone, variant, size, shape, typography as typography_kind,
+    installed_typography_sheet, tone, variant, size, shape, typography as typography_kind,
     ButtonSize, ButtonSizeRef, ResolutionCtx, Shape, ShapeRef, Tone, ToneRef, TypographyKind,
     TypographyKindRef, Variant, VariantRef,
 };

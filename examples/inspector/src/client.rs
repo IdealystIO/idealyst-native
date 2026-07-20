@@ -55,6 +55,10 @@ pub struct Snapshot {
     pub signals: Vec<Value>,
     /// `get_logs` rows.
     pub logs: Vec<Value>,
+    /// `reactive_profile` — the rendered "which signal caused a long render"
+    /// report, or the disabled-feature hint in `reactive_profile_error`.
+    pub reactive_profile: Option<String>,
+    pub reactive_profile_error: Option<String>,
 }
 
 /// What wakes the main session loop: a queued action to send, or a request
@@ -385,6 +389,14 @@ fn refresh(
             Err(e) => (Vec::new(), Some(e)),
         };
 
+    // The verb returns a JSON string of the formatted report (or an error when
+    // the target wasn't built with `debug-stats`).
+    let (reactive_profile, reactive_profile_error) =
+        match call(writer, reader, next_id, "reactive_profile", json!({})) {
+            Ok(v) => (v.as_str().map(|s| s.to_string()), None),
+            Err(e) => (None, Some(e)),
+        };
+
     Ok(Snapshot {
         connected: true,
         error: None,
@@ -397,6 +409,8 @@ fn refresh(
         perf_error,
         signals,
         logs,
+        reactive_profile,
+        reactive_profile_error,
     })
 }
 

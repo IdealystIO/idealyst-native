@@ -64,29 +64,38 @@ impl PhaseTimer {
 #[cfg(feature = "debug-stats")]
 pub(crate) fn drain_and_log_phase_counters() {
     let counters = runtime_core::debug::take_phase_counters();
-    if counters.is_empty() {
-        return;
+    if !counters.is_empty() {
+        // Sort by total_us descending — biggest contributors first.
+        // `&'static str` is `Ord`, so name ties stay stable.
+        let mut entries: Vec<_> = counters.into_iter().collect();
+        entries.sort_by(|a, b| b.1.total_us.cmp(&a.1.total_us));
+        let mut parts: Vec<String> = Vec::with_capacity(entries.len());
+        for (name, c) in &entries {
+            parts.push(format!(
+                "{name}: {count}x total={total:.1}ms avg={avg:.0}us max={max:.0}us",
+                name = name,
+                count = c.call_count,
+                total = c.total_us as f64 / 1000.0,
+                avg = if c.call_count > 0 {
+                    c.total_us as f64 / c.call_count as f64
+                } else {
+                    0.0
+                },
+                max = c.max_us as f64,
+            ));
+        }
+        log::info!("[phase-stats] {}", parts.join(" | "));
     }
-    // Sort by total_us descending — biggest contributors first.
-    // `&'static str` is `Ord`, so name ties stay stable.
-    let mut entries: Vec<_> = counters.into_iter().collect();
-    entries.sort_by(|a, b| b.1.total_us.cmp(&a.1.total_us));
-    let mut parts: Vec<String> = Vec::with_capacity(entries.len());
-    for (name, c) in &entries {
-        parts.push(format!(
-            "{name}: {count}x total={total:.1}ms avg={avg:.0}us max={max:.0}us",
-            name = name,
-            count = c.call_count,
-            total = c.total_us as f64 / 1000.0,
-            avg = if c.call_count > 0 {
-                c.total_us as f64 / c.call_count as f64
-            } else {
-                0.0
-            },
-            max = c.max_us as f64,
-        ));
+
+    // Reactive profile: which signal caused a long render. Drained from the
+    // same window as the phase counters above.
+    let events = runtime_core::debug::take_events();
+    let profile = runtime_core::debug::format_reactive_profile(&events, 15);
+    if !profile.is_empty() {
+        for line in profile.lines() {
+            log::info!("[reactive] {line}");
+        }
     }
-    log::info!("[phase-stats] {}", parts.join(" | "));
 }
 
 #[cfg(not(feature = "debug-stats"))]

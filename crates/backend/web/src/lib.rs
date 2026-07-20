@@ -2292,6 +2292,23 @@ impl Backend for WebBackend {
         node
     }
 
+    fn create_styled_text(
+        &mut self,
+        runs: &[runtime_core::TextRun],
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        let node = primitives::text::create_styled(self, runs);
+        a11y::apply(&node, a11y, None);
+        node
+    }
+
+    fn update_styled_text(&mut self, node: &Self::Node, runs: &[runtime_core::TextRun]) {
+        // Never called on theme swaps (the cohort driver
+        // short-circuits on cascade-capable backends — run colors are
+        // `var()` refs); kept for direct callers.
+        primitives::text::update_styled(self, node, runs);
+    }
+
     fn create_button(
         &mut self,
         label: &str,

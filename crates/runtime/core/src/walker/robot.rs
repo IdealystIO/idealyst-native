@@ -31,6 +31,9 @@ fn label_now(source: &TextSource) -> Option<String> {
         TextSource::Static(s) => Some(s.clone()),
         TextSource::Bound(d) => Some((d.compute)()),
         TextSource::JsBinding(spec) => Some((spec.compute_fallback)()),
+        // Styled runs are static content — report the concatenated
+        // plain text, the same value the styled node renders.
+        TextSource::Styled(runs) => Some(crate::styled_text::plain_text_of(runs)),
     }
 }
 
@@ -41,7 +44,7 @@ fn label_now(source: &TextSource) -> Option<String> {
 /// caller's scope to the underlying signals.
 fn label_recompute(source: &TextSource) -> Option<Rc<dyn Fn() -> Option<String>>> {
     match source {
-        TextSource::Static(_) => None,
+        TextSource::Static(_) | TextSource::Styled(_) => None,
         TextSource::Bound(d) => {
             let compute = d.compute.clone();
             Some(Rc::new(move || Some(crate::reactive::untrack(|| (compute)()))))

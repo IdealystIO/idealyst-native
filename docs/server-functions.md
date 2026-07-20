@@ -207,10 +207,29 @@ Built-in extractors:
 | `Headers` | the request's `HeaderMap` | — |
 | `Extension<T>` | `ctx.get::<T>()`, set by middleware | 500 |
 | `Auth<T>` (from `server-kit`) | like `Extension<T>`, set by an auth guard | **401** |
+| `Role<M>` (from `server-kit`) | a capability marker set by an auth guard | **401** anonymous / **403** signed-in without it |
 | `Cookies` | parsed request cookies (`cookies.0` is the map) | — |
 
 `FromContext` is an open trait — implement it on your own type and annotate
-the param `#[ctx]` to inject it.
+the param `#[ctx]` to inject it. For the common "app resource as a named
+extractor" case (a db pool, a mail client), `server_kit::context!` writes
+the wrapper for you:
+
+```rust
+server_kit::context! {
+    /// The app's database pool.
+    pub struct Db(sqlx::PgPool);
+}
+
+// boot: server::install_state(pool);
+#[server]
+async fn list_todos(filter: Filter, #[ctx] db: Db) -> Result<Vec<Todo>, ServerError> {
+    db.query("…").fetch_all().await          // Db derefs to the pool
+}
+```
+
+The fn names its dependency as a domain type instead of `State<PgPool>`,
+and a missing resource fails with a clear 500 naming the type and the fix.
 
 Note: a type used inside a wrapper (`Principal` above) appears in the
 *shared* signature, so it must be defined on both builds — the client names
@@ -322,7 +341,30 @@ Middleware runs in registration order before every handler — single calls,
 each batch entry, and stream opens. Two roles fall out of one trait:
 **context-producing** (the auth guard above) and **short-circuiting** (rate
 limits, `server_kit::csrf_guard`). The kit also owns `Auth<T>` — the
-401-on-missing extractor — and the `require::<T>(prefix)` perimeter guard.
+401-on-missing extractor — the `require::<T>(prefix)` perimeter guard, its
+declarative sibling `require_tag::<T>(tag)`, and the `context!` resource
+macro (§3).
+
+### Endpoint tags
+
+Every `#[server]` / `#[channel]` / `#[subscription]` / `#[sse]` accepts
+`tags(...)` — static metadata carried on the registration entry and copied
+onto the request `Context`, readable by any hook or middleware via
+`ctx.has_tag(name)` / `ctx.tag(name)` / `ctx.route_tags()`:
+
+```rust
+#[server(tags(admin))]                     // bare tag → ("admin", "")
+async fn rotate_keys(admin: Auth<Admin>) -> Result<(), ServerError> { … }
+
+#[server(tags(limit = "30/min"))]          // valued tag → ("limit", "30/min")
+async fn send_message(msg: NewMessage) -> Result<(), ServerError> { … }
+```
+
+The primitive attaches **no meaning** to any tag — it just carries the
+endpoint's self-description to the policy layer. That's what makes guards
+declarative: `require_tag::<Admin>("admin")` protects everything that says
+it's admin, with no path list to maintain, and a renamed route can't
+silently fall out of the guarded set.
 
 Because the slot is singular, "my custom `DispatchHook` + the kit's chain"
 panics at boot: pick one policy owner. A custom hook that wants the kit's
@@ -421,9 +463,242 @@ Notes that make this robust:
   server_kit::install_middleware(server_kit::require::<Principal>("account/"));
   ```
 
-The prefix is a naming convention today — there is no module-level grouping
-attribute yet (see §10), so keep group prefixes in one place (a `const`, or
-the `path = ` attributes colocated in one module) to avoid drift.
+Prefer `require_tag` + `tags(admin)` over the path-prefix form when the
+group is a *capability* — membership then lives on each endpoint's own
+declaration instead of a naming convention. The prefix form remains useful
+when the URL structure itself is the contract (e.g. everything under
+`internal/` is VPN-only at the load balancer too).
+
+### Roles: capabilities as facts
+
+The full role model rests on one principle: **the session guard translates
+"how you logged in" into facts; routes declare which facts they need.**
+Capabilities are plain `Clone` types; hierarchy (and unions) are encoded
+once, at insertion — every downstream check is set-membership.
+
+```rust
+#[derive(Clone)] pub struct Employee(pub Person);
+#[derive(Clone)] pub struct Employer(pub Person);
+#[derive(Clone)] pub struct Member(pub Person);    // the named union
+
+// The session guard — whichever login flow validated, insert the facts
+// that session satisfies, plus the kit's domain-free Authenticated:
+server_kit::install_middleware(server_kit::from_fn(|ctx| {
+    let session = read_session(ctx.headers());
+    Box::pin(async move {
+        match lookup(session).await {
+            Some(Login::Employee(p)) => {
+                ctx.insert(server_kit::Authenticated);
+                ctx.insert(Employee(p.clone()));
+                ctx.insert(Member(p));
+            }
+            Some(Login::Employer(p)) => {
+                ctx.insert(server_kit::Authenticated);
+                ctx.insert(Employer(p.clone()));
+                ctx.insert(Member(p));
+            }
+            None => {}          // anonymous continues — guest routes work
+        }
+        Ok(())
+    })
+}));
+```
+
+`server_kit::Authenticated` is the kit's one domain-free fact — "a session
+was established," whatever the scheme. It's what makes failures
+status-accurate: `Role<M>` resolves `M` from the context and answers
+**401** when there's no session at all, **403** when there's a session
+without that capability (`Auth<T>` by contrast always 401s).
+
+Routes then come in exactly the shapes you'd expect:
+
+```rust
+#[server]                                   // guest = the ABSENCE of a
+async fn browse(q: Query) -> …              // requirement, not a role
+
+#[server(tags(role = "member"))]            // either class (the union fact)
+async fn lobby(who: Role<Member>) -> …
+
+#[server(tags(role = "employer"))]          // one class only
+async fn payroll(who: Role<Employer>) -> …
+```
+
+The deny-by-default net is `role_guard` — the kit owns enforcement, the
+app registers its vocabulary (this registration is the kit/user seam made
+explicit):
+
+```rust
+server_kit::install_middleware(
+    server_kit::role_guard()
+        .role::<Employer>("employer")
+        .role::<Employee>("employee")
+        .role::<Member>("member"),
+);
+```
+
+Per request (unary, each batch entry, stream opens): no `role` tag →
+pass; registered value → require the mapped capability (present → pass,
+`Authenticated` without it → 403, anonymous → 401); **unregistered value
+→ 500, fail closed** — a typo'd role must never silently open a route.
+
+When a route serves multiple classes but *branches* on which, put the sum
+type in the signature instead of a union marker: `Auth<Identity>` where
+`Identity` is an enum — adding a class later is then a compile error at
+every branching route.
+
+### Rate limiting
+
+Same declaration/enforcement/vocabulary split as roles: the endpoint
+declares its limit as a valued tag, the kit enforces, the app registers
+what "one caller" means:
+
+```rust
+#[server(tags(limit = "30/min"))]      // token bucket: burst 30, refill 30/min
+async fn send_message(msg: NewMessage, who: Role<Member>) -> Result<(), ServerError> { … }
+
+server_kit::install_middleware(
+    server_kit::rate_limit()
+        // First matching key_by wins; register after your session guard
+        // so the principal is available. Fallbacks: x-forwarded-for,
+        // then one shared per-route bucket.
+        .key_by(|ctx| ctx.get::<Principal>().map(|p| format!("user:{}", p.username)))
+        // Optional: also limit routes with no `limit` tag.
+        .default_limit("300/min"),
+);
+```
+
+Semantics worth knowing:
+
+- Buckets are per `(route, caller)`; grammar is `"<count>/<sec|min|hour|day>"`.
+- A rejection is **429 with `Retry-After: <secs>`** — on unary calls, per
+  batch entry, and refused stream opens alike. The header rides the
+  primitive's *response-header jar* (`server::ResponseHeaderJar` on the
+  `Context` for hooks/middleware, `server::append_response_header` inside
+  handler bodies — the generalized cookie jar, drained on success AND
+  error paths).
+- A **malformed `limit` tag fails closed** (500 naming the grammar) —
+  a typo never means "unlimited".
+- **Where buckets live is a seam** (`LimitStore`). The default
+  `MemoryLimitStore` is in-process (N instances ≈ N× the nominal limit).
+  For shared limits, provide a Redis connection **as app context — the
+  same way a database is provided** — and point the store at it
+  (feature `redis` on `server-kit`):
+
+  ```rust
+  let client = redis::Client::open(cfg.redis_url)?;
+  server::install_state(client.clone());        // fns can use it as context too
+  server_kit::install_middleware(
+      server_kit::rate_limit()
+          .key_by(…)
+          .store(server_kit::RedisLimitStore::from_installed()),
+  );
+  ```
+
+  One connection, many consumers, none owning it. The Redis store runs
+  the same token-bucket algorithm as one atomic Lua script per admit, so
+  concurrent instances can't double-spend. **Failure policy**: a store
+  *outage* fails **open** (with a loud stderr warning) — the limiter
+  protects capacity, and its own dependency going down must not become a
+  total outage; contrast with config errors, which fail closed. Wrap the
+  store if your threat model needs fail-closed limiting.
+
+### Sessions
+
+The cookie/bearer session recipe, productized — and deliberately **built
+on the cache abstraction, not a database**: a session store is a
+KV-with-TTL, which is exactly the `Cache` contract (below), so sessions
+ride whatever store the app provides.
+
+```rust
+// boot
+let sessions = server_kit::Sessions::new(cache::MemoryCache::new());
+//            …or ::new(cache::RedisCache::from_installed()) for multi-instance
+server::install_state(sessions.clone());
+server_kit::install_middleware(sessions.guard::<Principal>());
+
+// the app's half of login is ONLY the credential check:
+#[server]
+async fn login(creds: Credentials, sessions: State<Sessions>) -> Result<LoginOk, ServerError> {
+    let user = verify(&creds).await.ok_or(ServerError::failed("bad credentials"))?;
+    let ticket = sessions.start(&Principal { username: user.name }).await
+        .map_err(|e| ServerError::failed(e.to_string()))?;
+    Ok(LoginOk { token: ticket.token })   // web: None (cookie set); native: Some(bearer)
+}
+
+#[server] async fn me(user: Auth<Principal>) -> Result<String, ServerError> { … }
+#[server] async fn logout(sessions: State<Sessions>) -> Result<(), ServerError> {
+    sessions.end().await.map_err(|e| ServerError::failed(e.to_string()))
+}
+```
+
+Everything mechanical lives in the kit: CSPRNG tokens, the httpOnly/
+Secure/SameSite=Lax cookie for web + bearer for native (one server, both
+transports — `start` branches on the `x-idealyst-client: native` header),
+the guard that resolves either transport and inserts `Authenticated` +
+your serde principal (so `Auth<P>` / `Role<M>` compose unchanged), TTL /
+sliding expiration, and logout. The guard never rejects — an invalid
+session is simply anonymous, and the route's own requirements answer. A
+session-store outage inserts nothing (protected routes fail closed) with
+a stderr warning. `examples/login-demo` runs on this.
+
+### The cache
+
+`crates/sdk/server/cache` is the shared KV-with-TTL provider: a
+`Cache` trait (`get`/`set`+TTL/`delete`, byte-oriented, with
+`get_json`/`set_json` typed helpers), `MemoryCache`, and `RedisCache`
+(feature `redis`) over the **app-provided client** — the same
+`install_state`'d `redis::Client` the rate limiter and your server fns
+use. Deliberately minimal: anything needing atomic read-modify-write
+(rate-limit buckets) is *not* a cache and keeps its purpose-built store
+(`LimitStore`); the two share the provided connection, not the trait.
+Response-caching is done in fn bodies with `get_json`/`set_json` — an
+automatic response-cache middleware is intentionally absent (safe keying
+across authenticated callers is app knowledge).
+
+### Observability
+
+The chain's hook wraps every invocation, so the kit reports one
+`RequestRecord` per call/open — path, tags, transport outcome, duration —
+to any installed observer:
+
+```rust
+server_kit::install_observer(server_kit::stderr_logger());
+// → [srv] payroll 403 0.4ms (call) [role=employer]
+
+server_kit::install_observer(|r| {
+    metrics::histogram!("srv_ms", r.duration, "path" => r.path.to_string());
+});
+```
+
+Records are transport-level: chain rejections (401/403/429), handler
+transport failures, and successful replies with size. A domain
+`Err(Failed)` rides a 200 and reports as `Ok` — observing domain errors
+is the app's business. Observers run synchronously on the request path;
+keep them cheap.
+
+### Kit scope, and extending who/what to guard
+
+The scoping rule: **the kit ships policy machinery whose correctness is
+protocol-shaped (401/403, ordering, batch + stream coverage, fail-closed
+— where a subtle bug is a silent security hole); the app ships policy
+vocabulary, which is domain-shaped.** The kit never names your roles;
+your code never re-implements enforcement. Extension surfaces, in
+increasing depth:
+
+1. **New capability**: define a `Clone` type, insert it from your guard.
+   `Auth<T>` / `Role<M>` / `require_tag::<T>` are generic over it — zero
+   kit code.
+2. **New credential source** (API keys, webhook HMACs, mTLS): another
+   fact-producing middleware inserting the *same* fact types. Routes
+   never learn how the caller authenticated.
+3. **New policy dimension** (tenancy, feature flags, business hours): a
+   middleware reading headers, facts, and your own invented tags — the
+   primitive gave tags no meaning precisely so you can.
+4. **New requirement semantics** (composite requirements, custom
+   statuses): implement `FromContext` on your own wrapper; `#[ctx]`
+   wires it into any signature. `Role<M>` itself is nothing more.
+5. **A different policy model entirely**: install your own
+   `DispatchHook`; borrow the kit's pieces via `server_kit::run_chain`.
 
 ### Cookies and the auth patterns
 
@@ -654,11 +929,10 @@ Honest limitations of today's implementation, in priority order:
    call sites compile everywhere and eliminate most hand-written gates.
 2. **No module-level attributes.** Server-only helper modules are gated with
    raw `#[cfg(feature = "server")]`; letting `#[server]` annotate `mod`/`use`
-   items would keep authors inside one vocabulary. Relatedly, route *groups*
-   have no syntax — protecting a set of routes rides a path-prefix naming
-   convention plus `ctx.path()` matching (`server_kit::require`, §5) rather
-   than an `#[api(prefix = …, guard = …)]` module attribute or per-fn
-   metadata tags a hook could read.
+   items would keep authors inside one vocabulary. Per-fn `tags(...)` +
+   `require_tag` (§5) now cover declarative group *membership*, but a
+   module-level `#[api(prefix = …, guard = …)]` that applies a prefix/tags
+   to everything inside still doesn't exist — each fn declares its own.
 3. **No CLI scaffolding for the layered shape** (DESIGN.md Phase 6). The
    recommended api/ui/server-bin split and the Cargo feature plumbing are
    hand-assembled today, which is why the examples are colocated.

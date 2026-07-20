@@ -10,6 +10,7 @@ use runtime_core::{
 };
 use idea_ui::{typography_kind, Stack, StackGap, Typography};
 
+use crate::components::Prose;
 use crate::styles::{
     CodePanel as CodePanelStyle,
     CodeText, PlaceholderBox, SectionWrap, ShowcaseCard, ShowcaseCode, ShowcaseDemo,
@@ -37,7 +38,7 @@ pub fn PageHeader(props: &PageHeaderProps) -> Element {
     ui! {
         Stack(gap = StackGap::Md) {
             Typography(content = title, kind = typography_kind::H1)
-            Typography(content = blurb, kind = typography_kind::BodyLg, muted = true)
+            Prose(content = blurb, kind = typography_kind::BodyLg, muted = true)
         }
     }
 }
@@ -298,7 +299,7 @@ pub fn Section(props: SectionProps) -> Element {
         Stack(gap = StackGap::Lg) {
             Typography(content = title, kind = typography_kind::H2)
             for paragraph in paragraphs {
-                Typography(content = paragraph)
+                Prose(content = paragraph)
             }
             if let Some(src) = code {
                 CodePanel(src = src)

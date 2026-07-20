@@ -2489,6 +2489,24 @@ impl Backend for AndroidBackend {
         node
     }
 
+    fn create_styled_text(
+        &mut self,
+        runs: &[runtime_core::TextRun],
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        let node = primitives::text::create_styled(self, runs);
+        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Text));
+        node
+    }
+
+    fn update_styled_text(&mut self, node: &Self::Node, runs: &[runtime_core::TextRun]) {
+        // Theme-cohort re-realization: rebuild the SpannableString so
+        // run token colors resolve against the new theme. No paragraph
+        // state to merge — unspanned ranges take the TextView's own
+        // properties, which `apply_style` keeps current independently.
+        primitives::text::set_styled(node, runs);
+    }
+
     fn create_button(&mut self, label: &str, on_click: &runtime_core::Action, _leading_icon: Option<&runtime_core::IconData>, _trailing_icon: Option<&runtime_core::IconData>, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         // TODO: render icons as compound drawables on the button
         let node = primitives::button::create(self, label, on_click.fire.clone());

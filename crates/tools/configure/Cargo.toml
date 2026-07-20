@@ -1,0 +1,27 @@
+[package]
+name = "configure"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Idealyst project configuration engine — provisions devcontainers (idealyst-managed docker-compose sidecar services) and other project config. Shared by the `idealyst configure` CLI and the MCP `configure_devcontainer` tool."
+
+[lib]
+# Plain library, no interactive/TTY code: both the `idealyst configure`
+# CLI (which layers a dialoguer wizard on top) and the MCP server call
+# the same non-interactive `apply` / `read_state` surface. Keeping the
+# core prompt-free is what lets the MCP tool reuse it verbatim.
+name = "configure"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The idealyst-managed compose file (`docker-compose.idealyst.yml`) is
+# generated wholesale from typed structs, so we serialize it with a YAML
+# writer. `serde_yaml` is unmaintained upstream but stable and battle-
+# tested; we only emit files we own, never round-trip user YAML.
+serde_yaml = "0.9"
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"

@@ -32,8 +32,7 @@ pub fn page() -> Element {
                 title = "Server-side rendering",
                 blurb = "Render the app to fully-styled HTML on the server for a fast, \
                  crawlable first paint \u{2014} then let the WASM bundle adopt that exact \
-                 DOM and bring it to life, instead of throwing it away and re-rendering. \
-                 The page you're reading is served this way.",
+                 DOM and bring it to life. The page you're reading is served this way.",
             )
             PageSection(handle = render_ref) { render_on_server() }
             PageSection(handle = firstpaint_ref) { first_paint() }
@@ -82,15 +81,15 @@ fn first_paint() -> Element {
         Section(
             title = "The same first paint".to_string(),
             paragraphs = vec![
-                "SSR output isn't an approximation of the app \u{2014} it's the web \
-                 backend's own first paint, produced by the same style system. The server \
-                 resolves the same theme tokens, emits the same class names, and lays text \
-                 out with the same fonts, so the HTML a crawler or a cold browser sees is \
-                 pixel-for-pixel what the live app would have painted on frame one.".to_string(),
-                "That buys you the things a pure client-rendered WASM app gives up: real \
-                 content in the initial response for search engines and link unfurlers, and \
-                 a meaningful first paint before a single byte of WASM has executed. The \
-                 user sees the page; the interactivity catches up.".to_string(),
+                "SSR output is the web backend's own first paint, produced by the same \
+                 style system. The server resolves the same theme tokens, emits the same \
+                 class names, and lays text out with the same fonts, so the HTML a crawler \
+                 or a cold browser sees is pixel-for-pixel what the live app would have \
+                 painted on frame one.".to_string(),
+                "That gives you real content in the initial response for search engines \
+                 and link unfurlers, and a meaningful first paint before a single byte of \
+                 WASM has executed. The user sees the page; the interactivity catches \
+                 up.".to_string(),
             ],
         )
     }
@@ -101,17 +100,15 @@ fn hydration() -> Element {
         Section(
             title = "Hydration by adoption".to_string(),
             paragraphs = vec![
-                "The expensive mistake most SSR setups make is re-rendering on the client: \
-                 the server sends HTML, then the framework boots, ignores that HTML, builds \
-                 its own tree, and replaces the DOM \u{2014} a flash and a pile of wasted \
-                 work. Idealyst hydrates by adoption instead. The booting WASM walks the \
-                 server-rendered DOM and binds its reactive primitives to the nodes that are \
-                 already there, in place.".to_string(),
+                "Hydration works by adoption: the booting WASM walks the server-rendered \
+                 DOM and binds its reactive primitives to the nodes that are already \
+                 there, in place. The document the server sent is the document the app \
+                 runs in \u{2014} frame one carries over untouched.".to_string(),
                 "Adoption only works if the client agrees with the server about what the \
                  tree should be, down to layout. The framework keeps that agreement with \
                  viewport-determinism \u{2014} the client's first measurement matches the \
-                 server's assumptions \u{2014} so nodes line up and the bundle can claim the \
-                 existing DOM rather than rebuild it.".to_string(),
+                 server's assumptions \u{2014} so nodes line up and the bundle claims the \
+                 existing DOM.".to_string(),
             ],
         )
     }

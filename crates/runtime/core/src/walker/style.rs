@@ -894,8 +894,9 @@ fn attach_style_reactive<B: Backend + 'static>(
 
         #[cfg(feature = "debug-stats")]
         debug::record_apply_style_enter();
-        #[cfg(feature = "debug-stats")]
-        debug::record_effect_fired();
+        // (Per-effect timing now comes from `run_effect` → `EffectRun`, which
+        // covers every effect including this style-apply one; the old
+        // `record_effect_fired()` marker here is redundant and was removed.)
 
         let app = style();
 

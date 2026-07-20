@@ -226,6 +226,50 @@ its text is mutated in place.
 Text wrapping, font, color, alignment are style concerns —
 controlled via the optional `style` slot, not separate props.
 
+#### Styled runs — inline-styled ranges in one paragraph
+
+```rust
+pub fn styled_text(runs: Vec<TextRun>) -> Bound<TextHandle>
+```
+
+A text node whose content is a list of `TextRun`s, each optionally
+carrying a `TextRunStyle` delta (font family/weight/size, foreground,
+background). This is how mixed-style text that must wrap as ONE
+paragraph is expressed — inline code chips in prose being the
+canonical case:
+
+```rust
+styled_text(vec![
+    TextRun::plain("the "),
+    TextRun::styled("ui!", TextRunStyle {
+        font_family: Some(FontFamily::System("ui-monospace, monospace".into())),
+        background: Some(Tokenized::token("color-surface-alt", Color("#eee".into()))),
+        ..Default::default()
+    }),
+    TextRun::plain(" macro"),
+])
+.with_style(paragraph_style)
+```
+
+The node's own style is the paragraph style; run deltas layer over
+it. Each backend realizes the runs through its platform's own
+attributed-text mechanism (`Backend::create_styled_text`): nested
+`<span>`s on web/SSR, `NSAttributedString` on iOS/macOS,
+`SpannableString` on Android, cosmic-text rich spans on the GPU
+renderer. Inline wrapping happens INSIDE the platform text engine —
+the framework's layout tree has no inline formatting context, which
+is exactly why runs live inside one text node instead of being
+sibling nodes. Backends without a styled realization fall back to
+the concatenated plain text (same words, no styling).
+
+Run colors/sizes are `Tokenized`, so chips track theme swaps: web
+emits them as `var(--token)` (CSS cascade), native backends
+re-realize through the theme cohort. The run list is static —
+reactive content stays on the plain `text(...)` closure path, and a
+`TextRunStyle` deliberately has no padding/radius (per-range
+box-decoration can't be expressed uniformly across attributed-text
+engines).
+
 ### `Button` — interactive trigger
 
 ```rust

@@ -8,6 +8,8 @@
 use runtime_core::{component, ui, Element, Route, StyleApplication};
 use idea_ui::Typography;
 
+use crate::components::Prose;
+
 use crate::routes::{
     AGENTIC_ROUTE, CODE_SPLITTING_ROUTE, CONCEPTS_ROUTE, CROSS_PLATFORM_ROUTE, PERFORMANCE_ROUTE,
     SERVER_FUNCTIONS_ROUTE, SSR_ROUTE, TYPE_SAFETY_ROUTE, WHY_RUST_ROUTE,
@@ -38,9 +40,9 @@ fn intro() -> Element {
         ui! {
             Typography(
                 content = "What you get when one Rust codebase drives every platform: \
-                    native output everywhere, a reactive core with no virtual DOM, \
+                    native output everywhere, a reactive core built on signals, \
                     full-stack server functions, and a type system that catches whole \
-                    classes of bugs before the app runs. Pick a capability to go deep."
+                    classes of bugs before the app runs."
                     .to_string(),
                 kind = idea_ui::typography_kind::BodyLg,
                 muted = true,
@@ -63,24 +65,24 @@ fn grid() -> Element {
     // (title, blurb, destination)
     let cards_data: [(&str, &str, &'static Route<()>); 9] = [
         (
-            "Truly cross-platform",
+            "Cross-platform",
             "One `app()` function compiles to native UIKit, Android Views, AppKit, the \
-             DOM, a GPU pipeline, even a terminal \u{2014} driving each platform's own \
-             toolkit, never a webview.",
+             DOM, a GPU pipeline, even a terminal \u{2014} each backend drives the \
+             platform's own toolkit.",
             &CROSS_PLATFORM_ROUTE,
         ),
         (
             "High performance",
-            "No virtual DOM. Fine-grained signals mutate exactly the primitives that \
-             change. Benchmarked head-to-head against React, Vue, and Svelte on \
-             identical screens.",
+            "Every update is a direct write to the platform view that changed. Work \
+             stays proportional to the change, however large the tree grows.",
             &PERFORMANCE_ROUTE,
         ),
         (
-            "Absolute type safety",
-            "The function signature is the contract, end to end. Invalid states don't \
-             compile, `match` exhaustiveness is enforced, and refs can't outlive the \
-             component that owns them.",
+            "Type safety end to end",
+            "The function signature is the contract, from database row to rendered \
+             view. Every enum variant is handled \u{2014} `match` exhaustiveness is \
+             enforced \u{2014} and the borrow checker ties refs to the component that \
+             owns them.",
             &TYPE_SAFETY_ROUTE,
         ),
         (
@@ -104,22 +106,22 @@ fn grid() -> Element {
             &CODE_SPLITTING_ROUTE,
         ),
         (
-            "Reactive without a virtual DOM",
-            "Signals are the whole reactive model \u{2014} no tree-diffing, no \
-             reconciliation, no re-render cycle. The fundamentals live in Core \
-             concepts.",
+            "Fine-grained reactivity",
+            "Signals are the whole reactive model: a signal knows every view that \
+             reads it and pushes updates straight to them, one primitive at a time \
+             \u{2014} no virtual DOM overhead. The fundamentals live in Core concepts.",
             &CONCEPTS_ROUTE,
         ),
         (
-            "No bundled runtime",
-            "WASM on the web, native binaries everywhere else. No JavaScript engine, no \
-             platform VM, nothing extra to ship alongside your app.",
+            "Ships as compiled code",
+            "WASM on the web, native binaries everywhere else. The runtime is Rust \
+             code linked into your app, so the download is your app and nothing more.",
             &WHY_RUST_ROUTE,
         ),
         (
-            "AI-forward",
+            "Built for AI tooling",
             "Documentation generation and MCP support are built in \u{2014} your \
-             components expose live metadata that LLMs can read to enrich their \
+             components expose live metadata that LLMs read to enrich their \
              context.",
             &AGENTIC_ROUTE,
         ),
@@ -162,7 +164,7 @@ pub fn FeatureCard(props: FeatureCardProps) -> Element {
     ui! {
         view(style = card_style) {
             Typography(content = title, kind = idea_ui::typography_kind::H3)
-            Typography(content = blurb, muted = true)
+            Prose(content = blurb, muted = true)
             link(route = route, params = ()) {
                 text(style = cta_style) { "Read more \u{2192}" }
             }

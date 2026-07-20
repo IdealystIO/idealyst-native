@@ -266,6 +266,67 @@ fine** — `run_effect`'s restore-closure step checks the slot first.
 
 ---
 
+## Profiling reactive updates
+
+The reactive profiler answers **"which signal (or component) caused a
+long render?"** — the idealyst analog of React's Profiler. Because a
+`Signal::set` wakes a *fixed set of effects* (not a component re-render),
+the cost is attributable precisely: trigger signal → the effects that
+ran → the single layout/paint commit at the end.
+
+It lives in `runtime_core::debug` and is gated behind the **`debug-stats`**
+Cargo feature — entirely compiled out (zero cost) when off. On web you
+must also call `backend_web::install_time_source()` at startup or every
+timing reads `0` (the wasm32 monotonic-clock fallback).
+
+**The model — a transaction.** Each flush is one *transaction*:
+
+- **Identity.** Signals and effects are opaque arena ids; the profiler
+  records each one's author-code `file:line` at creation (via
+  `#[track_caller]`, resolved at compile time). Effects also carry the
+  `#[component]` that was building when they were created, and text
+  bindings carry a `text#<id>` label naming the node they drive.
+- **Trigger.** The signal(s) whose write opened the flush (one for an
+  immediate `set`, several for a `batch`).
+- **Effect runs.** Each subscriber effect's closure-body time — the
+  compute + the backend mutation call. `Signal::get` is deliberately
+  *not* timed individually (it fires 10k+×/flush; the timer reads would
+  swamp the measurement).
+- **Commit.** The layout/paint pass the backend runs when the outermost
+  mutation window closes (the reactive-idle hook). **This is usually
+  where a "long render" actually spends its time** — the effect closures
+  are typically cheap; the commit is not. It's attributed to the
+  transaction, not to any one effect (a single layout pass can't be
+  split across the effects that dirtied it).
+
+**Reading it.** Drain the event stream and fold it:
+
+```rust
+use runtime_core::debug;
+let events = debug::take_events();                 // destructive drain
+let report = debug::txn_report(&events);           // Vec<TxnRecord>, slowest first
+let signals = debug::slow_signals(&events);         // (signal, Σµs, count) by trigger
+let text = debug::format_reactive_profile(&events, 20); // rendered report
+```
+
+`TxnRecord` carries `trigger_labels`, `effect_count`, per-effect
+`effects: Vec<(label, µs)>`, `effect_us`, `commit_us`, and `total_us`.
+An outer effect's `µs` *includes* any nested flush it triggered; the
+nested transaction appears as its own record for the finer split.
+
+**Surfaces** (all render `format_reactive_profile`):
+
+- **Inspector** — the Stats tab's "REACTIVE PROFILE" section (live).
+- **Robot verb** `reactive_profile` — drains and returns the report.
+- **Web** — `window.reactive_profile()` on the benchmark variant (build
+  with `--features debug-stats`), callable from devtools.
+- **Native** — appended to the iOS/Android phase-counter log dumps.
+
+Turn `debug-stats` **off** before quoting real benchmark numbers — the
+spans inflate per-op cost (see project CLAUDE.md §6).
+
+---
+
 ## Reactivity at the framework's seams
 
 The framework uses reactivity at three layers:

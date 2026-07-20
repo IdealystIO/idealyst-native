@@ -20,10 +20,25 @@ license.workspace = true
 
 [features]
 default = []
-server = ["server/server"]
+server = ["server/server", "dep:cache", "dep:serde", "dep:serde_json", "dep:getrandom"]
+# Redis-backed LimitStore + cache/session backends (shared across
+# instances). The connection is app-provided context — the app opens one
+# redis::Client and every consumer (RedisLimitStore, cache::RedisCache,
+# sessions-over-cache) reads the same installed instance.
+redis = ["server", "dep:redis", "dep:tokio", "cache/redis"]
 
 [dependencies]
 server = { workspace = true }
+# Sessions ride the Cache abstraction (a session store IS a KV-with-TTL).
+cache = { workspace = true, optional = true }
+serde = { version = "1", optional = true }
+serde_json = { version = "1", optional = true }
+# CSPRNG session tokens.
+getrandom = { version = "0.2", optional = true }
+# `redis` feature only. Mirrors jobs/pubsub: tokio-comp + the multiplexed
+# connection manager + Lua script support; tokio only for sync::OnceCell.
+redis = { version = "0.27", default-features = false, features = ["tokio-comp", "connection-manager", "script"], optional = true }
+tokio = { version = "1", features = ["sync"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }

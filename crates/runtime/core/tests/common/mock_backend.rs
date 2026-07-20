@@ -136,8 +136,16 @@ pub enum Event {
     /// tests can assert mid-list placement).
     InsertAt { parent: NodeId, child: NodeId, index: usize },
 
+    /// `create_styled_text(runs, ..)` — records the concatenated
+    /// plain text plus how many runs carried a style delta, so tests
+    /// can assert the walker handed the full run list over.
+    CreateStyledText { plain: String, styled_runs: usize },
+
     // --- Update ---
     UpdateText { node: NodeId, content: String },
+    /// `update_styled_text(node, runs)` — the theme-cohort
+    /// re-realization hook for styled text on non-cascade backends.
+    UpdateStyledText { node: NodeId, plain: String },
     UpdateButtonLabel { node: NodeId, label: String },
     UpdateImageSrc { node: NodeId, src: String },
     UpdateImageAlt { node: NodeId, alt: Option<String> },
@@ -691,6 +699,26 @@ impl Backend for MockBackend {
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {
         self.core.record(Event::UpdateText { node: *node, content: content.to_string() });
+    }
+
+    fn create_styled_text(
+        &mut self,
+        runs: &[runtime_core::TextRun],
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        let id = self.core.mint();
+        self.core.record(Event::CreateStyledText {
+            plain: runtime_core::styled_text::plain_text_of(runs),
+            styled_runs: runs.iter().filter(|r| r.style.is_some()).count(),
+        });
+        id
+    }
+
+    fn update_styled_text(&mut self, node: &Self::Node, runs: &[runtime_core::TextRun]) {
+        self.core.record(Event::UpdateStyledText {
+            node: *node,
+            plain: runtime_core::styled_text::plain_text_of(runs),
+        });
     }
 
     fn clear_children(&mut self, node: &Self::Node) {

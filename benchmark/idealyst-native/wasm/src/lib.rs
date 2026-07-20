@@ -1152,6 +1152,34 @@ fn phase_counters_json() -> String {
     "null".into()
 }
 
+/// Drain the reactive transaction stream and return the rendered
+/// "which signal caused a long render" profile: top signals by total
+/// cost, then the slowest transactions with a per-effect breakdown.
+/// Draining is destructive, so each call reports the flushes since the
+/// last call. Call from devtools (`window.reactive_profile()`) after
+/// exercising the app.
+///
+/// `start()` already installs the web time source, so the per-effect and
+/// commit timings are real (not the wasm32 `0` fallback). Returns a hint
+/// string when `debug-stats` is OFF.
+#[wasm_bindgen]
+pub fn reactive_profile() -> String {
+    #[cfg(feature = "debug-stats")]
+    {
+        let events = runtime_core::debug::take_events();
+        let text = runtime_core::debug::format_reactive_profile(&events, 20);
+        if text.is_empty() {
+            "(no reactive transactions recorded this interval)".into()
+        } else {
+            text
+        }
+    }
+    #[cfg(not(feature = "debug-stats"))]
+    {
+        "reactive_profile: rebuild this bench variant with --features debug-stats".into()
+    }
+}
+
 /// Reset phase counters without dumping them — useful between
 /// suite runs when you want to attribute time to just the
 /// upcoming work. Pair with `bench_stats_json()` at the end of
