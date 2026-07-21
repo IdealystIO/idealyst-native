@@ -1,0 +1,7 @@
+recorded_at_epoch,scenario_id,run_id,item_id,passed,skipped,neutralized,awarded,points
+1784664974,nav-notes,run-0,builds-web,true,false,false,20,20
+1784664974,nav-notes,run-0,uses-stack-navigator,true,false,false,15,15
+1784664974,nav-notes,run-0,declares-two-screens,false,false,false,0,10
+1784664974,nav-notes,run-0,list-shows-notes,true,false,false,15,15
+1784664974,nav-notes,run-0,detail-navigation-works,false,false,true,0,20
+1784664974,nav-notes,run-0,back-returns-to-list,true,false,false,20,20

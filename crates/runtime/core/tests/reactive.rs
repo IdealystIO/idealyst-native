@@ -14,6 +14,8 @@
 #[path = "common/mod.rs"]
 mod common;
 
+#[path = "reactive/dispose.rs"]
+mod dispose;
 #[path = "reactive/smoke.rs"]
 mod smoke;
 #[path = "reactive/topology.rs"]

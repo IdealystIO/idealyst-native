@@ -44,10 +44,18 @@ ENV PATH=/home/vscode/.local/bin:$PATH \
 # Claude Code as the standalone binary (no node dependency in this image).
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
+# Wasm toolchain — MISSING originally: web builds need the target and a
+# wasm-bindgen-cli matching the workspace's wasm-bindgen version (checked
+# below after the repo COPY). Without these, `idealyst build --web` fails
+# with E0463 and agents burn tokens self-installing (run-3 feedback §2.4).
+RUN rustup target add wasm32-unknown-unknown
+
 # Bake the idealyst CLI + arena spine from the build context (the repo).
 # The registry cache this warms also serves the agent's own builds at runtime.
 COPY --chown=vscode:vscode . /build/repo
-RUN cargo install --path /build/repo/crates/tools/cli \
+RUN WBG=$(grep -A1 'name = "wasm-bindgen"' /build/repo/Cargo.lock | grep version | head -1 | cut -d'"' -f2) \
+    && cargo install wasm-bindgen-cli --version "$WBG" --locked \
+    && cargo install --path /build/repo/crates/tools/cli \
     && cd /build/repo/arena \
     && cargo build -p arena-spine --bin arena \
     && install target/debug/arena /usr/local/cargo/bin/arena \

@@ -28,7 +28,11 @@ runtime-core = { workspace = true, optional = true }
 # Compile-checked usage recipes for the docs/MCP catalog. Off in every
 # production build (the `recipe!` macro then expands to nothing).
 [features]
-catalog = ["dep:runtime-core", "runtime-core/catalog", "runtime-core/async-driver"]
+# `persisted_signal` — the storage↔signal rail (hydrate + persist-on-change
+# with user-writes-win semantics). Opt-in so the base crate stays a
+# dependency-free platform shim.
+reactive = ["dep:runtime-core", "runtime-core/async-driver"]
+catalog = ["reactive", "runtime-core/catalog"]
 
 # Web (wasm): localStorage via web-sys.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -46,3 +50,5 @@ ndk-context = "0.1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
+# Drives the inline (native-fallback) async path in `persisted` tests.
+pollster = "0.3"

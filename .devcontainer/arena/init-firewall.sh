@@ -33,6 +33,9 @@ ALLOWED_DOMAINS=(
   crates.io
   index.crates.io
   static.crates.io
+  # Rust toolchain components (rustup target/toolchain downloads) — code,
+  # not docs; without it a missing wasm target is unfixable in-container.
+  static.rust-lang.org
 )
 
 # Plain per-IP iptables rules, no ipset: ipset's hash:ip needs ip_set kernel

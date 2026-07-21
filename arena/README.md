@@ -88,6 +88,16 @@ Run each scenario N times. The headline signal isn't the mean — it's the
 **per-item pass-rate**: an item passing 8/8 is well-documented; 3/8 is a doc
 *ambiguity*, not mere model variance, and is exactly where to improve the MCP.
 
+## Results over time
+
+`arena record <scenario_dir> <run_dir>` appends each run to a repo-tracked
+CSV pair under `arena/results/`: `<scenario>.csv` (one summary row per run —
+score, tokens, process metrics, judge grades, framework commit) and
+`<scenario>-items.csv` (long format, one row per rubric item per run — the
+shape per-item pass-rate-over-time queries want). Append-only with a
+duplicate guard (`--force` to re-record); columns are flat and stable so the
+files can lift into a database table unchanged when the time comes.
+
 ## CLI
 
 ```

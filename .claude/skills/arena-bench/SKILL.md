@@ -205,7 +205,28 @@ and teardown is `docker rm`.
     A schema-invalid judge reply errors — discard it (deterministic base
     stands alone) rather than coaching the judge.
 
-11. **Report** to the user: the score line, artifact paths (`report.md`,
+10b. **Adversarial review** (non-scoring — the expert skeptic):
+    ```
+    arena adversary-prompt <host-side $PROJ> --framework <host repo root>
+    ```
+    Spawn an **arena-adversary** subagent with the output; save its JSON
+    reply to `$RUN_DIR/adversary-findings.json`, then validate + persist:
+    ```
+    arena adversary $PROJ --run-dir $RUN_DIR --findings-file $RUN_DIR/adversary-findings.json
+    ```
+    Schema-invalid output errors — discard it rather than coaching. Surface
+    critical findings to the user prominently; `rubric_candidate` entries are
+    proposals to harden into objective rubric items next iteration.
+
+11. **Record** the run in the longitudinal ledger (repo-tracked CSVs at
+    `arena/results/<scenario>.csv` + `<scenario>-items.csv`; commit them
+    with the next checkpoint):
+    ```
+    arena record $SCEN $RUN_DIR
+    ```
+    Re-recording a re-scored run needs `--force` (append-only ledger).
+
+12. **Report** to the user: the score line, artifact paths (`report.md`,
     `scored.json`, `process.json`, `quality.md`, `feedback.md`), and
     self-checks:
     - transcript shows only `mcp__idealyst*` MCP calls;

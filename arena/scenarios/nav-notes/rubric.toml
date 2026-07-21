@@ -31,6 +31,20 @@ tier = "static"
 verifier = "static_ast"
 assertion = { pattern = "Screen\\s*\\(", in = "src/**/*.rs", min_count = 2 }
 
+# Attribution-depth lesson (run-0): the detail-navigation outcome bundles TWO
+# concerns — navigating AND heading semantics. Its depends_on pointed only at
+# the navigator decision, so a heading-semantics miss neutralized as a
+# "framework finding" wrongly. This decision item carries the semantics half;
+# the outcome now depends on it.
+[[item]]
+id = "detail-title-is-heading"
+description = "The detail title carries heading semantics (a11y_role heading or equivalent), as the prompt requires — not just large text."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "a11y_role\\s*[=:]\\s*\"?[Hh]eading|role\\s*=\\s*\"?heading", in = "src/**/*.rs" }
+
 [[item]]
 id = "list-shows-notes"
 description = "The list screen shows the three required notes."
@@ -43,12 +57,12 @@ assertion = { action = "observe the initial page state", expect_name = "Grocerie
 
 [[item]]
 id = "detail-navigation-works"
-description = "Tapping a note reaches its detail screen."
+description = "Tapping a note reaches its detail screen with the title as a heading."
 points = 20
 class = "outcome"
 tier = "playwright"
 verifier = "ux_locator"
-depends_on = "uses-stack-navigator"
+depends_on = "detail-title-is-heading"
 assertion = { action = "click the note titled 'Groceries'", expect_role = "heading", expect_name = "Groceries" }
 
 [[item]]

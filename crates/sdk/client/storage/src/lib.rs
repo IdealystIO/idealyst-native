@@ -57,6 +57,13 @@ mod apple;
 #[cfg(all(not(target_arch = "wasm32"), target_os = "android"))]
 mod android;
 
+/// `persisted_signal` — hydrate-from-storage + persist-on-change with
+/// user-writes-win race semantics. Opt-in via the `reactive` feature.
+#[cfg(feature = "reactive")]
+pub mod persisted;
+#[cfg(feature = "reactive")]
+pub use persisted::{persisted_signal, persisted_signal_with};
+
 /// Compile-checked usage recipes (docs / MCP catalog). The `recipe!` macro
 /// self-gates on the `catalog` feature, so this is empty in production.
 #[cfg(feature = "catalog")]

@@ -340,6 +340,131 @@ fn run() -> anyhow::Result<()> {
             print!("{}", quality::build_judge_prompt(&project_dir, screenshots.as_deref()));
             Ok(())
         }
+        // ── Adversarial review (non-scoring) ──────────────────────────────
+        "adversary-prompt" => {
+            let project_dir = PathBuf::from(pos(&args, 0, "project_dir")?);
+            let framework_dir = PathBuf::from(
+                opt(&args, "--framework").unwrap_or_else(|| "/workspaces/idealyst-native".into()),
+            );
+            print!(
+                "{}",
+                arena_spine::adversary::build_prompt(&project_dir, &framework_dir)
+            );
+            Ok(())
+        }
+        "adversary" => {
+            // Validate + persist the adversary's findings (prose-tolerant read
+            // of --findings-file), writing adversary.json / adversary.md.
+            let _project_dir = PathBuf::from(pos(&args, 0, "project_dir")?);
+            let run_dir = PathBuf::from(
+                opt(&args, "--run-dir").ok_or_else(|| anyhow::anyhow!("missing --run-dir"))?,
+            );
+            let file = opt(&args, "--findings-file")
+                .ok_or_else(|| anyhow::anyhow!("missing --findings-file"))?;
+            let raw = std::fs::read_to_string(&file)?;
+            let json_span = match (raw.find('{'), raw.rfind('}')) {
+                (Some(s), Some(e)) if e > s => &raw[s..=e],
+                _ => raw.trim(),
+            };
+            let report: arena_spine::adversary::AdversaryReport = serde_json::from_str(json_span)
+                .map_err(|e| anyhow::anyhow!("malformed adversary report {file}: {e}"))?;
+            arena_spine::adversary::validate(&report)?;
+            std::fs::create_dir_all(&run_dir)?;
+            std::fs::write(
+                run_dir.join("adversary.json"),
+                serde_json::to_string_pretty(&report)?,
+            )?;
+            std::fs::write(
+                run_dir.join("adversary.md"),
+                arena_spine::adversary::render_markdown(&report),
+            )?;
+            let (c, m, mi) = report.findings.iter().fold((0, 0, 0), |acc, f| {
+                use arena_spine::adversary::Severity::*;
+                match f.severity {
+                    Critical => (acc.0 + 1, acc.1, acc.2),
+                    Major => (acc.0, acc.1 + 1, acc.2),
+                    Minor => (acc.0, acc.1, acc.2 + 1),
+                }
+            });
+            println!(
+                "adversary: {c} critical, {m} major, {mi} minor — artifacts: {}",
+                run_dir.display()
+            );
+            Ok(())
+        }
+        // ── Longitudinal ledger ───────────────────────────────────────────
+        "record" => {
+            // Append one run's results to the scenario's CSV pair (summary +
+            // per-item long format) under arena/results/ — the
+            // tracked-over-time record, shaped to lift into a database later.
+            let scenario_dir = PathBuf::from(pos(&args, 0, "scenario_dir")?);
+            let run_dir = PathBuf::from(pos(&args, 1, "run_dir")?);
+            let (scenario, _rubric) = load(&scenario_dir)?;
+            let scored: ScoredRun =
+                serde_json::from_str(&std::fs::read_to_string(run_dir.join("scored.json"))?)?;
+            let process: Option<serde_json::Value> = std::fs::read_to_string(run_dir.join("process.json"))
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok());
+            let quality: Option<arena_spine::quality::QualityReport> =
+                std::fs::read_to_string(run_dir.join("quality.json"))
+                    .ok()
+                    .and_then(|s| serde_json::from_str(&s).ok());
+
+            let run_id = run_dir
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("run-unknown")
+                .to_string();
+            let commit = opt(&args, "--commit").unwrap_or_else(|| {
+                std::process::Command::new("git")
+                    .args(["rev-parse", "--short", "HEAD"])
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_else(|| "unknown".into())
+            });
+            let epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let out_dir = opt(&args, "--out").map(PathBuf::from).unwrap_or_else(|| {
+                scenario_dir
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .map(|p| p.join("results"))
+                    .unwrap_or_else(|| PathBuf::from("results"))
+            });
+            let force = args.iter().any(|a| a == "--force");
+
+            let rec = arena_spine::record::RunRecord {
+                scenario_id: &scenario.id,
+                run_id: &run_id,
+                framework_commit: &commit,
+                recorded_at_epoch: epoch,
+                scored: &scored,
+                process: process.as_ref(),
+                quality: quality.as_ref(),
+            };
+            let row = arena_spine::record::summary_row(&rec);
+            let items = arena_spine::record::item_rows(&rec);
+            let appended =
+                arena_spine::record::append(&out_dir, &scenario.id, &run_id, &row, &items, force)?;
+            if appended {
+                println!(
+                    "recorded {}/{} → {}",
+                    scenario.id,
+                    run_id,
+                    out_dir.join(format!("{}.csv", scenario.id)).display()
+                );
+            } else {
+                println!(
+                    "{}/{} already recorded — pass --force to append a re-record",
+                    scenario.id, run_id
+                );
+            }
+            Ok(())
+        }
         // ── Aggregation (Phase 5) ─────────────────────────────────────────
         "aggregate" => {
             let scenario_id = pos(&args, 0, "scenario_id")?.clone();
@@ -368,6 +493,7 @@ fn run() -> anyhow::Result<()> {
              arena feedback-prompt <scenario_dir> <run_dir>             (two-pass reviewer prompt)\n  \
              arena quality         <project_dir> --run-dir <dir> [--judge-file <json>]\n  \
              arena judge-prompt    <project_dir> [--screenshots <dir>]\n  \
+             arena record          <scenario_dir> <run_dir> [--out <dir>] [--commit <sha>] [--force]\n  \
              arena aggregate       <scenario_id> <scored.json>..."
         ),
     }
@@ -410,6 +536,10 @@ const VALUE_FLAGS: &[&str] = &[
     "--port",
     "--judge-file",
     "--screenshots",
+    "--out",
+    "--commit",
+    "--framework",
+    "--findings-file",
 ];
 
 fn positionals(args: &[String]) -> Vec<&String> {

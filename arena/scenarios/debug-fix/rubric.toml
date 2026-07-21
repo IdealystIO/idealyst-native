@@ -23,6 +23,15 @@ verifier = "static_ast"
 assertion = { pattern = "\\bsignal\\s*\\(|signal!|Signal<", in = "src/app.rs" }
 
 [[item]]
+id = "loop-subscribes-not-snapshot"
+description = "The render loop iterates the signal itself, not a build-time `.get()` snapshot — run-0's agent converted the Vec to a signal but kept `for item in items.get()`, reproducing the hoisted-snapshot pitfall it had itself diagnosed. Signal alone is necessary, not sufficient."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "for\\s+\\w+\\s+in\\s+\\w+\\.get\\(\\)", in = "src/**/*.rs", absent = true }
+
+[[item]]
 id = "did-not-rewrite"
 description = "The APP-3417 module marker survives — the agent fixed, not rewrote (the prompt forbade a rewrite)."
 points = 10

@@ -16,7 +16,11 @@ pub fn app() -> Element {
     ui! {
         view() {
             text { "Todo" }
-            text_input(value = draft, placeholder = "New item")
+            text_input(
+                value = draft,
+                on_change = move |t| draft.set(t),
+                placeholder = "New item",
+            )
             button(label = "Add", on_click = move || {
                 let entry = draft.get();
                 if !entry.trim().is_empty() {

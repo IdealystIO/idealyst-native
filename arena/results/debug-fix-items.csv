@@ -1,0 +1,5 @@
+recorded_at_epoch,scenario_id,run_id,item_id,passed,skipped,neutralized,awarded,points
+1784663863,debug-fix,run-0,builds-web,true,false,false,20,20
+1784663863,debug-fix,run-0,fix-is-reactive-state,true,false,false,15,15
+1784663863,debug-fix,run-0,did-not-rewrite,true,false,false,10,10
+1784663863,debug-fix,run-0,add-item-appears,false,false,true,0,25

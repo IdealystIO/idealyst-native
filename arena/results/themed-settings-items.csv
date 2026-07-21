@@ -1,0 +1,8 @@
+recorded_at_epoch,scenario_id,run_id,item_id,passed,skipped,neutralized,awarded,points
+1784663826,themed-settings,run-0,builds-web,true,false,false,20,20
+1784663826,themed-settings,run-0,uses-toggle-control,true,false,false,10,10
+1784663826,themed-settings,run-0,uses-slider-control,true,false,false,10,10
+1784663826,themed-settings,run-0,uses-reactive-state,true,false,false,10,10
+1784663826,themed-settings,run-0,theming-not-hardcoded-per-node,false,false,false,0,10
+1784663826,themed-settings,run-0,volume-value-visible,true,false,false,15,15
+1784663826,themed-settings,run-0,dark-mode-flips,true,false,false,25,25
