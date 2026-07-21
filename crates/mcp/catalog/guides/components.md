@@ -138,8 +138,10 @@ ui! {
 Two mechanisms render a list of items; pick by size and volatility:
 
 - **Keyed `for` inside `ui!`** — the default for small/bounded collections.
-  The `key =` expression drives reconciliation: rows are moved/reused rather
-  than rebuilt when the collection reorders.
+  The loop header iterates the `Signal<Vec<T>>` ITSELF (never `items.get()`,
+  which freezes a build-time snapshot that never re-renders). The `key =`
+  expression drives reconciliation: rows are moved/reused rather than rebuilt
+  when the collection reorders.
 
   ```rust
   ui! {

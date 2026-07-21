@@ -22,14 +22,18 @@ tier = "static"
 verifier = "static_ast"
 assertion = { pattern = "StackNavigator", in = "src/**/*.rs" }
 
+# run-0 correction: the original `Screen\s*\(` pattern matched only the
+# navigation guide's STALE ui!-sugar form (which doesn't compile); the real
+# builder API is `StackNavigator::new(..).screen(ROUTE, |p| Screen::new(..))`.
+# The agent used the correct form and scored 0. Guide + rubric were wrong.
 [[item]]
 id = "declares-two-screens"
-description = "At least two Screen declarations exist (list + detail)."
+description = "At least two screen declarations exist (list + detail) — builder `.screen(` calls or `Screen::new(`."
 points = 10
 class = "decision"
 tier = "static"
 verifier = "static_ast"
-assertion = { pattern = "Screen\\s*\\(", in = "src/**/*.rs", min_count = 2 }
+assertion = { pattern = "\\.screen\\s*\\(|Screen::new\\s*\\(", in = "src/**/*.rs", min_count = 2 }
 
 # Attribution-depth lesson (run-0): the detail-navigation outcome bundles TWO
 # concerns — navigating AND heading semantics. Its depends_on pointed only at

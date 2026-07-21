@@ -161,7 +161,10 @@ lost.**
   a `#[component]` that conceptually yields several siblings but must return one
   `Element` — the walker splices the children into the parent with no wrapper
   view (so `flex: 1` / absolute overlays aren't broken by a box). Built once,
-  **not** reconciled — for a reactive child set use `switch`/`when`/`for`.
+  **not** reconciled — for a reactive child set use `switch`/`when`/keyed `for`
+  (`for item in items, key = item.id` — the SIGNAL itself in the header, never
+  `items.get()`, which freezes a build-time snapshot; see the
+  `keyed_list_add_remove` recipe).
 
 ## Lifecycle — `on_cleanup`
 
