@@ -23,6 +23,7 @@ use crate::config::Level;
 use crate::diagnostic::RawDiag;
 
 mod component_case;
+mod keyed_list;
 mod prefer_macros;
 mod prefer_ui;
 mod snapshot_condition;
@@ -77,6 +78,11 @@ pub fn all_rules() -> &'static [RuleInfo] {
             default_level: Level::Warn,
             summary: "a hoisted `.get()` snapshot used as a `ui!` condition — the branch silently never updates",
         },
+        RuleInfo {
+            id: keyed_list::RULE,
+            default_level: Level::Warn,
+            summary: "a child list built by hand (`.push(ui!{…})` / `.map(|x| ui!{…})`) outside the macro — keys are erased; use `for … , key = …`",
+        },
     ]
 }
 
@@ -108,6 +114,11 @@ impl<'ast> Visit<'ast> for Linter {
     fn visit_expr_struct(&mut self, node: &'ast syn::ExprStruct) {
         prefer_ui::check_struct(node, &mut self.diags);
         syn::visit::visit_expr_struct(self, node);
+    }
+
+    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+        keyed_list::check_method_call(node, &mut self.diags);
+        syn::visit::visit_expr_method_call(self, node);
     }
 
     // Macro INVOCATIONS are visible AST nodes (their bodies aren't) —

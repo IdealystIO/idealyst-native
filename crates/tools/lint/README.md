@@ -12,6 +12,7 @@ Flags idiom-drift patterns in idealyst projects, over the project's
 | `prefer-ui-macro` | warn | `builder::view(…)`, `BuildElement::build(…)`, `Element::View { … }` | `ui! { … }` / `jsx! { … }` |
 | `component-pascal-case` | error | `#[component] fn icon_button` | `#[component] fn IconButton` |
 | `snapshot-condition` | warn | hoisted `let ok = x.get()…;` used as a `ui!` `if` condition | `memo(move \|\| …)`, inline the `.get()`, or `.get_untracked()` if intentional |
+| `prefer-keyed-list` | warn | a child list built by hand — `VEC.push(ui! { … })` / `.map(\|x\| ui! { … })` — outside the macro | `ui! { view() { for item in items, key = item.id { … } } }` |
 
 > **Why un-expanded source?** After macro expansion, `signal(0)` *is*
 > `Signal::new(0)` and `ui! { … }` *is* `BuildElement::build(…)` — the idiom

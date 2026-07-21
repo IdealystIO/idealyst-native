@@ -62,21 +62,32 @@ pub(crate) fn update_src(b: &WebBackend, node: &Node, src: &str) {
 /// The `<img>` may already be complete by the time the walker installs
 /// this (a cached image decodes synchronously, and the handler is wired
 /// after `create`), so we check `HtmlImageElement::complete()` up front
-/// and fire immediately — otherwise the `load` event already fired and we
-/// would drop it. `complete && naturalWidth > 0` distinguishes a decoded
-/// image from a still-loading or errored one. Closures are parked in the
-/// backend keepalive vec (`_touch_closures`) so JS keeps them alive for
-/// the element's lifetime — same pattern as touch/hover.
+/// and fire — otherwise the `load` event already fired and we would drop
+/// it. `complete && naturalWidth > 0` distinguishes a decoded image from
+/// a still-loading or errored one. Closures are parked in the backend
+/// keepalive vec (`_touch_closures`) so JS keeps them alive for the
+/// element's lifetime — same pattern as touch/hover.
+///
+/// The already-decoded fire is **deferred to a microtask** rather than
+/// invoked inline. This install runs from inside `walker::image::build`
+/// while the backend `RefCell` is `borrow_mut`'d; a user `on_load` that
+/// writes a signal a reactive style depends on would re-enter that same
+/// borrow through the style effect and panic ("RefCell already borrowed",
+/// see `walker/style.rs`). Deferring also matches the browser: a cached
+/// `<img>`'s real `load` event dispatches as a queued task, never inline.
 pub(crate) fn install_load(b: &mut WebBackend, node: &Node, handler: ImageLoadHandler) {
     let Ok(img) = node.clone().dyn_into::<HtmlImageElement>() else {
         return;
     };
-    // Already decoded before we could attach — fire now with its size.
+    // Already decoded before we could attach — notify on a microtask
+    // (out of the backend borrow, and consistent with async `load`).
     if img.complete() && img.natural_width() > 0 {
-        handler(&ImageLoadEvent {
+        let event = ImageLoadEvent {
             width: img.natural_width() as f32,
             height: img.natural_height() as f32,
-        });
+        };
+        let handler = handler.clone();
+        runtime_core::schedule_microtask(move || handler(&event));
         // Still attach the listener: a reactive `src` swap loads a new
         // bitmap and re-fires `load`, which should re-notify.
     }
@@ -94,14 +105,18 @@ pub(crate) fn install_load(b: &mut WebBackend, node: &Node, handler: ImageLoadHa
 /// Install an `on_error` handler: fire the framework's
 /// [`ImageErrorHandler`] when the `<img>` fails to load/decode. Mirrors
 /// [`install_load`], including the already-settled check — a `complete`
-/// image with `naturalWidth == 0` has already errored, so fire now.
+/// image with `naturalWidth == 0` has already errored, so notify. The
+/// already-errored fire is deferred to a microtask for the same reason
+/// as `install_load`: this runs inside the backend `borrow_mut`, and a
+/// user `on_error` writing a style-affecting signal would re-enter it.
 pub(crate) fn install_error(b: &mut WebBackend, node: &Node, handler: ImageErrorHandler) {
     let Ok(img) = node.clone().dyn_into::<HtmlImageElement>() else {
         return;
     };
     // Already errored before we could attach (complete but no bitmap).
     if img.complete() && img.natural_width() == 0 && !img.src().is_empty() {
-        handler();
+        let handler = handler.clone();
+        runtime_core::schedule_microtask(move || handler());
     }
     let closure = Closure::<dyn FnMut(Event)>::new(move |_ev: Event| {
         handler();

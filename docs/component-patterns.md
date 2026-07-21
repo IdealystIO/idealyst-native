@@ -492,7 +492,7 @@ survives the filter.
 | `text(count.get())` | `text(move || count.get())` | bare read is a stale snapshot — compile error by design |
 | `let ok = x.get()… ;` then `if ok { … }` in `ui!` | `let ok = memo(move || x.get()…)` or inline the `.get()` in the condition | hoisted snapshot — the branch silently never updates (see "The snapshot trap") |
 | keyless `for x in sig { … }` | `for x in sig, key = x.id { … }` | reactive lists must reconcile — compile error by design |
-| building children in a `Vec::push` loop outside `ui!` | write them inside `ui!` (§9.3) | defeats keyed reconciliation + reactive-scope inference |
+| building children in a `Vec::push` loop outside `ui!`, or `.map(\|x\| ui!{…}).collect()` | write them inside `ui!` with `for … , key = …` (§9.3) | defeats keyed reconciliation + reactive-scope inference (`prefer-keyed-list`) |
 | `.set()` inside a memo body | derive from inputs | memos are pure — panics |
 | `.set()` inside `Ref::with` | read out, then set | `with` holds the arena borrow — aborts |
 | a no-op default closure for an optional callback | `Option<Rc<dyn Fn()>>` + bind-when-present (§9.6) | silent handlers block hit-test fall-through |

@@ -2512,3 +2512,96 @@ fn regression_breakpoint_overlay_survives_class_remint_in_cascade_order() {
         "re-mint must reuse the freed slots at their original indices",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Image `on_load` re-entrancy — cached-image load must fire on a microtask.
+// ---------------------------------------------------------------------------
+
+/// Await an `<img>`'s `load` event so `complete() && naturalWidth > 0`
+/// holds deterministically before the test installs its handler — this
+/// reproduces the "already cached / already decoded" state the bug needs.
+async fn decoded_img() -> web_sys::HtmlImageElement {
+    use wasm_bindgen::closure::Closure;
+    use wasm_bindgen::JsCast;
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let img: web_sys::HtmlImageElement =
+        doc.create_element("img").unwrap().unchecked_into();
+    // 1×1 transparent GIF — decodes to naturalWidth == 1.
+    let src = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        let cb = Closure::once_into_js(move || {
+            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
+        });
+        let _ = img.add_event_listener_with_callback("load", cb.unchecked_ref());
+    });
+    img.set_src(src);
+    wasm_bindgen_futures::JsFuture::from(promise).await.unwrap();
+    assert!(
+        img.complete() && img.natural_width() > 0,
+        "test image must be fully decoded before install",
+    );
+    img
+}
+
+/// REGRESSION — an `on_load` handler that re-enters the backend
+/// `RefCell` must not panic when the image is already decoded.
+///
+/// `walker::image::build` installs the load handler while holding
+/// `backend.borrow_mut()`. Before the fix, `install_load` fired the
+/// already-decoded notification *inline*, so a handler that writes a
+/// signal a reactive style depends on re-entered that same borrow via
+/// the style effect and aborted with "RefCell already borrowed"
+/// (`walker/style.rs`). The already-decoded fire is now deferred to a
+/// microtask, out of the borrow. This test reproduces the exact layer:
+/// install under a live `borrow_mut`, with a handler that itself takes
+/// `borrow_mut`. Inline firing panics; deferred firing does not.
+#[wasm_bindgen_test]
+async fn regression_image_on_load_cached_does_not_reenter_borrow() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    install_mount();
+    // `schedule_microtask` needs an installed scheduler; idempotent.
+    crate::install_scheduler();
+    let backend = Rc::new(std::cell::RefCell::new(WebBackend::new("#app")));
+
+    let img = decoded_img().await;
+    let node: web_sys::Node = wasm_bindgen::JsCast::unchecked_into(img);
+
+    // A handler that re-enters the backend borrow — the shape a
+    // signal-writing `on_load` produces once its style effect runs.
+    let fired = Rc::new(Cell::new(false));
+    let handler: runtime_core::ImageLoadHandler = {
+        let backend = backend.clone();
+        let fired = fired.clone();
+        Rc::new(move |_ev| {
+            // Re-entering `borrow_mut` here is exactly what the style
+            // effect did in the field crash. Must not be live during
+            // this call.
+            let _b = backend.borrow_mut();
+            fired.set(true);
+        })
+    };
+
+    // Install exactly as the walker does: under a live `borrow_mut`.
+    {
+        use runtime_core::Backend;
+        let mut b = backend.borrow_mut();
+        b.install_image_load_handler(&node, handler);
+    }
+
+    // Inline firing would already have panicked above. It must not have
+    // run yet — it's deferred to a microtask.
+    assert!(
+        !fired.get(),
+        "cached-image on_load must be deferred, not fired inline inside install",
+    );
+
+    // Yield one microtask turn; now the deferred notification runs, and
+    // the re-entrant borrow is safe because `install` has returned.
+    let yield_promise = js_sys::Promise::resolve(&wasm_bindgen::JsValue::NULL);
+    wasm_bindgen_futures::JsFuture::from(yield_promise).await.unwrap();
+    assert!(
+        fired.get(),
+        "deferred on_load must fire on the next microtask",
+    );
+}
