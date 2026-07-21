@@ -13,3 +13,10 @@ recorded_at_epoch,scenario_id,run_id,item_id,passed,skipped,neutralized,awarded,
 1784666056,themed-settings,run-1,theming-not-hardcoded-per-node,false,false,false,0,10
 1784666056,themed-settings,run-1,volume-value-visible,true,false,false,15,15
 1784666056,themed-settings,run-1,dark-mode-flips,true,false,false,25,25
+1784668279,themed-settings,run-2,builds-web,true,false,false,20,20
+1784668279,themed-settings,run-2,uses-toggle-control,true,false,false,10,10
+1784668279,themed-settings,run-2,uses-slider-control,true,false,false,10,10
+1784668279,themed-settings,run-2,uses-reactive-state,true,false,false,10,10
+1784668279,themed-settings,run-2,theming-not-hardcoded-per-node,true,false,false,10,10
+1784668279,themed-settings,run-2,volume-value-visible,true,false,false,15,15
+1784668279,themed-settings,run-2,dark-mode-flips,true,false,false,25,25
