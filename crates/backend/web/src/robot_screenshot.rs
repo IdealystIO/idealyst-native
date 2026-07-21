@@ -4,7 +4,11 @@
 //!
 //! The browser has no synchronous DOM-rasterize API, so we use the standard SVG
 //! `<foreignObject>` technique:
-//!   1. serialize the live `#app` subtree to XHTML (keeping its class names),
+//!   1. serialize the `#app` subtree to XHTML (keeping its class names) — via a
+//!      deep CLONE whose input/textarea/option attributes are synced from the
+//!      live DOM properties first (`.checked`, `.value`, `.selected`), because
+//!      XMLSerializer reads attributes and would otherwise snapshot stale
+//!      pre-interaction state,
 //!   2. embed every `<style>` sheet's CSSOM rules inline (idealyst styles via
 //!      hashed CSS classes, not inline `style=` — without this the snapshot
 //!      comes out unstyled),
@@ -29,7 +33,8 @@ use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{
-    CanvasRenderingContext2d, CssStyleSheet, HtmlCanvasElement, HtmlImageElement, HtmlStyleElement,
+    CanvasRenderingContext2d, CssStyleSheet, HtmlCanvasElement, HtmlImageElement,
+    HtmlInputElement, HtmlOptionElement, HtmlStyleElement, HtmlTextAreaElement,
 };
 
 /// Result handed to the caller: `(png_base64, width_px, height_px)`.
@@ -100,11 +105,7 @@ fn build_svg_data_url() -> Result<Prep, String> {
     // uses the real web fonts instead of a default fallback.
     let css = inline_resources(css);
 
-    let serializer =
-        web_sys::XmlSerializer::new().map_err(|_| "XMLSerializer unavailable".to_string())?;
-    let xhtml = serializer
-        .serialize_to_string(&target)
-        .map_err(|_| "serializing the DOM subtree failed".to_string())?;
+    let xhtml = serialize_with_live_input_state(&target)?;
 
     // The SVG is sized in CSS pixels; the canvas scales by dpr for crispness.
     // The wrapper div is given an EXPLICIT pixel size and `#app` is forced to
@@ -131,6 +132,80 @@ fn build_svg_data_url() -> Result<Prep, String> {
         css_h,
         dpr,
     })
+}
+
+/// Serialize `target` to XHTML with the LIVE input state baked in.
+///
+/// XMLSerializer reads ATTRIBUTES, but the state a user (or the Robot) has
+/// interacted with lives in DOM PROPERTIES — `input.checked`, `input.value`,
+/// `option.selected` — which stop tracking their reflected attributes the
+/// moment they're dirtied (the HTML "dirty value/checkedness" flags).
+/// Serializing the live tree therefore produced a stale PNG: a toggled
+/// checkbox rendered unchecked, typed text rendered as the initial value.
+///
+/// Fix at the root: deep-clone the subtree, mirror the live properties into
+/// the CLONE's attributes, and serialize the clone — the user's live DOM is
+/// never mutated. `cloneNode(true)` copies attributes only (properties reset
+/// to attribute-derived state), so the mirroring must read from the live tree.
+fn serialize_with_live_input_state(target: &web_sys::Element) -> Result<String, String> {
+    let clone: web_sys::Element = target
+        .clone_node_with_deep(true)
+        .map_err(|_| "cloning the capture subtree failed".to_string())?
+        .dyn_into()
+        .map_err(|_| "cloned capture subtree is not an element".to_string())?;
+    mirror_input_props_into_attributes(target, &clone);
+    let serializer =
+        web_sys::XmlSerializer::new().map_err(|_| "XMLSerializer unavailable".to_string())?;
+    serializer
+        .serialize_to_string(&clone)
+        .map_err(|_| "serializing the DOM subtree failed".to_string())
+}
+
+/// Walk the live tree and its deep clone in parallel and write each live
+/// input property into the clone's serializable attribute form.
+///
+/// The clone is a structural copy, so both trees have identical document
+/// order — `querySelectorAll` with the same selector yields index-aligned
+/// lists to zip. Handled state:
+/// - `<input>`: `checked` property → set/remove the `checked` attribute
+///   (checkbox/radio; harmless elsewhere), `value` property → `value` attr;
+/// - `<textarea>`: `value` property → child text (a textarea renders its
+///   text content — it has no `value` attribute);
+/// - `<option>`: `selected` property → set/remove the `selected` attribute.
+fn mirror_input_props_into_attributes(live_root: &web_sys::Element, clone_root: &web_sys::Element) {
+    const SELECTOR: &str = "input, textarea, option";
+    let (Ok(live), Ok(cloned)) = (
+        live_root.query_selector_all(SELECTOR),
+        clone_root.query_selector_all(SELECTOR),
+    ) else {
+        return;
+    };
+    let n = live.length().min(cloned.length());
+    for i in 0..n {
+        let (Some(l), Some(c)) = (live.item(i), cloned.item(i)) else { continue };
+        if let (Some(li), Some(ci)) =
+            (l.dyn_ref::<HtmlInputElement>(), c.dyn_ref::<HtmlInputElement>())
+        {
+            if li.checked() {
+                let _ = ci.set_attribute("checked", "");
+            } else {
+                let _ = ci.remove_attribute("checked");
+            }
+            let _ = ci.set_attribute("value", &li.value());
+        } else if let (Some(lt), Some(ct)) =
+            (l.dyn_ref::<HtmlTextAreaElement>(), c.dyn_ref::<HtmlTextAreaElement>())
+        {
+            ct.set_text_content(Some(&lt.value()));
+        } else if let (Some(lo), Some(co)) =
+            (l.dyn_ref::<HtmlOptionElement>(), c.dyn_ref::<HtmlOptionElement>())
+        {
+            if lo.selected() {
+                let _ = co.set_attribute("selected", "");
+            } else {
+                let _ = co.remove_attribute("selected");
+            }
+        }
+    }
 }
 
 fn render_to_png(prep: Prep, done: Box<dyn FnOnce(ShotResult)>) {
@@ -264,4 +339,140 @@ fn fetch_as_data_url(url: &str) -> Option<String> {
         _ => "application/octet-stream",
     };
     Some(format!("data:{mime};base64,{b64}"))
+}
+
+// Browser-side tests (this module needs a real DOM — XMLSerializer, cloneNode,
+// property/attribute divergence). Run with the `robot` feature on:
+//
+// ```sh
+// cd crates/backend/web
+// wasm-pack test --headless --chrome --release -- --features robot
+// ```
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::*;
+
+    fn doc() -> web_sys::Document {
+        web_sys::window().unwrap().document().unwrap()
+    }
+
+    /// Build a detached-from-`#app` scratch root attached to `<body>` (the
+    /// serializer needs a connected tree for `querySelectorAll` parity with
+    /// the real capture path) and clean it up via the returned guard.
+    fn scratch_root() -> web_sys::Element {
+        let d = doc();
+        let root = d.create_element("div").unwrap();
+        d.body().unwrap().append_child(&root).unwrap();
+        root
+    }
+
+    /// Regression: the web `robot screenshot` rendered a toggled checkbox as
+    /// UNCHECKED (stale) because XMLSerializer serializes ATTRIBUTES while the
+    /// toggle lives in the `.checked` PROPERTY (dirty-checkedness flag). The
+    /// serialized copy must mirror the live property both ways, and the live
+    /// DOM must never be mutated by the capture.
+    #[wasm_bindgen_test]
+    fn regression_screenshot_reflects_checkbox_property_state() {
+        let root = scratch_root();
+        let input = doc().create_element("input").unwrap();
+        input.set_attribute("type", "checkbox").unwrap();
+        root.append_child(&input).unwrap();
+
+        // Property-only toggle — exactly what a user click / robot `click`
+        // produces: `.checked == true`, no `checked` attribute.
+        let cb: HtmlInputElement = input.clone().dyn_into().unwrap();
+        cb.set_checked(true);
+
+        // NB: serializers normalize the attribute VALUE (`checked=""` vs
+        // Firefox's `checked="checked"`) — assert on the attribute NAME
+        // only. `type="checkbox"` does not contain the substring `checked=`.
+        let xhtml = serialize_with_live_input_state(&root).unwrap();
+        assert!(
+            xhtml.contains("checked="),
+            "serialized copy must carry the live checked property as an attribute: {xhtml}"
+        );
+        // The capture must not touch the live DOM (we serialized a clone).
+        assert!(
+            !input.has_attribute("checked"),
+            "live DOM was mutated by the capture"
+        );
+
+        // Inverse direction: markup says checked, live property says not —
+        // the stale attribute must be REMOVED from the serialized copy.
+        // (Setting the attribute after a script `.checked` write doesn't
+        // flip the property back: the dirty-checkedness flag is set.)
+        cb.set_checked(false);
+        input.set_attribute("checked", "").unwrap();
+        let xhtml = serialize_with_live_input_state(&root).unwrap();
+        assert!(
+            !xhtml.contains("checked="),
+            "stale checked attribute must be dropped when the property is false: {xhtml}"
+        );
+
+        root.remove();
+    }
+
+    /// Same staleness bug, other property-backed widgets: typed text
+    /// (`input.value` / `textarea.value`) and `<select>` selection
+    /// (`option.selected`) must reach the serialized copy.
+    #[wasm_bindgen_test]
+    fn regression_screenshot_reflects_text_and_select_property_state() {
+        let root = scratch_root();
+        let d = doc();
+
+        let text = d.create_element("input").unwrap();
+        text.set_attribute("value", "initial").unwrap();
+        root.append_child(&text).unwrap();
+        let area = d.create_element("textarea").unwrap();
+        root.append_child(&area).unwrap();
+        let select = d.create_element("select").unwrap();
+        let opt_a = d.create_element("option").unwrap();
+        opt_a.set_attribute("value", "a").unwrap();
+        opt_a.set_attribute("selected", "").unwrap();
+        let opt_b = d.create_element("option").unwrap();
+        opt_b.set_attribute("value", "b").unwrap();
+        select.append_child(&opt_a).unwrap();
+        select.append_child(&opt_b).unwrap();
+        root.append_child(&select).unwrap();
+
+        // Live edits: properties diverge from the serialized attributes.
+        text.clone()
+            .dyn_into::<HtmlInputElement>()
+            .unwrap()
+            .set_value("typed text");
+        area.clone()
+            .dyn_into::<HtmlTextAreaElement>()
+            .unwrap()
+            .set_value("typed area");
+        opt_b.clone().dyn_into::<HtmlOptionElement>().unwrap().set_selected(true);
+
+        let xhtml = serialize_with_live_input_state(&root).unwrap();
+        assert!(xhtml.contains("value=\"typed text\""), "input value stale: {xhtml}");
+        assert!(!xhtml.contains("value=\"initial\""), "stale initial value kept: {xhtml}");
+        assert!(xhtml.contains("typed area"), "textarea text stale: {xhtml}");
+        // Picking b deselects a (single-select): the serialized copy must
+        // move the `selected` attribute from a to b. Match per-`<option`
+        // fragment so attribute order / serializer value normalization
+        // (`selected=""` vs `selected="selected"`) don't matter.
+        let opt_fragment = |needle: &str| {
+            xhtml
+                .split("<option")
+                .find(|frag| frag.contains(needle))
+                .unwrap_or_else(|| panic!("no <option {needle}> in: {xhtml}"))
+                .to_string()
+        };
+        assert!(
+            opt_fragment("value=\"b\"").contains("selected="),
+            "selected option stale: {xhtml}"
+        );
+        assert!(
+            !opt_fragment("value=\"a\"").contains("selected="),
+            "deselected option kept its selected attribute: {xhtml}"
+        );
+        // Live DOM untouched.
+        assert!(!opt_b.has_attribute("selected"), "live DOM was mutated by the capture");
+
+        root.remove();
+    }
 }

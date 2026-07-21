@@ -1177,7 +1177,7 @@ impl CatalogService {
         self.robot_call("invoke_method", app.as_deref(), body).await
     }
 
-    #[tool(description = "Capture a PNG screenshot of the running app and save it to disk, returning the file PATH (not the image bytes). Two capture sources, selected via the optional `source` arg: `client` snapshots the REAL rendered surface (macOS/iOS/Android native widgets/fonts/view-hierarchy; web rasterizes the live DOM to PNG), working both for a `--local` app and for a runtime-server session by asking the connected client to capture over the wire; `replay` rasterizes the current scene with the wgpu renderer server-side (always available, even with no client attached, but uses the framework's renderer not the platform's). `auto` (the default) tries the real client and falls back to replay. Optional `width`/`height` in physical pixels are honored by the replay path (default: the session's viewport size); real-client capture always returns the device's own pixel dimensions. Response JSON: { path, width, height } — `path` is the absolute path to the saved PNG (`~/.idealyst/screenshots/<app>-<timestamp>.png` by default). The base64 is intentionally NOT returned: read the file at `path` to view the image. CAVEAT (web `client` capture): the DOM is serialized via its ATTRIBUTES, so live input state held in DOM properties — checkbox/switch checked, typed text — can render STALE in the PNG; verify interactive state with `get_snapshot`/`introspect_native`, not pixels. Requires the session to have registered the screenshot verb; returns an error otherwise.")]
+    #[tool(description = "Capture a PNG screenshot of the running app and save it to disk, returning the file PATH (not the image bytes). Two capture sources, selected via the optional `source` arg: `client` snapshots the REAL rendered surface (macOS/iOS/Android native widgets/fonts/view-hierarchy; web rasterizes the live DOM to PNG), working both for a `--local` app and for a runtime-server session by asking the connected client to capture over the wire; `replay` rasterizes the current scene with the wgpu renderer server-side (always available, even with no client attached, but uses the framework's renderer not the platform's). `auto` (the default) tries the real client and falls back to replay. Optional `width`/`height` in physical pixels are honored by the replay path (default: the session's viewport size); real-client capture always returns the device's own pixel dimensions. Response JSON: { path, width, height } — `path` is the absolute path to the saved PNG (`~/.idealyst/screenshots/<app>-<timestamp>.png` by default). The base64 is intentionally NOT returned: read the file at `path` to view the image. Web `client` capture serializes a clone of the DOM with live input state (checkbox/switch checked, typed text, selected option) mirrored into it, so interactive state renders current in the PNG; `get_snapshot`/`introspect_native` remain the structured way to assert on state. Requires the session to have registered the screenshot verb; returns an error otherwise.")]
     async fn screenshot(
         &self,
         Parameters(args): Parameters<RobotScreenshotArgs>,
@@ -1233,7 +1233,7 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "Launch an `idealyst dev` session for a project — the MCP-friendly equivalent of running `idealyst dev` in a terminal. Spawns the CLI detached (stdout/stderr go to `~/.idealyst/dev-logs/<name>-<id>.log`, returned as `log_path`) so it doesn't block the MCP connection, and TRACKS the process so `stop_dev` can tear the whole session down later. One call can run several platforms at once (they run in parallel inside the single dev process). Args: `platforms` (any of `web`/`ios`/`android`/`macos`/`terminal`; omit to use the project's manifest `targets`), `all` (every host-buildable platform), `local` (build natively per platform with file-watch rebuilds, no runtime-server wire — state doesn't survive saves; default is runtime-server hot-reload), `no_robot` (disable the Robot bridge/relay), `bridge_port`, `screenshot_dir`, `no_build` (web only), `dir` (project dir; defaults to the server's cwd). Returns the new session's { id, pid, dir, platforms, local, no_robot, log_path, status }. The dev process keeps running until you call `stop_dev`; read `log_path` to follow build progress or failures. Robot tools (find_element/click/screenshot/…) reach the running app once it registers — poll `list_apps`.")]
+    #[tool(description = "Launch an `idealyst dev` session for a project — the MCP-friendly equivalent of running `idealyst dev` in a terminal. Spawns the CLI detached (stdout/stderr go to `~/.idealyst/dev-logs/<name>-<id>.log`, returned as `log_path`) so it doesn't block the MCP connection, and TRACKS the process so `stop_dev` can tear the whole session down later. One call can run several platforms at once (they run in parallel inside the single dev process). Args: `platforms` (any of `web`/`ios`/`android`/`macos`/`terminal`; omit to use the project's manifest `targets`), `all` (every host-buildable platform), `local` (build natively per platform with file-watch rebuilds, no runtime-server wire — state doesn't survive saves; default is runtime-server hot-reload), `no_robot` (disable the Robot bridge/relay), `bridge_port`, `screenshot_dir`, `no_build` (web only), `dir` (project dir; defaults to the server's cwd). Returns the new session's { id, pid, dir, platforms, local, no_robot, log_path, status }. The dev process keeps running until you call `stop_dev`; read `log_path` to follow build progress or failures. Rust source edits are picked up WITHOUT re-running this tool: the default runtime-server mode hot-patches the running app on save (component state preserved), while `local` mode's file watcher rebuilds and live-reloads (web does a full page reload, native platforms restart the app — state is lost). Robot tools (find_element/click/screenshot/…) reach the running app once it registers — poll `list_apps`.")]
     async fn run_dev(
         &self,
         Parameters(args): Parameters<RunDevArgs>,
@@ -1892,12 +1892,38 @@ impl CatalogService {
             .ok_or_else(|| {
                 McpError::invalid_params(format!("guide {:?} not found", req.slug), None)
             })?;
+        // Surface the recipe catalog next to the prose: arena feedback
+        // (debug-fix run-0) showed an agent reading the reactivity guide,
+        // correctly naming the frozen-snapshot pitfall, then writing
+        // `for item in items.get()` anyway — because it never discovered
+        // the `keyed_list_add_remove` recipe that shows the right form.
+        let mut body = entry.body.to_string();
+        let related = related_recipe_names(&cat, entry);
+        if !related.is_empty() {
+            body.push_str(&format!(
+                "\n\nRelated recipes: {} — fetch the compile-checked source with \
+                 describe_recipe(name); browse all with list_recipes.",
+                related.join(", ")
+            ));
+        } else if matches!(
+            entry.slug,
+            "reactivity" | "reactivity-in-depth" | "components" | "navigation" | "styling"
+        ) {
+            // No recipes registered in this catalog build (or none joined):
+            // still point core guides at the recipe tools so the pathway is
+            // discoverable.
+            body.push_str(
+                "\n\nRelated recipes: compile-checked usage examples for this area \
+                 live in the recipe catalog — browse with list_recipes, fetch one \
+                 with describe_recipe.",
+            );
+        }
         let json = serde_json::json!({
             "slug": entry.slug,
             "title": entry.title,
             "order": entry.order,
             "tags": entry.tags,
-            "body": entry.body,
+            "body": body,
         });
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&json).unwrap(),
@@ -2024,7 +2050,25 @@ impl CatalogService {
                 // only when their struct/enum derives `#[derive(IdealystSchema)]`;
                 // an unannotated one simply isn't here. Make the cause
                 // actionable rather than a bare "not found".
-                let hint = if req.name.ends_with("Props") {
+                //
+                // Same dead-end, styling flavor (observed in arena runs): the
+                // core style-machinery types show up in signatures
+                // (`impl IntoStyleSource`, `StyleApplication`) but are not
+                // IdealystSchema types, so a bare "not found" sends the agent
+                // source-diving. Redirect to the prose home instead.
+                const CORE_STYLE_TYPES: &[&str] = &[
+                    "StyleSource",
+                    "StyleApplication",
+                    "StyleSheet",
+                    "StyleRules",
+                    "IntoStyleSource",
+                ];
+                let short = req.name.rsplit("::").next().unwrap_or(&req.name);
+                let hint = if CORE_STYLE_TYPES.contains(&short) {
+                    " — this is a core style type, not an IdealystSchema type: \
+                     see read_guide(\"styling\") and the `stylesheet` macro entry \
+                     (describe_macro(\"stylesheet\"))"
+                } else if req.name.ends_with("Props") {
                     " — if this is a component's props struct, its fields are \
                      catalogued only when it derives `#[derive(IdealystSchema)]`; \
                      the defining crate may not annotate it yet"
@@ -2822,6 +2866,42 @@ fn find_by_name<'a>(
         }
     }
     None
+}
+
+/// Best-effort guide → recipe join for `read_guide`'s "Related recipes"
+/// footer. The catalog carries no explicit guide↔recipe link, so this is a
+/// fuzzy name join: a recipe is related when its `target`, its full name,
+/// or one of its `_`-separated name words matches the guide's slug or one
+/// of its tags (case-insensitive). On top of that sit curated pins for
+/// joins the name data can't express — `keyed_list_add_remove` targets the
+/// `ui` macro but IS the reactivity guide's central "iterate the Signal,
+/// not `.get()`" example (the exact recipe the arena debug-fix agent never
+/// found). Pins go through the same registered-recipe scan, so the footer
+/// never advertises a name `describe_recipe` would 404 on.
+fn related_recipe_names(cat: &ResolvedCatalog, guide: &mcp_catalog::GuideEntry) -> Vec<&'static str> {
+    let mut keys: Vec<String> = guide.tags.iter().map(|t| t.to_lowercase()).collect();
+    keys.push(guide.slug.to_lowercase());
+    let pinned: &[&str] = if guide.slug.starts_with("reactivity") {
+        &["keyed_list_add_remove"]
+    } else {
+        &[]
+    };
+    let mut out: Vec<&'static str> = cat
+        .recipes()
+        .iter()
+        .filter(|r| {
+            let target = r.target.to_lowercase();
+            let name = r.name.to_lowercase();
+            pinned.contains(&r.name)
+                || keys.iter().any(|k| {
+                    *k == target || *k == name || name.split('_').any(|w| w == k)
+                })
+        })
+        .map(|r| r.name)
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 /// Recipes targeting or using `name`, shaped for a `describe_*` payload.
@@ -4254,5 +4334,126 @@ mod tests {
         assert!(dir.join(".vscode/ra-check.sh").exists());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression for the styling dead-end: `describe_type("StyleSource")`
+    /// (or any core style-machinery type seen in a signature) returned a
+    /// bare "not found", sending agents source-diving. The error must now
+    /// redirect to the styling guide + the `stylesheet` macro entry.
+    #[tokio::test]
+    async fn regression_describe_type_redirects_core_style_types() {
+        let svc = CatalogService::new();
+        for name in ["StyleSource", "StyleApplication", "StyleSheet", "StyleRules", "IntoStyleSource"] {
+            let err = svc
+                .describe_type(Parameters(NameRequest { name: name.into(), app: None }))
+                .await
+                .expect_err("core style type must not resolve as a schema type");
+            let msg = err.message.to_string();
+            assert!(msg.contains("core style type"), "{name}: {msg}");
+            assert!(msg.contains("read_guide(\"styling\")"), "{name}: {msg}");
+            assert!(msg.contains("stylesheet"), "{name}: {msg}");
+        }
+        // Unrelated unknown types keep the generic list_types hint.
+        let err = svc
+            .describe_type(Parameters(NameRequest { name: "NoSuchType".into(), app: None }))
+            .await
+            .expect_err("unknown type still errors");
+        assert!(err.message.contains("list_types"), "{}", err.message);
+    }
+
+    /// Regression for the arena debug-fix miss: the agent read the
+    /// reactivity guide, named the frozen-snapshot pitfall, then wrote
+    /// `for item in items.get()` — because the `keyed_list_add_remove`
+    /// recipe was never surfaced. `read_guide` must now append a
+    /// "Related recipes:" footer joining recipes to the guide (curated pin
+    /// for the reactivity guides), and fall back to a static pointer at
+    /// list_recipes/describe_recipe on the core guides when nothing joins.
+    #[tokio::test]
+    async fn regression_read_guide_appends_related_recipes_footer() {
+        let json = r#"{
+          "catalog_version": 2,
+          "components": [],
+          "guides": [
+            { "slug": "reactivity", "title": "Reactivity", "order": 30,
+              "tags": ["core", "reactivity"], "body": "signals prose" },
+            { "slug": "styling", "title": "Styling", "order": 40,
+              "tags": ["style", "theme"], "body": "styling prose" },
+            { "slug": "media", "title": "Media", "order": 90,
+              "tags": ["media"], "body": "media prose" }
+          ],
+          "recipes": [
+            { "name": "keyed_list_add_remove", "target": "ui",
+              "module_path": "runtime_core::recipes", "file": "recipes.rs", "line": 1,
+              "docs": "Reactive keyed list.", "source": "fn keyed_list_add_remove() {}",
+              "uses": [] },
+            { "name": "stylesheet_variants", "target": "styling",
+              "module_path": "demo::recipes", "file": "recipes.rs", "line": 2,
+              "docs": "Stylesheet variants.", "source": "fn stylesheet_variants() {}",
+              "uses": [] }
+          ]
+        }"#;
+        let cat = mcp_catalog::ResolvedCatalog::build_from_json(json).unwrap();
+        let svc = CatalogService::new();
+        svc.replace_catalog(cat).await;
+
+        let body_of = |r: &CallToolResult| {
+            let payload = r
+                .content
+                .iter()
+                .find_map(|c| c.as_text().map(|t| t.text.clone()))
+                .unwrap();
+            let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+            v["body"].as_str().unwrap().to_string()
+        };
+
+        // Reactivity: the curated pin surfaces keyed_list_add_remove even
+        // though its target (`ui`) shares no name with the guide's tags.
+        let r = svc
+            .read_guide(Parameters(SlugRequest { slug: "reactivity".into() }))
+            .await
+            .unwrap();
+        let body = body_of(&r);
+        assert!(body.contains("Related recipes:"), "{body}");
+        assert!(body.contains("keyed_list_add_remove"), "{body}");
+        assert!(body.contains("describe_recipe"), "{body}");
+        assert!(body.starts_with("signals prose"), "footer must append, not replace: {body}");
+
+        // Styling: the fuzzy join (recipe target == guide slug) finds the
+        // stylesheet recipe.
+        let r = svc
+            .read_guide(Parameters(SlugRequest { slug: "styling".into() }))
+            .await
+            .unwrap();
+        let body = body_of(&r);
+        assert!(body.contains("stylesheet_variants"), "{body}");
+
+        // Non-core guide with no joining recipes: no footer at all.
+        let r = svc
+            .read_guide(Parameters(SlugRequest { slug: "media".into() }))
+            .await
+            .unwrap();
+        let body = body_of(&r);
+        assert!(!body.contains("Related recipes:"), "{body}");
+
+        // Core guide + a catalog with NO recipes: static footer still names
+        // the recipe tools so the pathway stays discoverable.
+        let bare = r#"{
+          "catalog_version": 2,
+          "components": [],
+          "guides": [
+            { "slug": "navigation", "title": "Navigation", "order": 50,
+              "tags": ["navigation"], "body": "nav prose" }
+          ]
+        }"#;
+        svc.replace_catalog(mcp_catalog::ResolvedCatalog::build_from_json(bare).unwrap())
+            .await;
+        let r = svc
+            .read_guide(Parameters(SlugRequest { slug: "navigation".into() }))
+            .await
+            .unwrap();
+        let body = body_of(&r);
+        assert!(body.contains("Related recipes:"), "{body}");
+        assert!(body.contains("list_recipes"), "{body}");
+        assert!(body.contains("describe_recipe"), "{body}");
     }
 }

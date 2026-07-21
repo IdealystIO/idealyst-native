@@ -27,6 +27,7 @@ mod keyed_list;
 mod prefer_macros;
 mod prefer_ui;
 mod snapshot_condition;
+mod snapshot_loop;
 
 /// Static metadata for one lint rule.
 pub struct RuleInfo {
@@ -83,6 +84,11 @@ pub fn all_rules() -> &'static [RuleInfo] {
             default_level: Level::Warn,
             summary: "a child list built by hand (`.push(ui!{…})` / `.map(|x| ui!{…})`) outside the macro — keys are erased; use `for … , key = …`",
         },
+        RuleInfo {
+            id: snapshot_loop::RULE,
+            default_level: Level::Warn,
+            summary: "`for … in <expr>.get()` inside `ui!`/`jsx!` — a build-time snapshot; iterate the Signal itself with `key = …`",
+        },
     ]
 }
 
@@ -123,9 +129,11 @@ impl<'ast> Visit<'ast> for Linter {
 
     // Macro INVOCATIONS are visible AST nodes (their bodies aren't) —
     // reached from every position (expr, stmt, item) via `visit_macro`.
-    // This is how a leftover `signal!(…)` call is flagged.
+    // This is how a leftover `signal!(…)` call is flagged, and where the
+    // rules that TOKENIZE `ui!`/`jsx!` bodies (snapshot-loop) hook in.
     fn visit_macro(&mut self, node: &'ast syn::Macro) {
         prefer_macros::check_macro(node, &mut self.diags);
+        snapshot_loop::check_ui_macro(node, &mut self.diags);
         syn::visit::visit_macro(self, node);
     }
 }

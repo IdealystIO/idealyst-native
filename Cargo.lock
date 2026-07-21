@@ -10371,6 +10371,7 @@ dependencies = [
  "inventory",
  "ios-navigator-helpers",
  "jni 0.21.1",
+ "mcp-catalog",
  "mock-backend",
  "runtime-core",
  "wasm-bindgen",

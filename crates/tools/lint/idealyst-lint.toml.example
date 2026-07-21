@@ -9,9 +9,15 @@ component-pascal-case = "error"
 
 # Reactive primitives: warn by default. Bump to "error" once your codebase
 # is clean, or "off" in a crate that legitimately holds raw handles.
-prefer-signal-macro = "warn"
+prefer-signal-fn    = "warn"
 prefer-effect-macro = "warn"
-prefer-memo-macro   = "warn"
+prefer-memo-fn      = "warn"
+
+# Reactivity freshness traps: a hoisted `.get()` used as a ui! `if`
+# condition, and `for item in items.get()` in a ui!/jsx! loop header —
+# both freeze a build-time snapshot that never re-renders.
+snapshot-condition = "warn"
+snapshot-loop      = "warn"
 
 # Element construction. Set "off" for a crate that intentionally builds
 # elements by hand (e.g. a low-level backend test harness).

@@ -104,3 +104,5 @@ Use `animate_at!` to schedule animations at a specific offset, or `timeline!` fo
 - [[concepts|Primitives, Components, Style]] — the structural layer signals operate on.
 - [[primitives|Primitives reference]] — every primitive's reactive props.
 - The [[Signal]] type entry for the full method surface.
+- **Recipes** — compile-checked, copy-pasteable examples via `list_recipes` /
+  `describe_recipe`; the canonical reactive list is `keyed_list_add_remove`.

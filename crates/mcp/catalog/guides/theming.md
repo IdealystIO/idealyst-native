@@ -1,18 +1,28 @@
 +++
-title = "Theming idea-ui"
+title = "Theming and Light/Dark Mode"
 order = 45
-tags = ["theme", "style"]
+tags = ["theme", "style", "dark-mode", "light-dark"]
 +++
 
-# Theming idea-ui
+# Theming and Light/Dark Mode
 
-Every idea-ui component reads its colors, spacing, radii, and type scale from a
-**theme** — one plain struct of design tokens. Customizing the look of the whole
-component set is done by installing a theme, not by styling components one by one.
-This guide is the idea-ui counterpart to the framework-level [[styling]] guide:
-`styling` covers the `stylesheet!` macro and the generic `install_theme`; this one
-covers the concrete idea-ui theme API (`install_idea_theme`, `light_theme`,
-`app_theme!`, …).
+Light/dark mode and app-wide reskins work the same way at every level of the
+stack: install a **theme** (one plain struct of design tokens) once at startup,
+swap it at runtime, and every styled surface re-resolves automatically. This is
+NOT an idea-ui-only facility:
+
+- **Any app** — including one built on bare `runtime-core` primitives — themes
+  through the `idea-theme` crate's generic runtime (`install_theme`,
+  `set_theme`, `install_themes`) plus token-referencing `stylesheet!` rules.
+  That path, with a complete light/dark example and the signal-driven swap
+  pattern, is covered in the [[styling]] guide (and the `dark_mode_toggle`
+  recipe — `describe_recipe("dark_mode_toggle")`).
+- **idea-ui apps** get a richer, typed layer on top: every idea-ui component
+  reads its colors, spacing, radii, and type scale from an installed
+  `IdeaTheme`. This guide covers that concrete API (`install_idea_theme`,
+  `light_theme`, `dark_theme`, `app_theme!`, …). Customizing the look of the
+  whole component set is done by installing a theme, not by styling components
+  one by one.
 
 ## The theme is one struct
 
@@ -110,8 +120,16 @@ install_idea_theme_reactive(move || if dark.get() { dark_theme() } else { light_
 
 Because component stylesheets read tokens through the installed theme, a swap
 re-flows every styled surface automatically — there is no per-component wiring.
+Do NOT hand-roll a palette struct with per-node `if dark {...}` color switching —
+that forfeits the automatic re-flow and scatters the theme across call sites.
 See [[color_scheme]] for the platform's light/dark default, useful for picking the
 initial theme without a flash.
+
+Apps not using idea-ui components get the same swap semantics from the generic
+layer directly: `idea_theme::set_theme(...)` for an event-driven swap, or
+`idea_theme::install_themes(active, &[("light", LIGHT), ("dark", DARK)])` with a
+`Signal<String>` for a fully signal-driven one. See [[styling]] and the
+`dark_mode_toggle` recipe.
 
 ## Custom tones and variants
 

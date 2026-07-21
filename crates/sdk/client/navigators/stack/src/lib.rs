@@ -49,6 +49,17 @@
 
 #![deny(missing_docs)]
 
+// Lets code inside this crate refer to itself by its external name, so the
+// captured `recipes` source shows the `use stack_navigator::{…}` import line
+// an app author needs verbatim (mirrors `extern crate self as runtime_core`
+// in core and `as idea_ui` in the component library).
+extern crate self as stack_navigator;
+
+/// Compile-checked usage recipes (docs / MCP catalog). Present only under the
+/// `catalog` feature — see [`recipes`].
+#[cfg(feature = "catalog")]
+pub mod recipes;
+
 use runtime_core::accessibility::AccessibilityProps;
 use runtime_core::primitives::navigator::{
     navigator_fill_rules, navigator_outlet, screen_flow_fill_rules, HeaderButton, MountResult,
