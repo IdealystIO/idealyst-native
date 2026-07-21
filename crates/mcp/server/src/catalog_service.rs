@@ -429,8 +429,16 @@ pub struct RunDevArgs {
     /// `--local`: build the app natively per platform with a file-watch
     /// rebuild loop, bypassing the runtime-server wire. State does not
     /// survive saves. Default false (runtime-server hot-reload).
+    /// NOTE: for WEB targets, Robot introspection requires local=true — the
+    /// robot feature + relay dial-out are only compiled/wired in local mode.
     #[serde(default)]
     pub local: bool,
+    /// `--headless-client`: force a headless Chromium at the served web URL.
+    /// Usually unnecessary — when the relay is active and the machine has no
+    /// display (container/CI), dev auto-launches one so the web app loads and
+    /// registers with the Robot bridge. Default false.
+    #[serde(default)]
+    pub headless_client: bool,
     /// `--no-robot`: disable the Robot bridge/relay for this session.
     /// Default false — the bridge is on so the MCP Robot tools can drive
     /// the running app.
@@ -652,6 +660,12 @@ pub struct ConfigureDevcontainerRequest {
     /// a base devcontainer exists (initializes one when absent).
     #[serde(default)]
     pub services: Vec<ConfigureServiceArg>,
+    /// Target a named devcontainer config
+    /// (`.devcontainer/<config>/devcontainer.json`) instead of the default
+    /// `.devcontainer/devcontainer.json`. The named config must already exist;
+    /// managed services are shared across configs.
+    #[serde(default)]
+    pub config: Option<String>,
 }
 
 /// One aspect instruction for `configure_vscode`.
@@ -1163,7 +1177,7 @@ impl CatalogService {
         self.robot_call("invoke_method", app.as_deref(), body).await
     }
 
-    #[tool(description = "Capture a PNG screenshot of the running app and save it to disk, returning the file PATH (not the image bytes). Two capture sources, selected via the optional `source` arg: `client` snapshots the REAL rendered surface (macOS/iOS/Android native widgets/fonts/view-hierarchy; web rasterizes the live DOM to PNG), working both for a `--local` app and for a runtime-server session by asking the connected client to capture over the wire; `replay` rasterizes the current scene with the wgpu renderer server-side (always available, even with no client attached, but uses the framework's renderer not the platform's). `auto` (the default) tries the real client and falls back to replay. Optional `width`/`height` in physical pixels are honored by the replay path (default: the session's viewport size); real-client capture always returns the device's own pixel dimensions. Response JSON: { path, width, height } — `path` is the absolute path to the saved PNG (`~/.idealyst/screenshots/<app>-<timestamp>.png` by default). The base64 is intentionally NOT returned: read the file at `path` to view the image. Requires the session to have registered the screenshot verb; returns an error otherwise.")]
+    #[tool(description = "Capture a PNG screenshot of the running app and save it to disk, returning the file PATH (not the image bytes). Two capture sources, selected via the optional `source` arg: `client` snapshots the REAL rendered surface (macOS/iOS/Android native widgets/fonts/view-hierarchy; web rasterizes the live DOM to PNG), working both for a `--local` app and for a runtime-server session by asking the connected client to capture over the wire; `replay` rasterizes the current scene with the wgpu renderer server-side (always available, even with no client attached, but uses the framework's renderer not the platform's). `auto` (the default) tries the real client and falls back to replay. Optional `width`/`height` in physical pixels are honored by the replay path (default: the session's viewport size); real-client capture always returns the device's own pixel dimensions. Response JSON: { path, width, height } — `path` is the absolute path to the saved PNG (`~/.idealyst/screenshots/<app>-<timestamp>.png` by default). The base64 is intentionally NOT returned: read the file at `path` to view the image. CAVEAT (web `client` capture): the DOM is serialized via its ATTRIBUTES, so live input state held in DOM properties — checkbox/switch checked, typed text — can render STALE in the PNG; verify interactive state with `get_snapshot`/`introspect_native`, not pixels. Requires the session to have registered the screenshot verb; returns an error otherwise.")]
     async fn screenshot(
         &self,
         Parameters(args): Parameters<RobotScreenshotArgs>,
@@ -1230,6 +1244,7 @@ impl CatalogService {
             all: args.all,
             local: args.local,
             no_robot: args.no_robot,
+            headless_client: args.headless_client,
             bridge_port: args.bridge_port,
             screenshot_dir: args.screenshot_dir.map(std::path::PathBuf::from),
             no_build: args.no_build,
@@ -1318,11 +1333,28 @@ impl CatalogService {
         let deadline = std::time::Instant::now() + timeout;
         loop {
             let live = self.live_apps();
-            let matched: Vec<_> = live
+            let mut matched: Vec<_> = live
                 .iter()
                 .filter(|a| args.name.as_deref().map(|n| a.name == n).unwrap_or(true))
                 .cloned()
                 .collect();
+            // Registration precedes drivability: a web app's relay registers
+            // at dev startup, but the bridge only answers once the wasm app
+            // has dialed in. Returning on registration alone sends agents
+            // straight into "no app connected to the relay" errors (observed
+            // live: arena run-2, screenshot right after wait_for_app). Only
+            // count an app as arrived when its bridge answers `ping`.
+            let mut drivable = Vec::with_capacity(matched.len());
+            for a in matched.drain(..) {
+                let ok = crate::robot_bridge::RobotBridge::new(a.bridge_addr.clone())
+                    .call("ping", serde_json::json!({}))
+                    .await
+                    .is_ok();
+                if ok {
+                    drivable.push(a);
+                }
+            }
+            let matched = drivable;
             if !matched.is_empty() {
                 let selectors = app_selectors(&matched);
                 let json: Vec<serde_json::Value> = matched
@@ -1347,9 +1379,14 @@ impl CatalogService {
             if std::time::Instant::now() >= deadline {
                 let target = args.name.as_deref().unwrap_or("any app");
                 return Ok(CallToolResult::error(vec![Content::text(format!(
-                    "timed out after {}s waiting for {target} to register. If you \
+                    "timed out after {}s waiting for {target} to register AND answer \
+                     a bridge ping (registration alone isn't drivable). If you \
                      launched it with run_dev, the build may still be running or \
-                     failing — check read_dev_log.",
+                     failing — check read_dev_log. For a WEB target, Robot needs \
+                     run_dev with local=true (the relay only exists in local \
+                     mode), and something must load the served page — on a \
+                     display-less machine dev auto-launches a headless browser \
+                     client for you (or pass headless_client=true).",
                     timeout.as_secs()
                 ))]));
             }
@@ -2027,6 +2064,24 @@ impl CatalogService {
                 }))
             })
             .collect();
+        // Disambiguate "your filter matched nothing" from "this catalog build
+        // registered no recipes at all" — an empty bare `[]` reads as a query
+        // failure and sends agents into retry loops (observed live: arena
+        // run-2 probed twice, then went source-diving).
+        if json.is_empty() {
+            let total = cat.recipes().len();
+            let msg = if total == 0 {
+                "[] (0 recipes registered in this catalog build — nothing to filter; \
+                 recipes come from crates compiled with the `catalog` feature)"
+                    .to_string()
+            } else {
+                format!(
+                    "[] (filter matched none of the {total} registered recipe(s) — \
+                     try without `filter`)"
+                )
+            };
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&json).unwrap(),
         )]))
@@ -2576,7 +2631,7 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "Initialize or update a project's devcontainer, toggling idealyst-managed sidecar services that run alongside the main dev container. Same engine as the `idealyst configure devcontainer` CLI (non-interactive path). Managed services (database [postgres|mysql], redis, minio) live ENTIRELY in `.devcontainer/docker-compose.idealyst.yml` (owned + regenerated by idealyst, referenced from `devcontainer.json`'s `dockerComposeFile`); the user's own `docker-compose.yml` and any services they added there are never touched. When no devcontainer exists, a minimal compose-based one is scaffolded. Pass `services` as a list of { id (database|redis|minio), variant?, action (enable|reconfigure|remove) }: `enable` adds a service (no-op + warning if already configured), `reconfigure` resets it to the given/default variant, `remove` drops it; removing the last service deletes the managed file. An empty `services` list just ensures a base devcontainer exists. `dir` defaults to the single live app's project root, else the server's working directory. Returns { added, removed, reconfigured, unchanged, warnings, wrote } (wrote = files created/modified).")]
+    #[tool(description = "Initialize or update a project's devcontainer, toggling idealyst-managed sidecar services that run alongside the main dev container. Same engine as the `idealyst configure devcontainer` CLI (non-interactive path). Managed services (database [postgres|mysql], redis, minio) live ENTIRELY in `.devcontainer/docker-compose.idealyst.yml` (owned + regenerated by idealyst, referenced from `devcontainer.json`'s `dockerComposeFile`); the user's own `docker-compose.yml` and any services they added there are never touched. When no devcontainer exists, a minimal compose-based one is scaffolded. Pass `services` as a list of { id (database|redis|minio), variant?, action (enable|reconfigure|remove) }: `enable` adds a service (no-op + warning if already configured), `reconfigure` resets it to the given/default variant, `remove` drops it; removing the last service deletes the managed file. An empty `services` list just ensures a base devcontainer exists. `config` targets a named devcontainer config (`.devcontainer/<config>/devcontainer.json`, which must already exist) instead of the default; managed services are shared across configs. `dir` defaults to the single live app's project root, else the server's working directory. Returns { added, removed, reconfigured, unchanged, warnings, wrote } (wrote = files created/modified).")]
     async fn configure_devcontainer(
         &self,
         Parameters(req): Parameters<ConfigureDevcontainerRequest>,
@@ -2624,7 +2679,10 @@ impl CatalogService {
         }
 
         // The engine is synchronous filesystem work; keep it off the reactor.
-        let request = ConfigureRequest { services };
+        let request = ConfigureRequest {
+            services,
+            config: req.config.clone(),
+        };
         let dir_for_task = dir.clone();
         let report = tokio::task::spawn_blocking(move || devcontainer::apply(&dir_for_task, &request))
             .await
@@ -4118,6 +4176,7 @@ mod tests {
                     variant: Some("postgres".into()),
                     action: Some("enable".into()),
                 }],
+                config: None,
             }))
             .await
             .expect("configure_devcontainer tool call succeeds");
@@ -4148,6 +4207,7 @@ mod tests {
                     variant: None,
                     action: Some("frobnicate".into()),
                 }],
+                config: None,
             }))
             .await;
         assert!(bad.is_err(), "unknown action should be rejected");

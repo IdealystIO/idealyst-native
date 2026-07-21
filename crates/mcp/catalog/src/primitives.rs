@@ -213,7 +213,7 @@ inventory::submit! {
     PrimitiveEntry {
         name: "text_input",
         pascal_name: "TextInput",
-        docs: "Single-line text-entry widget. Backed by `UITextField` (iOS), `EditText` (Android), `<input>` (web), `NSTextField` (macOS). Carries a value signal + change/submit handlers.",
+        docs: "Single-line text-entry widget. Backed by `UITextField` (iOS), `EditText` (Android), `<input>` (web), `NSTextField` (macOS). The `value` signal is the source of truth; `on_change` fires per native input event (typical body: `value.set(new_text)`). Enter-to-submit: chain the builder method `.on_key_down(|e| if e.key == \"Enter\" { submit(); KeyOutcome::PreventDefault } else { KeyOutcome::Default })` after the `ui!` call — see the `input_with_submit` recipe.",
         props: &[
             PropFieldSpec {
                 name: "value",
@@ -222,10 +222,46 @@ inventory::submit! {
                 constraint: "",
             },
             PropFieldSpec {
-                name: "placeholder",
-                type_str: "Option<TextSource>",
-                doc: "Placeholder text shown when the value is empty.",
+                name: "on_change",
+                type_str: "Fn(String)",
+                doc: "Fires for every native input event with the new text. Typical pattern: `value.set(new_text)` (the redundant write-back is optimized away).",
                 constraint: "",
+            },
+            PropFieldSpec {
+                name: "placeholder",
+                type_str: "impl Into<Reactive<Option<String>>>",
+                doc: "Placeholder shown when the value is empty. A plain String is static; a Signal/rx! makes it live.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "secure",
+                type_str: "impl Into<Reactive<bool>>",
+                doc: "Mask entered text (password entry) via each backend's native secure mode. Reactive source allows runtime show/hide.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "on_key_down",
+                type_str: "Fn(&KeyEvent) -> KeyOutcome",
+                doc: "Keydown hook while focused. Return KeyOutcome::PreventDefault to suppress the platform default — this is how Enter-to-submit is built.",
+                constraint: "builder method ONLY (chain `.on_key_down(..)` after the ui! call) — an inline prop is silently dropped",
+            },
+            PropFieldSpec {
+                name: "on_blur",
+                type_str: "Fn() -> BlurOutcome",
+                doc: "Consulted when the input is about to lose focus via the dismiss path. Return BlurOutcome::Keep to veto and keep focus (keyboard stays up on mobile).",
+                constraint: "builder method (.on_blur(..)) — check ui! support before using as an inline prop",
+            },
+            PropFieldSpec {
+                name: "on_focus",
+                type_str: "Fn(bool)",
+                doc: "Focus-change notification: true on gain, false on loss. No veto — for driving focus-dependent chrome (e.g. a parent's focus ring).",
+                constraint: "builder method (.on_focus(..)) — check ui! support before using as an inline prop",
+            },
+            PropFieldSpec {
+                name: "ref",
+                type_str: "Ref<TextInputHandle>",
+                doc: "Imperative handle: focus(), blur(), select_all(), insert_text(text).",
+                constraint: "bind via `.bind(ref)` builder method",
             },
             COMMON_STYLE_FIELD,
             COMMON_REF_FILL_FIELD,
@@ -241,12 +277,36 @@ inventory::submit! {
     PrimitiveEntry {
         name: "text_area",
         pascal_name: "TextArea",
-        docs: "Multi-line text input. Same model as `TextInput` but with native multi-line widgets (`UITextView`, `EditText` with `inputType=textMultiLine`, `<textarea>`, `NSTextView`).",
+        docs: "Multi-line text input. Same model as `TextInput` (value signal + on_change) but with native multi-line widgets (`UITextView`, `EditText` with `inputType=textMultiLine`, `<textarea>`, `NSTextView`). No key/blur/focus hooks — those are `text_input`-only today.",
         props: &[
             PropFieldSpec {
                 name: "value",
                 type_str: "Signal<String>",
                 doc: "Two-way bound text value.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "on_change",
+                type_str: "Fn(String)",
+                doc: "Fires per native input event with the new text; typical body is `value.set(new_text)`.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "placeholder",
+                type_str: "String",
+                doc: "Static placeholder shown when the value is empty.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "wrap",
+                type_str: "bool",
+                doc: "Soft-wrap long lines (default true).",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "ref",
+                type_str: "Ref<TextAreaHandle>",
+                doc: "Imperative handle: focus(), blur(), select_all(), insert_text(text).",
                 constraint: "",
             },
             COMMON_STYLE_FIELD,
@@ -268,7 +328,13 @@ inventory::submit! {
             PropFieldSpec {
                 name: "value",
                 type_str: "Signal<bool>",
-                doc: "Two-way bound boolean state.",
+                doc: "Signal → widget binding: the switch reflects the signal. The user's taps arrive via `on_change` — a bare `toggle(value = sig)` renders but never updates the signal.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "on_change",
+                type_str: "Fn(bool)",
+                doc: "Fires with the new state on user interaction. Typical body: `value.set(new_state)`. REQUIRED for the toggle to do anything.",
                 constraint: "",
             },
             COMMON_STYLE_FIELD,

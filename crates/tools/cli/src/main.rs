@@ -17,6 +17,7 @@ mod config;
 mod dev_config;
 mod dev_log;
 mod framework_source;
+mod headless_client;
 mod memory_limit;
 mod platform;
 

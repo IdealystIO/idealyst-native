@@ -62,6 +62,12 @@ pub struct ServiceRequest {
 #[derive(Clone, Debug, Default)]
 pub struct ConfigureRequest {
     pub services: Vec<ServiceRequest>,
+    /// Target a **named config** (`.devcontainer/<config>/devcontainer.json`,
+    /// e.g. this repo's `arena`) instead of the default
+    /// `.devcontainer/devcontainer.json`. The managed compose file is shared
+    /// across configs (it stays at `.devcontainer/docker-compose.idealyst.yml`);
+    /// only the `dockerComposeFile` reference is config-relative.
+    pub config: Option<String>,
 }
 
 /// Snapshot of the current devcontainer configuration.
@@ -87,9 +93,11 @@ pub struct ConfigureReport {
 }
 
 /// Read the current devcontainer configuration for the project at `dir`.
-pub fn read_state(dir: &Path) -> Result<DevcontainerState> {
+/// `config` targets a named config's `devcontainer.json` for the `exists`
+/// check; the enabled-service set is shared across configs.
+pub fn read_state(dir: &Path, config: Option<&str>) -> Result<DevcontainerState> {
     Ok(DevcontainerState {
-        exists: wiring::exists(dir),
+        exists: wiring::exists(dir, config),
         enabled: compose::read_enabled(dir)?,
     })
 }
@@ -99,6 +107,7 @@ pub fn read_state(dir: &Path) -> Result<DevcontainerState> {
 /// exists (this is how a project gets "initialized").
 pub fn apply(dir: &Path, req: &ConfigureRequest) -> Result<ConfigureReport> {
     let mut report = ConfigureReport::default();
+    let config = req.config.as_deref();
 
     let before = compose::read_enabled(dir)?;
     let (after, warnings) = resolve(&before, &req.services)?;
@@ -107,12 +116,13 @@ pub fn apply(dir: &Path, req: &ConfigureRequest) -> Result<ConfigureReport> {
 
     let project_name = project_name(dir);
 
-    // Always initialize a base devcontainer (no-op if one exists).
-    report.wrote.extend(wiring::ensure_base(dir, &project_name)?);
+    // Always initialize a base devcontainer (no-op if one exists; errors on a
+    // missing NAMED config — those are hand-authored, not scaffolded).
+    report.wrote.extend(wiring::ensure_base(dir, config, &project_name)?);
 
     // The app service key must be read AFTER a potential scaffold (which
     // creates it as `dev`).
-    let app_service = wiring::app_service(dir);
+    let app_service = wiring::app_service(dir, config);
 
     if after.is_empty() {
         // Tear down: drop the managed file + its reference, keep the base.
@@ -122,9 +132,9 @@ pub fn apply(dir: &Path, req: &ConfigureRequest) -> Result<ConfigureReport> {
                 .with_context(|| format!("remove {}", managed.display()))?;
             report.wrote.push(managed);
         }
-        report.wrote.extend(wiring::remove_reference(dir)?);
+        report.wrote.extend(wiring::remove_reference(dir, config)?);
     } else {
-        report.wrote.extend(wiring::add_reference(dir)?);
+        report.wrote.extend(wiring::add_reference(dir, config)?);
         let text = compose::render(&after, &app_service);
         let managed = compose::managed_path(dir);
         std::fs::write(&managed, text)

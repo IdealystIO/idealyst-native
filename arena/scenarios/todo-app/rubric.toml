@@ -18,23 +18,30 @@ assertion = { target = "web" }
 
 # --- decision items (source-verifiable: did the agent pick the right APIs) ---
 
+# Calibration policy (2026-07-20, from run-0): items test the CAPABILITY, not a
+# specific library. Component-library wrappers (e.g. idea-ui) are legitimate
+# choices when the library is a project dep — the MCP serves dep docs, and the
+# arena must not steer agents toward or away from any one library. The
+# principled check for "is there really a text input" is the robot tier
+# (wrappers expand to primitives at runtime); migrate these when Phase 2 lands.
+
 [[item]]
 id = "uses-list-primitive"
-description = "Renders the items through a list primitive (flat_list) rather than a hand-rolled loop of views."
+description = "Renders the items through a reconciling list mechanism — flat_list/virtualizer or a keyed reactive `for` — rather than a hand-rolled index loop of views."
 points = 10
 class = "decision"
 tier = "static"
 verifier = "static_ast"
-assertion = { pattern = "flat_list|virtualizer", in = "src/**/*.rs" }
+assertion = { pattern = "flat_list|virtualizer|for\\s+\\w+\\s+in\\s+[^{}\\n]*,\\s*key\\s*=", in = "src/**/*.rs" }
 
 [[item]]
 id = "uses-text-input"
-description = "Has a text_input primitive for entering a new item."
+description = "Has a text-entry component for entering a new item (text_input primitive or a component-library wrapper such as Field)."
 points = 10
 class = "decision"
 tier = "static"
 verifier = "static_ast"
-assertion = { pattern = "text_input", in = "src/**/*.rs" }
+assertion = { pattern = "text_input|Field\\s*\\(|Field\\s*\\{", in = "src/**/*.rs" }
 
 [[item]]
 id = "uses-reactive-state"
@@ -43,7 +50,7 @@ points = 10
 class = "decision"
 tier = "static"
 verifier = "static_ast"
-assertion = { pattern = "signal!|Signal<", in = "src/**/*.rs" }
+assertion = { pattern = "\\bsignal\\s*\\(|signal!|Signal<", in = "src/**/*.rs" }
 
 [[item]]
 id = "uses-persistent-storage"
@@ -52,7 +59,7 @@ points = 10
 class = "decision"
 tier = "static"
 verifier = "static_ast"
-assertion = { pattern = "storage::|use_storage|Storage::", in = "src/**/*.rs" }
+assertion = { pattern = "storage::|use_storage|Storage::|platform_storage", in = "src/**/*.rs" }
 
 # --- outcome items (platform truth via Playwright; each gated on a decision) -
 
@@ -74,7 +81,10 @@ class = "outcome"
 tier = "playwright"
 verifier = "ux_locator"
 depends_on = "uses-reactive-state"
-assertion = { action = "add an item, then activate its done control", expect_role = "checkbox" }
+# Capability policy: the done control may be a checkbox, switch, or labeled
+# button depending on the widget chosen — assert the BEHAVIOR (visible state
+# change), not a widget-specific role.
+assertion = { action = "add an item, then activate its done control, and confirm the item's visible state changed (e.g. strikethrough/dimmed/checked)" }
 
 [[item]]
 id = "delete-removes-row"

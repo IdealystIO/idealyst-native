@@ -1,0 +1,8 @@
+# Build-context trim for the arena runner (BuildKit reads this because it
+# sits next to the Dockerfile). Source stays; build artifacts and VCS go.
+**/target
+.git
+**/node_modules
+**/dist
+arena/runs
+**/.idealyst

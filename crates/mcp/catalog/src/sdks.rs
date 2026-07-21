@@ -54,7 +54,7 @@ sdk!(
     "storage",
     SdkCategory::Data,
     SdkKind::Api,
-    "Cross-platform INSECURE key-value storage for non-sensitive app data. `storage::platform_storage()` returns the platform store. No security claims — use `credentials` for secrets."
+    "Cross-platform INSECURE key-value storage for non-sensitive app data. API: `storage::platform_storage(namespace) -> Arc<dyn Storage>` with ASYNC `get(key) -> Result<Option<String>, StorageError>` / `set(key, value) -> Result<(), StorageError>` / `remove(key)` — call from UI code via `runtime_core::driver::spawn_async(async { ... })` (needs the `async-driver` feature on the runtime-core dep; the generated wrappers enable it). Backends: localStorage (web), NSUserDefaults (iOS/macOS), SharedPreferences (Android), JSON file (desktop). A `platform_storage` recipe (persist-on-change example) registers once storage is a dependency of the build. No security claims — use `credentials` for secrets."
 );
 sdk!(
     "credentials",

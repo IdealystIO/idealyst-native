@@ -1,0 +1,38 @@
+{
+  // Arena runner: a hermetic variant of the base devcontainer. Run arena
+  // benches from a Claude Code session INSIDE this container — subagents
+  // (the arena-implementer) inherit the container boundary, so the
+  // "no web docs" invariant is enforced at the network layer by
+  // init-firewall.sh (allowlist-only egress), not just at the tool layer.
+  //
+  // Auth: the shared `claude-home` volume persists a browser login across
+  // rebuilds; for headless hosts generate a token with `claude setup-token`
+  // and export CLAUDE_CODE_OAUTH_TOKEN before `devcontainer up`. Both paths
+  // bill the subscription (the reason the arena uses subagents at all).
+  "name": "idealyst-arena",
+  "dockerComposeFile": [
+    "../docker-compose.yml",
+    "docker-compose.arena.yml"
+  ],
+  "service": "dev",
+  "runServices": ["dev", "chrome"],
+  "workspaceFolder": "/workspaces/idealyst-native",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {}
+  },
+  // NOTE: no CLAUDE_CODE_OAUTH_TOKEN passthrough — `${localEnv:…}` on an
+  // unset host var materializes a SET-BUT-EMPTY env var, which Claude Code
+  // prefers over the seeded credentials file and then fails to log in with.
+  // Credential seeding (post-create) is the auth path; if you explicitly
+  // want token auth, export the token inside the container yourself.
+  // post-create runs BEFORE the first post-start, so heavy fetches (npm,
+  // rustup, wasm-bindgen, cargo install) happen while egress is still open;
+  // the firewall then clamps every subsequent start.
+  "postCreateCommand": "bash .devcontainer/arena/post-create.sh",
+  "postStartCommand": "sudo bash .devcontainer/arena/init-firewall.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": ["rust-lang.rust-analyzer"]
+    }
+  }
+}

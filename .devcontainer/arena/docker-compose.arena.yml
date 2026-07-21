@@ -1,0 +1,34 @@
+# Arena overlay on the base .devcontainer/docker-compose.yml.
+# Adds: a local headless Chromium (the robot-tier host spawns a browser
+# binary — the remote `chrome` sidecar can't serve that), the wasm-opt
+# binary, firewall tooling, and the NET_ADMIN/NET_RAW caps the
+# allowlist firewall needs. cap_add lives here because devcontainer.json
+# `runArgs` is ignored under docker-compose.
+services:
+  dev:
+    # Own tag: without this, compose would build our Dockerfile and tag it
+    # over the base service's `image:` name (mcr.microsoft.com/devcontainers/
+    # rust:1), silently contaminating the non-arena devcontainer.
+    image: idealyst-arena-dev
+    # Reap orphaned processes: bench runs detach headless browsers + dev
+    # sessions; without an init they zombie-accumulate when killed.
+    init: true
+    # Compose-merge rule: relative paths resolve against the FIRST compose
+    # file's directory (.devcontainer/), not this overlay's.
+    build:
+      context: .
+      dockerfile: arena/Dockerfile
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      PLAYWRIGHT_WS_ENDPOINT: ws://chrome:3000
+      # robot_web.rs probes this first when hosting the served bundle.
+      ARENA_CHROME: /usr/bin/chromium
+    volumes:
+      # Host Claude credentials, read-only: post-create seeds the persistent
+      # claude-home volume from here on first create, so no per-deployment
+      # login. Linux hosts only — macOS keeps credentials in the Keychain
+      # (no file), where the seed no-ops and you log in once (it persists in
+      # the volume) or use CLAUDE_CODE_OAUTH_TOKEN.
+      - ${HOME}/.claude:/host-claude:ro

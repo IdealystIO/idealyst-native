@@ -25,6 +25,7 @@
 
 pub mod harness;
 pub mod metrics;
+pub mod quality;
 pub mod report;
 pub mod rubric;
 pub mod scenario;

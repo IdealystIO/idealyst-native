@@ -40,6 +40,15 @@ pub mod primitives;
 #[cfg(feature = "async-driver")]
 pub mod driver;
 
+// Lets code inside this crate (recipes, macro expansions) refer to itself by
+// its external name, so captured recipe source shows the paths an app author
+// would actually write.
+extern crate self as runtime_core;
+
+/// Compile-checked usage recipes (docs / MCP catalog). The `recipe!` macro
+/// self-gates on the `catalog` feature, so this is empty in production.
+pub mod recipes;
+
 // `resource()` — async data as a reactive primitive. Depends on the
 // async-driver feature for `spawn_async`; gated together.
 #[cfg(feature = "async-driver")]

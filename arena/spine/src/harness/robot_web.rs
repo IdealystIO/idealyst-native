@@ -21,8 +21,18 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-const DEFAULT_CHROME: &str = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Fixed install locations probed (in order) when `ARENA_CHROME` is unset.
+/// Any Chromium-family binary works — the host only needs `--headless=new`.
+const BROWSER_CANDIDATES: &[&str] = &[
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/brave",
+];
 
 /// Holds the relay + headless browser alive for the duration of robot-tier
 /// verification. Kills the browser on drop; the relay's own `Drop` removes its
@@ -40,8 +50,48 @@ impl Drop for RobotWebHost {
 }
 
 fn chrome_path() -> Option<String> {
-    let p = std::env::var("ARENA_CHROME").unwrap_or_else(|_| DEFAULT_CHROME.to_string());
-    Path::new(&p).exists().then_some(p)
+    resolve_browser(std::env::var("ARENA_CHROME").ok(), BROWSER_CANDIDATES)
+}
+
+/// `env` (ARENA_CHROME) wins outright — even if the path doesn't exist we
+/// return None rather than silently falling back, so a typo'd override fails
+/// loudly instead of running a different browser than the user asked for.
+fn resolve_browser(env: Option<String>, candidates: &[&str]) -> Option<String> {
+    if let Some(p) = env {
+        return Path::new(&p).exists().then_some(p);
+    }
+    if let Some(found) = candidates.iter().find(|p| Path::new(p).exists()) {
+        return Some(found.to_string());
+    }
+    playwright_chromium()
+}
+
+/// Last resort: a Playwright-managed Chromium under `~/.cache/ms-playwright/`
+/// (`chromium-<rev>/chrome-linux/chrome` or `chromium_headless_shell-<rev>/
+/// chrome-linux/headless_shell`). Newest revision wins.
+fn playwright_chromium() -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let root = Path::new(&home).join(".cache/ms-playwright");
+    let mut hits: Vec<(String, std::path::PathBuf)> = Vec::new();
+    for entry in std::fs::read_dir(&root).ok()?.flatten() {
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+        let bin = if dir_name.starts_with("chromium_headless_shell-") {
+            entry.path().join("chrome-linux/headless_shell")
+        } else if dir_name.starts_with("chromium-") {
+            entry.path().join("chrome-linux/chrome")
+        } else {
+            continue;
+        };
+        if bin.exists() {
+            hits.push((dir_name, bin));
+        }
+    }
+    // Sort by directory name descending — the numeric revision suffix makes
+    // lexicographic order match recency for same-width revisions.
+    hits.sort_by(|a, b| b.0.cmp(&a.0));
+    hits.into_iter()
+        .next()
+        .map(|(_, p)| p.to_string_lossy().to_string())
 }
 
 /// Start a relay registered for `project_dir` (so `verify::robot` discovers it
@@ -98,6 +148,10 @@ pub fn host(
             "--headless=new",
             "--disable-gpu",
             "--no-sandbox",
+            // Docker's default /dev/shm (64MB) silently kills chromium's
+            // renderer under multi-MB wasm init — no console error, empty
+            // DOM, no relay dial-in. Required for in-container runs.
+            "--disable-dev-shm-usage",
             "--no-first-run",
             "--no-default-browser-check",
             "--remote-debugging-port=0",
@@ -127,6 +181,54 @@ fn wait_for_app(tcp: SocketAddr) -> anyhow::Result<()> {
             anyhow::bail!("browser app never connected to the relay within {CONNECT_TIMEOUT:?}");
         }
         std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_browser;
+
+    fn tmp_file(name: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("arena-browser-test-{name}-{}", std::process::id()));
+        std::fs::write(&p, "").unwrap();
+        p
+    }
+
+    #[test]
+    fn regression_env_override_beats_candidates() {
+        // The bug: DEFAULT_CHROME hardcoded the macOS path, so on Linux the
+        // host errored even with browsers installed. Now candidates probe, but
+        // an explicit ARENA_CHROME must still win over any candidate.
+        let envp = tmp_file("env");
+        let cand = tmp_file("cand");
+        let cand_s = cand.to_string_lossy().to_string();
+        let got = resolve_browser(
+            Some(envp.to_string_lossy().to_string()),
+            &[cand_s.as_str()],
+        );
+        assert_eq!(got.as_deref(), Some(envp.to_string_lossy().as_ref()));
+        std::fs::remove_file(envp).ok();
+        std::fs::remove_file(cand).ok();
+    }
+
+    #[test]
+    fn regression_bad_env_override_fails_loudly_not_fallback() {
+        // A typo'd ARENA_CHROME must yield None (loud error upstream), not
+        // silently run a different browser than the user asked for.
+        let cand = tmp_file("cand2");
+        let cand_s = cand.to_string_lossy().to_string();
+        let got = resolve_browser(Some("/nonexistent/browser".into()), &[cand_s.as_str()]);
+        assert_eq!(got, None);
+        std::fs::remove_file(cand).ok();
+    }
+
+    #[test]
+    fn first_existing_candidate_wins() {
+        let cand = tmp_file("cand3");
+        let cand_s = cand.to_string_lossy().to_string();
+        let got = resolve_browser(None, &["/nonexistent/one", cand_s.as_str()]);
+        assert_eq!(got, Some(cand_s.clone()));
+        std::fs::remove_file(cand).ok();
     }
 }
 

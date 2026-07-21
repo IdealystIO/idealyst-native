@@ -1,0 +1,68 @@
+# SECRET — capability policy applies: primitives or component-library
+# wrappers both satisfy control items.
+scenario_id = "themed-settings"
+
+[[item]]
+id = "builds-web"
+description = "The produced project builds for web."
+points = 20
+class = "decision"
+tier = "compile"
+verifier = "compile"
+assertion = { target = "web" }
+
+[[item]]
+id = "uses-toggle-control"
+description = "Dark mode is a real toggle control (toggle primitive or wrapper: Toggle/Checkbox/Switch)."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "\\btoggle\\s*\\(|Toggle|Checkbox|Switch", in = "src/**/*.rs" }
+
+[[item]]
+id = "uses-slider-control"
+description = "Volume is a real slider control (slider primitive or wrapper)."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "\\bslider\\s*\\(|Slider", in = "src/**/*.rs" }
+
+[[item]]
+id = "uses-reactive-state"
+description = "Scheme + volume live in reactive state."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "\\bsignal\\s*\\(|signal!|Signal<", in = "src/**/*.rs" }
+
+[[item]]
+id = "theming-not-hardcoded-per-node"
+description = "Color scheme flows through the styling system (stylesheet!/theme tokens/idea-theme), not ad-hoc per-node literals flipped in handlers."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "stylesheet!|theme_token!|install_idea_theme|ThemeProvider", in = "src/**/*.rs" }
+
+[[item]]
+id = "volume-value-visible"
+description = "The slider's live value is visible as a number."
+points = 15
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-slider-control"
+assertion = { action = "observe the initial page state", expect_name = "50" }
+
+[[item]]
+id = "dark-mode-flips"
+description = "Activating the Dark mode toggle visibly changes the color scheme."
+points = 25
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-toggle-control"
+assertion = { action = "note the page background, activate the 'Dark mode' toggle, and check whether the page background and text colors visibly changed to a dark scheme" }

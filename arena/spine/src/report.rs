@@ -63,6 +63,14 @@ pub fn render_pathologies(p: &Pathologies) -> String {
         "- {} tool calls, {} exact duplicates\n",
         p.total_calls, p.duplicate_calls
     ));
+    if p.mcp_calls > 0 {
+        out.push_str(&format!(
+            "- {} MCP calls across {} distinct tools, {} errored\n",
+            p.mcp_calls,
+            p.mcp_tools_used.len(),
+            p.mcp_errors
+        ));
+    }
     if p.repeated_docs.is_empty() {
         out.push_str("- no docs re-fetched\n");
     } else {

@@ -196,6 +196,18 @@ pub struct Args {
     #[arg(long)]
     pub no_robot: bool,
 
+    /// Launch a headless Chromium at the served web URL so the app runs (and
+    /// dials the robot relay) without any display. AUTO-enabled when the
+    /// relay is active and no display is present (container/CI/SSH) — this
+    /// flag forces it on even with a display.
+    #[arg(long)]
+    pub headless_client: bool,
+
+    /// Never launch the headless web client (overrides the auto behavior
+    /// and `--headless-client`).
+    #[arg(long)]
+    pub no_headless_client: bool,
+
     /// Where the Robot `screenshot` verb saves PNGs (the relay writes them
     /// host-side; a browser tab / device can't). Default:
     /// `<project>/.idealyst/screenshots/`.
@@ -997,7 +1009,7 @@ fn launch_target(
     runtime_server_port: Option<u16>,
 ) -> Result<()> {
     match target {
-        Target::Web => launch_web(dir, args, runtime_server_port),
+        Target::Web => launch_web(dir, args, runtime_server_port, children),
         Target::Ios => launch_ios(dir, args, runtime_server_port),
         Target::Android => launch_android(dir, args, runtime_server_port),
         Target::Roku => anyhow::bail!(
@@ -1059,7 +1071,12 @@ fn launch_terminal(dir: &Path, args: &Args, runtime_server_port: Option<u16>) ->
 ///   A file watcher rebuilds the bundle on source change and bumps
 ///   the generation counter so the browser reloads (full page
 ///   reload — state does not survive saves).
-fn launch_web(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Result<()> {
+fn launch_web(
+    dir: &Path,
+    args: &Args,
+    runtime_server_port: Option<u16>,
+    children: Arc<Mutex<Vec<Child>>>,
+) -> Result<()> {
     use dev_http::{serve_static, AasContext, PreloadContext, ReloadContext};
 
     let source = crate::framework_source::resolve(dir)?;
@@ -1249,6 +1266,19 @@ fn launch_web(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Resu
             args.host, args.port
         );
         spawn_browser_opener(&args.host, args.port);
+        // Headless web client: with no display, nothing would ever load the
+        // served page, so the app never dials the relay and the robot bridge
+        // stays empty (MCP wait_for_app times out). Auto-launch a headless
+        // browser when the relay is active and no display exists.
+        let relay_active = std::env::var("IDEALYST_ROBOT_RELAY_URL").is_ok();
+        if crate::headless_client::should_launch(
+            args.headless_client,
+            args.no_headless_client,
+            relay_active,
+            crate::headless_client::has_display(),
+        ) {
+            spawn_headless_client(&args.host, args.port, dir, Arc::clone(&children));
+        }
         serve_static(
             &args.host,
             args.port,
@@ -1761,6 +1791,37 @@ fn spawn_worker(
 /// `http://0.0.0.0:…` doesn't resolve in any browser. We rewrite any
 /// wildcard host to `localhost`.
 ///
+/// Launch the headless web client once the server's listener is up (same
+/// TCP-poll dance as [`spawn_browser_opener`]). The browser `Child` goes into
+/// `children` so Ctrl-C / MCP `stop_dev` teardown kills it with the session.
+fn spawn_headless_client(host: &str, port: u16, dir: &Path, children: Arc<Mutex<Vec<Child>>>) {
+    let connect_host = match host {
+        "0.0.0.0" | "::" | "[::]" => "localhost".to_string(),
+        other => other.to_string(),
+    };
+    let url = format!("http://{connect_host}:{port}");
+    // Per-port profile: chromium's ProcessSingleton means a second launch on
+    // the SAME user-data-dir doesn't start a browser — it hands the URL to
+    // whatever instance holds the lock (possibly a stale one from a dead
+    // session) and exits. Port-suffixing keeps sessions from hijacking each
+    // other.
+    let profile = dir.join(format!(".idealyst/headless-client-profile-{port}"));
+    std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                match crate::headless_client::launch(&url, &profile) {
+                    Ok(child) => children.lock().unwrap().push(child),
+                    Err(e) => eprintln!("[dev] headless web client failed: {e:#}"),
+                }
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        }
+        eprintln!("[dev] headless web client: server never came up on port {port}");
+    });
+}
+
 /// If `open` (macOS) / `xdg-open` (Linux) / `start` (Windows) isn't
 /// available, or the TCP poll times out, we exit silently — the URL
 /// is already logged above, so the user can click that.
@@ -2126,6 +2187,8 @@ impl Args {
             local: self.local,
             web: self.web,
             no_robot: self.no_robot,
+            headless_client: self.headless_client,
+            no_headless_client: self.no_headless_client,
             screenshot_dir: self.screenshot_dir.clone(),
             ios: self.ios,
             android: self.android,

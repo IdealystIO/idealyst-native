@@ -15,10 +15,10 @@
       ],
       "env": {}
     },
-    "idealyst-robot": {
+    "idealyst": {
       "type": "stdio",
-      "command": "/Users/nicho/Desktop/idealyst-native/target/release/robot-mcp-proxy",
-      "args": ["--port", "9718"],
+      "command": "idealyst",
+      "args": ["mcp"],
       "env": {}
     }
   }

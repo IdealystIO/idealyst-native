@@ -1,0 +1,62 @@
+# SECRET — items derive strictly from the stated requirements plus the
+# framework's documented navigation surface (StackNavigator/Screen — the
+# `navigation` guide's canonical form). Capability policy: component-library
+# wrappers count wherever a wrapper legitimately provides the capability.
+scenario_id = "nav-notes"
+
+[[item]]
+id = "builds-web"
+description = "The produced project builds for web."
+points = 20
+class = "decision"
+tier = "compile"
+verifier = "compile"
+assertion = { target = "web" }
+
+[[item]]
+id = "uses-stack-navigator"
+description = "Navigation goes through the navigator system (StackNavigator), not hand-rolled show/hide state."
+points = 15
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "StackNavigator", in = "src/**/*.rs" }
+
+[[item]]
+id = "declares-two-screens"
+description = "At least two Screen declarations exist (list + detail)."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "Screen\\s*\\(", in = "src/**/*.rs", min_count = 2 }
+
+[[item]]
+id = "list-shows-notes"
+description = "The list screen shows the three required notes."
+points = 15
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "declares-two-screens"
+assertion = { action = "observe the initial page state", expect_name = "Groceries" }
+
+[[item]]
+id = "detail-navigation-works"
+description = "Tapping a note reaches its detail screen."
+points = 20
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-stack-navigator"
+assertion = { action = "click the note titled 'Groceries'", expect_role = "heading", expect_name = "Groceries" }
+
+[[item]]
+id = "back-returns-to-list"
+description = "The native back affordance returns to the list."
+points = 20
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-stack-navigator"
+assertion = { action = "click the note titled 'Groceries', then use the back affordance (browser back or on-page back control)", expect_name = "Ideas" }

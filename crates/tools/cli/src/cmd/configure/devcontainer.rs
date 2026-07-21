@@ -50,6 +50,13 @@ pub struct Args {
     /// `--service <id>[=variant|remove|reconfigure]`. Repeatable.
     #[arg(long = "service", value_name = "id[=variant|remove|reconfigure]")]
     pub service: Vec<String>,
+
+    /// Target a named devcontainer config
+    /// (`.devcontainer/<name>/devcontainer.json`, e.g. `arena`) instead of
+    /// the default `.devcontainer/devcontainer.json`. The named config must
+    /// already exist. Managed services are shared across configs.
+    #[arg(long, value_name = "name")]
+    pub config: Option<String>,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -70,7 +77,7 @@ pub fn run(args: Args) -> Result<()> {
                  pass --non-interactive to apply them directly."
             );
         }
-        let report = super::wizard::run(&dir)?;
+        let report = super::wizard::run(&dir, args.config.as_deref())?;
         print_report(&report);
         return Ok(());
     }
@@ -113,7 +120,10 @@ fn build_request(args: &Args) -> Result<ConfigureRequest> {
         services.push(parse_flag(id, value)?);
     }
 
-    Ok(ConfigureRequest { services })
+    Ok(ConfigureRequest {
+        services,
+        config: args.config.clone(),
+    })
 }
 
 /// Map one flag value to a [`ServiceRequest`]. `None` (bare flag) = enable;

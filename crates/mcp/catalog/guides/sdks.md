@@ -38,7 +38,7 @@ dep, the SDK's functions are importable (`use net::Client;`).
 |---|---|
 | **`net`** | Cross-platform async networking — HTTP, WebSocket, and Server-Sent Events. `net::Client` is the HTTP entry point. The transport layer the server-functions layer composes (see [[server-functions]]). |
 | **`server`** | Full-stack server functions — `#[server] async fn`, `server::configure`, `server::router`, extractors, auth guards. See the dedicated [[server-functions]] guide. |
-| **`storage`** | Cross-platform **insecure** key-value storage for non-sensitive app data. `storage::platform_storage()` returns the platform store. No security claims — use `credentials` for secrets. |
+| **`storage`** | Cross-platform **insecure** key-value storage for non-sensitive app data. `storage::platform_storage(ns) -> Arc<dyn Storage>`; async `get(key) -> Result<Option<String>, _>` / `set` / `remove` (see "Calling async APIs" below). Backends: localStorage / NSUserDefaults / SharedPreferences / JSON file. Once storage is a dependency, the `platform_storage` recipe (persist-on-change) registers in `list_recipes`. Use `credentials` for secrets. |
 | **`credentials`** | Cross-platform **secure** storage for secrets (auth tokens, API keys) — Keychain / Keystore on device. Web errors rather than faking security. |
 | **`files`** | Cross-platform blob/file storage for **binary data** (recordings, downloads). |
 | **`file-export`** | Save a file to a user-chosen location through the platform's native "save" UI (no permission prompt). |
@@ -110,3 +110,33 @@ app supplies the reason string.
 When you're unsure which crate provides a capability, this list is the map:
 networking → `net`, persistence → `storage` / `credentials` / `files`,
 server relay → `server`, camera/mic/recording → the media crates.
+
+## Calling async APIs from UI code
+
+Several SDK surfaces (`storage`, `net`, …) are `async`. UI handlers and
+component bodies are synchronous — bridge with
+`runtime_core::driver::spawn_async`:
+
+```rust
+use runtime_core::driver::spawn_async;
+
+let items = signal(Vec::new());
+spawn_async(async move {
+    let store = storage::platform_storage("my-app");
+    if let Ok(Some(saved)) = store.get("items").await {
+        items.set(parse(saved));
+    }
+});
+```
+
+No `Send` bound is required, and the executor is pre-installed by the
+CLI-generated app wrappers on every platform — no setup in app code. Signal
+writes inside the future notify the UI exactly like writes from a handler.
+
+`spawn_async` exists only when the `runtime-core` dependency enables the
+`async-driver` feature — CLI-generated wrapper Cargo.tomls do, but a
+hand-written dep line must add it:
+
+```toml
+runtime-core = { path = "…", features = ["async-driver"] }
+```

@@ -74,15 +74,76 @@ across runs. An item that passes 8/8 is well-documented; 3/8 is a documentation
 - `arena verify` CLI runs the source tiers against any produced tree (used it to
   smoke the example).
 
-### NOT yet run — the #1 next step
-- **A full live `bench` has never been executed.** Every seam is unit-tested and
-  the deterministic + robot-web paths are verified, but no real
-  implementation-agent run has gone scaffold→agent→build→verify→score→feedback
-  end to end. **Do this first** (see §5) — it will surface real integration
-  issues (claude flags, transcript parsing, the locate agent, feedback prompt).
-- Only **one scenario** exists (`todo-app`).
-- The **locate (Playwright) tier** and the **feedback agent** are wired but never
-  exercised live.
+### First live run: DONE (2026-07-20, run-0 on Linux)
+The core loop (scaffold → `arena-implementer` subagent → build → score on
+compile+static) ran end-to-end for `todo-app`: **40/60 (final 43.703)**,
+artifacts in `runs/todo-app/run-0/`. Isolation held (only `mcp__idealyst*` MCP
+calls). Integration findings it surfaced, now fixed:
+- `harness/agent.rs` folded cache-read tokens into the total (42M vs a 2M
+  budget → token bonus always 0). Cache reads now accumulate separately as
+  `cache_read_tokens` (context-pressure signal); the total counts only new
+  input + cache-creation + output. Regression-tested.
+- The `uses-reactive-state` rubric pattern predated the `signal(...)` fn-call
+  API; static patterns need re-checking whenever the authoring surface moves.
+- Doc finding #1: the agent chose idea-ui (`Field`/`Checkbox`/keyed `for`)
+  over the `text_input`/`flat_list` primitives the rubric expected. `flat_list`
+  was mentioned in exactly one guide, only as a naming-convention example.
+  **Resolved (user policy, 2026-07-20):** rubric items test the *capability*,
+  not a specific library — component-library wrappers are legitimate when the
+  library is a project dep (the MCP serves dep docs; never steer toward or away
+  from any one library, incl. idea-ui). Rubric updated (run-0 rescores 60/60,
+  final 63.703); a neutral "Rendering collections" section was added to the
+  `components` guide (keyed `for` vs `flat_list`). Principled long-term check
+  is the robot tier (wrappers expand to primitives at runtime) — migrate the
+  static items when the outcome tiers land.
+- Model policy: the implementer is pinned to `opus` in its agent frontmatter
+  (run-0 accidentally inherited the session model, Fable). The spine now
+  parses the model id from the transcript and records it in `report.md` +
+  `scored.json`; cross-run comparisons are only valid within one model.
+- Next infra step (user, 2026-07-20): run scaffolded projects inside Docker
+  containers carrying the full web-test toolchain (builds on `idealyst
+  configure devcontainer`) — see the session task list.
+
+> ## ⚠️ Architecture update v2 (2026-07-20): naive in-container implementer
+>
+> The run topology changed again (user decision). The **orchestrator and all
+> reviewer agents run OUTSIDE the container** (ordinary host session /
+> subagents); the **implementer is a separate headless `claude -p` session
+> INSIDE the arena container** (`.devcontainer/arena/`), driven via
+> `docker exec`, using the container's seeded subscription OAuth credentials.
+>
+> Why the subagent flow (§ above) was retired as the primary: subagents
+> receive the repo's CLAUDE.md — the run-0 implementer was never fully naive.
+> The v2 implementer is naive by construction: cwd = the scaffolded project at
+> `/workspaces/arena-runs/…` (outside the repo tree — upward config traversal
+> finds no CLAUDE.md/skills), `--strict-mcp-config` + the project `.mcp.json`
+> (idealyst only), no seeded user settings/hooks/plugins, and the container's
+> allowlist firewall as the doc-isolation backstop.
+> `--dangerously-skip-permissions` is sanctioned ONLY inside the container.
+>
+> `claude -p` is acceptable again here because the container's auth is the
+> documented subscription-headless path (seeded OAuth / `setup-token`);
+> verify billing landed on the subscription after the first v2 run.
+> The subagent flow remains as an explicitly non-hermetic fallback
+> (`.claude/agents/arena-implementer.md`). Current steps live in
+> `.claude/skills/arena-bench/SKILL.md`.
+
+### Phases 2–5: DONE (2026-07-20)
+All four tiers + all three assessment layers are live-validated. Run-2
+rescored **full-tier 125/125 (final 128.996)** via: `arena build --robot` →
+`arena live` (serve + relay + headless client) → locator pass → `arena
+verdict` → `arena score --locate-dir`. New CLI surface: `live`,
+`locate-prompts`, `verdict`, `feedback-prompt`, `quality`, `judge-prompt`,
+`aggregate`; `score` also writes `process.json` (pathologies + MCP
+call/error/adoption stats). Reviewer agents:
+`.claude/agents/arena-{locator,feedback,quality}.md` (register at session
+start). Scenario slate: `todo-app`, `nav-notes`, `themed-settings`,
+`debug-fix` (ships a build-validated broken app via the new scenario
+`assets/` overlay). The first feedback report
+(`arena-runs/todo-app/run-2/feedback.md`) traced 7 doc-bypass clusters to
+concrete `crates/mcp/catalog/` fixes — start the doc-improvement loop there.
+Current steps live in `.claude/skills/arena-bench/SKILL.md`; benches run in
+per-run `idealyst-arena-runner` containers (`arena/runner/`).
 
 ---
 
@@ -184,6 +245,10 @@ prompt = """<requirements only; no hints about how to use the MCP>"""
 platforms = ["web"]      # which platforms outcome items verify on
 token_budget = 2_000_000 # hard ceiling per agent run
 runs = 5                 # statistical samples
+# Optional: idealyst-managed sidecars the app needs (server-fn scenarios).
+# Must be enabled in the arena container BEFORE the run; `arena scaffold`
+# prints the `idealyst configure devcontainer --config arena …` command.
+services = []            # e.g. ["database=postgres", "redis"]
 ```
 
 `rubric.toml` (one `[[item]]` per check):
@@ -217,9 +282,22 @@ compile → `target`; robot → `verb`/`expect_name`; playwright → `action`/
 ## 5. How to run it
 
 ### Prerequisites
-- `claude` (headless agent), `idealyst` (CLI — **must be the build with the
-  robot work**, see note below), `python3` (serves the web build), Google Chrome
-  (robot-tier headless load), `npx` (Playwright MCP for the locate tier).
+**Preferred: run inside the arena devcontainer** (`.devcontainer/arena/`) — a
+hermetic variant of the repo devcontainer that bakes the whole toolchain
+(chromium, wasm-bindgen pinned to Cargo.lock, wasm-opt, python3, the idealyst
+CLI built from the checkout) and applies an **allowlist-only egress firewall**
+on every start (Anthropic endpoints + crates.io only — no github/npm/docs.rs/
+open web). Running the orchestrating Claude Code session in that container puts
+the subagents inside the same boundary, so "the MCP is the only doc source" is
+enforced at the network layer. Auth persists in the shared `claude-home`
+volume (browser login once), or export `CLAUDE_CODE_OAUTH_TOKEN` (from
+`claude setup-token`) before `devcontainer up` — both bill the subscription.
+
+Host-run fallback needs: `claude`, `idealyst` (CLI — **must be the build with
+the robot work**, see note below), `python3` (serves the web build), a
+Chromium-family browser (robot-tier headless load; `ARENA_CHROME` overrides,
+common paths + Playwright's cache are probed), `npx` (Playwright MCP for the
+locate tier).
 - **Important:** the arena scaffolds apps that path-dep this framework checkout.
   The CLI that scaffolds must match. Either `cargo install --path
   crates/tools/cli` or point the harness at `target/debug/idealyst`.

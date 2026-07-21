@@ -10412,6 +10412,7 @@ dependencies = [
  "ndk-context",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
+ "runtime-core",
  "serde",
  "serde_json",
  "tokio",

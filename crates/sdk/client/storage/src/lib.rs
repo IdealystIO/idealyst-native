@@ -57,6 +57,11 @@ mod apple;
 #[cfg(all(not(target_arch = "wasm32"), target_os = "android"))]
 mod android;
 
+/// Compile-checked usage recipes (docs / MCP catalog). The `recipe!` macro
+/// self-gates on the `catalog` feature, so this is empty in production.
+#[cfg(feature = "catalog")]
+pub mod recipes;
+
 /// A future returned by a [`Storage`] op. Boxed so the trait stays
 /// object-safe (`Arc<dyn Storage>`).
 pub type StorageFuture<'a, T> =

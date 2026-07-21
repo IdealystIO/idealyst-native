@@ -57,8 +57,11 @@ finding.
 | `robot` | a Robot verb against the app's self-report | mid |
 | `playwright` | platform truth via the `arena-locate` skill | high |
 
-`compile` + `static` are wired now. `robot` + `playwright` report `skip` until
-their verifiers land (they need the framework path deps and the locator skill).
+All four tiers are wired. `robot` + `playwright` need a live app: `arena
+build <proj> --robot`, then `arena live <proj>` (serve + relay + headless
+client) stays up while `arena score --locate-dir …` verifies. The locator is
+the `arena-locator` subagent; its `{passed, evidence}` replies persist via
+`arena verdict`. Items with no live app or verdict `skip` (never for/against).
 
 ## Item classes
 

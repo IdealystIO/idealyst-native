@@ -1,0 +1,20 @@
+# PUBLIC — exercises the forms + theming surface of the MCP (toggle/slider
+# primitives or their wrappers, theme tokens, reactive value display).
+id = "themed-settings"
+
+prompt = """
+Build a settings screen.
+
+Requirements:
+- A "Dark mode" toggle. Flipping it visibly switches the app between a
+  light and a dark color scheme (background and text colors change).
+- A "Volume" slider from 0 to 100, starting at 50, with the current value
+  shown as a number next to it that updates live while sliding.
+- The controls are labelled and the layout is a single tidy column.
+
+Target the web platform.
+"""
+
+platforms = ["web"]
+token_budget = 1_500_000
+runs = 5
