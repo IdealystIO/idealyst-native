@@ -745,7 +745,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "windows 0.58.0",
 ]
 
@@ -1578,6 +1578,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
+name = "baseline"
+version = "0.4.0"
+dependencies = [
+ "runtime-core",
+]
+
+[[package]]
 name = "benchmark"
 version = "0.4.0"
 dependencies = [
@@ -2030,7 +2037,7 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "permissions",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -2112,7 +2119,7 @@ dependencies = [
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
  "runtime-core",
- "skrifa 0.40.0",
+ "skrifa 0.42.1",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -2136,7 +2143,7 @@ dependencies = [
  "raw-window-handle",
  "runtime-core",
  "serde_json",
- "skrifa 0.40.0",
+ "skrifa 0.42.1",
  "vello",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -3041,7 +3048,7 @@ dependencies = [
  "media-stream",
  "ndarray",
  "pollster 0.3.0",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tract-core",
  "tract-hir",
  "tract-onnx",
@@ -3558,7 +3565,7 @@ dependencies = [
  "serde",
  "serde_json",
  "server",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
 ]
 
@@ -3818,7 +3825,7 @@ dependencies = [
  "ndk-context",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -3839,7 +3846,7 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "runtime-core",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -3867,7 +3874,7 @@ dependencies = [
  "ndk-context",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "wasm-bindgen",
  "web-sys",
@@ -4543,7 +4550,7 @@ dependencies = [
  "runtime-core",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
 ]
 
@@ -5769,7 +5776,7 @@ dependencies = [
  "jobs",
  "pubsub",
  "serde",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "toml 0.8.23",
 ]
@@ -6074,7 +6081,7 @@ dependencies = [
  "serde_json",
  "server",
  "sqlx",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
 ]
 
@@ -6294,6 +6301,16 @@ dependencies = [
  "tower-service",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "lazy-canvas"
+version = "0.4.0"
+dependencies = [
+ "backend-web",
+ "canvas",
+ "canvas-vello",
+ "runtime-core",
 ]
 
 [[package]]
@@ -6788,7 +6805,7 @@ dependencies = [
  "ndk-context",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -6886,7 +6903,7 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "permissions",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -7152,7 +7169,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite 0.21.0",
  "tungstenite 0.21.0",
@@ -7733,7 +7750,7 @@ dependencies = [
  "offload-macro",
  "pollster 0.3.0",
  "serde",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "wasmworker",
 ]
 
@@ -8503,7 +8520,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
 ]
@@ -9539,7 +9556,7 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "runtime-core",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -9843,7 +9860,7 @@ dependencies = [
  "serde",
  "serde_json",
  "server-macros",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite 0.21.0",
  "tower 0.5.3",
@@ -12110,7 +12127,7 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "runtime-core",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",

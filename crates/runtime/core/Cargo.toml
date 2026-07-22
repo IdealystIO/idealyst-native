@@ -159,8 +159,8 @@ dev-hot = { workspace = true, optional = true }
 # expansions can reach the catalog crate without declaring it as a
 # direct dep.
 mcp-catalog = { workspace = true, optional = true }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 # Only linked under the `robot` feature — encodes captured screenshot
 # PNGs as base64 for the bridge's `"screenshot"` JSON response.
 base64 = { version = "0.22", optional = true }

@@ -267,6 +267,8 @@ members = [
     # embeds its sources verbatim (cli/src/cmd/scaffold_template.rs).
     "examples/welcome",
     "examples/fiddle",
+    "examples/baseline",
+    "examples/lazy-canvas",
     "examples/inspector",
     "examples/login-demo",
     "examples/nav-showcase",
@@ -317,6 +319,13 @@ runtime-core = { path = "crates/runtime/core" }
 # which are never attacker-controlled — SipHash's DoS-resistance is pure
 # overhead there.
 rustc-hash = "2"
+# Common third-party utilities pinned workspace-wide so framework crates can't
+# drift onto incompatible versions (a `thiserror = "1"` here and a `"2"` there
+# ships two copies in the bundle). Crates opt in with `{ workspace = true }`;
+# extra features compose (`{ workspace = true, features = ["rc"] }`).
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 css = { path = "crates/css" }
 dev-hot = { path = "crates/dev/hot" }
 runtime-macros = { path = "crates/runtime/macros" }

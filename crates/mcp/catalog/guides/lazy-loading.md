@@ -104,9 +104,23 @@ Splitting happens during a web build; there's nothing to configure per chunk:
 idealyst build --web --release
 ```
 
-The release pipeline runs the wasm-split pass and (with `--release`) prunes
-chunk-only data out of `main.wasm`. The chunks land in `dist/web/pkg/` next to
-the main bundle and load over the network on demand.
+The release pipeline runs the wasm-split pass; the chunks land in
+`dist/web/pkg/` next to the main bundle and load over the network on demand.
+Chunk-only **code** leaves `main.wasm` automatically. Chunk-only **data** (large
+`&'static` tables, an SDK's embedded payload) stays in `main.wasm` by default —
+dropping it requires the **experimental, opt-in** `--data-prune`:
+
+```bash
+idealyst build --web --release --data-prune   # verify your app still renders!
+```
+
+`--data-prune` is off by default because its chunk-only classification
+under-approximates what `main` reaches (it can't trace data reached via
+data→data pointers, `call_indirect`, or the deferred `Element::External`
+registration queue), so it can silently zero main-reachable statics — corrupting
+`main.wasm` with no error (fonts stop registering, a lazy route renders
+nothing). Only enable it after confirming the built app renders correctly, and
+re-check when your static data changes.
 
 ## Lazy-loading a heavy SDK (External extensions)
 
@@ -152,8 +166,10 @@ Three parts, all required:
    ```
 
 Get any part wrong and the SDK silently stays in `main.wasm` (parts 1–2) or the
-external renders a "not supported" placeholder (part 3). Verify the win by
-checking `main.wasm` shrank and the chunk carries the SDK's bytes.
+external renders a "not supported" placeholder (part 3). This keeps the SDK's
+**code** out of `main.wasm`; its **data** (an embedded payload, large static
+tables) only leaves `main.wasm` under the opt-in `--data-prune` (above) — verify
+the app still renders when you enable it.
 
 ### Eager state in a lazy chunk is safe
 

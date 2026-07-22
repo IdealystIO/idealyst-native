@@ -1,6 +1,8 @@
 //! Runner for the `tests/` apps. Shells out to the installed `idealyst`
-//! CLI to build each test app at `--web --release` (which turns on the
-//! data-segment pruning default), asserts the expected dist artifacts
+//! CLI to build each test app at `--web --release --data-prune` (data
+//! pruning is off by default now — it corrupts main.wasm on apps with
+//! indirect main→data reachability — so this suite opts in explicitly to
+//! exercise it on pure-data fixtures), asserts the expected dist artifacts
 //! exist, and optionally (`--browser`) drives a headless Chrome to
 //! assert DOM + console state.
 //!
@@ -154,8 +156,14 @@ fn main() -> ExitCode {
             }
         }
 
+        // `--data-prune` is required: chunk-only data pruning is OFF by default
+        // (its classification under-approximates main's reachability and
+        // corrupts main.wasm on real apps). This suite specifically exercises
+        // the prune, so it opts in explicitly — the fixtures here are pure-data
+        // payloads with no indirect main→data reachability, the case the
+        // heuristic handles correctly.
         let status = Command::new("idealyst")
-            .args(["build", "--web", "--release"])
+            .args(["build", "--web", "--release", "--data-prune"])
             .current_dir(&app_dir)
             .status();
 

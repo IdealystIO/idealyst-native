@@ -11,8 +11,8 @@ anyhow = "1"
 # `sync icons` subcommand and the per-platform build crates parse
 # the same `[package.metadata.idealyst.app.icon]` block; centralizing
 # the parse here keeps one source of truth for the schema.
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 toml = "0.8"
 # Content + config hashing for the build-output cache. SHA-256 is
 # overkill for a freshness check, but the per-bucket runtime is sub-

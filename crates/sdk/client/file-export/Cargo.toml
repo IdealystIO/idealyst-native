@@ -23,7 +23,7 @@ license.workspace = true
 # target.
 
 [dependencies]
-thiserror = "1"
+thiserror = { workspace = true }
 
 # iOS / macOS: drive UIDocumentPickerViewController (iOS) / NSSavePanel (macOS)
 # through the Obj-C runtime, the same posture `camera`/`media-writer` take.

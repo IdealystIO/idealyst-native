@@ -28,7 +28,7 @@ inventory = "0.3"
 # text) renders on the CPU backends with the SAME geometry the GPU (vello) path
 # produces — both outline at upem = 1000 with hinting off. Pure Rust, builds on
 # every target incl. wasm. Matches the version vello already pulls.
-skrifa = "0.40"
+skrifa = "0.42"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }

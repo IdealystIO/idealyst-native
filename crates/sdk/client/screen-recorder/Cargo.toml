@@ -56,7 +56,7 @@ frameworks = ["ReplayKit", "CoreMedia", "CoreVideo"]
 # Only needed for the `private_layer` Element::External component + its
 # `register()`. The capture capability itself is framework-agnostic.
 runtime-core = { workspace = true }
-thiserror = "1"
+thiserror = { workspace = true }
 # Self-registration of the per-backend PrivateLayer external at construction.
 inventory = "0.3"
 # The live-source currency every capture backend writes into and the public

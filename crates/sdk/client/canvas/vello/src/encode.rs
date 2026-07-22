@@ -9,6 +9,9 @@
 //! device/surface is acquired (blocking on native, async on web). Keeping the
 //! encoder here guarantees byte-identical output across targets (CLAUDE.md §7).
 
+// `FontResource` is used only by the glyph path; allow it to sit unused when
+// the `glyphs` feature is off (the default build still flags real unused ones).
+#[cfg_attr(not(feature = "glyphs"), allow(unused_imports))]
 use canvas_core::{
     BlendMode as CanvasBlend, Color as CanvasColor, DrawOp, FillRule, FontResource, GradientStop,
     ImageSource as CanvasImage, LineCap, LineJoin, Paint, PaintKind, Path, PathSeg,
@@ -20,10 +23,13 @@ use std::collections::HashMap;
 
 use vello::kurbo::{Affine, BezPath, Cap, Join, Point, Rect, Shape, Stroke as KurboStroke};
 use vello::peniko::color::DynamicColor;
+// `FontData` is used only by the glyph path (see the `glyphs` feature).
+#[cfg_attr(not(feature = "glyphs"), allow(unused_imports))]
 use vello::peniko::{
     BlendMode, Blob, Brush, Color, ColorStop, Compose, Fill, FontData, Gradient, ImageAlphaType,
     ImageBrush, ImageData, ImageFormat, Mix,
 };
+#[cfg(feature = "glyphs")]
 use vello::Glyph as VelloGlyph;
 use vello::Scene as VelloScene;
 
@@ -205,6 +211,17 @@ pub(crate) fn encode_scene(ops: &[DrawOp], vs: &mut VelloScene, base: Affine) {
                 encode_scene(&fills, vs, cur);
             }
             DrawOp::Glyphs { font, glyphs, paint } => {
+                // Gated on the `glyphs` feature: `vs.draw_glyphs` + `font_data_cached`
+                // are the ONLY things in the web render path that reach vello's glyph
+                // pipeline (and through it the font stack — skrifa / read-fonts). With
+                // the feature off, a text run draws nothing and DCE drops that whole
+                // subtree from the bundle. See the `glyphs` feature in Cargo.toml.
+                #[cfg(not(feature = "glyphs"))]
+                {
+                    let _ = (font, glyphs, paint);
+                }
+                #[cfg(feature = "glyphs")]
+                {
                 if glyphs.is_empty() {
                     continue;
                 }
@@ -250,6 +267,7 @@ pub(crate) fn encode_scene(ops: &[DrawOp], vs: &mut VelloScene, base: Affine) {
                 }
                 if wrap.is_some() {
                     vs.pop_layer();
+                }
                 }
             }
             DrawOp::MaskGroup { content, mask, luminance: _, alpha, blend } => {
@@ -350,8 +368,10 @@ thread_local! {
 /// (see `canvas_core::PositionedGlyph`), so vello must scale the font's own
 /// outline to that em — i.e. `font_size = 1000`. Diverging from 1000 here would
 /// silently shift every glyph's size relative to the outline-fallback path.
+#[cfg(feature = "glyphs")]
 const GLYPH_UPEM: f32 = 1000.0;
 
+#[cfg(feature = "glyphs")]
 thread_local! {
     /// Per-render-thread cache of vello [`FontData`] handles keyed by
     /// [`FontResource::id`]. `FontData` wraps a refcounted [`Blob`]; building it
@@ -371,6 +391,7 @@ pub(crate) fn force_image_reupload() {
 }
 
 /// Get-or-build the cached vello [`FontData`] for a canvas font resource.
+#[cfg(feature = "glyphs")]
 fn font_data_cached(font: &FontResource) -> FontData {
     FONT_DATA.with(|m| {
         m.borrow_mut()

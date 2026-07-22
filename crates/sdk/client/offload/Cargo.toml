@@ -27,8 +27,8 @@ license.workspace = true
 # backend ships them across the worker boundary; native clones them).
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-thiserror = "1"
+serde = { workspace = true }
+thiserror = { workspace = true }
 
 # Web: the message-passing Web Worker pool. `macros` gives `#[webworker_fn]` +
 # `webworker!`; no SharedArrayBuffer required (its explicit design goal).

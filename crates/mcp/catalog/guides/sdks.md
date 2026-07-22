@@ -109,8 +109,10 @@ lazy! {
 ```
 
 Now `build_heavy` (and any static data it reaches) is reachable only from the
-chunk, so the release data-prune drops it from `main.wasm`; the backend applies
-the queued registration before dispatching the chunk's own `External`. This is
+chunk, so wasm-split keeps its code out of `main.wasm` (its data leaves main only
+under the experimental opt-in `idealyst build --web --release --data-prune`);
+the backend applies the queued registration before dispatching the chunk's own
+`External`. This is
 per-SDK opt-in — an SDK that wants it must NOT also `inventory::submit!` its web
 handler (that submission is itself a main-bundle anchor); it keeps inventory
 self-registration for native, where bundle size is a non-issue. Measured on a

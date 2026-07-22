@@ -125,16 +125,27 @@ pub struct Args {
     #[arg(long, value_name = "PATH")]
     pub out_dir: Option<PathBuf>,
 
-    /// Web + release only: opt out of chunk-only data pruning in the
-    /// main wasm bundle. By default release web builds zero data
-    /// symbols (≥ 24 bytes) that wasm-split-cli classifies as
-    /// reachable only from `lazy!` chunks — recovers ~25-50% of the
-    /// gzipped main bundle on apps with a heavy lazy chunk (a wgpu
-    /// simulator, an editor, …). The 24-byte threshold is the
-    /// verified-safe floor below which the symbol-level call graph
-    /// misclassifies small vtables and the runtime hits null-function
-    /// traps. Pass this flag if a custom app trips on the analysis
-    /// — file a repro so we can tighten the heuristic.
+    /// **EXPERIMENTAL, off by default.** Web + release only: opt IN to
+    /// chunk-only data pruning in the main wasm bundle. When enabled, release
+    /// builds zero data symbols (≥ 24 bytes) that wasm-split-cli classifies as
+    /// reachable only from `lazy!` chunks — recovering ~25-50% of the gzipped
+    /// main bundle on apps with a heavy lazy chunk.
+    ///
+    /// This is OFF by default because the classification **under-approximates
+    /// what `main` reaches**: it can't trace data reached via data→data
+    /// pointers, `call_indirect` / the function table, or the deferred
+    /// `Element::External` registration queue. Data that `main` actually reads
+    /// through those edges gets misclassified "chunk-only" and zeroed, silently
+    /// corrupting `main.wasm` (no wasm trap): fonts fail to register, a
+    /// `#[component(lazy)]` route renders nothing. Only enable it after
+    /// verifying your app renders correctly with it, and re-verify when your
+    /// static data changes.
+    #[arg(long)]
+    pub data_prune: bool,
+
+    /// Deprecated no-op: data pruning is now off by default (see
+    /// `--data-prune`). Accepted so existing invocations keep working; if both
+    /// are passed, pruning stays off.
     #[arg(long)]
     pub no_data_prune: bool,
 
@@ -375,18 +386,15 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
             // the emitted HTML expects the wasm to adopt it on boot.
             // Pure SPA builds drop the machinery for a smaller wasm.
             hydrate: args.ssg || args.ssr,
-            // Release web builds prune chunk-only data ≥ 24 bytes from
-            // the main bundle (the verified-safe floor below which the
-            // heuristic call graph misclassifies small vtables and
-            // null-function-traps at runtime). Recovers up to ~50% of
-            // gzipped bytes on apps with a heavy lazy chunk. Debug
-            // builds skip pruning to keep the build cycle fast.
-            // `--no-data-prune` opts out.
-            prune_dead_data_min: if args.release && !args.no_data_prune {
-                Some(24)
-            } else {
-                None
-            },
+            // Chunk-only data pruning is OFF by default and opt-in via
+            // `--data-prune` — the classification under-approximates main's
+            // reachability and silently corrupts main.wasm otherwise. See
+            // `resolve_prune_data_min`.
+            prune_dead_data_min: resolve_prune_data_min(
+                args.release,
+                args.data_prune,
+                args.no_data_prune,
+            ),
         },
     )?;
     let bundle = artifact
@@ -412,6 +420,31 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
         );
     }
     Ok(artifact.entry_js)
+}
+
+/// Resolve the chunk-only data-prune threshold for a web build. Returns
+/// `Some(min_bytes)` to enable pruning, `None` to disable it.
+///
+/// Pruning is **off by default** and opt-in via `--data-prune`. The
+/// `wasm-split-cli` chunk-only classification under-approximates what `main`
+/// reaches: it walks the symbol-level call graph but can't trace data reached
+/// through data→data pointers, `call_indirect` / the function table, or the
+/// deferred `Element::External` registration queue. Data `main` reads through
+/// those edges gets misclassified "chunk-only" and zeroed — silently corrupting
+/// `main.wasm` with no wasm trap (observed: fonts fail to register via
+/// `typeface!`, and a `#[component(lazy)]` route mounts nothing, not even its
+/// `loading` placeholder). The 24-byte floor only guards small vtables; larger
+/// misclassified statics slip through. So the safe default is to not prune;
+/// `--data-prune` is an explicit, per-app opt-in for those who verify it.
+///
+/// `--no-data-prune` is now redundant (kept as a no-op); if both flags are
+/// passed, pruning stays off.
+fn resolve_prune_data_min(release: bool, data_prune: bool, no_data_prune: bool) -> Option<usize> {
+    if release && data_prune && !no_data_prune {
+        Some(24)
+    } else {
+        None
+    }
 }
 
 fn build_ios_target(dir: &std::path::Path, args: &Args) -> Result<()> {
@@ -641,4 +674,33 @@ fn build_runtime_server_host(dir: &std::path::Path, args: &Args) -> Result<()> {
         artifact.wrapper_dir.display(),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_prune_data_min;
+
+    /// Regression for the release `data-prune` corruption: the unsound
+    /// chunk-only classification must NOT run by default. It corrupted
+    /// `main.wasm` (zeroed main-reachable fonts / lazy-dispatch data) because
+    /// its reachability walk misses data→data / call_indirect / deferred-
+    /// registration edges. Off unless the app explicitly opts in.
+    ///
+    /// A tighter end-to-end test would need to build a wasm fixture with
+    /// indirect main→data reachability and diff the pruned bytes — not
+    /// reachable from a CLI unit test — so this pins the default/opt-in gate,
+    /// the layer the fix actually changed.
+    #[test]
+    fn data_prune_is_off_by_default_and_opt_in() {
+        // release, no flags → OFF (the fix: was Some(24), which corrupted main)
+        assert_eq!(resolve_prune_data_min(true, false, false), None);
+        // explicit opt-in → ON
+        assert_eq!(resolve_prune_data_min(true, true, false), Some(24));
+        // opt-in but also --no-data-prune → OFF (no-prune wins)
+        assert_eq!(resolve_prune_data_min(true, true, true), None);
+        // debug never prunes, even with the opt-in
+        assert_eq!(resolve_prune_data_min(false, true, false), None);
+        // the deprecated --no-data-prune alone is a harmless no-op (already off)
+        assert_eq!(resolve_prune_data_min(true, false, true), None);
+    }
 }
