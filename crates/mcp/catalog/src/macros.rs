@@ -96,7 +96,7 @@ inventory::submit! {
         invocation: "lazy!(path::to::Component)",
         kind: MacroKind::Markup,
         module_path: "runtime_macros",
-        docs: "Marks a code-splitting boundary: the wrapped subtree builds behind a lazily-loaded chunk on backends that support splitting (web), and inline elsewhere. See the `lazy` module in runtime-macros for constraints and naming.",
+        docs: "Marks a code-splitting boundary: the wrapped subtree builds behind a lazily-loaded chunk on backends that support splitting (web), and inline elsewhere. The body hoists into a `#[wasm_split]` async fn; code (and static data) reachable ONLY from it moves into the chunk and loads on first mount. v1 has no captures — create the signals/closures the chunk needs inside the block. Heavy `External` SDK? Splitting the render is not enough: an eagerly-registered handler still anchors the whole SDK in `main.wasm`. Register it from INSIDE the `lazy!` body via the SDK's `register_lazy()` (built on `defer_external_registration`) so the handler rides the chunk too. See the `lazy` module in runtime-macros for constraints and naming, and [[defer_external_registration]].",
         expansion: "",
         _seal: (),
     }
