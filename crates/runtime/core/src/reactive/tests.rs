@@ -1758,3 +1758,42 @@ fn ref_get_returns_owned_clone() {
     r.clear();
     assert!(r.get().is_none(), "post-unmount get() returns None");
 }
+
+#[test]
+fn unscope_marks_in_unscope_flag_with_nesting() {
+    // The depth flag brackets `unscope` and nests correctly, and is cleared
+    // once the outermost call returns (guard restores it even though these
+    // closures don't unwind).
+    assert!(!super::in_unscope());
+    super::unscope(|| {
+        assert!(super::in_unscope(), "inside unscope the flag is set");
+        super::unscope(|| assert!(super::in_unscope(), "still set in a nested unscope"));
+        assert!(super::in_unscope(), "still set after the inner unscope returns");
+    });
+    assert!(!super::in_unscope(), "flag cleared after the outer unscope returns");
+}
+
+#[test]
+fn unscope_suppresses_unowned_signal_warning() {
+    // A signal created inside `unscope` is a deliberate thread-lifetime global
+    // (viewport / safe-area / breakpoint / theme cohort / token registry), so
+    // it must NOT emit the unowned-signal leak warning — the blessed global
+    // API can't fight the diagnostic. Regression for the `viewport.rs:74`
+    // warning seen while loading a code-split chunk.
+    if std::env::var_os("IDEALYST_NO_UNOWNED_SIGNAL_WARN").is_some() {
+        // Warnings globally silenced; the suppression path isn't observable.
+        return;
+    }
+    let before = super::__unowned_signal_warn_count();
+    let _global = super::unscope(|| Signal::new(ViewportProbe(0)));
+    assert_eq!(
+        super::__unowned_signal_warn_count(),
+        before,
+        "a signal created inside unscope must not warn about being unowned"
+    );
+}
+
+/// A distinct payload type so the suppression test's `Signal::new` site is
+/// unique (the warning dedups by creation site) and independent of other tests.
+#[derive(Clone)]
+struct ViewportProbe(#[allow(dead_code)] u32);
