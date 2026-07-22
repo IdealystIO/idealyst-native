@@ -13,7 +13,26 @@ that compile into separate wasm chunks, loaded on demand. On native
 platforms it's a no-op — the chunk crate is a normal cargo dep and
 its content is mounted inline.
 
-> Status: proposal. Not implemented.
+> **Status: implemented, and evolved past this proposal.** The living
+> author-facing docs are the `lazy-loading` MCP guide. What shipped beyond what
+> this document describes:
+>
+> - **Component-level laziness is the primary surface.** `#[component(lazy)]` /
+>   `#[lazy_component]` split a component's body into a chunk and make its
+>   **props the args** that cross the boundary — the "typed args / v2" gap this
+>   proposal defers (below) is closed for the common case. `lazy! { … }` remains
+>   for splitting an anonymous, input-free block.
+> - **Three real states.** The loader yields `Result<Element, String>`; the
+>   walker drives a Loading → Ready | Error machine. `loading` / `error` props
+>   (or `LazyBuilder::loading` / `on_error`) render each, and `LazyError` carries
+>   `.message()` + a `.retry()` that re-drives the load. Retry opts in via
+>   `#[component(lazy, retryable)]`.
+> - **Eager construction is owned, not leaked.** The chunk's loader future runs
+>   under the chunk's reactive scope, so state a component/SDK allocates in its
+>   constructor (signals in `CoreCanvas::new()`, `signal()` at build) is owned by
+>   the chunk and torn down with it. Earlier this leaked ("signal created
+>   outside any reactive scope") — that trap is closed; there is no need to defer
+>   eager-state widgets to walk-time.
 
 ---
 

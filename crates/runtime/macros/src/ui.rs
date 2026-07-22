@@ -2818,37 +2818,26 @@ fn emit_if(
         };
     }
 
-    // 3. Reactive condition → `when(move || cond, …)`. Two shapes qualify, both
-    //    lowered identically:
-    //      (a) a `.get()` read anywhere in the condition (`if sig.get() > 0`,
-    //          `if !flag.get()`). A `.get()` buried in a comparison/negation has
-    //          a plain `bool` *type*, so the type-driven dispatch (path 4) would
-    //          miss it — this keeps it live, exactly as 0.0.1 did.
-    //      (b) a top-level CALL condition — `if use_focus()()`,
-    //          `if state.is_active()`, `if is_active(state)`. A call may read a
-    //          signal that isn't spelled `.get()` (a reactive hook returning
-    //          `impl Fn() -> bool`, a predicate that reads a signal internally).
-    //          In 0.0.1 those were treated as static and **silently frozen** —
-    //          the documented `use_focus()` footgun. 0.1.0 makes any top-level
-    //          `Call`/`MethodCall` reactive: the framework's Effect tracks
-    //          whatever signals the call reads while evaluating, so it's live. A
-    //          static call (reads no signal) yields an inert effect that runs
-    //          once and never re-fires — correct and ~free.
+    // 3. Reactive by default (0.4.0 inverted gate) → `when(move || cond, …)`.
+    //    ANY condition that might read a signal — a call / method-call / `.get()`
+    //    anywhere in the tree (`if sig.get() > 0`, `if a.get() < b.get()`,
+    //    `if items.len() > 0`, `if foo(x) < bar(y)`, `if state.is_active()`), or
+    //    an unrecognized exotic shape — lowers reactively. The framework's Effect
+    //    subscribes to whatever the closure reads while evaluating; a genuinely
+    //    static condition yields an inert effect that runs once and never
+    //    re-fires (correct, ~free).
     //
-    //    We do NOT force EVERY condition reactive. A pure structural comparison
-    //    (`if kind == Kind::Scope`, `if !name.is_empty()`, `if a && b`) reads no
-    //    signal by construction, so wrapping it in a `move ||` closure would only
-    //    impose `'static`/`Clone` capture ceremony (cloning an `Rc` per branch,
-    //    threading owned strings, …) for zero reactive benefit. Those fall
-    //    through to the plain static `if` (path 5, borrowed captures, flat-splat).
-    //    The one residual gap — a non-`.get()` reactive read hidden inside such a
-    //    comparison — is authored with the visible closure boundary
-    //    `{ move || if cond { … } else { … } }` (an `Element::Dynamic`), the same
-    //    escape hatch every reactive child uses. The trade-off of (a)/(b) is the
-    //    `'static` move-capture the closure imposes: a branch that renders a
-    //    borrowed/non-`Clone` value now needs a `.clone()` or `'static` capture —
-    //    a loud, diagnosable compile error, never a silent freeze.
-    if condition_is_reactive(cond) || matches!(cond, Expr::Call(_) | Expr::MethodCall(_)) {
+    //    Reactivity is the SAFE DEFAULT here: a real signal read is NEVER
+    //    silently frozen (the pre-0.4.0 gate assumed static unless it spotted a
+    //    top-level call or a literal `.get()`, so `if items.len() > 0` and
+    //    `match x.method()` froze). The trade-off is the `'static` move-capture
+    //    the closure imposes: a branch rendering a borrowed/non-`Clone` value now
+    //    needs a `.clone()` or `'static` capture — a loud, diagnosable compile
+    //    error, never a silent freeze. See the `migration-0-3-0-to-0-4-0` guide.
+    //    To force a genuinely-static-but-call-containing condition back to a
+    //    borrowed-capture plain `if`, read it via `.get_untracked()` or hoist it
+    //    to a `let` above the `ui!` block.
+    if condition_may_read_signal(cond) {
         let then_expr = emit_block_as_primitive(then_body);
         let else_expr =
             else_body.map(emit_block_as_primitive).unwrap_or_else(empty_view_primitive);
@@ -2857,13 +2846,12 @@ fn emit_if(
         };
     }
 
-    // 4. Type-driven dispatch — ONLY for a condition whose TYPE could be a
-    //    reactive bool: a bare path (`if del_visible`) or field access
-    //    (`if state.open`). Those are the only shapes that might be a
-    //    `Signal<bool>`/`Derived<bool>` rather than a plain `bool`. We emit
-    //    `(COND).__idealyst_if(then, els)` with BOTH `StaticCond` and
-    //    `ReactiveCond` in scope; Rust method resolution picks the impl from
-    //    COND's type:
+    // 4. Type-driven dispatch — a CALL-FREE bare path (`if del_visible`) or field
+    //    access (`if state.open`) whose TYPE decides reactivity. Those are the
+    //    only remaining shapes that might be a `Signal<bool>`/`Derived<bool>`
+    //    rather than a plain `bool`. We emit `(COND).__idealyst_if(then, els)`
+    //    with BOTH `StaticCond` and `ReactiveCond` in scope; Rust method
+    //    resolution picks the impl from COND's type:
     //      - `bool` → `StaticCond` → the taken branch's flat node list;
     //      - `Signal<bool>` (e.g. `memo(...)`) / `Derived<bool>` →
     //        `ReactiveCond` → one reactive `when`.
@@ -2871,10 +2859,10 @@ fn emit_if(
     //    (preserving no-wrapper flat-splat) and `ChildList`/`one_or_view`
     //    normalize per ctx.
     //
-    // 5. EVERY OTHER condition shape — a literal, `&&`/`||`/`!`, a comparison —
-    //    is a pure static `bool` (path 3 already claimed the reactive shapes),
-    //    so it falls through to `emit_plain_if` (a plain Rust `if`, captures
-    //    BORROWED, flat-splat in child slot).
+    // 5. EVERY OTHER (call-free) condition shape — a literal, `&&`/`||`/`!`, a
+    //    comparison of call-free operands (`if kind == Kind::Scope`, `if a && b`)
+    //    — is a provably signal-free `bool`, so it falls through to
+    //    `emit_plain_if` (a plain Rust `if`, captures BORROWED, flat-splat).
     if !matches!(cond, Expr::Path(_) | Expr::Field(_)) {
         return emit_plain_if(cond, then_body, else_body, ctx);
     }
@@ -2996,6 +2984,79 @@ fn condition_is_reactive(cond: &Expr) -> bool {
     compact.contains(".get()")
 }
 
+/// The 0.4.0 inverted-gate predicate. Returns `true` when a condition /
+/// scrutinee is **not provably signal-free** — i.e. it might read a reactive
+/// signal, so it must lower reactively (`when` / `switch`). The bias is
+/// deliberate and one-directional: any shape we can't prove reads no signal
+/// defaults to reactive, so a genuine reactive read is **never silently
+/// frozen**. The only cost of a false positive (a static expression treated
+/// reactive) is an inert effect that runs once and never re-fires — correct and
+/// ~free. This replaces the pre-0.4.0 gate, which assumed *static* unless it
+/// spotted a top-level call or a literal `.get()`, and so silently froze
+/// reactive reads buried inside a comparison/negation (`if a.get() < b.get()`
+/// stayed live only by the `.get()` string check; `if foo(x) < bar(y)` and
+/// `match x.method()` froze). See the `migration-0-3-0-to-0-4-0` guide.
+///
+/// Provably signal-free = a tree built only from literals, paths, field/index
+/// access, references, and unary/binary/boolean operators over signal-free
+/// operands. **Any** function or method call (`.get()`, `.len()`, `foo(x)`)
+/// makes it non-signal-free, because a call can read a signal — directly via
+/// `.get()`, or inside the callee. A call-free bare path/field is left for the
+/// type-driven `StaticCond` / `ReactiveCond` dispatch in `emit_if` (its *type*
+/// decides). Macros are checked for a literal `.get()` (the one seam we can't
+/// walk structurally); unrecognized exotic shapes default to reactive.
+fn condition_may_read_signal(expr: &Expr) -> bool {
+    match expr {
+        // A call of any kind may read a signal — directly (`.get()`) or in the
+        // callee (`foo(x)`, `items.len()`, a predicate that reads a signal).
+        //
+        // `.get_untracked()` is the EXCEPTION: it is the framework's declared
+        // intentional-static marker — an explicit non-subscribing read (the same
+        // escape the `snapshot-condition` lint and the runtime untracked-read
+        // warning honor). Honoring it here makes it a real INLINE escape hatch:
+        // `if sig.get_untracked() > 3` lowers to a static plain `if` with
+        // borrowed captures, matching author intent, instead of a reactive
+        // `when` that never fires. We still recurse into the RECEIVER, which may
+        // itself read a signal (`foo().get_untracked()`).
+        Expr::MethodCall(m) if m.method == "get_untracked" && m.args.is_empty() => {
+            condition_may_read_signal(&m.receiver)
+        }
+        Expr::Call(_) | Expr::MethodCall(_) => true,
+        // Structural operators / wrappers: reactive iff any operand is.
+        Expr::Binary(b) => {
+            condition_may_read_signal(&b.left) || condition_may_read_signal(&b.right)
+        }
+        Expr::Unary(u) => condition_may_read_signal(&u.expr),
+        Expr::Paren(p) => condition_may_read_signal(&p.expr),
+        Expr::Group(g) => condition_may_read_signal(&g.expr),
+        Expr::Reference(r) => condition_may_read_signal(&r.expr),
+        Expr::Field(f) => condition_may_read_signal(&f.base),
+        Expr::Index(i) => {
+            condition_may_read_signal(&i.expr) || condition_may_read_signal(&i.index)
+        }
+        Expr::Cast(c) => condition_may_read_signal(&c.expr),
+        Expr::Try(t) => condition_may_read_signal(&t.expr),
+        Expr::Tuple(t) => t.elems.iter().any(condition_may_read_signal),
+        Expr::Array(a) => a.elems.iter().any(condition_may_read_signal),
+        Expr::Range(r) => {
+            r.start.as_deref().is_some_and(condition_may_read_signal)
+                || r.end.as_deref().is_some_and(condition_may_read_signal)
+        }
+        // Leaves that cannot read a signal on their own.
+        Expr::Lit(_) | Expr::Path(_) => false,
+        // `if let PAT = EXPR` bindings are handled by the caller (always static);
+        // never treated as a signal read here.
+        Expr::Let(_) => false,
+        // A macro's tokens can't be walked structurally, so fall back to the
+        // visible-`.get()` seam: `matches!(sig.get(), …)` stays reactive,
+        // `matches!(kind, Kind::Scope)` stays static.
+        Expr::Macro(_) => condition_is_reactive(expr),
+        // Exotic shapes (block, closure, async, nested if/match, …) are rare in
+        // a condition; default to reactive so nothing is silently frozen.
+        _ => true,
+    }
+}
+
 /// Emit a `match` UI node. Same reactivity heuristic as `emit_if`:
 /// if the scrutinee reads a signal, lower to `runtime_core::switch`
 /// so the arm re-evaluates on signal changes (and surviving subtrees
@@ -3038,8 +3099,14 @@ fn emit_match(scrutinee: &Expr, arms: &[MatchArm], ctx: Ctx) -> TokenStream2 {
     //       enum lowered to a STATIC plain `match` and never re-rendered
     //       on signal change — unlike the equivalent `if key(state) { … }`,
     //       which the structured `if` path always makes reactive.
+    // 0.4.0 inverted gate: reactive by default. A scrutinee that might read a
+    // signal — `match screen.get()`, `match x.method()`, `match key(state)` —
+    // lowers to a reactive `switch`; only a provably signal-free scrutinee
+    // (`match plain_enum`) stays a static plain `match`. `reactive_call` is kept
+    // separately to drive the shape-(b) arg rewrite below (`key(state)` →
+    // `key((state).get())`).
     let reactive_call = is_reactive_call_shape(scrutinee);
-    if condition_is_reactive(scrutinee) || reactive_call {
+    if condition_may_read_signal(scrutinee) || reactive_call {
         // Build the scrutinee the closure evaluates. For shape (b) we
         // rewrite `key(state)` → `key((state).get())` so the closure
         // subscribes to each signal arg (the structured paths do the

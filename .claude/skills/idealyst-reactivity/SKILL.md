@@ -79,8 +79,11 @@ scope.
   nothing. Commonest form is the **hoisted-snapshot trap**: `let ok =
   x.get()…;` at component-body level then `if ok { … }` in `ui!` — `ok` is a
   frozen `bool`, the branch is static, silently. Keep derivations behind
-  `move ||` (`memo(move || …)`) or inline the `.get()` into the condition
-  (auto-promoted to `when`). "A `let` freezes, a closure flows." GUARDED:
+  `move ||` (`memo(move || …)`) or inline the read into the condition — under
+  the 0.4.0 inverted gate any `if`/`match` condition that might read a signal (a
+  `.get()` or any call anywhere) lowers to `when`/`switch`; only a provably
+  signal-free condition stays static. "A `let` freezes, a closure — or a call
+  in the condition — flows." GUARDED:
   debug builds warn at runtime (untracked build read, names the component;
   `__take_untracked_build_read_warnings` in tests), the `snapshot-condition`
   lint flags it (ambient in `idealyst dev`), and `.get_untracked()` declares

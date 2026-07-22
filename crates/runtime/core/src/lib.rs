@@ -371,7 +371,7 @@ pub use text_defaults::{
 pub use styled_text::{TextRun, TextRunStyle};
 
 pub use runtime_macros::{
-    component, doc_scope, jsx, lazy, props, recipe, stylesheet, ui,
+    component, doc_scope, jsx, lazy, lazy_component, props, recipe, stylesheet, ui,
 };
 
 /// `#[idealyst_tool]` and `#[derive(IdealystSchema)]` — the

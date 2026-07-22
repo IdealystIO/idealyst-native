@@ -931,9 +931,9 @@ fn dispatch_presence<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Eleme
 
 #[inline(never)]
 fn dispatch_lazy<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
-    let Element::Lazy { loader, on_state, placeholder, style, ref_fill, accessibility } = node
+    let Element::Lazy { loader, on_state, placeholder, error, style, ref_fill, accessibility } = node
     else { unreachable!() };
-    lazy::build(backend, loader, on_state, placeholder, style, ref_fill, accessibility)
+    lazy::build(backend, loader, on_state, placeholder, error, style, ref_fill, accessibility)
 }
 
 #[cfg(test)]

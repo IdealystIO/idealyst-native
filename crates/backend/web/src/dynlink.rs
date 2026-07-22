@@ -54,28 +54,21 @@ pub fn install_dynlink_loader() {
                 Ok(v) => {
                     let ptr = v.as_f64().unwrap_or(0.0) as u32 as *mut runtime_core::Element;
                     if ptr.is_null() {
-                        empty_placeholder()
+                        // A null pointer means the JS loader reported failure
+                        // (fetch / link error). Surface it so the walker's state
+                        // machine shows the `.on_error(..)` UI as a retryable
+                        // failure instead of silently rendering nothing.
+                        Err(format!("lazy! dynamic-split: chunk {hash} failed to load"))
                     } else {
                         // SAFETY: the side built this `Box<Element>` on the
                         // SHARED heap (its allocator resolves to main's via the
                         // GOT), so it is a valid main-heap allocation we now own.
-                        *unsafe { Box::from_raw(ptr) }
+                        Ok(*unsafe { Box::from_raw(ptr) })
                     }
                 }
-                Err(e) => {
-                    runtime_core::logging::log(
-                        runtime_core::logging::LogLevel::Error,
-                        &format!("lazy! dynamic-split: load failed for {hash}: {e:?}"),
-                    );
-                    empty_placeholder()
-                }
+                Err(e) => Err(format!("lazy! dynamic-split: load failed for {hash}: {e:?}")),
             }
         })
     });
     runtime_core::primitives::lazy::install_dynlink_loader(loader);
-}
-
-fn empty_placeholder() -> runtime_core::Element {
-    use runtime_core::IntoElement;
-    runtime_core::view(Vec::new()).into_element()
 }

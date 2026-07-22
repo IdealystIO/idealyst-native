@@ -154,7 +154,7 @@ pub(crate) fn try_expand(
         });
     }
 
-    Ok(Some(emit_glue(item_fn, &fields)))
+    Ok(Some(emit_glue(item_fn, &fields, attr)))
 }
 
 /// The classic explicit-props signature: exactly one parameter, no
@@ -192,7 +192,7 @@ pub(crate) fn is_legacy_props_sig(sig: &syn::Signature) -> bool {
 /// structural difference is `build()` calling the fn field-by-field and
 /// the per-field defaults living directly in `Default` (so no
 /// `defaults()` override is needed).
-fn emit_glue(item_fn: &ItemFn, fields: &[Field]) -> TokenStream2 {
+fn emit_glue(item_fn: &ItemFn, fields: &[Field], attr: &ComponentAttr) -> TokenStream2 {
     let fn_name = &item_fn.sig.ident;
     let vis = &item_fn.vis;
     let props_ident = format_ident!("{}Props", fn_name);
@@ -218,6 +218,26 @@ fn emit_glue(item_fn: &ItemFn, fields: &[Field]) -> TokenStream2 {
             None => quote! { #name: ::core::default::Default::default(), },
         }
     });
+
+    if attr.lazy {
+        // Lazy mode: the component's body compiles into a separate wasm chunk
+        // and `build()` yields an `Element::Lazy`. The struct gains `loading` /
+        // `error` config fields (not forwarded to the component fn), and the
+        // component's args cross the chunk boundary as `props`.
+        let arg_names: Vec<&Ident> = fields.iter().map(|f| &f.name).collect();
+        return crate::lazy_component::emit_inline_lazy_glue(crate::lazy_component::LazyGlue {
+            fn_name,
+            props_ident: &props_ident,
+            vis,
+            fn_docs: &fn_docs,
+            struct_doc: &struct_doc,
+            field_defs: field_defs.collect(),
+            default_fields: default_fields.collect(),
+            arg_names: &arg_names,
+            retryable: attr.retryable,
+        });
+    }
+
     let build_args = fields.iter().map(|f| {
         let name = &f.name;
         quote! { self.#name }
