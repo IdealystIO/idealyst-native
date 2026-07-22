@@ -40,14 +40,20 @@
 //! }
 //! ```
 //!
-//! # v1 constraints
+//! # Constraints
 //!
-//! - **No captures.** The lazy block can't reference enclosing
-//!   variables. (wasm-split's annotated function is a plain `fn`,
-//!   not `Fn`; it can't carry state. Capture hoisting via typed
-//!   `Args` is the v2 plan.)
+//! - **No captures.** The `lazy! { … }` *block* can't reference enclosing
+//!   variables — wasm-split's annotated function is a plain `fn`, not `Fn`, so
+//!   it can't carry state. To pass runtime input across a split, use a
+//!   **lazy component** instead: `#[component(lazy)]` / `#[lazy_component]`
+//!   turns the component's props into the args that cross the boundary (see
+//!   the `lazy-loading` guide). `lazy! { … }` stays the tool for splitting an
+//!   anonymous block that needs no inputs.
 //! - **Return type is `Element`.** The block is interpreted as a
-//!   `ui!` block — its value is coerced through `IntoElement`.
+//!   `ui!` block — its value is coerced through `IntoElement`, then wrapped
+//!   `Ok` for the loader (whose output is `Result<Element, String>`; real load
+//!   failures on the dynamic-split path surface as `Err` and drive the
+//!   `.on_error(..)` UI).
 //!
 //! # Naming
 //!
@@ -101,7 +107,14 @@ pub fn emit(input: TokenStream) -> TokenStream {
                 { #body_tokens }.into_element()
             }
             ::runtime_core::primitives::lazy::lazy_split(|| {
-                ::std::boxed::Box::pin(#body_ident(()))
+                // The loader yields `Result<Element, String>`. On the inline /
+                // static-wasm-split path the body always produces an `Element`,
+                // so wrap it `Ok`. Real load failures are surfaced by the
+                // dynamic-split loader (`__dynlink_load`) and land in the
+                // `.on_error(..)` UI.
+                ::std::boxed::Box::pin(async move {
+                    ::std::result::Result::Ok(#body_ident(()).await)
+                })
             })
         }
     };

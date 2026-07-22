@@ -103,6 +103,43 @@ fn structural_condition_stays_static_with_borrowed_capture() {
     assert_eq!(count_create_text(&rt.events(), "hi"), 1, "static branch mounted once");
 }
 
+/// `.get_untracked()` is the intentional-static escape hatch, honored INLINE.
+/// `if sig.get_untracked() < 2` reads once at build, keeps BORROWED captures
+/// (the branch references an `Rc` still owned after the `ui!` — only possible
+/// without a `move` closure), and does NOT rebuild when the signal changes.
+#[test]
+fn get_untracked_condition_stays_static_with_borrowed_capture() {
+    let rt = TestRuntime::new();
+    let n: Signal<i32> = signal(0);
+    let shared: Rc<String> = Rc::new("hi".to_string());
+
+    let tree: Element = ui! {
+        view {
+            if n.get_untracked() < 2 {
+                text { shared.as_str().to_string() }
+            } else {
+                text { "high".to_string() }
+            }
+        }
+    };
+    let _owner = rt.render(tree);
+
+    // Borrowed-capture proof: `shared` is still owned here (a reactive `when`
+    // would have MOVED it into the branch closure — this would not compile).
+    assert_eq!(shared.as_str(), "hi");
+    assert_eq!(count_create_text(&rt.events(), "hi"), 1, "static branch mounted once");
+
+    // Static: no rebuild when the untracked signal changes.
+    rt.backend_mut().clear_events();
+    n.set(9);
+    assert_eq!(
+        count_create_text(&rt.events(), "high"),
+        0,
+        "`.get_untracked()` condition is static — no rebuild on set (events: {:?})",
+        rt.events()
+    );
+}
+
 /// 0.4.0 headline fix: a signal read BURIED IN A COMPARISON — not a top-level
 /// call, no visible `.get()` at the `if` site — is now reactive. Pre-0.4.0 the
 /// gate only caught top-level calls / literal `.get()`, so `if count() > 1`

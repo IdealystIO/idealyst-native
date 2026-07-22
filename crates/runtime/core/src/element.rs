@@ -877,6 +877,10 @@ pub enum Element {
         /// Subtree mounted immediately as a fallback while the
         /// chunk loads. `None` renders an empty view.
         placeholder: Option<Box<dyn Fn() -> Element>>,
+        /// Built when the chunk fails to load, receiving a
+        /// [`LazyError`](primitives::lazy::LazyError) with the failure message
+        /// and a `retry` handle. `None` keeps the placeholder visible and logs.
+        error: Option<Rc<dyn Fn(&primitives::lazy::LazyError) -> Element>>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
         accessibility: AccessibilityProps,

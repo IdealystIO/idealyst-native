@@ -3009,6 +3009,18 @@ fn condition_may_read_signal(expr: &Expr) -> bool {
     match expr {
         // A call of any kind may read a signal — directly (`.get()`) or in the
         // callee (`foo(x)`, `items.len()`, a predicate that reads a signal).
+        //
+        // `.get_untracked()` is the EXCEPTION: it is the framework's declared
+        // intentional-static marker — an explicit non-subscribing read (the same
+        // escape the `snapshot-condition` lint and the runtime untracked-read
+        // warning honor). Honoring it here makes it a real INLINE escape hatch:
+        // `if sig.get_untracked() > 3` lowers to a static plain `if` with
+        // borrowed captures, matching author intent, instead of a reactive
+        // `when` that never fires. We still recurse into the RECEIVER, which may
+        // itself read a signal (`foo().get_untracked()`).
+        Expr::MethodCall(m) if m.method == "get_untracked" && m.args.is_empty() => {
+            condition_may_read_signal(&m.receiver)
+        }
         Expr::Call(_) | Expr::MethodCall(_) => true,
         // Structural operators / wrappers: reactive iff any operand is.
         Expr::Binary(b) => {

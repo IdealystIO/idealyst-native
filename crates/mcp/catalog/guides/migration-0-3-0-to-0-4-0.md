@@ -1,7 +1,7 @@
 +++
 title = "Migrating 0.3 → 0.4"
 order = 903
-tags = ["migration", "0.4.0", "breaking", "reactivity", "macros"]
+tags = ["migration", "0.4.0", "breaking", "reactivity", "macros", "lazy", "code-splitting"]
 +++
 
 # Migrating 0.3 → 0.4
@@ -95,8 +95,10 @@ if list.get().contains(&needle) {
 ```
 
 To force a call-containing condition back to a borrowed-capture static `if`
-against your intent, read it via `.get_untracked()` (the intentional-static
-marker) — but prefer the `let bool` hoist, which reads clearer.
+against your intent, read the signal **inline** via `.get_untracked()` — the
+framework's intentional-static marker is honored directly in the condition
+(`if sig.get_untracked() < 3` stays static, no `move` capture). The `let bool`
+hoist is the other option and reads clearer for a plain presence check.
 
 **Status:** landed. `emit_if` / `emit_match` route through
 `condition_may_read_signal`; regression coverage in
@@ -121,11 +123,60 @@ plus the dedup-preserved and static-stays-static assertions in the same files.
 - **`if let PAT = EXPR`** is unchanged — always static (author a reactive form as
   `match sig.get() { … }`).
 
+## Lazy loading: component surface + a fallible loader
+
+0.4.0 promotes code-splitting from an inline-block-only tool to a
+**component-level** one, and gives a lazy load real, observable states. See the
+[[lazy-loading]] guide for the full surface; the migration-relevant deltas:
+
+**New (additive).** A component can be split into its own wasm chunk with
+`#[component(lazy)]` (or the `#[lazy_component]` shorthand). Its **props become
+the args** that cross the split, so runtime input no longer forces you off the
+blessed API into the `#[wasm_split]` internals. The generated props gain
+`loading` / `error` config fields, and the load exposes three states —
+Loading → Ready | Error — with a `LazyError` (`.message()` + `.retry()`). Retry
+opts in via `#[component(lazy, retryable)]` (which derives `Clone` on the
+props). Eager state a chunk builds in a constructor is now **owned by the chunk
+scope**, not leaked — the pre-0.4.0 "signal created outside any reactive scope"
+trap on lazy bodies is closed.
+
+**Breaking (narrow).** The loader's output type changed:
+
+```rust
+// 0.3
+pub type LazyFuture = Pin<Box<dyn Future<Output = Element>>>;
+// 0.4 — the load can fail (web fetch / dynamic-link), surfaced to `.on_error(..)`
+pub type LazyFuture = Pin<Box<dyn Future<Output = Result<Element, String>>>>;
+```
+
+The `lazy! { … }` macro handles this for you (it wraps the block's `Element` in
+`Ok`). You only touch it if you **hand-roll a loader** — a bare `lazy_split(||
+Box::pin(async { … }))`, an `install_dynlink_loader` bridge, or a direct
+`Element::Lazy { … }` construction:
+
+```rust
+// before
+lazy_split(|| Box::pin(async { my_chunk().await.into_element() }))
+// after — wrap the success value; return `Err(msg)` to drive the error UI
+lazy_split(|| Box::pin(async { Ok(my_chunk().await.into_element()) }))
+```
+
+`Element::Lazy` also gained an `error` field; an exhaustive `match` on `Element`
+that names `Lazy { … }` needs the new field (or `..`).
+
+**Status:** landed. Coverage in `crates/runtime/core/tests/walker/lazy.rs`
+(`error_ui_renders_on_load_failure`, `retry_reloads_after_error`, and the
+`lazy_component_*` macro tests) and `primitives::lazy` / `walker::lazy` unit
+tests.
+
 ## Migration checklist
 
 - [ ] Build. Fix any `E0507` ("cannot move out of value, a captured variable in
       an `Fn` closure") / `E0382` ("use of moved value") at an `if` / `match`
       whose condition contains a call.
+- [ ] If you **hand-roll a lazy loader** (not the `lazy!` macro), wrap its
+      success value in `Ok(...)`; the loader now returns `Result<Element,
+      String>`. Add `..` to any exhaustive `match` on `Element::Lazy { … }`.
 - [ ] For each: is the condition **static**? → hoist it to a `let bool` above the
       `ui!` block. Is it **reactive**? → `.clone()` the non-`Copy` value the
       branch needs, or restructure to `if let`.

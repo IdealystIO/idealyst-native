@@ -33,6 +33,7 @@ mod inline_props;
 mod invocation_macro;
 mod jsx;
 mod lazy;
+mod lazy_component;
 #[cfg(feature = "catalog")]
 mod external_emit;
 #[cfg(feature = "catalog")]
@@ -290,6 +291,26 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
         Ok(a) => a,
         Err(e) => return e.to_compile_error().into(),
     };
+    emit_component(attr, item)
+}
+
+/// `#[lazy]` — shorthand for `#[component(lazy)]`. The component's body ships in
+/// a separate wasm chunk, loaded on first mount; its props become the args that
+/// cross the split. `#[lazy(retryable)]` == `#[component(lazy, retryable)]`;
+/// the same `#[component(...)]` argument grammar is accepted, with `lazy`
+/// implied. Prefer this for the common "this component is heavy, always
+/// chunk it" case; drop to explicit `#[component(lazy, …)]` when you need other
+/// component options alongside.
+#[proc_macro_attribute]
+pub fn lazy_component(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let attr = match component_attr::parse_lazy_attr(attr.into()) {
+        Ok(a) => a,
+        Err(e) => return e.to_compile_error().into(),
+    };
+    emit_component(attr, item)
+}
+
+fn emit_component(attr: component_attr::ComponentAttr, item: TokenStream) -> TokenStream {
     let mut item_fn = parse_macro_input!(item as ItemFn);
     // `strict-docs`: require a doc comment on the component fn. Computed
     // from the original attrs before any rewrite; emitted alongside the
@@ -355,6 +376,21 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
         Ok(g) => g,
         Err(e) => return e.to_compile_error().into(),
     };
+    // Lazy mode threads the component's props across the chunk boundary and
+    // generates the `loading`/`error` config fields — both of which need the
+    // macro-generated inline-props struct. A no-arg or legacy explicit-props
+    // component doesn't have one, so route the author to a shape that does.
+    if attr.lazy && inline_glue.is_none() {
+        return syn::Error::new_spanned(
+            &item_fn.sig.ident,
+            "#[component(lazy)] / #[lazy] currently requires inline props \
+             (declare the props as fn parameters: `#[lazy] fn Foo(id: u32) -> Element`). \
+             For a no-arg component add a parameter, and for a component both eager and \
+             lazy, wrap the eager one with `lazy_component!(LazyFoo = Foo)`.",
+        )
+        .to_compile_error()
+        .into();
+    }
     // Components read as PascalCase at the `ui!` call site. Authors who
     // also name the fn itself PascalCase — the "true `fn` component"
     // style — would otherwise trip Rust's `non_snake_case` lint. Inject

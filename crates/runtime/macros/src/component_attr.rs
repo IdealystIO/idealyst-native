@@ -43,13 +43,50 @@ pub(crate) struct ComponentAttr {
     /// `Some` when the component is tagged for external (Web Component)
     /// export. Drives the `ExternalEntry` catalog registration.
     pub(crate) external: Option<ExternalSpec>,
+    /// `#[component(lazy)]` / `#[component(lazy = true)]` (or the `#[lazy]`
+    /// shorthand) — the component's body is compiled into a separate wasm
+    /// chunk and its `BuildElement` yields an `Element::Lazy`. The generated
+    /// props struct gains `loading` / `error` config fields.
+    pub(crate) lazy: bool,
+    /// `#[component(lazy, retryable)]` — derive `Clone` on the props so the
+    /// error UI's `retry()` can re-invoke the loader. Only meaningful with
+    /// `lazy`. Without it the loader is one-shot (props move once, no `Clone`
+    /// bound) and the error UI is message-only.
+    pub(crate) retryable: bool,
+}
+
+impl ComponentAttr {
+    fn empty() -> Self {
+        ComponentAttr {
+            defaults: Vec::new(),
+            has_children: false,
+            external: None,
+            lazy: false,
+            retryable: false,
+        }
+    }
 }
 
 pub(crate) fn parse_component_attr(input: TokenStream2) -> syn::Result<ComponentAttr> {
     if input.is_empty() {
-        return Ok(ComponentAttr { defaults: Vec::new(), has_children: false, external: None });
+        return Ok(ComponentAttr::empty());
     }
     syn::parse2::<ComponentAttr>(input)
+}
+
+/// Parse the argument list of the `#[lazy]` shorthand and fold it into a
+/// `ComponentAttr` with `lazy` forced on. `#[lazy]` == `#[component(lazy)]`;
+/// `#[lazy(retryable)]` == `#[component(lazy, retryable)]`. The same grammar
+/// as `#[component(...)]` is accepted (so `#[lazy(default(...))]` works), with
+/// `lazy` implied.
+pub(crate) fn parse_lazy_attr(input: TokenStream2) -> syn::Result<ComponentAttr> {
+    let mut attr = if input.is_empty() {
+        ComponentAttr::empty()
+    } else {
+        syn::parse2::<ComponentAttr>(input)?
+    };
+    attr.lazy = true;
+    Ok(attr)
 }
 
 impl Parse for ComponentAttr {
@@ -57,9 +94,23 @@ impl Parse for ComponentAttr {
         let mut defaults = Vec::new();
         let mut has_children = false;
         let mut external = None;
+        let mut lazy = false;
+        let mut retryable = false;
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
             match ident.to_string().as_str() {
+                "lazy" => {
+                    lazy = true;
+                    // Accept the `lazy = true` / `lazy = false` spelling too.
+                    if input.peek(Token![=]) {
+                        let _: Token![=] = input.parse()?;
+                        let lit: syn::LitBool = input.parse()?;
+                        lazy = lit.value;
+                    }
+                }
+                "retryable" => {
+                    retryable = true;
+                }
                 "default" => {
                     let content;
                     syn::parenthesized!(content in input);
@@ -104,7 +155,7 @@ impl Parse for ComponentAttr {
                     return Err(syn::Error::new(
                         ident.span(),
                         format!(
-                            "unexpected argument `{}`; only `default(...)`, `children`, and `external` are supported",
+                            "unexpected argument `{}`; only `default(...)`, `children`, `external`, `lazy`, and `retryable` are supported",
                             other
                         ),
                     ));
@@ -115,7 +166,13 @@ impl Parse for ComponentAttr {
             }
             let _: Token![,] = input.parse()?;
         }
-        Ok(ComponentAttr { defaults, has_children, external })
+        if retryable && !lazy {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "`retryable` only applies to a lazy component; use `#[component(lazy, retryable)]`",
+            ));
+        }
+        Ok(ComponentAttr { defaults, has_children, external, lazy, retryable })
     }
 }
 
