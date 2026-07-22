@@ -18,9 +18,25 @@ use serde_json::{json, Value};
 
 use super::compose::MANAGED_FILE;
 
-/// Path to `<dir>/.devcontainer/devcontainer.json`.
-pub fn devcontainer_json_path(dir: &Path) -> PathBuf {
-    dir.join(".devcontainer").join("devcontainer.json")
+/// Path to the targeted `devcontainer.json`: the default
+/// `<dir>/.devcontainer/devcontainer.json`, or a **named config**
+/// `<dir>/.devcontainer/<config>/devcontainer.json` (the devcontainer spec's
+/// multi-config layout, e.g. this repo's `arena` variant).
+pub fn devcontainer_json_path(dir: &Path, config: Option<&str>) -> PathBuf {
+    match config {
+        Some(c) => dir.join(".devcontainer").join(c).join("devcontainer.json"),
+        None => dir.join(".devcontainer").join("devcontainer.json"),
+    }
+}
+
+/// The `dockerComposeFile` entry for the managed file, relative to the
+/// targeted config's json. Named configs live one level deeper than
+/// `.devcontainer/`, where the (shared) managed file stays.
+fn managed_ref(config: Option<&str>) -> String {
+    match config {
+        Some(_) => format!("../{MANAGED_FILE}"),
+        None => MANAGED_FILE.to_string(),
+    }
 }
 
 /// Path to the user-owned base compose file.
@@ -28,25 +44,25 @@ pub fn base_compose_path(dir: &Path) -> PathBuf {
     dir.join(".devcontainer").join("docker-compose.yml")
 }
 
-/// Does the project already have a `devcontainer.json`?
-pub fn exists(dir: &Path) -> bool {
-    devcontainer_json_path(dir).exists()
+/// Does the project already have the targeted `devcontainer.json`?
+pub fn exists(dir: &Path, config: Option<&str>) -> bool {
+    devcontainer_json_path(dir, config).exists()
 }
 
-/// The compose service key of the main dev container. Read from
+/// The compose service key of the main dev container. Read from the targeted
 /// `devcontainer.json`'s `"service"`; defaults to `"dev"`.
-pub fn app_service(dir: &Path) -> String {
-    read_json(dir)
+pub fn app_service(dir: &Path, config: Option<&str>) -> String {
+    read_json(dir, config)
         .ok()
         .flatten()
         .and_then(|v| v.get("service").and_then(|s| s.as_str()).map(String::from))
         .unwrap_or_else(|| "dev".to_string())
 }
 
-/// Parse the existing `devcontainer.json` (JSONC-tolerant). `Ok(None)` when
+/// Parse the targeted `devcontainer.json` (JSONC-tolerant). `Ok(None)` when
 /// the file doesn't exist.
-fn read_json(dir: &Path) -> Result<Option<Value>> {
-    let path = devcontainer_json_path(dir);
+fn read_json(dir: &Path, config: Option<&str>) -> Result<Option<Value>> {
+    let path = devcontainer_json_path(dir, config);
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Ok(None);
     };
@@ -60,9 +76,21 @@ fn read_json(dir: &Path) -> Result<Option<Value>> {
 /// none is present. Does NOT add the managed reference (see [`add_reference`])
 /// so an empty service set still yields a working base container. Returns
 /// files written (empty when a devcontainer already exists).
-pub fn ensure_base(dir: &Path, project_name: &str) -> Result<Vec<PathBuf>> {
-    if read_json(dir)?.is_some() {
+///
+/// Named configs are never scaffolded — they're deliberate, hand-authored
+/// variants (a missing one is a typo, not a fresh project), so targeting an
+/// absent named config errors instead.
+pub fn ensure_base(dir: &Path, config: Option<&str>, project_name: &str) -> Result<Vec<PathBuf>> {
+    if read_json(dir, config)?.is_some() {
         return Ok(Vec::new());
+    }
+    if let Some(c) = config {
+        anyhow::bail!(
+            "named devcontainer config {:?} not found at {} — create it first \
+             (named configs are not scaffolded)",
+            c,
+            devcontainer_json_path(dir, config).display(),
+        );
     }
     scaffold_base(dir, project_name)
 }
@@ -74,8 +102,8 @@ pub fn ensure_base(dir: &Path, project_name: &str) -> Result<Vec<PathBuf>> {
 /// Errors if `devcontainer.json` is not compose-based (Dockerfile/image
 /// devcontainers can't merge our sidecar services) — rather than silently
 /// mangle it, we tell the user what's incompatible.
-pub fn add_reference(dir: &Path) -> Result<Vec<PathBuf>> {
-    let Some(mut value) = read_json(dir)? else {
+pub fn add_reference(dir: &Path, config: Option<&str>) -> Result<Vec<PathBuf>> {
+    let Some(mut value) = read_json(dir, config)? else {
         return Ok(Vec::new());
     };
     let obj = value
@@ -87,12 +115,12 @@ pub fn add_reference(dir: &Path) -> Result<Vec<PathBuf>> {
              idealyst-managed services attach via docker-compose; convert the \
              devcontainer to compose, or remove `.devcontainer/` to let \
              `idealyst configure devcontainer` scaffold a compose-based one.",
-            devcontainer_json_path(dir).display(),
+            devcontainer_json_path(dir, config).display(),
         );
     }
-    if add_managed_reference(obj) {
-        write_json(dir, &value)?;
-        return Ok(vec![devcontainer_json_path(dir)]);
+    if add_managed_reference(obj, &managed_ref(config)) {
+        write_json(dir, config, &value)?;
+        return Ok(vec![devcontainer_json_path(dir, config)]);
     }
     Ok(Vec::new())
 }
@@ -100,8 +128,8 @@ pub fn add_reference(dir: &Path) -> Result<Vec<PathBuf>> {
 /// Remove the managed-file reference from `dockerComposeFile` (used when the
 /// last managed service is torn down). Returns files written. No-op when the
 /// devcontainer is absent or already doesn't reference it.
-pub fn remove_reference(dir: &Path) -> Result<Vec<PathBuf>> {
-    let Some(mut value) = read_json(dir)? else {
+pub fn remove_reference(dir: &Path, config: Option<&str>) -> Result<Vec<PathBuf>> {
+    let Some(mut value) = read_json(dir, config)? else {
         return Ok(Vec::new());
     };
     let Some(obj) = value.as_object_mut() else {
@@ -113,8 +141,9 @@ pub fn remove_reference(dir: &Path) -> Result<Vec<PathBuf>> {
     let Some(arr) = entry.as_array_mut() else {
         return Ok(Vec::new());
     };
+    let managed = managed_ref(config);
     let before = arr.len();
-    arr.retain(|v| v.as_str() != Some(MANAGED_FILE));
+    arr.retain(|v| v.as_str() != Some(managed.as_str()));
     if arr.len() == before {
         return Ok(Vec::new());
     }
@@ -123,30 +152,30 @@ pub fn remove_reference(dir: &Path) -> Result<Vec<PathBuf>> {
         let only = arr[0].clone();
         obj.insert("dockerComposeFile".into(), only);
     }
-    write_json(dir, &value)?;
-    Ok(vec![devcontainer_json_path(dir)])
+    write_json(dir, config, &value)?;
+    Ok(vec![devcontainer_json_path(dir, config)])
 }
 
 /// Add the managed file to `dockerComposeFile`, normalizing a bare string to
 /// an array. Returns true if a change was made (caller should rewrite).
-fn add_managed_reference(obj: &mut serde_json::Map<String, Value>) -> bool {
+fn add_managed_reference(obj: &mut serde_json::Map<String, Value>, managed: &str) -> bool {
     let entry = obj.get("dockerComposeFile").cloned().unwrap_or(Value::Null);
     let mut files: Vec<Value> = match entry {
         Value::String(s) => vec![Value::String(s)],
         Value::Array(a) => a,
         _ => Vec::new(),
     };
-    if files.iter().any(|v| v.as_str() == Some(MANAGED_FILE)) {
+    if files.iter().any(|v| v.as_str() == Some(managed)) {
         return false;
     }
-    files.push(Value::String(MANAGED_FILE.to_string()));
+    files.push(Value::String(managed.to_string()));
     obj.insert("dockerComposeFile".into(), Value::Array(files));
     true
 }
 
-/// Write `devcontainer.json` pretty-printed with a trailing newline.
-fn write_json(dir: &Path, value: &Value) -> Result<()> {
-    let path = devcontainer_json_path(dir);
+/// Write the targeted `devcontainer.json` pretty-printed with a trailing newline.
+fn write_json(dir: &Path, config: Option<&str>, value: &Value) -> Result<()> {
+    let path = devcontainer_json_path(dir, config);
     let mut text = serde_json::to_string_pretty(value).context("serialize devcontainer.json")?;
     text.push('\n');
     std::fs::write(&path, text).with_context(|| format!("write {}", path.display()))?;
@@ -175,8 +204,8 @@ fn scaffold_base(dir: &Path, project_name: &str) -> Result<Vec<PathBuf>> {
             }
         }
     });
-    let json_path = devcontainer_json_path(dir);
-    write_json(dir, &devcontainer)?;
+    let json_path = devcontainer_json_path(dir, None);
+    write_json(dir, None, &devcontainer)?;
 
     // Base compose: a single Rust dev container. `..` (the project root, one
     // level up from `.devcontainer/`) is mounted at the workspace folder.

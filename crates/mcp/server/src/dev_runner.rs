@@ -47,6 +47,11 @@ pub struct DevLaunch {
     /// `--local`: build the app natively per platform (no runtime-server
     /// wire). See the CLI docs for the trade-off.
     pub local: bool,
+    /// `--headless-client`: force-launch a headless Chromium at the served
+    /// web URL. Dev already AUTO-launches one when the relay is active and
+    /// no display is present, so this is only needed to force it on a
+    /// machine that has a display.
+    pub headless_client: bool,
     /// `--no-robot`: disable the Robot bridge/relay for this session.
     pub no_robot: bool,
     /// `--bridge-port`: pin the Robot bridge to a fixed port.
@@ -176,6 +181,9 @@ impl DevRunner {
         }
         if launch.no_robot {
             cmd.arg("--no-robot");
+        }
+        if launch.headless_client {
+            cmd.arg("--headless-client");
         }
         if let Some(port) = launch.bridge_port {
             cmd.arg("--bridge-port").arg(port.to_string());

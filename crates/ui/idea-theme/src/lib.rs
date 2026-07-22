@@ -41,6 +41,11 @@ pub mod extensible;
 pub mod intent;
 mod theme_runtime;
 
+/// Compile-checked usage recipes (docs / MCP catalog). Present only under
+/// the `catalog` feature — see [`recipes`].
+#[cfg(feature = "catalog")]
+pub mod recipes;
+
 pub mod theme;
 
 // Generic theme-as-struct runtime. Re-exported at the crate root so

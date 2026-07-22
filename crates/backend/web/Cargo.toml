@@ -135,6 +135,9 @@ features = [
     "XmlHttpRequest",
     "HtmlIFrameElement",
     "HtmlInputElement",
+    # Robot DOM screenshot: live `option.selected` state is mirrored into the
+    # serialized clone's `selected` attribute (property→attribute sync).
+    "HtmlOptionElement",
     "HtmlStyleElement",
     "HtmlTextAreaElement",
     "KeyboardEvent",

@@ -1,0 +1,4 @@
+recorded_at_epoch,scenario_id,run_id,framework_commit,model,rubric_points,max_points,final_score,agent_total_tokens,mcp_payload_tokens,total_calls,duplicate_calls,mcp_calls,mcp_errors,mcp_tools_used,doc_bypass_reads,items_passed,items_failed,items_skipped,items_neutralized,lint_clean,lint_diagnostics,judge_visual_polish,judge_layout_sanity,judge_accessibility,judge_error_handling,judge_code_organization
+1784663826,themed-settings,run-0,13863798,claude-opus-4-8,90,100,93.656,403241,13189,94,3,19,3,12,24,6,1,0,0,,,,,,,
+1784666056,themed-settings,run-1,18fb4008,claude-opus-4-8,90,100,93.593,421956,11490,119,4,25,2,16,53,6,1,0,0,,,,,,,
+1784668279,themed-settings,run-2,d4780008,claude-opus-4-8,100,100,103.993,302126,14403,85,10,36,1,16,11,7,0,0,0,,,,,,,

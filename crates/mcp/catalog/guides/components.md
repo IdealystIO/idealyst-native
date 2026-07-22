@@ -133,6 +133,49 @@ ui! {
 
 `rx!(expr)` wraps a computed expression as a live `Reactive`; a bare `Signal<String>` is live too. The component renders it with plain `text(props.content.clone())` — a live value re-paints just that text node when its signals change, with no parent rebuild. idea-ui's `Typography` (`content`), `Button`/`Badge`/`Tag` (`label`), and `Alert` (`title`) all take `Reactive<String>`.
 
+## Rendering collections
+
+Two mechanisms render a list of items; pick by size and volatility:
+
+- **Keyed `for` inside `ui!`** — the default for small/bounded collections.
+  The loop header iterates the `Signal<Vec<T>>` ITSELF (never `items.get()`,
+  which freezes a build-time snapshot that never re-renders). The `key =`
+  expression drives reconciliation: rows are moved/reused rather than rebuilt
+  when the collection reorders.
+
+  ```rust
+  ui! {
+      for item in items, key = item.id {
+          Row(label = item.title.clone())
+      }
+  }
+  ```
+
+- **`flat_list` primitive** — for long or unbounded collections. It windows
+  rendering to the visible range (virtualization), so 10 000 rows cost what
+  ~20 do. Use it whenever the item count is user-driven and can grow.
+
+Never assemble rows by pushing into a `Vec<Element>` outside the macro — that
+defeats keyed reconciliation and hides the children from reactive-scope
+inference. See `describe_primitive("flat_list")` for its props.
+
+> Compile-checked, copy-pasteable examples exist for these patterns:
+> `list_recipes` / `describe_recipe` — the canonical reactive list is
+> `keyed_list_add_remove`, the canonical form is `input_with_submit`.
+
+## Accessibility
+
+Every primitive accepts a11y props (`a11y_label`, `a11y_role`, `a11y_hint`,
+`a11y_hidden`) and the `Bound` builder exposes the same as methods
+(`.a11y_role(Role::Header)`). Highlights of `runtime_core::accessibility::Role`:
+`Header`, `Link`, `List`, `ListItem`, `Button`.
+
+The rule that trips people: **visual style does not imply semantics.** A
+screen title needs `text(title).a11y_role(Role::Header)` — idea-ui's
+`Typography(kind = H1)` sets only the visual type scale, not a heading role.
+Locators, screen readers, and the arena's platform-truth checks all key on
+roles, not font sizes. Similarly, icon-only buttons need an `a11y_label`.
+
 ## Methods — imperative handles
 
 When a parent needs to imperatively poke a child (`.focus()`, `.scroll_to_top()`, `.reset()`), mark nested fns with `#[method]`:

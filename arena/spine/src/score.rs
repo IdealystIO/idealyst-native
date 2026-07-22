@@ -11,10 +11,11 @@
 
 use crate::rubric::{ItemClass, Rubric};
 use crate::verify::{verifier_for, RunContext, VerifyResult};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Serialize)]
+// Deserialize so `arena aggregate` can fold persisted scored.json files.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Outcome {
     pub item_id: String,
     /// The item's maximum point value.
@@ -30,7 +31,7 @@ pub struct Outcome {
     pub evidence: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScoredRun {
     pub outcomes: Vec<Outcome>,
     pub rubric_points: u32,
@@ -41,6 +42,10 @@ pub struct ScoredRun {
     pub final_score: f64,
     /// Outcome failures attributable to the framework, not the agent.
     pub framework_findings: Vec<String>,
+    /// Model id of the implementation agent (from its transcript). Scores are
+    /// only comparable within one model. None when scored without a transcript.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub model: Option<String>,
 }
 
 /// Verify every item against a produced project, then score.
@@ -132,6 +137,7 @@ pub fn score_from_results(
         mcp_payload_tokens,
         final_score,
         framework_findings: findings,
+        model: None,
     }
 }
 

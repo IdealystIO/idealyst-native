@@ -1,0 +1,80 @@
+# SECRET — items derive strictly from the stated requirements plus the
+# framework's documented navigation surface (StackNavigator/Screen — the
+# `navigation` guide's canonical form). Capability policy: component-library
+# wrappers count wherever a wrapper legitimately provides the capability.
+scenario_id = "nav-notes"
+
+[[item]]
+id = "builds-web"
+description = "The produced project builds for web."
+points = 20
+class = "decision"
+tier = "compile"
+verifier = "compile"
+assertion = { target = "web" }
+
+[[item]]
+id = "uses-stack-navigator"
+description = "Navigation goes through the navigator system (StackNavigator), not hand-rolled show/hide state."
+points = 15
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "StackNavigator", in = "src/**/*.rs" }
+
+# run-0 correction: the original `Screen\s*\(` pattern matched only the
+# navigation guide's STALE ui!-sugar form (which doesn't compile); the real
+# builder API is `StackNavigator::new(..).screen(ROUTE, |p| Screen::new(..))`.
+# The agent used the correct form and scored 0. Guide + rubric were wrong.
+[[item]]
+id = "declares-two-screens"
+description = "At least two screen declarations exist (list + detail) — builder `.screen(` calls or `Screen::new(`."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "\\.screen\\s*\\(|Screen::new\\s*\\(", in = "src/**/*.rs", min_count = 2 }
+
+# Attribution-depth lesson (run-0): the detail-navigation outcome bundles TWO
+# concerns — navigating AND heading semantics. Its depends_on pointed only at
+# the navigator decision, so a heading-semantics miss neutralized as a
+# "framework finding" wrongly. This decision item carries the semantics half;
+# the outcome now depends on it.
+[[item]]
+id = "detail-title-is-heading"
+description = "The detail title carries heading semantics (a11y_role heading or equivalent), as the prompt requires — not just large text."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "a11y_role\\s*[=:]\\s*\"?[Hh]eading|role\\s*=\\s*\"?heading", in = "src/**/*.rs" }
+
+[[item]]
+id = "list-shows-notes"
+description = "The list screen shows the three required notes."
+points = 15
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "declares-two-screens"
+assertion = { action = "observe the initial page state", expect_name = "Groceries" }
+
+[[item]]
+id = "detail-navigation-works"
+description = "Tapping a note reaches its detail screen with the title as a heading."
+points = 20
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "detail-title-is-heading"
+assertion = { action = "click the note titled 'Groceries'", expect_role = "heading", expect_name = "Groceries" }
+
+[[item]]
+id = "back-returns-to-list"
+description = "The native back affordance returns to the list."
+points = 20
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-stack-navigator"
+assertion = { action = "click the note titled 'Groceries', then use the back affordance (browser back or on-page back control)", expect_name = "Ideas" }

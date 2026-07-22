@@ -22,7 +22,7 @@ fn reconfigure(id: &str, variant: Option<&str>) -> ServiceRequest {
     ServiceRequest { id: id.into(), variant: variant.map(Into::into), action: Action::Reconfigure }
 }
 fn req(services: Vec<ServiceRequest>) -> ConfigureRequest {
-    ConfigureRequest { services }
+    ConfigureRequest { services, config: None }
 }
 
 fn managed(dir: &Path) -> String {
@@ -32,6 +32,95 @@ fn devcontainer_json(dir: &Path) -> serde_json::Value {
     let text =
         std::fs::read_to_string(dir.join(".devcontainer/devcontainer.json")).unwrap();
     serde_json::from_str(&text).unwrap()
+}
+
+/// Stand up a repo-shaped tree: a default devcontainer AND a named config
+/// (like this repo's `.devcontainer/arena/`), both compose-based.
+fn write_named_config(dir: &Path, name: &str) {
+    let sub = dir.join(".devcontainer").join(name);
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(
+        sub.join("devcontainer.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "name": name,
+            "dockerComposeFile": ["../docker-compose.yml", format!("docker-compose.{name}.yml")],
+            "service": "dev"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn named_config_gets_a_relative_managed_reference() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    // Default devcontainer exists (scaffolded by a plain enable+remove cycle
+    // would churn; just init base via an empty request), plus a named config.
+    devcontainer::apply(dir, &req(vec![])).unwrap();
+    write_named_config(dir, "arena");
+
+    let report = devcontainer::apply(
+        dir,
+        &ConfigureRequest {
+            services: vec![enable_variant("database", "postgres")],
+            config: Some("arena".into()),
+        },
+    )
+    .unwrap();
+    assert_eq!(report.added, vec!["database".to_string()]);
+
+    // The managed file is SHARED — it lands at .devcontainer/, not inside the
+    // named config's directory.
+    assert!(dir.join(".devcontainer/docker-compose.idealyst.yml").exists());
+    assert!(!dir.join(".devcontainer/arena/docker-compose.idealyst.yml").exists());
+
+    // The named config references it RELATIVE to its own json (../).
+    let text =
+        std::fs::read_to_string(dir.join(".devcontainer/arena/devcontainer.json")).unwrap();
+    let dc: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let files = dc.get("dockerComposeFile").unwrap().as_array().unwrap();
+    assert!(files.iter().any(|v| v == "../docker-compose.idealyst.yml"));
+
+    // The DEFAULT config's json is untouched — no managed reference added.
+    let root = devcontainer_json(dir);
+    match root.get("dockerComposeFile").unwrap() {
+        serde_json::Value::String(s) => assert!(!s.contains("idealyst")),
+        serde_json::Value::Array(a) => {
+            assert!(!a.iter().any(|v| v.as_str().unwrap_or("").contains("idealyst")))
+        }
+        other => panic!("unexpected dockerComposeFile shape: {other:?}"),
+    }
+}
+
+#[test]
+fn named_config_removal_drops_the_relative_reference() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    devcontainer::apply(dir, &req(vec![])).unwrap();
+    write_named_config(dir, "arena");
+
+    let cfg = |services| ConfigureRequest { services, config: Some("arena".into()) };
+    devcontainer::apply(dir, &cfg(vec![enable("redis")])).unwrap();
+    devcontainer::apply(dir, &cfg(vec![remove("redis")])).unwrap();
+
+    assert!(!dir.join(".devcontainer/docker-compose.idealyst.yml").exists());
+    let text =
+        std::fs::read_to_string(dir.join(".devcontainer/arena/devcontainer.json")).unwrap();
+    assert!(!text.contains("idealyst"), "reference should be gone: {text}");
+}
+
+#[test]
+fn missing_named_config_errors_instead_of_scaffolding() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let err = devcontainer::apply(
+        dir,
+        &ConfigureRequest { services: vec![enable("redis")], config: Some("arena".into()) },
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("arena"), "unexpected error: {err:#}");
+    assert!(!dir.join(".devcontainer/arena").exists(), "must not scaffold named configs");
 }
 
 #[test]
@@ -90,7 +179,7 @@ fn read_state_round_trips_enabled_set() {
     devcontainer::apply(dir, &req(vec![enable_variant("database", "mysql"), enable("redis")]))
         .unwrap();
 
-    let state = devcontainer::read_state(dir).unwrap();
+    let state = devcontainer::read_state(dir, None).unwrap();
     assert!(state.exists);
     let db = state.enabled.iter().find(|e| e.id == "database").unwrap();
     assert_eq!(db.variant.as_deref(), Some("mysql"));

@@ -6,7 +6,7 @@
 //! the same doc five times means the doc didn't stick or the tool gave no
 //! stable anchor to return to.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// One tool invocation from a captured transcript.
@@ -15,6 +15,11 @@ pub struct ToolCall {
     pub tool: String,
     #[serde(default)]
     pub args: serde_json::Value,
+    /// The tool RESULT came back as an error (`is_error` on the tool_result
+    /// block). An MCP call erroring is a misuse/doc signal: the agent reached
+    /// for the right tool but couldn't drive it.
+    #[serde(default)]
+    pub error: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -30,7 +35,10 @@ impl Transcript {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+/// Serialize/Deserialize: persisted as `process.json` per run — the
+/// model-assessment layer's deterministic core, and what `arena
+/// feedback-prompt` reloads instead of recomputing.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Pathologies {
     pub total_calls: usize,
     /// Exact `(tool, args)` repeats — the same call made again expecting a
@@ -40,6 +48,18 @@ pub struct Pathologies {
     pub doc_fetch_counts: BTreeMap<String, usize>,
     /// Docs fetched more than once, worst offenders first.
     pub repeated_docs: Vec<(String, usize)>,
+    /// Total MCP tool invocations (any `mcp__*`).
+    #[serde(default)]
+    pub mcp_calls: usize,
+    /// MCP invocations whose result came back as an error — "reached for the
+    /// right tool, couldn't drive it" (bad args, wrong state, unclear docs).
+    #[serde(default)]
+    pub mcp_errors: usize,
+    /// Distinct MCP tools used (short name, `mcp__<server>__` stripped) →
+    /// call count. Adoption coverage: which parts of the surface the agent
+    /// found at all; an unused family the task needed = discoverability gap.
+    #[serde(default)]
+    pub mcp_tools_used: BTreeMap<String, usize>,
 }
 
 /// Heuristic: which tools are documentation lookups whose repeat-rate is a
@@ -92,10 +112,24 @@ pub fn doc_bypass_reads(t: &Transcript, project_dir: &std::path::Path) -> usize 
                 .get("command")
                 .and_then(|c| c.as_str())
                 .map(|c| {
-                    let reads_file =
-                        ["cat ", "less ", "head ", "tail ", "bat "].iter().any(|p| c.contains(p));
-                    // crude: an absolute path that isn't the project, on a read cmd
-                    reads_file && c.contains("/crates/") && !c.contains(&proj)
+                    // sed/grep/awk/rg included: run-2's agent did ~55 framework
+                    // source reads almost entirely via `sed -n`/`grep -rn`,
+                    // which the original cat/head list missed (the feedback
+                    // reviewer counted 55 where this metric said 16).
+                    let reads_file = [
+                        "cat ", "less ", "head ", "tail ", "bat ", "sed ", "grep ", "awk ", "rg ",
+                    ]
+                    .iter()
+                    .any(|p| c.contains(p));
+                    // Both absolute (`/…/crates/…`) and RELATIVE framework
+                    // paths count: run-3's agent evaded the absolute-only
+                    // check with `cd <repo> && grep … crates/…` (reviewer
+                    // hand-counted ~33 where this metric said 4). A bare
+                    // `crates/` path in a read command can only mean the
+                    // framework tree — scaffolded projects don't have one.
+                    let touches_framework = (c.contains("/crates/") || c.contains(" crates/"))
+                        && !c.contains(&proj);
+                    reads_file && touches_framework
                 })
                 .unwrap_or(false),
             _ => false,
@@ -113,6 +147,9 @@ pub fn analyze(t: &Transcript) -> Pathologies {
     let mut seen: HashSet<String> = HashSet::new();
     let mut duplicate_calls = 0usize;
     let mut doc_fetch_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut mcp_calls = 0usize;
+    let mut mcp_errors = 0usize;
+    let mut mcp_tools_used: BTreeMap<String, usize> = BTreeMap::new();
 
     for call in &t.calls {
         // Canonical key for exact-duplicate detection.
@@ -120,6 +157,17 @@ pub fn analyze(t: &Transcript) -> Pathologies {
         let exact_key = format!("{}|{}", call.tool, args_canon);
         if !seen.insert(exact_key) {
             duplicate_calls += 1;
+        }
+
+        if call.tool.starts_with("mcp__") {
+            mcp_calls += 1;
+            if call.error {
+                mcp_errors += 1;
+            }
+            // `mcp__<server>__<tool>` → `<tool>`; keeps the coverage map
+            // readable and server-agnostic.
+            let short = call.tool.rsplit("__").next().unwrap_or(&call.tool);
+            *mcp_tools_used.entry(short.to_string()).or_insert(0) += 1;
         }
 
         if is_doc_tool(&call.tool) {
@@ -140,6 +188,9 @@ pub fn analyze(t: &Transcript) -> Pathologies {
         duplicate_calls,
         doc_fetch_counts,
         repeated_docs,
+        mcp_calls,
+        mcp_errors,
+        mcp_tools_used,
     }
 }
 
@@ -152,7 +203,28 @@ mod tests {
         ToolCall {
             tool: tool.into(),
             args,
+            error: false,
         }
+    }
+
+    #[test]
+    fn mcp_error_and_adoption_counting() {
+        let mut err_call = call("mcp__idealyst__click", json!({"id": "x"}));
+        err_call.error = true;
+        let t = Transcript {
+            calls: vec![
+                call("mcp__idealyst__read_guide", json!({"slug": "styling"})),
+                err_call,
+                call("mcp__idealyst__click", json!({"id": "y"})),
+                call("Bash", json!({"command": "ls"})), // non-MCP: uncounted
+            ],
+        };
+        let p = analyze(&t);
+        assert_eq!(p.mcp_calls, 3);
+        assert_eq!(p.mcp_errors, 1);
+        assert_eq!(p.mcp_tools_used.get("click"), Some(&2));
+        assert_eq!(p.mcp_tools_used.get("read_guide"), Some(&1));
+        assert!(!p.mcp_tools_used.contains_key("Bash"));
     }
 
     #[test]

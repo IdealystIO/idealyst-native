@@ -24,18 +24,30 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub struct AgentRun {
     pub transcript: Transcript,
-    /// Input-side tokens (uncached input + cache creation + cache reads), summed
-    /// across the agent's assistant turns. Not a billing figure — a *consistent*
-    /// effort proxy. Mid-2026 subagent jsonl token counts are known to undercount
-    /// (~2×); fine for the token-bonus tiebreaker, which is relative and strictly
-    /// smaller than the smallest rubric item.
+    /// NEW input-side tokens (uncached input + cache creation), summed across
+    /// the agent's assistant turns. Cache READS are deliberately excluded: they
+    /// re-count the same growing context every turn, so over an N-turn run they
+    /// grow ~quadratically and swamp any realistic `token_budget` (a 215-call
+    /// run summed to 42M against a 2M budget), permanently zeroing the token
+    /// bonus. Thrashing is penalized by the duplicate-call pathology instead.
+    /// Not a billing figure — a *consistent* effort proxy. Mid-2026 subagent
+    /// jsonl token counts are known to undercount (~2×); fine for the
+    /// token-bonus tiebreaker, which is relative and strictly smaller than the
+    /// smallest rubric item.
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// Cache-read tokens, kept separately as a context-pressure signal (how
+    /// much context the agent dragged through the run) — never part of
+    /// [`AgentRun::total_tokens`].
+    pub cache_read_tokens: u64,
     /// Estimated tokens of idealyst-MCP tool *results* pulled into context —
     /// the doc-bloat signal, distinct from total spend.
     pub mcp_payload_tokens: u64,
     pub final_text: String,
     pub transcript_path: PathBuf,
+    /// Model id from the transcript's assistant events (first seen). Runs are
+    /// only comparable within one model, so every report records it.
+    pub model: Option<String>,
 }
 
 impl AgentRun {
@@ -68,10 +80,13 @@ pub fn parse_session_jsonl(bytes: &[u8]) -> AgentRun {
     let text = String::from_utf8_lossy(bytes);
     let mut calls: Vec<ToolCall> = Vec::new();
     let mut tool_names: HashMap<String, String> = HashMap::new(); // tool_use_id -> name
+    let mut call_index: HashMap<String, usize> = HashMap::new(); // tool_use_id -> calls[i]
     let mut input_tokens = 0u64;
     let mut output_tokens = 0u64;
+    let mut cache_read_tokens = 0u64;
     let mut mcp_payload_chars = 0usize;
     let mut final_text = String::new();
+    let mut model: Option<String> = None;
 
     for line in text.lines() {
         let line = line.trim();
@@ -84,7 +99,18 @@ pub fn parse_session_jsonl(bytes: &[u8]) -> AgentRun {
         match ev.get("type").and_then(|t| t.as_str()) {
             Some("assistant") => {
                 let msg = ev.get("message");
-                accumulate_usage(msg.and_then(|m| m.get("usage")), &mut input_tokens, &mut output_tokens);
+                if model.is_none() {
+                    model = msg
+                        .and_then(|m| m.get("model"))
+                        .and_then(|m| m.as_str())
+                        .map(String::from);
+                }
+                accumulate_usage(
+                    msg.and_then(|m| m.get("usage")),
+                    &mut input_tokens,
+                    &mut output_tokens,
+                    &mut cache_read_tokens,
+                );
                 if let Some(content) = msg
                     .and_then(|m| m.get("content"))
                     .and_then(|c| c.as_array())
@@ -99,10 +125,12 @@ pub fn parse_session_jsonl(bytes: &[u8]) -> AgentRun {
                                     .to_string();
                                 if let Some(id) = block.get("id").and_then(|i| i.as_str()) {
                                     tool_names.insert(id.to_string(), name.clone());
+                                    call_index.insert(id.to_string(), calls.len());
                                 }
                                 calls.push(ToolCall {
                                     tool: name,
                                     args: block.get("input").cloned().unwrap_or(Value::Null),
+                                    error: false,
                                 });
                             }
                             Some("text") => {
@@ -131,6 +159,17 @@ pub fn parse_session_jsonl(bytes: &[u8]) -> AgentRun {
                         if block.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
                             continue;
                         }
+                        // Error results mark the originating call — the
+                        // misuse/doc signal metrics::analyze aggregates.
+                        if block.get("is_error").and_then(|e| e.as_bool()) == Some(true) {
+                            if let Some(i) = block
+                                .get("tool_use_id")
+                                .and_then(|i| i.as_str())
+                                .and_then(|id| call_index.get(id))
+                            {
+                                calls[*i].error = true;
+                            }
+                        }
                         let from_idealyst = block
                             .get("tool_use_id")
                             .and_then(|i| i.as_str())
@@ -151,22 +190,25 @@ pub fn parse_session_jsonl(bytes: &[u8]) -> AgentRun {
         transcript: Transcript { calls },
         input_tokens,
         output_tokens,
+        cache_read_tokens,
         // ~4 chars/token is the standard rough conversion.
         mcp_payload_tokens: (mcp_payload_chars / 4) as u64,
         final_text,
         transcript_path: PathBuf::new(),
+        model,
     }
 }
 
-/// Add one assistant turn's `usage` to the running totals. Input side folds in
-/// cache creation + cache reads so a thrashing agent (which re-reads a large
-/// cached context every turn) costs more in the proxy — exactly the behavior the
-/// token bonus should penalize. There is no cumulative `result` event in the
-/// subagent log, so summation is the only way to total it.
-fn accumulate_usage(usage: Option<&Value>, input: &mut u64, output: &mut u64) {
+/// Add one assistant turn's `usage` to the running totals. Input counts only
+/// NEW tokens (uncached input + cache creation); cache reads accumulate into
+/// their own counter — see the `AgentRun::input_tokens` docs for why folding
+/// them into the total broke the token bonus. There is no cumulative `result`
+/// event in the subagent log, so summation is the only way to total it.
+fn accumulate_usage(usage: Option<&Value>, input: &mut u64, output: &mut u64, cache_read: &mut u64) {
     let Some(u) = usage else { return };
     let get = |k: &str| u.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
-    *input += get("input_tokens") + get("cache_creation_input_tokens") + get("cache_read_input_tokens");
+    *input += get("input_tokens") + get("cache_creation_input_tokens");
+    *cache_read += get("cache_read_input_tokens");
     *output += get("output_tokens");
 }
 
@@ -194,7 +236,7 @@ mod tests {
         // one Bash call) with per-turn usage, the idealyst result returned as a
         // user tool_result, and a final text block.
         let stream = r#"
-{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"mcp__idealyst__list_components","input":{}}],"usage":{"input_tokens":10,"cache_creation_input_tokens":100,"cache_read_input_tokens":0,"output_tokens":3}}}
+{"type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"tool_use","id":"t1","name":"mcp__idealyst__list_components","input":{}}],"usage":{"input_tokens":10,"cache_creation_input_tokens":100,"cache_read_input_tokens":0,"output_tokens":3}}}
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"AAAAAAAA"}]}]}}
 {"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"idealyst build --web"}}],"usage":{"input_tokens":5,"cache_read_input_tokens":200,"output_tokens":42}}}
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"a long bash result that is NOT idealyst docs"}]}}
@@ -203,15 +245,33 @@ mod tests {
         let run = parse_session_jsonl(stream.as_bytes());
         assert_eq!(run.transcript.calls.len(), 2);
         assert_eq!(run.transcript.calls[0].tool, "mcp__idealyst__list_components");
-        // input = (10+100+0) + (5+0+200) + (1+0+0) = 316
-        assert_eq!(run.input_tokens, 316);
+        // input = (10+100) + 5 + 1 = 116 — cache reads (0+200+0) live apart
+        assert_eq!(run.input_tokens, 116);
+        assert_eq!(run.cache_read_tokens, 200);
         // output = 3 + 42 + 0 = 45
         assert_eq!(run.output_tokens, 45);
-        assert_eq!(run.total_tokens(), 361);
+        assert_eq!(run.total_tokens(), 161);
         // 8 chars of idealyst result / 4 = 2 payload tokens; the Bash result
         // (a plain string, non-idealyst) must NOT count.
         assert_eq!(run.mcp_payload_tokens, 2);
         assert_eq!(run.final_text, "done");
+        assert_eq!(run.model.as_deref(), Some("claude-opus-4-8"));
+    }
+
+    #[test]
+    fn regression_cache_reads_dont_swamp_the_token_total() {
+        // The bug: cache_read_input_tokens were folded into input_tokens, so a
+        // long run (which re-reads its whole growing context every turn)
+        // totalled ~quadratically — the first live run summed 42M "tokens"
+        // against a 2M budget and the token bonus was permanently zero. A run
+        // whose only large figure is cache reads must total small.
+        let stream = r#"
+{"type":"assistant","message":{"content":[{"type":"text","text":"a"}],"usage":{"input_tokens":10,"cache_read_input_tokens":1000000,"output_tokens":5}}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"b"}],"usage":{"input_tokens":10,"cache_read_input_tokens":2000000,"output_tokens":5}}}
+"#;
+        let run = parse_session_jsonl(stream.as_bytes());
+        assert_eq!(run.total_tokens(), 30, "cache reads must not count");
+        assert_eq!(run.cache_read_tokens, 3_000_000, "but are still tracked");
     }
 
     #[test]

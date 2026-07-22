@@ -10,3 +10,9 @@ crate-type = ["rlib"]
 
 [dependencies]
 runtime-core = { workspace = true }
+
+# Compile-checked usage recipes for the docs/MCP catalog (see
+# src/recipes.rs). Off in every production build — the `recipe!` macro
+# expands to nothing without it, so recipes cost zero in shipped apps.
+[features]
+catalog = ["runtime-core/catalog"]

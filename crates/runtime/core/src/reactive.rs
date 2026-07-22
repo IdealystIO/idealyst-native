@@ -1360,14 +1360,24 @@ impl<T> Signal<T> {
 
 impl<T: Clone + 'static> Signal<T> {
     /// Creates a signal in the global arena. The slot is freed when the
-    /// surrounding render `Owner` drops. (For tests and ad-hoc usage outside
-    /// a render tree, the slot leaks until the thread exits.)
+    /// surrounding render `Owner` drops. Created OUTSIDE any reactive scope
+    /// (an event handler, `spawn_async`, a test) the slot has no owner and
+    /// leaks until the thread exits — dev builds warn once per creation
+    /// site when that happens. For dynamic-collection state that must
+    /// outlive its row (the legitimate unowned case), free the slot
+    /// explicitly with [`Signal::dispose`] when the item is removed.
     #[track_caller]
     pub fn new(value: T) -> Self {
         let (id, gen) = ARENA.with(|a| {
             a.borrow_mut().insert_signal(SignalInner { value })
         });
-        register_signal(id);
+        let owned = register_signal(id);
+        #[cfg(debug_assertions)]
+        if !owned {
+            warn_unowned_signal(std::panic::Location::caller());
+        }
+        #[cfg(not(debug_assertions))]
+        let _ = owned;
         // Reactive-profile identity: stash the author-code creation site so a
         // profile can name this signal. `#[track_caller]` resolves the
         // `Location` at compile time — no runtime cost when `debug-stats` is
@@ -1377,6 +1387,40 @@ impl<T: Clone + 'static> Signal<T> {
         // in-crate site, which is an accepted limit.
         crate::debug::record_signal_created(id.0, std::panic::Location::caller());
         Self { id, gen, _phantom: PhantomData }
+    }
+
+    /// Free this signal's arena slot NOW, releasing its value, JS
+    /// notifiers, and robot-watch entry. This exists for the one
+    /// legitimately-unowned case: per-item state in a dynamic collection
+    /// (created in an add-handler, outliving any single row) — call it when
+    /// the ITEM is removed, or the slot leaks until the thread exits.
+    ///
+    /// Semantics mirror the stale-set philosophy: disposing an
+    /// already-freed handle (double dispose, or the owning scope beat you
+    /// to it) is a silent no-op — the generation guard rejects it. After
+    /// dispose the handle is stale like any scope-freed signal: writes
+    /// no-op, reads panic with the standard stale-slot message. Scope-owned
+    /// signals normally don't need this — the scope frees them — and
+    /// disposing one early is allowed but unusual.
+    pub fn dispose(self) {
+        // Take the boxed value out under the borrow, drop it AFTER the
+        // borrow releases — the value's Drop may itself touch the arena
+        // (e.g. an Rc whose teardown disposes further signals), which would
+        // otherwise re-enter the RefCell.
+        let boxed = ARENA.with(|a| {
+            let mut arena = a.borrow_mut();
+            let live = arena
+                .signal_gen
+                .get(self.id.0 as usize)
+                .copied()
+                == Some(self.gen);
+            if live {
+                arena.take_signals_batched(&[self.id])
+            } else {
+                Vec::new()
+            }
+        });
+        drop(boxed);
     }
 
     /// Read the current value **without subscribing** — and, unlike a
@@ -3083,6 +3127,36 @@ pub(crate) fn with_scope<R>(scope: &mut Scope, f: impl FnOnce() -> R) -> R {
         debug_assert_eq!(last, Some(ptr), "scope stack imbalance");
     });
     result
+}
+
+/// Dev-build diagnostic: a signal created with no active scope has no owner
+/// and leaks until thread exit. Warn ONCE per creation site (handlers and
+/// async blocks run hot; a warning per call would be noise, zero warnings
+/// was the bug — arena run-3's adversary found per-item signals leaking on
+/// every add/delete cycle with nothing telling the author). Silenceable via
+/// IDEALYST_NO_UNOWNED_SIGNAL_WARN=1 for intentional-leak test harnesses.
+#[cfg(debug_assertions)]
+fn warn_unowned_signal(loc: &'static std::panic::Location<'static>) {
+    use std::cell::RefCell;
+    use std::collections::HashSet;
+    thread_local! {
+        static WARNED: RefCell<HashSet<(&'static str, u32)>> = RefCell::new(HashSet::new());
+        static SILENCED: bool = std::env::var_os("IDEALYST_NO_UNOWNED_SIGNAL_WARN").is_some();
+    }
+    if SILENCED.with(|s| *s) {
+        return;
+    }
+    let fresh = WARNED.with(|w| w.borrow_mut().insert((loc.file(), loc.line())));
+    if fresh {
+        crate::logging::log(crate::logging::LogLevel::Warn, &format!(
+            "[idealyst] signal created outside any reactive scope at {}:{} — it has no owner and \
+             will leak until the thread exits. If this is per-item state for a dynamic \
+             collection, call `.dispose()` when the item is removed; otherwise create it inside \
+             a component/render scope. (Silence: IDEALYST_NO_UNOWNED_SIGNAL_WARN=1)",
+            loc.file(),
+            loc.line(),
+        ));
+    }
 }
 
 /// Registers a signal ID with the topmost active scope, if any. Returns

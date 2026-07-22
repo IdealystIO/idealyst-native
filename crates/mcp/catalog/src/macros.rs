@@ -72,7 +72,7 @@ inventory::submit! {
         invocation: "ui! { … }",
         kind: MacroKind::Markup,
         module_path: "runtime_macros",
-        docs: "The primary DSL for composing an element tree. Primitives are lowercase (`view`, `text`, `button`, …); components are PascalCase and dispatch through `BuildElement` (`Card(...)`, `Field(...)`). Supports `if` / `if let` / `match` branches and `for item in items { … }` iteration inline, plus bare-identifier child splats — write children where they render, not in an out-of-macro `Vec::push` loop. The canonical component-body form; see [[component-hygiene]] and [[components]].",
+        docs: "The primary DSL for composing an element tree. Primitives are lowercase (`view`, `text`, `button`, …); components are PascalCase and dispatch through `BuildElement` (`Card(...)`, `Field(...)`). Supports `if` / `if let` / `match` branches and reactive keyed iteration — `for item in items, key = item.id { … }` where `items` is the `Signal<Vec<T>>` ITSELF (writing `for item in items.get()` freezes a build-time snapshot that never re-renders; see [[reactivity]] pitfalls and the `keyed_list_add_remove` recipe). Bare-identifier child splats supported — write children where they render, not in an out-of-macro `Vec::push` loop. NOTE: unknown props on primitives are silently dropped, and some primitive hooks (`.on_key_down`) are builder methods chained after the call, not inline props. The canonical component-body form; see [[component-hygiene]] and [[components]].",
         expansion: "",
         _seal: (),
     }

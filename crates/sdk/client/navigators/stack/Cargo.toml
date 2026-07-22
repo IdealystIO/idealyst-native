@@ -16,6 +16,11 @@ license.workspace = true
 
 [features]
 runtime-server = ["dep:dev-server", "dep:wire"]
+# Compile-checked usage recipes for the docs/MCP catalog. Off in every
+# production build (the `recipe!` macro then expands to nothing). Must be
+# THIS crate's own feature — the `#[cfg(feature = "catalog")]` gate on
+# `src/recipes.rs` only sees this crate's features, not runtime-core's.
+catalog = ["runtime-core/catalog"]
 
 [dependencies]
 runtime-core = { workspace = true }
@@ -32,6 +37,9 @@ backend-ssr = { workspace = true }
 # needs backend-web/backend-ssr (tests/hydration_web.rs).
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 mock-backend = { workspace = true }
+# `tests/recipes.rs`: asserts the `stack_two_screens` recipe registers in the
+# catalog with the extension-trait import line intact (feature `catalog`).
+mcp-catalog = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }

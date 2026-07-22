@@ -66,6 +66,30 @@ pub fn write_isolated_mcp_config(project_dir: &Path) -> anyhow::Result<PathBuf> 
     Ok(path)
 }
 
+/// Copy a scenario's `assets/` tree over the scaffolded project (recursive,
+/// overwriting). This is how "start from a broken/pre-existing app" scenarios
+/// (debug-and-fix, perf) get their starting state: the scaffold provides the
+/// build plumbing, the assets provide the code under test.
+pub fn overlay_assets(assets_dir: &Path, project_dir: &Path) -> anyhow::Result<usize> {
+    fn walk(src: &Path, dst: &Path, copied: &mut usize) -> anyhow::Result<()> {
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            let to = dst.join(entry.file_name());
+            if entry.file_type()?.is_dir() {
+                std::fs::create_dir_all(&to)?;
+                walk(&entry.path(), &to, copied)?;
+            } else {
+                std::fs::copy(entry.path(), &to)?;
+                *copied += 1;
+            }
+        }
+        Ok(())
+    }
+    let mut copied = 0;
+    walk(assets_dir, project_dir, &mut copied)?;
+    Ok(copied)
+}
+
 /// Best-effort `idealyst build --web`. Returns the `dist/web` path on success,
 /// `Err` with the build-error tail otherwise. Used both as the compile-tier
 /// signal and as the prerequisite for the locator pass (which serves the

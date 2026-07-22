@@ -1,0 +1,20 @@
+# PUBLIC — the `prompt` below is the ONLY task framing the implementation
+# agent receives. This scenario ships starting code (assets/) — the agent
+# must DIAGNOSE, not rebuild. It tests robot-introspection usage: the bug is
+# invisible in the source unless you know the reactivity model, but obvious
+# the moment you drive the running app.
+id = "debug-fix"
+
+prompt = """
+This project contains a small todo app that has a bug: typing a new item
+into the field and pressing Add does not make the item appear in the list.
+
+Diagnose the cause and fix it. Do not rewrite the app from scratch — find
+the defect and correct it with a minimal change.
+
+Target the web platform.
+"""
+
+platforms = ["web"]
+token_budget = 1_500_000
+runs = 5

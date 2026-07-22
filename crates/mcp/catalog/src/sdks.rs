@@ -20,6 +20,13 @@ use crate::{SdkCategory, SdkEntry, SdkKind};
 
 macro_rules! sdk {
     ($name:literal, $cat:expr, $kind:expr, $summary:literal) => {
+        sdk!($name, $cat, $kind, $summary, guide = "sdks");
+    };
+    // Entries whose prose home is a dedicated guide (e.g. the navigator
+    // crates → `navigation`) override the default `sdks` anchor so
+    // `describe_sdk` points an agent at the guide that actually documents
+    // the crate's API shape.
+    ($name:literal, $cat:expr, $kind:expr, $summary:literal, guide = $guide:literal) => {
         inventory::submit! {
             SdkEntry {
                 name: $name,
@@ -27,7 +34,7 @@ macro_rules! sdk {
                 dep_line: concat!($name, " = { workspace = true }"),
                 category: $cat,
                 kind: $kind,
-                guide: "sdks",
+                guide: $guide,
                 _seal: (),
             }
         }
@@ -54,7 +61,7 @@ sdk!(
     "storage",
     SdkCategory::Data,
     SdkKind::Api,
-    "Cross-platform INSECURE key-value storage for non-sensitive app data. `storage::platform_storage()` returns the platform store. No security claims — use `credentials` for secrets."
+    "Cross-platform INSECURE key-value storage for non-sensitive app data. PREFERRED for signal-backed state: `storage::persisted_signal(namespace, key, initial) -> Signal<T>` (crate feature `reactive`) — hydrates on creation, persists on change, race-correct (a user write before the async load resolves WINS; hand-rolled load/persist wiring almost always clobbers it). Raw API: `storage::platform_storage(namespace) -> Arc<dyn Storage>` with ASYNC `get(key) -> Result<Option<String>, StorageError>` / `set` / `remove` — call via `runtime_core::driver::spawn_async` (needs runtime-core's `async-driver` feature; generated wrappers enable it). Backends: localStorage (web), NSUserDefaults (iOS/macOS), SharedPreferences (Android), JSON file (desktop). The `persisted_signal` recipe registers once storage is a dependency of the build. No security claims — use `credentials` for secrets."
 );
 sdk!(
     "credentials",
@@ -221,23 +228,24 @@ sdk!(
 // Navigation — render navigators (`Element::Navigator`)
 // ---------------------------------------------------------------------
 
-sdk!(
-    "drawer-navigator",
-    SdkCategory::Ui,
-    SdkKind::Api,
-    "Side-drawer navigator — a responsive sidebar/modal drawer over screens. Renders `Element::Navigator`."
-);
+// The two navigator SDK crates that exist today: `stack-navigator` (push/pop
+// depth) and `swap-navigator` (flat Select). Tab and drawer experiences are
+// author layouts over the swap model with idea-ui-nav chrome (AppShell /
+// TabBar / Drawer) — there is no separate tab-/drawer-navigator crate, so no
+// entry (the drift audit checks this table against the crate listing).
 sdk!(
     "stack-navigator",
     SdkCategory::Ui,
     SdkKind::Api,
-    "Push/pop stack navigator with native screen transitions and a back stack."
+    "Push/pop stack navigator with native screen transitions and a back stack. Fluent BUILDER, not a `ui!` tag: `StackNavigator::new(&ROOT).screen(ROUTE, |params| Screen::new(...).title(...)).layout(|nav| ...).bind(nav_ref)` with `const ROOT: Route<()> = Route::<()>::new(\"home\", \"/\")` route consts (typed params via `Route<P>` + `RouteParams`). Import BOTH extension traits — `use stack_navigator::{StackBuilder, StackScreenExt, ...}` — or `.screen(...)`/`.title(...)` won't resolve. Compile-checked `stack_two_screens` recipe registers once this crate is a dependency. See the [[navigation]] guide.",
+    guide = "navigation"
 );
 sdk!(
-    "tab-navigator",
+    "swap-navigator",
     SdkCategory::Ui,
     SdkKind::Api,
-    "Tab-bar navigator — top-level sibling screens selected by a tab bar."
+    "Flat screen-swap navigator (the Select model) — one visible screen, no back stack; the substrate for TAB and DRAWER experiences (chrome = author layout with idea-ui-nav's AppShell / TabBar / Drawer). Same builder shape as the stack: `SwapNavigator::new(&HOME).screen(HOME, |_| Screen::new(...)).layout(|nav| ... { nav.outlet } ...).bind(nav_ref)`; import the `SwapBuilder` extension trait. See the [[navigation]] guide.",
+    guide = "navigation"
 );
 
 // ---------------------------------------------------------------------

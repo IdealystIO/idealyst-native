@@ -57,8 +57,11 @@ finding.
 | `robot` | a Robot verb against the app's self-report | mid |
 | `playwright` | platform truth via the `arena-locate` skill | high |
 
-`compile` + `static` are wired now. `robot` + `playwright` report `skip` until
-their verifiers land (they need the framework path deps and the locator skill).
+All four tiers are wired. `robot` + `playwright` need a live app: `arena
+build <proj> --robot`, then `arena live <proj>` (serve + relay + headless
+client) stays up while `arena score --locate-dir …` verifies. The locator is
+the `arena-locator` subagent; its `{passed, evidence}` replies persist via
+`arena verdict`. Items with no live app or verdict `skip` (never for/against).
 
 ## Item classes
 
@@ -84,6 +87,16 @@ earned its length.
 Run each scenario N times. The headline signal isn't the mean — it's the
 **per-item pass-rate**: an item passing 8/8 is well-documented; 3/8 is a doc
 *ambiguity*, not mere model variance, and is exactly where to improve the MCP.
+
+## Results over time
+
+`arena record <scenario_dir> <run_dir>` appends each run to a repo-tracked
+CSV pair under `arena/results/`: `<scenario>.csv` (one summary row per run —
+score, tokens, process metrics, judge grades, framework commit) and
+`<scenario>-items.csv` (long format, one row per rubric item per run — the
+shape per-item pass-rate-over-time queries want). Append-only with a
+duplicate guard (`--force` to re-record); columns are flat and stable so the
+files can lift into a database table unchanged when the time comes.
 
 ## CLI
 

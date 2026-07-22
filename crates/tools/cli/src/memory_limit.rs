@@ -156,6 +156,34 @@ fn macos_current_rss_bytes() -> Option<u64> {
     }
 }
 
+/// Lift the address-space cap for a child that legitimately reserves huge
+/// address space. Headless Chromium is the motivating case: V8 reserves
+/// multi-GB virtual regions (pointer-compression cage) at startup, so under
+/// the CLI's inherited `RLIMIT_AS` it dies INSTANTLY and silently — dev's
+/// headless web client spawned and vanished with no output (root-caused live
+/// 2026-07-20). [`apply`] preserves `rlim_max`, so the child may raise its
+/// soft cap back to the hard limit between fork and exec. No-op off Linux.
+pub fn unlimit_child(cmd: &mut std::process::Command) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: pre_exec runs after fork, before exec — only
+        // async-signal-safe calls are allowed; getrlimit/setrlimit qualify.
+        unsafe {
+            cmd.pre_exec(|| {
+                let mut cur: libc::rlimit = std::mem::zeroed();
+                if libc::getrlimit(libc::RLIMIT_AS, &mut cur) == 0 {
+                    cur.rlim_cur = cur.rlim_max;
+                    let _ = libc::setrlimit(libc::RLIMIT_AS, &cur);
+                }
+                Ok(())
+            });
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = cmd;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,6 +195,43 @@ mod tests {
     // both the libc surface drift and any layout mismatch in
     // `proc_taskinfo` (the call returns -1 / wrong size on
     // mismatch and we'd see `None` here).
+    // Regression for the silent headless-client death: a child spawned with
+    // `unlimit_child` must see soft RLIMIT_AS == hard limit even when the
+    // parent (this test) has a lowered soft cap. Uses `sh -c 'ulimit -v'`
+    // (reports KB, or "unlimited") as the observer; restores the parent's
+    // limit afterwards. 8 GB is far above the test runner's needs, so the
+    // temporary cap can't disturb sibling tests.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn regression_unlimit_child_lifts_inherited_rlimit_as() {
+        unsafe {
+            let mut orig: libc::rlimit = std::mem::zeroed();
+            assert_eq!(libc::getrlimit(libc::RLIMIT_AS, &mut orig), 0);
+            let capped = libc::rlimit {
+                rlim_cur: 8 * 1024 * 1024 * 1024,
+                rlim_max: orig.rlim_max,
+            };
+            assert_eq!(libc::setrlimit(libc::RLIMIT_AS, &capped), 0);
+
+            let plain = std::process::Command::new("sh")
+                .args(["-c", "ulimit -v"])
+                .output()
+                .unwrap();
+            let mut lifted_cmd = std::process::Command::new("sh");
+            lifted_cmd.args(["-c", "ulimit -v"]);
+            unlimit_child(&mut lifted_cmd);
+            let lifted = lifted_cmd.output().unwrap();
+
+            // Restore before asserting so a failure can't leak the cap.
+            let _ = libc::setrlimit(libc::RLIMIT_AS, &orig);
+
+            let plain_out = String::from_utf8_lossy(&plain.stdout).trim().to_string();
+            let lifted_out = String::from_utf8_lossy(&lifted.stdout).trim().to_string();
+            assert_eq!(plain_out, "8388608", "child inherits the capped soft limit (KB)");
+            assert_ne!(lifted_out, plain_out, "unlimit_child must lift the cap");
+        }
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_rss_returns_plausible_value() {

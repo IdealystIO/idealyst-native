@@ -14,8 +14,8 @@ use configure::devcontainer::{
 };
 use dialoguer::{theme::ColorfulTheme, MultiSelect, Select};
 
-pub fn run(dir: &Path) -> Result<ConfigureReport> {
-    let state = devcontainer::read_state(dir)?;
+pub fn run(dir: &Path, config: Option<&str>) -> Result<ConfigureReport> {
+    let state = devcontainer::read_state(dir, config)?;
     let theme = ColorfulTheme::default();
 
     if !state.exists {
@@ -87,7 +87,13 @@ pub fn run(dir: &Path) -> Result<ConfigureReport> {
         }
     }
 
-    devcontainer::apply(dir, &ConfigureRequest { services: requests })
+    devcontainer::apply(
+        dir,
+        &ConfigureRequest {
+            services: requests,
+            config: config.map(String::from),
+        },
+    )
 }
 
 /// Prompt for a variant when the service has them, defaulting to `current` (or

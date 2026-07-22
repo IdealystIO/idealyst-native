@@ -88,7 +88,15 @@ Use `animate_at!` to schedule animations at a specific offset, or `timeline!` fo
    ui! { if too_short { … } }              // static branch: silently never updates
    ```
 
-   The component body runs once and is not a tracked context. Keep derivations behind `move ||` — `let too_short = memo(move || name.get().len() < 3);` gives a live `ReadSignal<bool>` condition — or inline the read (`if name.get().len() < 3` is auto-promoted to a reactive branch). **A `let` freezes, a closure flows.** Debug builds warn at runtime when this happens (naming the component), and the `snapshot-condition` lint flags it at the `let`. For an *intentional* build-time snapshot, declare it: `.get_untracked()` reads without subscribing and silences both diagnostics.
+   The component body runs once and is not a tracked context. Keep derivations behind `move ||` — `let too_short = memo(move || name.get().len() < 3);` gives a live `ReadSignal<bool>` condition — or inline the read (`if name.get().len() < 3` is auto-promoted to a reactive branch). **A `let` freezes, a closure flows.** Debug builds warn at runtime when this happens (naming the component), and the `snapshot-condition` lint flags the hoisted-`let` form — inline forms inside `ui!` (including a `for` header, next pitfall) are NOT linted; verify list reactivity by running the app. For an *intentional* build-time snapshot, declare it: `.get_untracked()` reads without subscribing and silences both diagnostics.
+
+4. **Lists: iterate the signal, not `.get()`.** `for item in items.get()` inside `ui!` iterates a build-time snapshot — the loop renders once and NEVER re-runs, even though `items` is a signal. Unlike `if` headers, a `for` header's `.get()` is NOT auto-promoted. The reactive form iterates the `Signal<Vec<T>>` itself, with a key for reconciliation:
+
+   ```rust
+   for item in items, key = item.id { Row(item = item) }
+   ```
+
+   See [[components]] § Rendering collections and `describe_recipe("keyed_list_add_remove")` for the full working form.
 3. **`HashMap::get()` is not a signal read** — the reactivity detector keys on `.get()` calls and false-positives benignly here. Don't worry about it; it just means an extra effect run that immediately settles.
 
 ## See also
@@ -96,3 +104,5 @@ Use `animate_at!` to schedule animations at a specific offset, or `timeline!` fo
 - [[concepts|Primitives, Components, Style]] — the structural layer signals operate on.
 - [[primitives|Primitives reference]] — every primitive's reactive props.
 - The [[Signal]] type entry for the full method surface.
+- **Recipes** — compile-checked, copy-pasteable examples via `list_recipes` /
+  `describe_recipe`; the canonical reactive list is `keyed_list_add_remove`.

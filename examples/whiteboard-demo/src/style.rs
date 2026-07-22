@@ -3,6 +3,16 @@
 //! they build / compose `StyleRules` and wrap reactive style sources, the
 //! raw material that the `#[component]` bodies feed into `ui!`'s
 //! `style = …` slots.
+//!
+//! NOTE: these hand-built reactive `StyleRules` closures are a
+//! special-case for the whiteboard's frosted/translucent chrome (alpha
+//! re-attachment over resolved theme colors) — NOT the blessed way to
+//! theme an app. For normal app styling declare a `stylesheet!` whose
+//! colors are token references (`Tokenized::token` / `theme_token!`) and
+//! install/swap themes via `idea_theme::install_theme` / `set_theme`
+//! (or idea-ui's `install_idea_theme`); a theme swap then re-flows every
+//! styled node with no per-node closures. See the `styling` MCP guide
+//! and the `dark_mode_toggle` recipe in `crates/ui/idea-theme`.
 
 use runtime_core::{
     presence, Color, Easing, Element, IntoElement, Length, PresenceAnim, PresenceState,

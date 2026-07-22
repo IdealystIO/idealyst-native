@@ -1,0 +1,21 @@
+# PUBLIC — requirements only; exercises the navigation surface of the MCP
+# (navigators guide, StackNavigator/Screen, per-screen state).
+id = "nav-notes"
+
+prompt = """
+Build a two-screen notes browser.
+
+Requirements:
+- The first screen shows a list of exactly these three notes, by title:
+  "Groceries", "Ideas", "Travel".
+- Tapping a note navigates to a detail screen showing that note's title as
+  a heading and a short body of placeholder text.
+- The detail screen can navigate back to the list, using the platform's
+  native back affordance.
+
+Target the web platform.
+"""
+
+platforms = ["web"]
+token_budget = 1_500_000
+runs = 5

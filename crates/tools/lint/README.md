@@ -13,6 +13,7 @@ Flags idiom-drift patterns in idealyst projects, over the project's
 | `component-pascal-case` | error | `#[component] fn icon_button` | `#[component] fn IconButton` |
 | `snapshot-condition` | warn | hoisted `let ok = x.get()…;` used as a `ui!` `if` condition | `memo(move \|\| …)`, inline the `.get()`, or `.get_untracked()` if intentional |
 | `prefer-keyed-list` | warn | a child list built by hand — `VEC.push(ui! { … })` / `.map(\|x\| ui! { … })` — outside the macro | `ui! { view() { for item in items, key = item.id { … } } }` |
+| `snapshot-loop` | warn | `for item in items.get()` inside a `ui!` / `jsx!` body — a frozen build-time snapshot | `for item in items, key = item.id { … }` (iterate the Signal itself) |
 
 > **Why un-expanded source?** After macro expansion, `signal(0)` *is*
 > `Signal::new(0)` and `ui! { … }` *is* `BuildElement::build(…)` — the idiom
@@ -21,7 +22,9 @@ Flags idiom-drift patterns in idealyst projects, over the project's
 > expansion, which is the only place the question "did the author use the
 > macro?" still has an answer. As a bonus, `syn` never descends into macro
 > token streams, so anything *inside* `ui! { … }` / `signal( … )` is
-> invisible — legitimate macro use is never flagged.
+> invisible — legitimate macro use is never flagged. (Rules that *do* need to
+> see inside — `snapshot-condition`, `snapshot-loop` — deliberately tokenize
+> the visible `ui!` / `jsx!` invocation bodies and scan lexically.)
 
 ## CLI
 
@@ -46,8 +49,9 @@ settable to `off` / `warn` / `error` (the ESLint model):
 # idealyst-lint.toml
 [rules]
 component-pascal-case = "error"   # keep the hard line on naming
-prefer-signal-macro   = "warn"
+prefer-signal-fn      = "warn"
 prefer-effect-macro   = "warn"
+snapshot-loop         = "warn"
 prefer-ui-macro       = "off"     # e.g. a crate that hand-builds elements
 ```
 
@@ -57,14 +61,14 @@ prefer-ui-macro       = "off"     # e.g. a crate that hand-builds elements
 // Whole file:
 // idealyst-lint-disable-file
 // Whole file, one rule:
-// idealyst-lint-disable-file prefer-signal-macro
+// idealyst-lint-disable-file prefer-signal-fn
 
 // Next line, all rules:
 // idealyst-lint-disable-next-line
 let s = Signal::new(0);
 
 // Same line, specific rules (comma- or space-separated):
-let s = Signal::new(0); // idealyst-lint-disable-line prefer-signal-macro
+let s = Signal::new(0); // idealyst-lint-disable-line prefer-signal-fn
 ```
 
 A directive with no rule ids after it suppresses **all** rules on its target
@@ -97,7 +101,7 @@ wrapper script that emits both streams' JSON, or use
 The JSON is the `cargo check --message-format=json` shape: one
 `{"reason":"compiler-message", …}` per finding plus a trailing
 `{"reason":"build-finished", …}`. Diagnostic codes are `idealyst::<rule>`
-(e.g. `idealyst::prefer-signal-macro`), so they're easy to filter.
+(e.g. `idealyst::prefer-signal-fn`), so they're easy to filter.
 
 ## The hard-stop companion: `strict-naming`
 

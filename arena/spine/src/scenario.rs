@@ -48,6 +48,14 @@ pub struct Scenario {
     /// Statistical samples to run for this scenario.
     #[serde(default = "default_runs")]
     pub runs: u32,
+    /// Idealyst-managed sidecar services the scenario's app needs at runtime
+    /// (e.g. `["database=postgres", "redis"]` for a server-fn scenario). The
+    /// arena container must have them enabled BEFORE the run — `arena
+    /// scaffold` surfaces the exact `idealyst configure devcontainer
+    /// --config arena …` command; enabling mid-session can't work because the
+    /// orchestrating session already lives inside the container.
+    #[serde(default)]
+    pub services: Vec<String>,
 }
 
 impl Scenario {

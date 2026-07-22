@@ -1,0 +1,51 @@
+# SECRET — never enters the implementation agent's context.
+# The planted bug: the items collection is a plain `Rc<RefCell<Vec>>`, so the
+# UI renders once and mutations never notify. The correct fix is reactive
+# state (signal) driving the list.
+scenario_id = "debug-fix"
+
+[[item]]
+id = "builds-web"
+description = "The fixed project still builds for web."
+points = 20
+class = "decision"
+tier = "compile"
+verifier = "compile"
+assertion = { target = "web" }
+
+[[item]]
+id = "fix-is-reactive-state"
+description = "The items collection became reactive state (signal) rather than a repaint hack."
+points = 15
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "\\bsignal\\s*\\(|signal!|Signal<", in = "src/app.rs" }
+
+[[item]]
+id = "loop-subscribes-not-snapshot"
+description = "The render loop iterates the signal itself, not a build-time `.get()` snapshot — run-0's agent converted the Vec to a signal but kept `for item in items.get()`, reproducing the hoisted-snapshot pitfall it had itself diagnosed. Signal alone is necessary, not sufficient."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "for\\s+\\w+\\s+in\\s+\\w+\\.get\\(\\)", in = "src/**/*.rs", absent = true }
+
+[[item]]
+id = "did-not-rewrite"
+description = "The APP-3417 module marker survives — the agent fixed, not rewrote (the prompt forbade a rewrite)."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "APP-3417", in = "src/**/*.rs" }
+
+[[item]]
+id = "add-item-appears"
+description = "Typing an item and pressing Add makes it visibly appear."
+points = 25
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "fix-is-reactive-state"
+assertion = { action = "type 'Buy milk' into the New item field and press the Add button", expect_name = "Buy milk" }

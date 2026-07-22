@@ -36,7 +36,9 @@ pub struct TypographyProps {
     /// via `.into()`, so call sites are unchanged for the static case.
     pub content: Reactive<String>,
     /// Typographic role (font family/size/weight/line-height), e.g.
-    /// H1/Body/Caption. Default Body.
+    /// H1/Body/Caption. Default Body. VISUAL type scale only — a heading
+    /// `kind` does not set an accessibility heading role (see the
+    /// component doc for how to mark a real heading).
     pub kind: TypographyKindRef,
     /// Optional intent-colored text. When `Some`, overrides `muted`.
     pub tone: Option<ToneRef>,
@@ -91,6 +93,16 @@ impl Default for TypographyProps {
 /// Themed text. Renders `content` at the given `kind` (H1…H6, Body,
 /// Caption, …) using the theme's type scale — the standard way to put
 /// text on screen with consistent typography.
+///
+/// **Accessibility**: `kind` sets the visual type scale ONLY — a heading
+/// `kind` (H1…H6) does not confer an accessibility heading role, so screen
+/// readers announce the text as plain text. Visual style does not imply
+/// semantics: a screen or section title that assistive tech should treat
+/// as a heading needs the role set explicitly via the primitive-level
+/// `a11y_role(Role::Header)` (e.g. `text(title).a11y_role(Role::Header)`
+/// with a matching style, or `a11y_role = Role::Header` on a wrapping
+/// primitive). Locators and platform accessibility checks key on roles,
+/// not font sizes.
 #[component]
 pub fn Typography(props: &TypographyProps) -> Element {
     let content = props.content.clone();
