@@ -6,3 +6,10 @@ recorded_at_epoch,scenario_id,run_id,item_id,passed,skipped,neutralized,awarded,
 1784740726,modal-confirm,run-1,delete-opens-confirm,true,false,false,20,20
 1784740726,modal-confirm,run-1,confirm-removes-row,true,false,false,20,20
 1784740726,modal-confirm,run-1,cancel-keeps-row,true,false,false,15,15
+1784751437,modal-confirm,run-2,builds-web,true,false,false,20,20
+1784751437,modal-confirm,run-2,uses-overlay-surface,true,false,false,15,15
+1784751437,modal-confirm,run-2,uses-reactive-state,true,false,false,10,10
+1784751437,modal-confirm,run-2,uses-list-rendering,true,false,false,10,10
+1784751437,modal-confirm,run-2,delete-opens-confirm,false,true,false,0,20
+1784751437,modal-confirm,run-2,confirm-removes-row,false,true,false,0,20
+1784751437,modal-confirm,run-2,cancel-keeps-row,false,true,false,0,15

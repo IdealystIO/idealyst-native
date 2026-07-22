@@ -4,3 +4,8 @@ recorded_at_epoch,scenario_id,run_id,item_id,passed,skipped,neutralized,awarded,
 1784741166,data-table,run-1,sort-state-reactive,true,false,false,15,15
 1784741166,data-table,run-1,table-renders-headers-rows,false,true,false,0,20
 1784741166,data-table,run-1,sorting-reorders-rows,false,true,false,0,25
+1784750634,data-table,run-2,builds-web,true,false,false,20,20
+1784750634,data-table,run-2,uses-table,false,false,false,0,20
+1784750634,data-table,run-2,sort-state-reactive,true,false,false,15,15
+1784750634,data-table,run-2,table-renders-headers-rows,false,true,false,0,20
+1784750634,data-table,run-2,sorting-reorders-rows,false,true,false,0,25

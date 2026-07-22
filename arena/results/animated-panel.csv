@@ -1,2 +1,3 @@
 recorded_at_epoch,scenario_id,run_id,framework_commit,model,rubric_points,max_points,final_score,agent_total_tokens,mcp_payload_tokens,total_calls,duplicate_calls,mcp_calls,mcp_errors,mcp_tools_used,doc_bypass_reads,items_passed,items_failed,items_skipped,items_neutralized,lint_clean,lint_diagnostics,judge_visual_polish,judge_layout_sanity,judge_accessibility,judge_error_handling,judge_code_organization
 1784740723,animated-panel,run-1,aeb55b9f,claude-opus-4-8,50,50,53.526,442224,12104,97,14,36,2,15,18,3,0,0,1,,,,,,,
+1784750883,animated-panel,run-2,136d94ae,claude-opus-4-8,75,75,78.888,333543,16470,69,4,24,2,15,1,4,0,0,0,,,,,,,

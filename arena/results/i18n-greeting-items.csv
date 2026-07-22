@@ -3,3 +3,7 @@ recorded_at_epoch,scenario_id,run_id,item_id,passed,skipped,neutralized,awarded,
 1784741166,i18n-greeting,run-1,uses-i18n,false,false,false,0,20
 1784741166,i18n-greeting,run-1,locale-reactive-switch,false,false,false,0,15
 1784741166,i18n-greeting,run-1,greeting-switches,false,true,false,0,25
+1784750553,i18n-greeting,run-2,builds-web,true,false,false,20,20
+1784750553,i18n-greeting,run-2,uses-i18n,true,false,false,20,20
+1784750553,i18n-greeting,run-2,locale-reactive-switch,true,false,false,15,15
+1784750553,i18n-greeting,run-2,greeting-switches,false,true,false,0,25

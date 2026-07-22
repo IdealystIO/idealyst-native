@@ -3,3 +3,7 @@ recorded_at_epoch,scenario_id,run_id,item_id,passed,skipped,neutralized,awarded,
 1784740723,animated-panel,run-1,uses-animation-surface,true,false,false,20,20
 1784740723,animated-panel,run-1,uses-reactive-state,true,false,false,10,10
 1784740723,animated-panel,run-1,panel-toggles-open-then-closed,false,false,true,0,25
+1784750883,animated-panel,run-2,builds-web,true,false,false,20,20
+1784750883,animated-panel,run-2,uses-animation-surface,true,false,false,20,20
+1784750883,animated-panel,run-2,uses-reactive-state,true,false,false,10,10
+1784750883,animated-panel,run-2,panel-toggles-open-then-closed,true,false,false,25,25

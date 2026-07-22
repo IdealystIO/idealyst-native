@@ -1,2 +1,3 @@
 recorded_at_epoch,scenario_id,run_id,framework_commit,model,rubric_points,max_points,final_score,agent_total_tokens,mcp_payload_tokens,total_calls,duplicate_calls,mcp_calls,mcp_errors,mcp_tools_used,doc_bypass_reads,items_passed,items_failed,items_skipped,items_neutralized,lint_clean,lint_diagnostics,judge_visual_polish,judge_layout_sanity,judge_accessibility,judge_error_handling,judge_code_organization
 1784741166,swap-tabs,run-1,aeb55b9f,claude-opus-4-8,20,50,25.493,401337,14369,72,3,28,2,16,10,1,2,2,0,,,,,,,
+1784750951,swap-tabs,run-2,136d94ae,claude-opus-4-8,50,50,55.735,352994,11765,122,9,35,2,14,30,3,0,2,0,,,,,,,

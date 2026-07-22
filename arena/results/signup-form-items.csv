@@ -9,3 +9,13 @@ recorded_at_epoch,scenario_id,run_id,item_id,passed,skipped,neutralized,awarded,
 1784740729,signup-form,run-1,invalid-input-keeps-submit-disabled,true,false,false,10,10
 1784740729,signup-form,run-1,valid-input-enables-submit,true,false,false,10,10
 1784740729,signup-form,run-1,submit-shows-success,true,false,false,15,15
+1784750713,signup-form,run-2,builds-web,true,false,false,20,20
+1784750713,signup-form,run-2,three-input-fields,true,false,false,10,10
+1784750713,signup-form,run-2,uses-reactive-state,true,false,false,8,8
+1784750713,signup-form,run-2,validates-email,true,false,false,10,10
+1784750713,signup-form,run-2,validates-password-length,true,false,false,10,10
+1784750713,signup-form,run-2,submit-gated-on-validity,true,false,false,12,12
+1784750713,signup-form,run-2,invalid-email-shows-error,false,true,false,0,12
+1784750713,signup-form,run-2,invalid-input-keeps-submit-disabled,false,true,false,0,10
+1784750713,signup-form,run-2,valid-input-enables-submit,false,true,false,0,10
+1784750713,signup-form,run-2,submit-shows-success,false,true,false,0,15

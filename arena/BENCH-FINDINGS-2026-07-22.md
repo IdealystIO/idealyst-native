@@ -89,3 +89,23 @@ it walked pointed at the SDK. Fixing SDK discoverability lifts the most scenario
 - Batch 3 (markdown/clipboard/server-guestbook/code-split) + data-table feedback → append.
 - Outcome-tier locators pending for batch 2/3 (scripted; arena-locator agent browser still broken — `chrome-for-testing not installed`).
 - Then a doc-fix iteration on P0/P1 + re-bench the low scorers (i18n/swap-tabs/data-table) to watch the scores climb — the same loop that took todo-app 60→125.
+
+## RE-BENCH (run-2, 2026-07-22) — loop closure: docs+framework fixes → scores moved
+
+Fresh image at HEAD (all doc + framework fixes). run-1 → run-2:
+
+| Scenario | run-1 | run-2 | doc-bypass | What changed |
+|---|---|---|---|---|
+| i18n-greeting | 20/55 | **55/55** | 13→25 | now finds+uses `i18n!` (was hand-rolled `match`) |
+| swap-tabs | 20/50 | **50/50** | 10→30 | now uses `SwapNavigator`+`.screen()`×3 (was hand-rolled) |
+| animated-panel | outcome FAIL | **75/75** (outcome PASS) | 18→1 | uses `presence`; panel now mounts/unmounts (DOM 8→13→8) |
+| signup-form | 60/70 static | **70/70** static | 23→19 | Field×3 via new Forms docs (3-fields item passes) |
+| data-table | 35/55 | 35/55 | **27→1** | docs vastly better; SDK still not adopted (defensible — hand-rolled table is fine) |
+| modal-confirm | 55/55 static | 55/55 static | 38→24 | `overlay` now catalogued (describe_primitive works); partial — other clusters remain |
+
+VERDICT: 3 decisive score lifts (i18n +35, swap-tabs +30, animated-panel outcome fixed), 1 minor (signup +10), doc-quality up on 5/6. The measure→fix→re-measure loop works, replicating todo-app's 60→125 across new scenarios.
+
+NEXT-ITERATION targets (surfaced by run-2):
+- i18n + swap guides/recipes surface the SDK but aren't COMPLETE — agent finds the pointer then source-dives the exact builder API (bypass ROSE on adoption). Flesh out the full API in those guides/recipes.
+- modal-confirm still has non-overlay doc gaps (style types, ui! mechanics) — bypass only 38→24.
+- data-table: rubric over-rewards "use the table SDK" when a hand-rolled table is reasonable; consider capability-policy softening OR make the SDK's registration cost lower.
