@@ -1,0 +1,119 @@
+# SECRET — never enters the implementation agent's context. Scores the
+# `split-canvas` scenario.
+#
+# The planted anti-pattern: the app ships with the vello GPU canvas engine
+# registered EAGERLY at boot (`canvas_vello::register(backend)` inside
+# `register_extensions`). That single call is a static anchor from `main.wasm`
+# into the whole vello/wgpu stack, so wasm-split keeps it in the main bundle no
+# matter where the canvas is *rendered*. The essential lesson — and the thing
+# this rubric discriminates — is that **registration, not rendering, is the
+# bundle anchor**: it is not enough to wrap the canvas USAGE in `lazy!`; the
+# eager registration must itself be REMOVED from boot and DEFERRED into the
+# chunk via `runtime_core::defer_external_registration`, called from inside the
+# `lazy!` body. Only then does the vello/wgpu code leave `main.wasm` for the
+# on-demand chunk.
+#
+# Verified end-to-end while authoring: an eager build and a hand-written
+# deferred-registration build of this exact app were built with `idealyst build
+# --web`. main.wasm went 6038 KiB (eager) -> 4071 KiB (deferred), a ~1.92 MiB
+# drop, with the vello/wgpu code landing in a separate
+# `module_0___idealyst_lazy_body_*.wasm` chunk (2.65 MiB). So the discriminators
+# below correspond to a real, measured bundle win.
+#
+# Capability policy (mirrors code-split / perf): items test the CAPABILITY, not
+# a specific spelling. `lazy!` is the framework's one documented code-splitting
+# boundary and `defer_external_registration` its one documented registration-
+# deferral seam, so those are checked directly; the canvas-still-works decision
+# is the platform-truth outcome tier.
+scenario_id = "split-canvas"
+
+# --- compile floor -----------------------------------------------------------
+
+[[item]]
+id = "builds-web"
+description = "The modified project still builds for web."
+points = 20
+class = "decision"
+tier = "compile"
+verifier = "compile"
+assertion = { target = "web" }
+
+# --- decision items (source-verifiable: did the agent pick the right APIs) ----
+
+# The `lazy!` markup macro is the framework's code-splitting boundary; it carves
+# its wrapped subtree into a separate wasm chunk on web. VERIFIED against the
+# real macro: the author form is the block form `lazy! { <ui-block> }`. The
+# shipped (eager) app has NO `lazy!` at all, so this already separates the naive
+# starting point from any real attempt. Tolerates any delimiter
+# (`lazy! {` / `lazy!(` / `lazy![`).
+[[item]]
+id = "uses-lazy"
+description = "The Draw screen's canvas subtree is carved behind the `lazy!` code-splitting boundary, so its code can land in a separate on-demand chunk rather than the main bundle."
+points = 15
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "lazy\\s*!\\s*[({\\[]", in = "src/**/*.rs" }
+
+# THE KEY DISCRIMINATOR. Wrapping the canvas in `lazy!` is not enough: an
+# eagerly-registered External handler is a static anchor that keeps the whole SDK
+# in main.wasm. The registration must be deferred INTO the chunk via
+# `runtime_core::defer_external_registration`, called from the `lazy!` body.
+# VERIFIED: this is the exact seam the framework docs (`sdks.md` "Code-splitting
+# a heavy extension") and the `tests/lazy-external-split/lazy` variant use, and
+# it is what produced the measured 6038->4071 KiB main.wasm drop. The shipped
+# eager app lacks it entirely.
+[[item]]
+id = "defers-registration"
+description = "The canvas handler's registration is DEFERRED into the lazy chunk via `defer_external_registration` (called from inside the `lazy!` body), rather than registered eagerly at boot — so the vello/wgpu code is reachable only from the chunk and leaves main.wasm."
+points = 25
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "defer_external_registration", in = "src/**/*.rs" }
+
+# The shipped anti-pattern — `canvas_vello::register(backend)` at boot, where
+# `backend` is the `register_extensions` parameter — must be GONE. A correct
+# deferral registers from inside the chunk against the closure's own backend
+# handle (`|b| canvas_vello::register(b)`), which does NOT match this pattern; an
+# agent who wrapped the canvas in `lazy!` but LEFT the eager boot-registration in
+# place (the classic "rendering, not registration" mistake, which does NOT shrink
+# the bundle) still matches it and correctly fails this item.
+[[item]]
+id = "no-eager-canvas-register"
+description = "The eager boot registration of the canvas engine is removed: `register_extensions` no longer calls `canvas_vello::register` on the boot backend, so nothing statically anchors the vello/wgpu SDK in main.wasm."
+points = 15
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "canvas_vello\\s*::\\s*register\\s*\\(\\s*backend", in = "src/**/*.rs", absent = true }
+
+# The feature must survive: the canvas module marker stays (the agent split the
+# loading, it did not delete the canvas to "shrink the bundle"). Paired with the
+# outcome item below, which confirms the canvas still paints.
+[[item]]
+id = "did-not-remove-canvas"
+description = "The SPLIT-CANVAS-7731 canvas module marker survives — the agent deferred the engine's loading, it did not remove the canvas feature."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "SPLIT-CANVAS-7731", in = "src/**/*.rs" }
+
+# --- outcome item (platform truth via Playwright; gated on the split) ---------
+
+# The whole point: functionality is maintained. Opening the Draw screen must
+# still show a canvas that has painted. On web this is backed by the lazy chunk
+# being fetched + its deferred registration draining before the canvas mounts —
+# but the locator only asserts the observable UX. Gated on `uses-lazy`: if the
+# agent split the code but the platform fails to render the (WebGPU) canvas,
+# that's a framework/platform finding (neutralized), not a deduction.
+[[item]]
+id = "draw-screen-renders-canvas"
+description = "Functionality maintained after the split: the Home screen shows an 'Open Draw' button and no canvas; clicking it opens the Draw screen where a drawing canvas appears and has rendered its shapes."
+points = 25
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-lazy"
+assertion = { action = "confirm the page initially shows an 'Open Draw' button and no drawing canvas is visible, then click 'Open Draw' and verify the Draw screen appears containing a <canvas> element that has painted (non-blank) content", expect_name = "Draw" }

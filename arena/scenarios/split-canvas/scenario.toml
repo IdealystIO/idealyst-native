@@ -1,0 +1,35 @@
+# PUBLIC — the `prompt` below is the ONLY task framing the implementation agent
+# receives. This scenario ships a working-but-naively-bundled app (assets/): a
+# two-screen drawing app whose GPU canvas engine (the `canvas` SDK's vello
+# renderer) is registered EAGERLY at boot, so the whole vello/wgpu SDK rides in
+# the web MAIN bundle even though the canvas only ever appears on the Draw
+# screen. The agent must move that engine's code out of the initial download so
+# it loads only when the Draw screen opens — WITHOUT breaking drawing.
+#
+# Requirements only: the prompt never names `lazy!` or `defer_external_registration`.
+# Discovering that wrapping the canvas USAGE in a lazy chunk is NOT enough — that
+# the eager REGISTRATION is the bundle anchor and must itself be deferred into the
+# chunk — is exactly the MCP-comprehension test.
+id = "split-canvas"
+
+prompt = """
+This project is a small drawing app. It opens on a Home screen with an
+"Open Draw" button; pressing it shows a Draw screen with a GPU-accelerated
+drawing canvas that paints some shapes.
+
+The canvas is powered by a heavy graphics engine. Right now that engine is part
+of the app's initial download, so every visitor pays its full download cost up
+front on the Home screen — even though the canvas is only ever shown once they
+open the Draw screen.
+
+Change the app so the canvas's graphics-engine code is downloaded only when the
+Draw screen is opened, shrinking the initial (main) bundle that loads on first
+paint. Do not break the drawing feature — opening the Draw screen must still
+show the canvas and it must still paint — and do not remove the canvas.
+
+Target the web platform.
+"""
+
+platforms = ["web"]
+token_budget = 1_500_000
+runs = 5

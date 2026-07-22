@@ -277,6 +277,29 @@ Assertion fields by tier: static → `pattern`/`in`/`absent`/`min_count`;
 compile → `target`; robot → `verb`/`expect_name`; playwright → `action`/
 `expect_role`/`expect_name`. See `rubric.rs::Assertion`.
 
+**Starting-state assets (`scenario/assets/`).** An optional `assets/` tree is
+overlaid onto the scaffold (recursive, overwriting) — the "start from a
+pre-existing app" scenarios (`debug-fix`, `perf`, `brownfield-extend`,
+`split-canvas`) ship their code under test here. Two rules:
+- Do **not** ship a full `Cargo.toml` in `assets/` — it would clobber the
+  scaffold's package name, which the generated `index.html` imports.
+- A scenario whose app needs SDK crates the bare scaffold lacks (e.g.
+  `split-canvas` needs `canvas` / `canvas-vello` / `backend-web`) ships an
+  `assets/Cargo.append.toml` **fragment**. `overlay_assets` does not copy it;
+  it substitutes the sentinel `__IDEALYST_FRAMEWORK__` with the framework root
+  and deep-merges it into the scaffold's `Cargo.toml`, so the added path-deps
+  resolve the same working tree the scaffold path-deps `runtime-core` at. See
+  `scaffold.rs::apply_cargo_append` (+ its unit test).
+
+> ⚠️ There is **no build-artifact / file-size verifier tier**. A scenario whose
+> real objective is a bundle-size change (`split-canvas`: defer a heavy External
+> SDK's registration so its code leaves `main.wasm`) can only assert the
+> *decisions* that produce the win statically (uses-`lazy!`, uses
+> `defer_external_registration`, eager register removed) plus a functionality
+> outcome; the KiB delta itself is a documented manual check (measured 6038 →
+> 4071 KiB main.wasm for `split-canvas`). Adding a `size`/`artifact` tier that
+> greps `dist/web/pkg` is open follow-up work.
+
 ---
 
 ## 5. How to run it

@@ -66,7 +66,8 @@ fn run() -> anyhow::Result<()> {
             // Scenario starting state (debug-fix / perf scenarios ship code).
             let assets = scenario_dir.join("assets");
             if assets.is_dir() {
-                let n = scaffold::overlay_assets(&assets, &scaffolded.project_dir)?;
+                let n =
+                    scaffold::overlay_assets(&assets, &scaffolded.project_dir, &framework_path)?;
                 eprintln!("overlaid {n} scenario asset file(s)");
             }
             // Sidecar services are container-level: they must be enabled (and

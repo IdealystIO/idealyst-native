@@ -1,0 +1,17 @@
+# Extra dependencies MERGED into the scaffold's Cargo.toml by
+# `scaffold::overlay_assets` (this file is not copied verbatim). The sentinel
+# `__IDEALYST_FRAMEWORK__` is substituted with the framework working-tree root,
+# so these path-deps resolve the same checkout the scaffold path-deps
+# `runtime-core` at.
+#
+# `canvas` (the author-facing 2D-drawing facade) is an all-target dep because the
+# app renders the canvas unconditionally and the MCP catalog emitter builds the
+# crate on the host. `canvas-vello` (the GPU/vello renderer) and `backend-web`
+# (whose registry the handler installs into) are web-only leaves.
+
+[dependencies]
+canvas = { path = "__IDEALYST_FRAMEWORK__/crates/sdk/client/canvas" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+canvas-vello = { path = "__IDEALYST_FRAMEWORK__/crates/sdk/client/canvas/vello" }
+backend-web = { path = "__IDEALYST_FRAMEWORK__/crates/backend/web" }
