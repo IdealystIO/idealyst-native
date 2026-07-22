@@ -1562,6 +1562,63 @@ fn insert_many_removes_stale_ssr_node_on_divergence_remount() {
 /// stalled on it, the external's next sibling mismatched (the first
 /// `[hydrate] SSR/client diverge`), and the stale host `<div>` was orphaned in
 /// the DOM. After the fix `create_external` arms a subtree remount that swaps
+/// A handler registered LAZILY — via `runtime_core::defer_external_registration`
+/// from what would be a `lazy!` chunk body, never eagerly — must be installed by
+/// `create_external`'s drain and dispatched, instead of falling through to the
+/// "not supported" placeholder. This is the code-splitting seam: an SDK's heavy
+/// handler stays out of `main.wasm` by registering from inside its chunk, and
+/// the backend picks it up on first dispatch.
+#[wasm_bindgen_test]
+fn create_external_drains_lazily_deferred_handler_before_dispatch() {
+    use runtime_core::Backend;
+    use std::any::{Any, TypeId};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    struct LazyWidget;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+
+    // No eager `register_external` here — mimic a heavy SDK that keeps its
+    // handler out of the main bundle. Instead defer it, as the SDK's chunk body
+    // would once the `lazy!` boundary loads. A flag proves the deferred handler
+    // (not the placeholder) actually ran.
+    let handler_ran = Rc::new(Cell::new(false));
+    let flag = handler_ran.clone();
+    runtime_core::defer_external_registration::<WebBackend, _>(move |b| {
+        let flag = flag.clone();
+        b.register_external::<LazyWidget, _>(move |_p, b| {
+            flag.set(true);
+            let el = b.doc.create_element("div").unwrap();
+            el.set_class_name("lazy-widget");
+            el
+        });
+    });
+
+    // Before dispatch the handler is NOT in the registry — it lives only in the
+    // pending queue.
+    assert!(!backend.external_handlers.has::<LazyWidget>(), "handler must be deferred, not eager");
+    assert!(runtime_core::has_pending_external_registrations());
+
+    let payload: Rc<dyn Any> = Rc::new(LazyWidget);
+    let node = backend.create_external(
+        TypeId::of::<LazyWidget>(),
+        "lazy-widget",
+        &payload,
+        &Default::default(),
+    );
+
+    // The drain installed the handler and dispatched to it: the built node is
+    // the handler's `.lazy-widget` div, not the not-supported placeholder.
+    assert!(handler_ran.get(), "deferred handler must run on first dispatch");
+    let el: web_sys::Element = node.unchecked_into();
+    assert_eq!(el.class_name(), "lazy-widget", "handler's node, not the placeholder");
+    // Queue consumed; handler now resident for subsequent dispatches.
+    assert!(!runtime_core::has_pending_external_registrations());
+    assert!(backend.external_handlers.has::<LazyWidget>());
+}
+
 /// the fresh node in for the stale host and resumes the cursor at the host's
 /// next sibling — so the sibling adopts cleanly.
 #[cfg(feature = "hydrate")]

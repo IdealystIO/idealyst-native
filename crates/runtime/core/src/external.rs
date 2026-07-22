@@ -186,6 +186,118 @@ pub trait RegisterExternal: Backend + Sized + 'static {
 }
 
 // =============================================================================
+// Deferred (lazy) external registration
+// =============================================================================
+//
+// Problem this solves: an SDK's external handler is installed eagerly — either
+// via `register_extensions()` at boot or an `inventory::submit!` drained at
+// backend construction. Both paths *statically reference* the handler from the
+// main module, so wasm-split's reachability analysis keeps the whole SDK in
+// `main.wasm`. For a heavy library used in only one corner of the app, that
+// defeats code-splitting: wrapping the *usage* in `lazy!` doesn't help, because
+// registration — not rendering — is the anchor.
+//
+// The fix: register from INSIDE a `lazy!` chunk body instead of at boot. The
+// chunk body doesn't hold `&mut Backend`, so it can't call `register_external`
+// directly. It calls [`defer_external_registration`] to queue a boxed
+// `FnOnce(&mut B)`; the backend [`drain_external_registrations`] applies the
+// queue the next time it dispatches an `Element::External`. Because the queued
+// closure — and the handler + heavy SDK it captures — is constructed only
+// inside the chunk, main.wasm never statically reaches it. The drain path in
+// main only names the type-erased `Box<dyn FnOnce(&mut B)>`, not the concrete
+// closure, so the SDK's code moves into the chunk where it belongs.
+//
+// On native there is no chunk (the `lazy!` body is compiled inline) and no
+// bundle-size concern, so SDKs keep their eager/inventory registration and make
+// their `register_lazy()` a no-op. The queue is only exercised on web.
+//
+// `B` is bounded `'static` (not `Backend`) on purpose: the drain just runs the
+// closure the caller built — the `Backend`/`RegisterExternal` bound lives in
+// that closure, at the SDK call site — so this stays trivially testable with
+// any `'static` stand-in backend.
+
+thread_local! {
+    // (backend TypeId, boxed `Box<dyn FnOnce(&mut B)>` type-erased as `Any`).
+    // Keyed by backend so a process that ever hosts more than one backend type
+    // (recorder + web in the same test binary) never applies one backend's
+    // registration to another.
+    static PENDING_EXTERNAL_REGS: std::cell::RefCell<Vec<(TypeId, Box<dyn Any>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Queue an external-handler registration to be applied the next time backend
+/// `B` dispatches an `Element::External`. Called from inside a `lazy!` chunk
+/// body (where `&mut B` isn't available) so the handler — and the heavy SDK it
+/// closes over — is reachable only from the chunk, not from `main.wasm`.
+///
+/// `apply` receives `&mut B` and typically calls
+/// `b.register_external::<Props, _>(handler)`. Idempotent registration is the
+/// SDK's responsibility (`register_external` last-write-wins), but the common
+/// case — the chunk loads once — queues once.
+///
+/// ```ignore
+/// // In an SDK's web module (cfg(target_arch = "wasm32")):
+/// pub fn register_lazy() {
+///     runtime_core::defer_external_registration::<backend_web::WebBackend, _>(|b| {
+///         b.register_external::<CodeBlockProps, _>(build_code_block::<backend_web::WebBackend>);
+///     });
+/// }
+/// ```
+pub fn defer_external_registration<B, F>(apply: F)
+where
+    B: 'static,
+    F: FnOnce(&mut B) + 'static,
+{
+    let boxed: Box<dyn FnOnce(&mut B)> = Box::new(apply);
+    PENDING_EXTERNAL_REGS.with(|q| {
+        q.borrow_mut().push((TypeId::of::<B>(), Box::new(boxed) as Box<dyn Any>));
+    });
+}
+
+/// `true` if any deferred registration is queued (for any backend). A cheap
+/// guard so a backend's hot `create_external` path can skip the drain — and its
+/// borrow + downcast — in the overwhelmingly common no-lazy-registration case.
+pub fn has_pending_external_registrations() -> bool {
+    PENDING_EXTERNAL_REGS.with(|q| !q.borrow().is_empty())
+}
+
+/// Apply and remove every deferred registration queued for backend `B`.
+/// Returns the number applied. Backends call this at the top of
+/// `create_external` (guarded by [`has_pending_external_registrations`]) so a
+/// handler queued by a just-loaded `lazy!` chunk is installed before the chunk's
+/// own `Element::External` is dispatched. Registrations queued for *other*
+/// backend types are left in place.
+pub fn drain_external_registrations<B: 'static>(backend: &mut B) -> usize {
+    let mine: Vec<Box<dyn Any>> = PENDING_EXTERNAL_REGS.with(|q| {
+        let mut q = q.borrow_mut();
+        // Partition in place: keep entries for other backends, take ours. Order
+        // among ours is preserved (registration order = queue order).
+        let mut mine = Vec::new();
+        let mut rest = Vec::new();
+        for (tid, boxed) in q.drain(..) {
+            if tid == TypeId::of::<B>() {
+                mine.push(boxed);
+            } else {
+                rest.push((tid, boxed));
+            }
+        }
+        *q = rest;
+        mine
+    });
+    let n = mine.len();
+    for boxed in mine {
+        // Recover the concrete `Box<dyn FnOnce(&mut B)>`. The stored TypeId keyed
+        // the entry to `B`, so this downcast never fails; guard rather than
+        // `expect` so a future keying bug degrades to a dropped registration
+        // (visible as a "not supported" placeholder) instead of a panic.
+        if let Ok(apply) = boxed.downcast::<Box<dyn FnOnce(&mut B)>>() {
+            (*apply)(backend);
+        }
+    }
+    n
+}
+
+// =============================================================================
 // ExternalHandle<T> — typed handle for `Bound<ExternalHandle<T>>` /
 // `Ref<ExternalHandle<T>>`. The `T` parameter is a phantom marker so
 // the type system can distinguish refs to different external kinds.
@@ -291,6 +403,84 @@ impl<T: 'static> Bound<ExternalHandle<T>> {
             *slot = children;
         }
         self
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    // Stand-in "backends" — the drain path only needs `'static`, so a plain
+    // struct exercises the queue without pulling a real Backend impl into a
+    // unit test. Distinct types prove backend-keyed isolation.
+    struct BackendA {
+        registered: Vec<&'static str>,
+    }
+    struct BackendB {
+        hits: u32,
+    }
+
+    #[test]
+    fn defer_then_drain_applies_in_order() {
+        // Fresh test thread → empty queue. Guard reflects that.
+        assert!(!has_pending_external_registrations());
+
+        defer_external_registration::<BackendA, _>(|b| b.registered.push("first"));
+        defer_external_registration::<BackendA, _>(|b| b.registered.push("second"));
+        assert!(has_pending_external_registrations());
+
+        let mut backend = BackendA { registered: Vec::new() };
+        let n = drain_external_registrations(&mut backend);
+
+        assert_eq!(n, 2, "both queued registrations applied");
+        // Registration order == queue order: the chunk that registers before it
+        // renders must win deterministically.
+        assert_eq!(backend.registered, vec!["first", "second"]);
+        // Queue emptied — a second drain is a no-op (chunk loads once).
+        assert!(!has_pending_external_registrations());
+        assert_eq!(drain_external_registrations(&mut backend), 0);
+    }
+
+    #[test]
+    fn drain_only_applies_matching_backend_type() {
+        // A recorder + web in one process must not cross-apply registrations.
+        defer_external_registration::<BackendA, _>(|b| b.registered.push("for-a"));
+        defer_external_registration::<BackendB, _>(|b| b.hits += 1);
+
+        let mut a = BackendA { registered: Vec::new() };
+        let applied_to_a = drain_external_registrations(&mut a);
+        assert_eq!(applied_to_a, 1, "only BackendA's registration ran");
+        assert_eq!(a.registered, vec!["for-a"]);
+
+        // BackendB's entry survived A's drain and applies to B.
+        assert!(has_pending_external_registrations());
+        let mut b = BackendB { hits: 0 };
+        assert_eq!(drain_external_registrations(&mut b), 1);
+        assert_eq!(b.hits, 1);
+        assert!(!has_pending_external_registrations());
+    }
+
+    #[test]
+    fn closure_captures_survive_until_drain() {
+        // The whole point: the heavy work is captured in the closure and only
+        // runs at drain time (i.e. when the chunk's external is dispatched),
+        // never at queue time.
+        let ran = Rc::new(Cell::new(false));
+        let flag = ran.clone();
+        defer_external_registration::<BackendA, _>(move |b| {
+            flag.set(true);
+            b.registered.push("captured");
+        });
+        assert!(!ran.get(), "closure body must not run at defer time");
+
+        let mut backend = BackendA { registered: Vec::new() };
+        drain_external_registrations(&mut backend);
+        assert!(ran.get(), "closure body runs exactly at drain time");
     }
 }
 

@@ -3035,6 +3035,15 @@ impl Backend for WebBackend {
         payload: &Rc<dyn std::any::Any>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
+        // LAZY REGISTRATION: a `lazy!` chunk that registers its own external
+        // handler (to keep the SDK out of `main.wasm` — see
+        // `runtime_core::defer_external_registration`) queued it when the chunk
+        // loaded. Apply the queue now, before lookup, so the chunk's own
+        // `Element::External` finds its freshly-installed handler. Guarded so
+        // the common no-lazy-registration path pays nothing.
+        if runtime_core::has_pending_external_registrations() {
+            runtime_core::drain_external_registrations(self);
+        }
         // HYDRATION: snapshot the SSR cursor before the handler runs so we
         // can tell whether the handler adopted the SSR host or built fresh.
         let hydrate_cursor_before = self.hydrate_cursor_snapshot();

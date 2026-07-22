@@ -62,7 +62,14 @@ to hit real AWS using your default credential chain.
 
 ## Deploy to AWS
 
-Install [cargo-lambda](https://www.cargo-lambda.info/), then either path:
+Install [cargo-lambda](https://www.cargo-lambda.info/), then either path.
+
+> **Shortcut.** For an idealyst app you don't need the hand-written
+> `src/bin/lambda.rs` at all — `idealyst build --serverless-lambda --release`
+> generates the wrapper, builds the `bootstrap`, and stages it plus an RIE
+> Dockerfile under `dist/serverless-lambda/` for you. This example keeps the
+> explicit bin to show what the adapter does. See
+> [docs/serverless.md](../../../../docs/serverless.md).
 
 ### A. cargo-lambda (quickest)
 

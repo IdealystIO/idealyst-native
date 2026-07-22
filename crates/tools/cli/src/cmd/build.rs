@@ -80,6 +80,22 @@ pub struct Args {
     #[arg(long)]
     pub ssg: bool,
 
+    /// Build the app's `#[server]` fns as an AWS Lambda `bootstrap`
+    /// (`provided.al2023` custom runtime) via `cargo lambda build`.
+    /// Generates an ephemeral wrapper that runs `server::router()` under
+    /// the Lambda runtime (`server_aws::run()`), then stages the
+    /// `bootstrap` + an RIE Dockerfile under `dist/serverless-lambda/` for
+    /// image-fidelity local testing and `cargo lambda deploy`. Requires
+    /// `cargo lambda` (`cargo install cargo-lambda`). Server-side target —
+    /// not part of the client `targets` set.
+    #[arg(long)]
+    pub serverless_lambda: bool,
+
+    /// serverless-lambda only: target CPU architecture (`arm64` default,
+    /// or `x86_64`). No effect on other targets.
+    #[arg(long, value_name = "arm64|x86_64")]
+    pub arch: Option<String>,
+
     /// SSG only: suppress the hydration boot `<script>`. The exported
     /// HTML is pure server-render — useful for SEO/marketing pages
     /// where no client takeover is wanted. No effect outside `--ssg`.
@@ -154,11 +170,32 @@ pub fn run(args: Args) -> Result<()> {
     // fall back to manifest. The `--aas` flag is separate from the
     // platform set — it's an extra build that happens alongside the
     // platforms (or alone if no platforms are selected).
-    let mut targets = collect_targets(&args, &manifest.app.targets);
-    if targets.is_empty() && !args.runtime_server && !args.ssr && !args.ssg {
+    // `--serverless-lambda` is a server-side artifact; on its own it should
+    // NOT drag in the manifest's client `targets` (a lambda build shouldn't
+    // also emit a web bundle). Combining explicitly still works
+    // (`--web --serverless-lambda`). ssr/ssg/runtime-server keep their existing
+    // manifest-fallback so hydration can rely on the web bundle being built.
+    let explicit_client = args.web
+        || args.ios
+        || args.android
+        || args.roku
+        || args.macos
+        || args.terminal;
+    let mut targets = if args.serverless_lambda && !explicit_client {
+        Vec::new()
+    } else {
+        collect_targets(&args, &manifest.app.targets)
+    };
+    if targets.is_empty()
+        && !args.runtime_server
+        && !args.ssr
+        && !args.ssg
+        && !args.serverless_lambda
+    {
         anyhow::bail!(
             "no targets to build: pass `--web` / `--ios` / `--android` / `--roku` / `--aas` / \
-             `--ssr` / `--ssg`, or add `targets = [...]` to `[package.metadata.idealyst.app]`"
+             `--ssr` / `--ssg` / `--serverless-lambda`, or add `targets = [...]` to \
+             `[package.metadata.idealyst.app]`"
         );
     }
     // De-dup while preserving the order the user (or manifest) gave.
@@ -174,6 +211,9 @@ pub fn run(args: Args) -> Result<()> {
     }
     if args.ssg {
         extras.push("ssg export");
+    }
+    if args.serverless_lambda {
+        extras.push("serverless-lambda");
     }
     eprintln!(
         "[build] {} targets: {}{}",
@@ -217,6 +257,10 @@ pub fn run(args: Args) -> Result<()> {
             targets.contains(&Target::Web),
             web_entry.as_deref(),
         )?;
+    }
+
+    if args.serverless_lambda {
+        build_serverless_lambda_target(&dir, &args)?;
     }
 
     Ok(())
@@ -543,6 +587,42 @@ fn build_ssg_export(
             if args.release { " --release" } else { "" },
         );
     }
+    Ok(())
+}
+
+fn build_serverless_lambda_target(dir: &std::path::Path, args: &Args) -> Result<()> {
+    let source = crate::framework_source::resolve(dir)?;
+    let arch = build_serverless_lambda::Arch::parse(args.arch.as_deref())?;
+    let artifact = build_serverless_lambda::build(
+        dir,
+        build_serverless_lambda::BuildOptions {
+            release: args.release,
+            arch,
+            source,
+            user_features: Vec::new(),
+        },
+    )?;
+    eprintln!(
+        "[build serverless-lambda] success ({}) → {}",
+        arch.as_str(),
+        artifact.bootstrap.display(),
+    );
+    eprintln!(
+        "  staged deploy/test context → {}",
+        artifact.deploy_dir.display(),
+    );
+    eprintln!(
+        "  local (real image via RIE): docker build --platform {plat} -t {name} {dir} && \
+         docker run --rm --platform {plat} -p 9000:8080 {name}",
+        plat = if matches!(arch, build_serverless_lambda::Arch::Arm64) {
+            "linux/arm64"
+        } else {
+            "linux/amd64"
+        },
+        name = "idealyst-lambda",
+        dir = artifact.deploy_dir.display(),
+    );
+    eprintln!("  deploy: cargo lambda deploy (see docs/serverless.md)");
     Ok(())
 }
 

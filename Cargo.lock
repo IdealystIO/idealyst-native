@@ -1840,6 +1840,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "build-serverless-lambda"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "build-ios",
+ "tempfile",
+]
+
+[[package]]
 name = "build-sim"
 version = "0.0.1"
 dependencies = [
@@ -5715,6 +5724,7 @@ dependencies = [
  "build-macos",
  "build-roku",
  "build-runtime-server",
+ "build-serverless-lambda",
  "build-sim",
  "build-ssr",
  "build-terminal",
@@ -6291,6 +6301,32 @@ name = "lazy-chunk-handoff-test"
 version = "0.0.1"
 dependencies = [
  "idea-ui",
+ "runtime-core",
+]
+
+[[package]]
+name = "lazy-external-split-eager"
+version = "0.0.1"
+dependencies = [
+ "idea-ui",
+ "lazy-external-split-heavy",
+ "runtime-core",
+]
+
+[[package]]
+name = "lazy-external-split-heavy"
+version = "0.0.1"
+dependencies = [
+ "backend-web",
+ "runtime-core",
+]
+
+[[package]]
+name = "lazy-external-split-lazy"
+version = "0.0.1"
+dependencies = [
+ "idea-ui",
+ "lazy-external-split-heavy",
  "runtime-core",
 ]
 

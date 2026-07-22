@@ -57,6 +57,7 @@ build-sim = { workspace = true }
 build-web = { workspace = true }
 build-macos = { workspace = true }
 build-ssr = { workspace = true }
+build-serverless-lambda = { workspace = true }
 run-macos = { workspace = true }
 build-terminal = { workspace = true }
 run-terminal = { workspace = true }

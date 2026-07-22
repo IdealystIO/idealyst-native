@@ -75,7 +75,30 @@ const APPS: &[AppCfg] = &[
         expected_marker: "Loaded from a separate wasm chunk",
         marker_wait_ms: 15_000,
     },
+    // The registration-split pair. Their H2 headings live in the MAIN
+    // bundle, so the marker only confirms mount; the point of these two is
+    // the main.wasm SIZE DELTA asserted by `measure_registration_split`
+    // after the build loop, not their DOM.
+    AppCfg {
+        dir: "lazy-external-split/eager",
+        wasm_stem: "lazy_external_split_eager",
+        expected_marker: "eager registration",
+        marker_wait_ms: 10_000,
+    },
+    AppCfg {
+        dir: "lazy-external-split/lazy",
+        wasm_stem: "lazy_external_split_lazy",
+        expected_marker: "lazy registration",
+        marker_wait_ms: 10_000,
+    },
 ];
+
+/// Least main.wasm shrinkage we require between the eager and lazy
+/// variants. The heavy SDK's payload is 512 KiB; a delta above ~400 KiB
+/// proves the payload left main (the slack absorbs wasm-opt variance and
+/// the few bytes the deferral seam itself adds). Well below 512 to stay
+/// robust; far above build-to-build noise (single-KB) to be a real signal.
+const MIN_MAIN_SHRINK_BYTES: u64 = 400 * 1024;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -114,6 +137,7 @@ fn main() -> ExitCode {
     }
 
     let mut failed: Vec<&str> = Vec::new();
+    let mut built: Vec<&str> = Vec::new();
     for app in APPS {
         if !only.is_empty() && !only.iter().any(|a| *a == app.dir) {
             continue;
@@ -154,6 +178,7 @@ fn main() -> ExitCode {
             failed.push(app.dir);
             continue;
         }
+        built.push(app.dir);
         println!("  build ok");
 
         if run_browser {
@@ -164,6 +189,22 @@ fn main() -> ExitCode {
                     eprintln!("  FAIL (browser): {e}");
                     failed.push(app.dir);
                 }
+            }
+        }
+    }
+
+    // Registration-split measurement: when both variants built this run,
+    // diff their main.wasm and require the lazy one to be meaningfully
+    // smaller — the heavy SDK's payload must have left main.wasm.
+    let eager = "lazy-external-split/eager";
+    let lazy = "lazy-external-split/lazy";
+    if built.contains(&eager) && built.contains(&lazy) {
+        println!("\n=== registration-split main.wasm delta ===");
+        match measure_registration_split(&tests_dir) {
+            Ok(()) => println!("  size delta ok"),
+            Err(e) => {
+                eprintln!("  FAIL: {e}");
+                failed.push("lazy-external-split (size delta)");
             }
         }
     }
@@ -180,32 +221,106 @@ fn main() -> ExitCode {
     }
 }
 
-/// Verify the build produced an `index.html` + a non-empty `.wasm` +
+/// Verify the build produced an `index.html` + a non-empty main `.wasm` +
 /// the wasm-bindgen JS shim. We don't try to introspect the wasm
 /// itself here — that's the browser pass's job.
+///
+/// Release bundles are content-addressed: `{stem}_bg.wasm` ships as
+/// `{stem}_bg.<hash>.wasm` and `{stem}.js` as `{stem}.<hash>.js` (see the
+/// web-bundle fingerprinting pass). Match by prefix/suffix, not exact
+/// name, so this stays correct across both fingerprinted and plain
+/// bundles.
 fn verify_artifacts(app_dir: &Path, wasm_stem: &str) -> Result<(), String> {
     let dist = app_dir.join("dist").join("web");
     let pkg = dist.join("pkg");
     let html = dist.join("index.html");
-    let wasm = pkg.join(format!("{wasm_stem}_bg.wasm"));
-    let js = pkg.join(format!("{wasm_stem}.js"));
 
     if !html.exists() {
         return Err(format!("missing {}", html.display()));
     }
-    let wasm_meta = std::fs::metadata(&wasm)
-        .map_err(|e| format!("missing {}: {}", wasm.display(), e))?;
-    if wasm_meta.len() < 1024 {
+    let wasm = find_pkg_file(&pkg, &format!("{wasm_stem}_bg"), ".wasm")
+        .ok_or_else(|| format!("missing {wasm_stem}_bg*.wasm in {}", pkg.display()))?;
+    let wasm_len = std::fs::metadata(&wasm).map(|m| m.len()).unwrap_or(0);
+    if wasm_len < 1024 {
         return Err(format!(
             "{} is suspiciously small ({} bytes)",
             wasm.display(),
-            wasm_meta.len()
+            wasm_len
         ));
     }
-    if !js.exists() {
-        return Err(format!("missing {}", js.display()));
+    if find_pkg_file(&pkg, &format!("{wasm_stem}."), ".js").is_none()
+        && find_pkg_file(&pkg, wasm_stem, ".js").is_none()
+    {
+        return Err(format!("missing {wasm_stem}*.js in {}", pkg.display()));
     }
     Ok(())
+}
+
+/// First file in `pkg` whose name starts with `prefix` and ends with
+/// `suffix`. Used to locate content-addressed artifacts whose middle is a
+/// build hash. Deterministic pick (lexicographically smallest) so repeat
+/// runs agree, though in practice there is exactly one main-bundle match.
+fn find_pkg_file(pkg: &Path, prefix: &str, suffix: &str) -> Option<PathBuf> {
+    let mut hits: Vec<PathBuf> = std::fs::read_dir(pkg)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with(prefix) && n.ends_with(suffix))
+                .unwrap_or(false)
+        })
+        .collect();
+    hits.sort();
+    hits.into_iter().next()
+}
+
+/// Compare the two variants' main bundles. The eager app anchors the
+/// heavy SDK's 512 KiB payload in `main.wasm`; the lazy app defers
+/// registration into the chunk so the release data-prune drops it. Assert
+/// the lazy main is smaller by at least [`MIN_MAIN_SHRINK_BYTES`], and
+/// print both sizes + the delta so a regression (or a win) is legible.
+fn measure_registration_split(tests_dir: &Path) -> Result<(), String> {
+    let eager = main_wasm_bytes(tests_dir, "lazy-external-split/eager", "lazy_external_split_eager")?;
+    let lazy = main_wasm_bytes(tests_dir, "lazy-external-split/lazy", "lazy_external_split_lazy")?;
+
+    let delta = eager.saturating_sub(lazy);
+    println!("  eager main.wasm: {} KiB", eager / 1024);
+    println!("  lazy  main.wasm: {} KiB", lazy / 1024);
+    println!(
+        "  lazy is {} KiB smaller (need \u{2265} {} KiB)",
+        delta / 1024,
+        MIN_MAIN_SHRINK_BYTES / 1024,
+    );
+
+    if lazy >= eager {
+        return Err(format!(
+            "lazy main.wasm ({} KiB) is not smaller than eager ({} KiB) — \
+             deferred registration failed to keep the heavy SDK out of main",
+            lazy / 1024,
+            eager / 1024,
+        ));
+    }
+    if delta < MIN_MAIN_SHRINK_BYTES {
+        return Err(format!(
+            "main.wasm shrank only {} KiB (< {} KiB) — the heavy payload did not \
+             fully leave main; check the deferral seam or the data-prune classification",
+            delta / 1024,
+            MIN_MAIN_SHRINK_BYTES / 1024,
+        ));
+    }
+    Ok(())
+}
+
+/// Byte size of one variant's main bundle (`{stem}_bg[.<hash>].wasm`).
+fn main_wasm_bytes(tests_dir: &Path, app_dir: &str, wasm_stem: &str) -> Result<u64, String> {
+    let pkg = tests_dir.join(app_dir).join("dist").join("web").join("pkg");
+    let wasm = find_pkg_file(&pkg, &format!("{wasm_stem}_bg"), ".wasm")
+        .ok_or_else(|| format!("no {wasm_stem}_bg*.wasm in {}", pkg.display()))?;
+    std::fs::metadata(&wasm)
+        .map(|m| m.len())
+        .map_err(|e| format!("reading {}: {}", wasm.display(), e))
 }
 
 fn workspace_tests_dir() -> PathBuf {

@@ -23,6 +23,16 @@ something regresses here, the surface area to bisect is small.
   verifies the main bundle ↔ chunk boundary survives release-mode
   pruning (chunks reach into main-bundle data symbols for shared
   vtables, statics, panic strings).
+- `lazy-external-split/` — a **pair** (`eager/`, `lazy/`) plus a shared
+  `heavy/` fake External SDK carrying a 512 KiB payload reachable only
+  through its handler. The two apps are identical except where the
+  handler is registered: `eager/` at boot (`register_extensions`), `lazy/`
+  from inside the `lazy!` chunk body via
+  `runtime_core::defer_external_registration`. The runner diffs their
+  `main.wasm` and requires the lazy variant to be ≥ 400 KiB smaller —
+  proving deferred registration keeps a heavy SDK out of the main bundle.
+  The runtime behavior itself is unit-tested in `runtime-core` and
+  `backend-web`; this pair is the end-to-end byte measurement.
 
 ## Runner
 

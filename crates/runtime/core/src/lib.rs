@@ -283,8 +283,9 @@ pub use primitives::portal::{
     PortalOps, PortalTarget, ViewportPlacement, ViewportRect,
 };
 pub use external::{
-    deserialize_external_payload, external, register_external_serde, serialize_external_payload,
-    ErasedHandler, ExternalHandle, ExternalRegistry, RegisterExternal,
+    defer_external_registration, deserialize_external_payload, drain_external_registrations,
+    external, has_pending_external_registrations, register_external_serde,
+    serialize_external_payload, ErasedHandler, ExternalHandle, ExternalRegistry, RegisterExternal,
 };
 pub use primitives::presence::{
     presence, PresenceAnim, PresenceHandle, PresenceOps, PresenceState,

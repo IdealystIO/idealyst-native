@@ -42,6 +42,97 @@ The framework currently has no answer for any of these.
 
 ---
 
+## Lazy registration of `External` handlers (implemented)
+
+Splitting the *render* isn't enough when the heavy code is a third-party
+`Element::External` extension. An external handler is installed eagerly —
+either from `register_extensions()` at boot or from an `inventory::submit!`
+drained at backend construction (`WebBackend::drain_self_registrars`). Both
+paths **statically reference the handler** from the main module, so
+wasm-split's reachability analysis keeps the whole SDK in `main.wasm`.
+Wrapping the *usage site* in `lazy!` does nothing: registration, not
+rendering, is the anchor.
+
+The fix is to register the handler from **inside** the `lazy!` chunk body. The
+chunk body has no `&mut Backend`, so it can't call `register_external`
+directly. Instead it queues the registration:
+
+```rust
+// runtime-core (backend-neutral, bound `B: 'static`):
+runtime_core::defer_external_registration::<B, _>(|b| { … });
+runtime_core::has_pending_external_registrations() -> bool;   // cheap guard
+runtime_core::drain_external_registrations::<B>(&mut b) -> usize;
+```
+
+- `defer_external_registration::<B>(apply)` boxes `apply: FnOnce(&mut B)`,
+  type-erases it to `Box<dyn Any>` keyed by `TypeId::of::<B>()`, and pushes it
+  onto a thread-local queue.
+- The web backend drains the queue at the top of `create_external` (guarded by
+  `has_pending_external_registrations()` so the common path pays nothing). By
+  the time the chunk's own `Element::External` is dispatched, the handler it
+  just queued is resident.
+- `drain_external_registrations::<B>` applies and removes only the entries
+  keyed to `B`; a process hosting two backend types (recorder + web) never
+  cross-applies.
+
+Why this moves the SDK out of `main.wasm`: main only names the type-erased
+`Box<dyn FnOnce(&mut B)>` in the drain path. The concrete closure — and the
+handler + heavy SDK it captures — is constructed only inside the chunk, so
+wasm-split's reachability analysis places all of it in the chunk, and the
+data-prune keeps its statics out of main.
+
+An SDK exposes a `register_lazy()` that is target-gated exactly like its
+existing `register()`:
+
+```rust
+#[cfg(target_arch = "wasm32")]
+pub fn register_lazy() {
+    runtime_core::defer_external_registration::<backend_web::WebBackend, _>(|b| {
+        b.register_external::<HeavyProps, _>(build_heavy::<backend_web::WebBackend>);
+    });
+}
+
+// Native: registration is eager (inventory / register_extensions) and there is
+// no chunk, so this is a no-op — the `lazy!` body is compiled inline anyway.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn register_lazy() {}
+```
+
+The app then registers-then-renders inside the `lazy!` boundary. No new macro
+is required — a `lazy!` body is a plain Rust block whose trailing expression is
+the `Element`:
+
+```rust
+lazy! {
+    heavy_sdk::register_lazy();   // web: queues the handler into THIS chunk
+    heavy_sdk::widget(props)      // trailing expr → the External Element
+}
+```
+
+Caveat: an SDK that wants web laziness must **not** `inventory::submit!` its
+web handler (that submission is itself a main-module anchor). It keeps
+inventory self-registration for native targets, where bundle size is a
+non-issue, and opts web into the lazy path. This is per-SDK opt-in for heavy
+libraries — the default eager path is unchanged.
+
+**Measured.** `tests/lazy-external-split/` is a pair of identical apps
+(`eager/`, `lazy/`) sharing a `heavy/` fake External SDK whose handler reaches
+512 KiB of static data. They differ only in where the handler registers. Built
+at `--web --release` (data-prune on), the `prune-regression` runner reports:
+
+| Variant | `main.wasm` | lazy chunk |
+|---|---|---|
+| eager (registered at boot) | 1294 KiB | ~0.8 KiB |
+| lazy (registered in chunk) | **781 KiB** | 516 KiB |
+
+The release data-prune log confirms the mechanism: `zeroed 524575 of 524575
+chunk-only data bytes` — the entire heavy payload is classified chunk-only and
+dropped from main, riding in the on-demand chunk instead. Runtime behavior is
+unit-tested in `runtime-core` (`external::tests`) and `backend-web`
+(`create_external_drains_lazily_deferred_handler_before_dispatch`).
+
+---
+
 ## Surface
 
 ### Author API
