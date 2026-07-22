@@ -1,0 +1,24 @@
+# PUBLIC — requirements only; exercises the code-splitting surface of the MCP
+# (the `lazy!` boundary — build a subtree behind a lazily-loaded chunk). No
+# hints about which macro/API to reach for; the agent must find it in the docs.
+id = "code-split"
+
+prompt = """
+Build a single-screen app with an on-demand "Report" panel.
+
+Requirements:
+- The initial screen shows a button labelled "Show report" and nothing else.
+- Pressing the button opens a heavy Report panel below the button. The panel
+  shows the heading text "Report details" and a short paragraph of report body
+  text.
+- The Report panel is expensive, so its code must NOT be loaded up front. Load
+  the panel's code on demand — only once the user first presses the button —
+  and render the panel's content once it has loaded. Whether the panel is open
+  is ordinary app state.
+
+Target the web platform.
+"""
+
+platforms = ["web"]
+token_budget = 1_500_000
+runs = 5

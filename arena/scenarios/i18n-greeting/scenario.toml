@@ -1,0 +1,23 @@
+# PUBLIC — exercises the i18n SDK surface (a declared translation catalog +
+# a reactive active-locale switch that re-renders every visible string in
+# place). Requirements only; no hint about how to reach the capability.
+id = "i18n-greeting"
+
+prompt = """
+Build a small welcome screen.
+
+Requirements:
+- The screen shows a greeting plus a couple of labels (for example a short
+  tagline and a call-to-action), all in English to start with.
+- A language switcher — a pair of buttons, or a toggle — lets the user pick
+  a second language (for example Spanish).
+- Picking the second language switches ALL of the visible strings on screen
+  (the greeting and the labels) to that language at once, live, without a
+  page reload. Switching back returns them to English.
+
+Target the web platform.
+"""
+
+platforms = ["web"]
+token_budget = 1_500_000
+runs = 5

@@ -1,0 +1,75 @@
+# SECRET — never enters the implementation agent's context. Each item is
+# atomic and objectively checkable at its declared tier. Items derive strictly
+# from the scenario's stated requirements: a set of visible strings that all
+# switch to a second language live, driven by a language switcher.
+#
+# Capability policy (mirrors todo-app / themed-settings): items test the
+# CAPABILITY, not one specific symbol. The `i18n` SDK is the internationalization
+# capability under test; the language-switcher control may be a primitive
+# `button` or a component-library wrapper (`Button`/`Toggle`) — the outcome item
+# does not care which.
+#
+# Reactivity note — READ THIS before "adding a signal check". With `i18n`, the
+# active locale IS the SDK's own global reactive signal: the generated message
+# functions return `Reactive<String>` and `set_locale(...)` mutates the global
+# locale, re-rendering every visible translated string in place. An idiomatic
+# app therefore declares NO `signal(...)` of its own for the language — so a
+# rubric item requiring `signal(` would PENALIZE correct SDK usage. The reactive
+# decision is instead proven by the `set_locale` / `set_locale_code` call that
+# drives the SDK's reactive locale (`locale-reactive-switch`).
+#
+# Idiomaticity / doc-risk this scenario is designed to surface: `describe_sdk
+# i18n` returns only a one-line summary and points at the `sdks` guide, whose
+# i18n row has no code. The `i18n!` macro + `set_locale` API lives in the crate's
+# README/lib.rs, which the MCP does not surface directly — so a naive agent may
+# never find the SDK and instead hand-roll a `match lang { "es" => ... }` map
+# with its own `signal(Locale)`. That hand-rolled app can still PASS the outcome
+# item (the greeting visibly switches) while FAILING `uses-i18n` +
+# `locale-reactive-switch` — exactly the SDK-discovery gap the arena exists to
+# measure. The static items deliberately reward the SDK path.
+scenario_id = "i18n-greeting"
+
+# --- compile floor -----------------------------------------------------------
+
+[[item]]
+id = "builds-web"
+description = "The produced project builds for web."
+points = 20
+class = "decision"
+tier = "compile"
+verifier = "compile"
+assertion = { target = "web" }
+
+# --- decision items (source-verifiable: did the agent reach for the SDK) ------
+
+[[item]]
+id = "uses-i18n"
+description = "Translations come from the i18n SDK's declared catalog — the `i18n! { locales: … }` macro that emits the typed message functions — not a hand-rolled `match`/`if lang == \"es\"` string map."
+points = 20
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "i18n::i18n\\s*!|\\bi18n\\s*!\\s*\\{", in = "src/**/*.rs" }
+
+[[item]]
+id = "locale-reactive-switch"
+description = "The active locale is switched through the SDK's reactive locale (`set_locale(Locale::…)` or the untyped `set_locale_code(\"…\")`), which mutates the global reactive locale signal and re-renders every visible translated string in place — rather than tracking the language in ad-hoc state and rebuilding strings by hand."
+points = 15
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "set_locale_code\\s*\\(|set_locale\\s*\\(", in = "src/**/*.rs" }
+
+# --- outcome item (platform truth via Playwright; gated on a decision) --------
+
+[[item]]
+id = "greeting-switches"
+description = "Activating the language switcher visibly changes the greeting text to the second language."
+points = 25
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "locale-reactive-switch"
+# The agent chooses its own strings and second language, so don't pin literals:
+# assert the observable change, not a specific word.
+assertion = { action = "note the greeting text shown on the page (it should be in English), then activate the language switcher for the second language (e.g. a 'Spanish'/'Español' button or a toggle) and confirm the greeting text visibly changed to a different language" }

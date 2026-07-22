@@ -1,0 +1,74 @@
+# SECRET — never enters the implementation agent's context. Each item is
+# atomic and objectively checkable at its declared tier. Items are derived
+# strictly from the scenario's stated requirements: copy a fixed snippet to
+# the system clipboard and show a brief visible "Copied!" confirmation.
+#
+# Capability policy (mirrors todo-app / data-fetch): items test the
+# CAPABILITY, not one specific symbol. The `clipboard` SDK
+# (`clipboard::set_text`) is the primary capability under test; a reactive
+# confirmation state is the secondary. Component-library wrappers over the
+# same primitives are legitimate.
+#
+# Why the clipboard write is verified in SOURCE, not by reading the OS
+# clipboard at runtime: reading the real clipboard in headless Chromium is
+# permission- and gesture-gated and unreliable across environments, so the
+# arena must NOT assert on clipboard contents. Instead the outcome is
+# verified through the app's own VISIBLE "Copied!" confirmation, which the
+# app only shows after a successful copy — an observable, deterministic
+# proxy for "the copy happened". The static item pins the real SDK call so
+# a raw `navigator.clipboard` JS binding (not the cross-platform SDK) does
+# not satisfy it.
+scenario_id = "clipboard-copy"
+
+# --- compile floor -----------------------------------------------------------
+
+[[item]]
+id = "builds-web"
+description = "The produced project builds for web."
+points = 20
+class = "decision"
+tier = "compile"
+verifier = "compile"
+assertion = { target = "web" }
+
+# --- decision items (source-verifiable: did the agent pick the right APIs) ---
+
+[[item]]
+id = "uses-clipboard-sdk"
+description = "Copies to the system clipboard through the cross-platform `clipboard` SDK's `set_text` (qualified `clipboard::set_text(...)` or a `use clipboard::{ set_text, .. }` import), NOT a web-only `navigator.clipboard` JS binding."
+points = 25
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+# Matches the qualified call/import `clipboard::set_text` and the grouped
+# import form `use clipboard::{set_text, ..}`. Both prove the SDK's copy
+# function is referenced; a raw `navigator.clipboard.writeText` shim does
+# not match. `set_text` is specifically the copy half of the SDK.
+assertion = { pattern = "clipboard::set_text|clipboard::\\{[^}]*set_text", in = "src/**/*.rs" }
+
+[[item]]
+id = "confirmation-is-reactive"
+description = "Holds the 'Copied!' confirmation in reactive state (a signal) so it can appear after the copy and clear again, rather than being a static always-on label."
+points = 15
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+# The confirmation must be reactive to toggle on/off — assert the reactive-
+# state capability (signal). The runtime item below proves the confirmation
+# text actually appears; here we only require it is driven by reactive state.
+assertion = { pattern = "\\bsignal\\s*\\(|signal!|Signal<", in = "src/**/*.rs" }
+
+# --- outcome item (platform truth via Playwright; gated on a decision) --------
+
+[[item]]
+id = "shows-copied-confirmation"
+description = "Pressing the Copy button shows a brief visible 'Copied!' confirmation on screen."
+points = 20
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-clipboard-sdk"
+# Observable proxy for a successful copy (the OS clipboard is NOT read — see
+# header). The confirmation is a short text such as "Copied!"; assert its
+# visible appearance after the click, tolerant of exact wording/casing.
+assertion = { action = "locate the 'Copy' button and click it, then confirm a brief visible confirmation such as the text 'Copied!' appears on screen that was not shown before the click", expect_name = "Copied!" }

@@ -1,0 +1,23 @@
+# PUBLIC — the `prompt` below is the ONLY task framing the implementation
+# agent receives. Requirements only; no hints about how to use the MCP or
+# which SDK/API to reach for.
+id = "clipboard-copy"
+
+prompt = """
+Build a screen that shows a short code snippet with a "Copy" button.
+
+The snippet is a fixed string (for example a shell command like
+`cargo add idealyst`) displayed on screen.
+
+Requirements:
+- Display the snippet text and a "Copy" button next to it.
+- Pressing "Copy" copies the snippet to the system clipboard.
+- After a successful copy, show a brief, visible "Copied!" confirmation on
+  screen so the user can see the copy worked.
+
+Target the web platform.
+"""
+
+platforms = ["web"]
+token_budget = 1_500_000
+runs = 5

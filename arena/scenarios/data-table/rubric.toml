@@ -1,0 +1,95 @@
+# SECRET — never enters the implementation agent's context. Each item is
+# atomic and objectively checkable at its declared tier. Items derive
+# strictly from the scenario's stated requirements: render a seeded 8-row
+# dataset in a table with per-field column headers, and re-order the rows
+# when a header is clicked. Nothing subjective; nothing the scenario didn't
+# ask for.
+scenario_id = "data-table"
+
+# Capability policy (mirrors todo-app / data-fetch): items test the
+# CAPABILITY, not one specific symbol. The `table` SDK — three
+# `Element::External` primitives (`Table` / `TableRow` / `TableCell`) that
+# lower to a real HTML `<table>`/`<tr>`/`<th>`/`<td>` on web — is the
+# capability the scenario is designed around, so it is what `uses-table`
+# rewards. idea-ui re-exports the same `Table`/`TableRow`/`TableCell` tags
+# as themed wrappers OVER that SDK, so they match too (both are "the table
+# SDK"). A hand-built grid (a `Stack`/`view` column of rows) that never
+# touches those tags does NOT earn `uses-table`, but it still earns the
+# compile floor and the outcome items — the render/sort behavior is what
+# the outcomes assert, and the arena must not steer toward one library.
+#
+# NOTE ON REGISTRATION (a real MCP-navigation trap this scenario surfaces):
+# the `table` SDK only renders a real `<table>` on web if the app installs
+# its external handlers — `table::register(&mut WebBackend)` from a
+# cfg-gated `register_extensions`, plus a `backend-web` dep — because the
+# CLI's `--local` web build dead-strips the crate's `inventory`
+# self-registration. An agent that uses the tags correctly but never
+# registers renders a "not supported on web" placeholder: `uses-table`
+# passes, the render outcome fails, and score.rs neutralizes that into a
+# framework/doc finding (the intended arena signal), not a deduction.
+
+# --- compile floor -----------------------------------------------------------
+
+[[item]]
+id = "builds-web"
+description = "The produced project builds for web."
+points = 20
+class = "decision"
+tier = "compile"
+verifier = "compile"
+assertion = { target = "web" }
+
+# --- decision items (source-verifiable: did the agent pick the right APIs) ---
+
+[[item]]
+id = "uses-table"
+description = "Renders the dataset through the `table` SDK — the `Table` / `TableRow` / `TableCell` tags (raw `table::prelude::*` or idea-ui's themed wrappers over the same SDK), or the `table(` / `table_row(` / `table_cell(` constructors — rather than a hand-rolled grid of views."
+points = 20
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+# `TableRow` / `TableCell` are distinctive enough that a match is a real
+# use of the SDK tags (they also match `TableRowProps`/`TableCellProps` and
+# the `table_row(`/`table_cell(` constructors — all SDK). `use table::`
+# catches a raw-SDK import even if the tags are aliased. The bare `Table`
+# tag is deliberately NOT matched alone (too collision-prone in prose).
+assertion = { pattern = "use\\s+table::|TableRow|TableCell|table_row\\s*\\(|table_cell\\s*\\(", in = "src/**/*.rs" }
+
+[[item]]
+id = "sort-state-reactive"
+description = "Holds the current sort selection (which column / direction) in reactive state (a signal) so the table re-renders when the header is clicked, rather than sorting a static once-built list."
+points = 15
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "\\bsignal\\s*\\(|signal!|Signal<", in = "src/**/*.rs" }
+
+# --- outcome items (platform truth via Playwright; each gated on a decision) -
+
+[[item]]
+id = "table-renders-headers-rows"
+description = "The seeded dataset renders as a table: the Name / Role / Score column headers are present and the 8 data rows are visible."
+points = 20
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-table"
+# Capability policy: assert the observable — a tabular layout with the
+# three column headers and the seeded rows — without pinning to a
+# widget-specific ARIA role (the render may be a real <table> or a grid).
+# "Grace Hopper" is one of the eight seeded names.
+assertion = { action = "observe the initial page; confirm a table with the column headers Name, Role, and Score is present and that the seeded data rows are shown — e.g. a visible row containing 'Grace Hopper'" }
+
+[[item]]
+id = "sorting-reorders-rows"
+description = "Clicking a column header sorts by that column: the visible order of the rows changes to reflect the new sort."
+points = 25
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "sort-state-reactive"
+# Assert the BEHAVIOR (row order changes on a header click), not a specific
+# sort direction — an agent may default to ascending or descending. Read
+# the first column's cell order before and after clicking the Score header;
+# a correct sort by score reorders the names away from their initial order.
+assertion = { action = "note the top-to-bottom order of the rows, then click the 'Score' column header, and confirm the rows are reordered (the row order after the click differs from the order before it)" }
