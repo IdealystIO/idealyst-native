@@ -1,0 +1,5 @@
+recorded_at_epoch,scenario_id,run_id,item_id,passed,skipped,neutralized,awarded,points
+1784742290,server-guestbook,run-1,builds-web,true,false,false,25,25
+1784742290,server-guestbook,run-1,uses-server-fn,true,false,false,25,25
+1784742290,server-guestbook,run-1,wires-server-config,true,false,false,20,20
+1784742290,server-guestbook,run-1,client-calls-server-fn,true,false,false,20,20

@@ -1,0 +1,5 @@
+recorded_at_epoch,scenario_id,run_id,item_id,passed,skipped,neutralized,awarded,points
+1784741649,markdown-viewer,run-1,builds-web,true,false,false,20,20
+1784741649,markdown-viewer,run-1,uses-markdown,false,false,false,0,15
+1784741649,markdown-viewer,run-1,renders-code-block,true,false,false,10,10
+1784741649,markdown-viewer,run-1,shows-heading-and-list,false,true,false,0,25

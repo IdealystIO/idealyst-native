@@ -1,0 +1,5 @@
+recorded_at_epoch,scenario_id,run_id,item_id,passed,skipped,neutralized,awarded,points
+1784741166,shared-cart,run-1,builds-web,true,false,false,20,20
+1784741166,shared-cart,run-1,uses-context,true,false,false,20,20
+1784741166,shared-cart,run-1,uses-conditional-rendering,true,false,false,15,15
+1784741166,shared-cart,run-1,add-updates-header,false,true,false,0,25

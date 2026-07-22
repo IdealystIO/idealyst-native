@@ -1,0 +1,2 @@
+recorded_at_epoch,scenario_id,run_id,framework_commit,model,rubric_points,max_points,final_score,agent_total_tokens,mcp_payload_tokens,total_calls,duplicate_calls,mcp_calls,mcp_errors,mcp_tools_used,doc_bypass_reads,items_passed,items_failed,items_skipped,items_neutralized,lint_clean,lint_diagnostics,judge_visual_polish,judge_layout_sanity,judge_accessibility,judge_error_handling,judge_code_organization
+1784741166,shared-cart,run-1,aeb55b9f,claude-opus-4-8,55,55,60.325,435032,17761,67,1,23,3,14,14,3,0,1,0,,,,,,,

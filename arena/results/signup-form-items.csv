@@ -1,0 +1,11 @@
+recorded_at_epoch,scenario_id,run_id,item_id,passed,skipped,neutralized,awarded,points
+1784740729,signup-form,run-1,builds-web,true,false,false,20,20
+1784740729,signup-form,run-1,three-input-fields,false,false,false,0,10
+1784740729,signup-form,run-1,uses-reactive-state,true,false,false,8,8
+1784740729,signup-form,run-1,validates-email,true,false,false,10,10
+1784740729,signup-form,run-1,validates-password-length,true,false,false,10,10
+1784740729,signup-form,run-1,submit-gated-on-validity,true,false,false,12,12
+1784740729,signup-form,run-1,invalid-email-shows-error,true,false,false,12,12
+1784740729,signup-form,run-1,invalid-input-keeps-submit-disabled,true,false,false,10,10
+1784740729,signup-form,run-1,valid-input-enables-submit,true,false,false,10,10
+1784740729,signup-form,run-1,submit-shows-success,true,false,false,15,15

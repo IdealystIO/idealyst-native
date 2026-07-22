@@ -1,0 +1,5 @@
+recorded_at_epoch,scenario_id,run_id,item_id,passed,skipped,neutralized,awarded,points
+1784741665,clipboard-copy,run-1,builds-web,true,false,false,20,20
+1784741665,clipboard-copy,run-1,uses-clipboard-sdk,true,false,false,25,25
+1784741665,clipboard-copy,run-1,confirmation-is-reactive,true,false,false,15,15
+1784741665,clipboard-copy,run-1,shows-copied-confirmation,false,true,false,0,20
