@@ -1515,9 +1515,20 @@ enum FPiece {
 /// - `Err(msg)` — the literal HAS a valid placeholder but also a brace
 ///   error (positional `{}`/`{0}`, `{:?}` Debug spec, unmatched brace,
 ///   non-identifier) — loud, because intent is clearly interpolation.
+///   ALSO loud, even with no valid slot co-occurring, when a brace group
+///   carries unambiguous interpolation intent — a binding followed by a
+///   `.field` / `[index]` / `(call)` continuation (`{item.name}`,
+///   `{v[0]}`, `{x.y()}`). Those can only be a broken attempt to
+///   interpolate an expression, so they must not silently render verbatim
+///   (see [`fstring_interp_intent`]).
 fn parse_fstring(value: &str) -> Result<Option<Vec<FPiece>>, String> {
     let mut pieces: Vec<FPiece> = vec![FPiece::Lit(String::new())];
     let mut first_err: Option<String> = None;
+    // Set when a brace group shows clear interpolation intent (a
+    // path/index/call on a binding). Forces the `Err` path even when no
+    // VALID `{ident}` slot co-occurs — closing the silent-verbatim gap
+    // that let `text { "{item.name}" }` render the literal `{item.name}`.
+    let mut force_err = false;
     let mut slots = 0usize;
     let mut push_ch = |pieces: &mut Vec<FPiece>, c: char| match pieces.last_mut() {
         Some(FPiece::Lit(s)) => s.push(c),
@@ -1556,7 +1567,22 @@ fn parse_fstring(value: &str) -> Result<Option<Vec<FPiece>>, String> {
                     && name.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
                     && name.chars().all(|c| c.is_alphanumeric() || c == '_');
                 if !ident_ok {
-                    if first_err.is_none() {
+                    if fstring_interp_intent(name) {
+                        // A binding + `.`/`[`/`(` continuation is
+                        // unambiguous interpolation intent, not prose.
+                        // Force the loud error even when no valid slot
+                        // co-occurs, so the footgun can't build clean.
+                        force_err = true;
+                        if first_err.is_none() {
+                            first_err = Some(format!(
+                                "`{{{inner}}}` — field paths, indexing, and method calls \
+                                 aren't interpolated in text f-strings (only a bare \
+                                 `{{name}}` is). Use a reactive closure \
+                                 `text {{ move || format!(\"{{}}\", {inner}) }}`, or bind a \
+                                 local first: `let name = {inner}; text {{ \"{{name}}\" }}`."
+                            ));
+                        }
+                    } else if first_err.is_none() {
                         first_err = Some(format!(
                             "`{{{inner}}}` — text f-strings take NAMED placeholders only \
                              (`{{count}}`, `{{count:.2}}`). For positional args or \
@@ -1602,6 +1628,15 @@ fn parse_fstring(value: &str) -> Result<Option<Vec<FPiece>>, String> {
             other => push_ch(&mut pieces, other),
         }
     }
+    // A clear-interpolation-intent brace group errors LOUD regardless of
+    // whether a valid slot co-occurred — it is never prose. Checked before
+    // the `slots == 0` prose short-circuit so `text { "{item.name}" }`
+    // fails to compile instead of rendering the literal `{item.name}`.
+    if force_err {
+        if let Some(e) = first_err {
+            return Err(e);
+        }
+    }
     if slots == 0 {
         return Ok(None);
     }
@@ -1609,6 +1644,32 @@ fn parse_fstring(value: &str) -> Result<Option<Vec<FPiece>>, String> {
         return Err(e);
     }
     Ok(Some(pieces))
+}
+
+/// Does a brace group's pre-spec content show unambiguous interpolation
+/// intent — a binding (`ident`) immediately followed by a `.field`,
+/// `[index]`, or `(call)` continuation? `item.name`, `v[0]`, `x.y()`,
+/// `a.b.c` are all yes; prose like `a b`, ` `, `see the {x` are no
+/// (there is no path/index/call continuation right after the leading
+/// identifier). Used to make the footgun loud instead of silently
+/// verbatim while leaving genuine literal-brace prose untouched.
+fn fstring_interp_intent(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c0) if c0.is_alphabetic() || c0 == '_' => {}
+        _ => return false,
+    }
+    // Consume the rest of the leading identifier, then inspect the first
+    // non-identifier char that follows it.
+    for c in chars {
+        if c.is_alphanumeric() || c == '_' {
+            continue;
+        }
+        return matches!(c, '.' | '[' | '(');
+    }
+    // Pure identifier with no continuation — that's a valid slot, handled
+    // upstream, never reaches here as a non-ident; treat as not-intent.
+    false
 }
 
 /// If `expr` is a text-position string literal with `{name}`
@@ -4371,6 +4432,53 @@ mod tests {
         let out = parse_and_emit(quote! { text(content = "hi {name}") });
         assert!(out.contains("__idealyst_text_from_parts"), "{out}");
         assert!(out.contains("(name) . __idealyst_text_slot"), "{out}");
+    }
+
+    #[test]
+    fn regression_fstring_field_path_is_error_not_silent_literal() {
+        // THE bug: `{item.name}` has no bare-`{ident}` slot, so it used to
+        // fall into the prose-tolerance `Ok(None)` path and render the
+        // LITERAL text `{item.name}` — a clean-building rendering bug that
+        // every list/detail screen hits. A path/index/call on a binding is
+        // unambiguous interpolation intent and must now error LOUD.
+        for lit in ["{item.name}", "{x.y()}", "{v[0]}", "{a.b.c}", "{foo()}"] {
+            assert!(
+                parse_fstring(lit).is_err(),
+                "clear-interpolation-intent `{lit}` must be a loud error, not silent literal",
+            );
+        }
+        // The error names the fix (reactive closure / local binding).
+        let Err(msg) = parse_fstring("{item.name}") else {
+            panic!("`{{item.name}}` must be an Err");
+        };
+        assert!(msg.contains("move ||") && msg.contains("let name"), "guidance msg: {msg}");
+        // End-to-end through the macro: emits a `compile_error!`, never the
+        // silent `__idealyst_text_from_parts` / verbatim literal.
+        let out = parse_and_emit(quote! { text { "{item.name}" } });
+        assert!(out.contains("compile_error"), "{out}");
+        assert!(!out.contains("__idealyst_text_from_parts"), "{out}");
+    }
+
+    #[test]
+    fn regression_fstring_prose_braces_still_tolerated() {
+        // Positive guards: the fix must NOT hijack legitimate literal-brace
+        // prose. Bare `{name}` still interpolates, plain text and prose
+        // braces (no path/index/call continuation) stay verbatim `Ok(None)`.
+        assert!(matches!(parse_fstring("{name}"), Ok(Some(_))), "bare ident is still a slot");
+        assert!(matches!(parse_fstring("plain text"), Ok(None)), "plain text unchanged");
+        for prose in ["{a b}", "{ }", "{see the {x} note}", "use {{ and }} freely"] {
+            assert!(
+                matches!(parse_fstring(prose), Ok(None)),
+                "prose `{prose}` must stay verbatim, not error",
+            );
+        }
+        // Unit-level guard on the intent predicate itself.
+        assert!(fstring_interp_intent("item.name"));
+        assert!(fstring_interp_intent("v[0]"));
+        assert!(fstring_interp_intent("x.y()"));
+        assert!(!fstring_interp_intent("a b"));
+        assert!(!fstring_interp_intent(" "));
+        assert!(!fstring_interp_intent("name"));
     }
 
     #[test]

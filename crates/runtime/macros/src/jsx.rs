@@ -825,6 +825,16 @@ mod tests {
     }
 
     #[test]
+    fn regression_text_fstring_field_path_is_error_like_ui() {
+        // Peer-macro parity for the silent-literal footgun: a `{item.name}`
+        // field-path slot must fail to compile here too, not render the
+        // literal `{item.name}` (routes through `ui::parse_fstring`).
+        let out = parse_and_emit(quote! { <text>{"{item.name}"}</text> });
+        assert!(out.contains("compile_error"), "got: {out}");
+        assert!(!out.contains("__idealyst_text_from_parts"), "got: {out}");
+    }
+
+    #[test]
     fn user_component_self_closing() {
         let out = parse_and_emit(quote! { <Counter label="x" value={score} /> });
         // Struct-literal + BuildElement::build dispatch (parity with ui!).

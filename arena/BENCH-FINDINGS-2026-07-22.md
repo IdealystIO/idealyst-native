@@ -26,10 +26,13 @@ Batch-3 note: markdown-viewer refuted the strong "external SDK won't render with
 
 ## ESCALATE — framework bugs (NOT doc-fixes; code changes outside crates/mcp/catalog/)
 
-These are broken APIs. Documentation cannot make them work — the CODE must
-change. Doc edits here are interim stopgaps only, clearly labeled.
+**BOTH RESOLVED 2026-07-22** — code fixes + regression tests landed (see below).
+Kept here as the record of what was escalated and why.
 
-- **`form` SDK `Form!` is incompatible with `ui!`** (signup-form). `ui! { Form(...) }`
+These were broken APIs. Documentation could not make them work — the CODE had
+to change. (Interim doc stopgaps were labeled as such and are now superseded.)
+
+- **[FIXED]** **`form` SDK `Form!` is incompatible with `ui!`** (signup-form). `ui! { Form(...) }`
   does not compile: `FormProps` has no `BuildElement` impl and there's no
   `pub type Form = FormProps` alias; the crate ships a dead
   `#[macro_export] macro_rules! Form!` that `ui!` no longer invokes, and its own
@@ -39,7 +42,7 @@ change. Doc edits here are interim stopgaps only, clearly labeled.
   macro, fix the self-test. Interim doc stopgap: reword the terse `sdks.rs:209`
   entry to steer to `Field` + signal validation (the working path) — but the SDK
   is what's broken.
-- **`text` f-string silently renders `{item.name}` as a literal** (modal-confirm).
+- **[FIXED]** **`text` f-string silently renders `{item.name}` as a literal** (modal-confirm).
   Only a bare identifier is interpolated; a field path / index / method call in
   braces passes through as literal text with NO compile error — a silent, clean-
   building rendering bug any list/detail screen hits. FRAMEWORK DECISION in

@@ -93,7 +93,9 @@ recipe!(
                 button(label = "Add item", on_click = add)
                 for item in items, key = item.id {
                     view {
-                        text { "{item.label}" }
+                        // Field paths aren't f-string slots (only a bare
+                        // `{ident}` is) — read the field in a closure.
+                        text { move || item.label.clone() }
                         button(
                             label = "Remove",
                             on_click = move || items.update(|v| v.retain(|i| i.id != item.id)),
@@ -200,7 +202,9 @@ recipe!(
             view {
                 for item in items, key = item.id {
                     view {
-                        text { "{item.label}" }
+                        // Field paths aren't f-string slots (only a bare
+                        // `{ident}` is) — read the field in a closure.
+                        text { move || item.label.clone() }
                         button(label = "Delete", on_click = move || pending.set(Some(item.id)))
                     }
                 }

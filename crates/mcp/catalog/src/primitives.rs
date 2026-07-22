@@ -84,13 +84,13 @@ inventory::submit! {
     PrimitiveEntry {
         name: "text",
         pascal_name: "Text",
-        docs: "Renders a string. A literal interpolates `{name}` placeholders f-string-style — signal slots are LIVE by type, `Display` values bake in (`text { \"count: {count}\" }`); a closure is reactive (`text { move || … }`); plain literals are static. Backends use native text widgets (`UILabel`, `TextView`, `<span>`, `NSTextField`). KNOWN LIMITATION (interim doc caveat — tracked framework bug, not final behavior): only a BARE identifier is a real interpolation slot (`{count}`). A field path, index, or method call inside braces — `{item.name}`, `{items[0]}`, `{obj.field()}` — is NOT interpolated; it renders LITERALLY as the text `{item.name}` with NO compile error. Any list/detail screen hits this silently. Workaround: pull the value into a local first (`let name = item.name.clone(); text { \"{name}\" }`) or, when it must stay reactive, use a closure that reads it directly: `text { move || item.name.clone() }`.",
+        docs: "Renders a string. A literal interpolates `{name}` placeholders f-string-style — signal slots are LIVE by type, `Display` values bake in (`text { \"count: {count}\" }`); a closure is reactive (`text { move || … }`); plain literals are static. Backends use native text widgets (`UILabel`, `TextView`, `<span>`, `NSTextField`). SLOTS TAKE A BARE IDENTIFIER ONLY (`{count}`). A field path, index, or method call inside braces — `{item.name}`, `{items[0]}`, `{obj.field()}` — is NOT a slot and is a COMPILE ERROR (loud, never silent): the message names the fix. Pull the value into a local first (`let name = item.name.clone(); text { \"{name}\" }`) or, when it must stay reactive, use a closure that reads it directly: `text { move || item.name.clone() }`.",
         props: &[
             PropFieldSpec {
                 name: "source",
                 type_str: "TextSource",
-                doc: "Static string, f-string literal (`\"count: {count}\"` — slots live-or-static by type), or reactive closure (`move || format!(…)` for positional/Debug formatting). INTERPOLATION LIMITATION (known bug): only a bare identifier is a slot — a field path/index/call (`{item.name}`) renders literally with no error. Use a reactive closure (`move || item.name.clone()`) for anything that isn't a plain variable name.",
-                constraint: "brace slots take a BARE identifier only; `{a.b}` / `{a[0]}` / `{a()}` are NOT interpolated (render literally) — use a closure",
+                doc: "Static string, f-string literal (`\"count: {count}\"` — slots live-or-static by type), or reactive closure (`move || format!(…)` for positional/Debug formatting). Only a bare identifier is a slot — a field path/index/call (`{item.name}`) is a COMPILE ERROR, not a silent literal. Use a reactive closure (`move || item.name.clone()`) for anything that isn't a plain variable name.",
+                constraint: "brace slots take a BARE identifier only; `{a.b}` / `{a[0]}` / `{a()}` are a COMPILE ERROR (not silently literal) — use a closure",
             },
             COMMON_STYLE_FIELD,
             COMMON_REF_FILL_FIELD,

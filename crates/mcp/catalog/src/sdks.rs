@@ -209,8 +209,8 @@ sdk!(
 sdk!(
     "form",
     SdkCategory::Ui,
-    SdkKind::Api,
-    "Third-party `Form` SDK."
+    SdkKind::External,
+    "Third-party `Form` container SDK (backed by `Element::External`). Author it as a first-class tag: `ui! { Form(on_submit = Some(cb)) { text_input(value = name) button(label = \"Save\", on_click = cb) } }` — the `on_submit` closure reads your field signals (NOT DOM FormData); share the same `Rc` with your submit button so one action covers every backend. WEB: on web `Form` renders a real `<form>` (free Enter-to-submit, autofill), but call `form::register(&mut backend)` from your wasm32 `register_extensions` or it renders an unsupported-`External` placeholder (runtime, not compile-time); native self-registers as a passthrough container (submission is fired by your submit button). Need imperative `.submit()`? Use the fn-call form `form(props).bind(ref)` — the `ui!` tag form drops the handle."
 );
 sdk!(
     "toolbar",

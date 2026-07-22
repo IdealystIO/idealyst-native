@@ -2,14 +2,15 @@
 //!
 //! Provides a `Form` container backed by the framework's
 //! `Element::External` extension mechanism (with children). `Form` is a
-//! library component in the idea-ui mould: a snake-case `form(props)`
-//! function plus a `#[macro_export]`ed `Form!` invocation macro, so it
-//! reads as a first-class element inside `ui!`/`jsx!`.
+//! library component in the idea-ui mould: a `#[component(children)]`
+//! `Form` tag (generating the `pub type Form = FormProps` alias +
+//! `BuildElement` impl) that delegates to a snake-case `form(props)`
+//! constructor, so it reads as a first-class element inside `ui!`/`jsx!`.
 //!
 //! # Usage
 //!
 //! ```ignore
-//! use form::prelude::*;       // brings in `Form!`, `form`, `FormProps`
+//! use form::prelude::*;       // brings in `Form`, `form`, `FormProps`
 //! use idea_ui::prelude::*;    // Button, TextInput, …
 //!
 //! // App bootstrap (one line per third-party SDK):
@@ -65,7 +66,7 @@
 //!   input.)
 #![deny(missing_docs)]
 
-use runtime_core::{Bound, Element, IdealystSchema, Ref, RefFill};
+use runtime_core::{component, Bound, Element, IdealystSchema, Ref, RefFill};
 use std::any::{Any, TypeId};
 use std::rc::Rc;
 
@@ -150,10 +151,11 @@ impl FormOps for UnsupportedOps {}
 // Constructor + invocation macro
 // ============================================================================
 
-/// Build a `Form` container. Snake-case because the PascalCase tag
-/// (`Form`) is the invocation macro; `ui! { Form(..) { .. } }` lowers to
-/// `Form!(..)` which calls this. Returns a typed `Bound<FormHandle>` so
-/// a trailing `.bind(..)` chain type-checks against `Ref<FormHandle>`.
+/// Build a `Form` container programmatically. Snake-case: this is the
+/// imperative constructor the PascalCase `Form` tag delegates to. Returns
+/// a typed `Bound<FormHandle>` so a trailing `.bind(..)` chain type-checks
+/// against `Ref<FormHandle>` — use this fn-call form (`form(props).bind(r)`)
+/// when you need the handle; the `ui! { Form(..) { .. } }` tag form drops it.
 pub fn form(mut props: FormProps) -> Bound<FormHandle> {
     // Children parent into the backend node (the External slot); the
     // payload only needs to carry `on_submit`, so move children out
@@ -172,25 +174,22 @@ pub fn form(mut props: FormProps) -> Bound<FormHandle> {
     })
 }
 
-/// `ui!`/`jsx!` invocation macro for `Form`. Hand-written +
-/// `#[macro_export]`ed (with `$crate::` paths) because `#[component]`
-/// only produces a crate-local macro, and this SDK is a library whose
-/// `Form!` must be callable from consumer crates. `children` is just a
-/// `FormProps` field, so the emitter's `children = { Vec<Element> }`
-/// lowering needs no special arm. Every field is coerced via `.into()`,
-/// matching the framework's uniform invocation-macro convention.
-#[macro_export]
-#[doc(hidden)]
-macro_rules! Form {
-    () => {
-        $crate::form(<$crate::FormProps as ::core::default::Default>::default())
-    };
-    ( $( $field:ident = $value:expr ),+ $(,)? ) => {
-        $crate::form($crate::FormProps {
-            $( $field: ($value).into(), )+
-            ..<$crate::FormProps as ::core::default::Default>::default()
-        })
-    };
+/// `Form` container tag for `ui!`/`jsx!`. The `#[component(children)]`
+/// attribute generates the `pub type Form = FormProps` alias, the
+/// `impl BuildElement for FormProps`, and the `Default` glue that the
+/// macros' PascalCase struct-literal dispatch requires — so
+/// `ui! { Form(on_submit = Some(cb)) { .. } }` resolves by ordinary path
+/// rules (no `#[macro_export]`), giving consumer crates IDE completion on
+/// every prop. It delegates to [`form`] so the tag and the fn-call form
+/// build the identical `Element::External` keyed by `FormProps`; the
+/// registered backend handler still dispatches on that TypeId.
+///
+/// The tag form yields an `Element` (the handle is dropped) — to bind a
+/// `Ref<FormHandle>` for imperative `.submit()`, use the fn-call form and
+/// its `.bind(..)` chain: `form(props).bind(r)`.
+#[component(children)]
+pub fn Form(props: FormProps) -> Bound<FormHandle> {
+    form(props)
 }
 
 /// Builder methods on `Bound<FormHandle>`. An extension trait because
@@ -214,12 +213,12 @@ impl FormBuilder for Bound<FormHandle> {
     }
 }
 
-/// One-stop import: `use form::prelude::*;` brings in the `Form!` macro,
-/// the `form` constructor, the props struct, the handle type, and the
-/// `.bind(..)` builder trait.
+/// One-stop import: `use form::prelude::*;` brings in the `Form` tag (the
+/// `#[component]`-generated alias + `BuildElement` impl), the `form`
+/// constructor, the props struct, the handle type, and the `.bind(..)`
+/// builder trait.
 pub mod prelude {
-    pub use super::{form, FormBuilder, FormHandle, FormProps};
-    pub use crate::Form;
+    pub use super::{form, Form, FormBuilder, FormHandle, FormProps};
 }
 
 // ============================================================================
@@ -301,33 +300,48 @@ mod tests {
         }
     }
 
-    /// The `Form!` invocation macro (what `ui! { Form { .. } }` lowers
-    /// to) builds the same External, coercing each field via `.into()`.
-    #[test]
-    fn form_macro_lowers_children() {
-        let el: Element =
-            crate::Form!(children = vec![text("a").into()]).into();
-        match el {
-            Element::External { type_id, children, .. } => {
-                assert_eq!(type_id, TypeId::of::<FormProps>());
-                assert_eq!(children.len(), 1);
-            }
-            _ => panic!("expected Element::External"),
-        }
-    }
-
-    /// End-to-end: the real `ui!` macro lowers `Form { View {} }` to
-    /// `Form!(children = { .. })` → `form(..)` → a `<form>` External
-    /// whose children flow through unchanged. This is the author-facing
-    /// path the SDK is meant to be used through.
+    /// End-to-end regression: the real `ui!` macro routes the PascalCase
+    /// `Form` tag through `#[component]`'s `BuildElement` dispatch —
+    /// `BuildElement::build(Form { on_submit, children, ..defaults() })` —
+    /// which delegates to `form(..)` and yields the `<form>` External. The
+    /// author's `on_submit` closure and children block both reach it.
+    ///
+    /// This test could NOT compile before the `#[component(children)]`
+    /// conversion: `ui! { Form(..) { .. } }` requires a `pub type Form`
+    /// alias + `impl BuildElement for FormProps`, and the crate previously
+    /// shipped only a (no-longer-invoked) `macro_rules! Form`.
     #[test]
     fn form_via_ui_macro() {
         use runtime_core::ui;
-        let el: Element = ui! { Form { View {} View {} } };
+
+        // A submit action the tag wires onto the External's payload.
+        let fired = std::rc::Rc::new(std::cell::Cell::new(false));
+        let on_submit: Rc<dyn Fn()> = {
+            let fired = fired.clone();
+            Rc::new(move || fired.set(true))
+        };
+
+        let el: Element = ui! {
+            Form(on_submit = Some(on_submit.clone())) {
+                text("email")
+                text("submit")
+            }
+        };
+
         match el {
-            Element::External { type_id, children, .. } => {
+            Element::External { type_id, type_name, children, payload, .. } => {
                 assert_eq!(type_id, TypeId::of::<FormProps>());
+                assert!(type_name.contains("FormProps"));
                 assert_eq!(children.len(), 2, "ui! children reach the External slot");
+
+                // `on_submit` rides the type-erased payload the backend
+                // handler receives; invoking it runs the author's closure.
+                let props =
+                    payload.downcast_ref::<FormProps>().expect("payload is FormProps");
+                let cb = props.on_submit.clone().expect("on_submit wired onto the payload");
+                assert!(!fired.get());
+                cb();
+                assert!(fired.get(), "invoking the wired on_submit runs the closure");
             }
             _ => panic!("ui! Form must build Element::External"),
         }
