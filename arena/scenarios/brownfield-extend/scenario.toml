@@ -1,0 +1,35 @@
+# PUBLIC — the `prompt` below is the ONLY task framing the implementation
+# agent receives. This scenario ships an existing, non-trivial app
+# (assets/) and asks for a feature ADDITION that must integrate with the
+# app's own components. It tests project self-introspection: does the
+# agent map the existing component graph (its Header/Toolbar/TaskList and
+# the shared TaskStore) before extending it, rather than reading every
+# source file or bolting on a parallel implementation. Requirements only;
+# no hints about how to use the MCP.
+id = "brownfield-extend"
+
+prompt = """
+This project is an existing task dashboard. It already renders a header
+with summary stats, a toolbar with priority-filter controls, and a list
+of task rows. Explore what is already here and build on it.
+
+Add a "Hide completed" filter:
+- Add a control to the existing toolbar that toggles whether completed
+  (done) tasks are shown.
+- When the filter is on, completed tasks must not appear in the task
+  list.
+- The header's "Showing" count and the task list must stay consistent —
+  both must reflect the filter.
+- The existing priority filter must keep working and must combine with
+  the new filter: a task appears only when it passes BOTH filters.
+
+Extend the existing app — do not rebuild it from scratch. Keep the
+existing components and the way they share state; wire your change into
+them.
+
+Target the web platform.
+"""
+
+platforms = ["web"]
+token_budget = 1_500_000
+runs = 5

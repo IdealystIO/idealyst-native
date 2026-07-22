@@ -3674,105 +3674,27 @@ fn emit_block_as_primitive(nodes: &[UiNode]) -> TokenStream2 {
     quote! { ::runtime_core::IntoElement::into_element(#body) }
 }
 
-/// Emit a `DrawerNavigator(...) { Screen(...) { ... } ... }`
-/// invocation as a builder chain. Props on the navigator other than
-/// `initial` map to same-named builder methods (`.header(...)`,
-/// `.content(...)`, `.drawer_type(...)`, etc.). Every child must be
-/// a `Screen(...)` element — anything else is a compile error.
+/// `DrawerNavigator` `ui!` sugar — retired. This branch used to emit
+/// `::runtime_core::DrawerNavigator::new(...)`, but no such author-facing
+/// type exists (nor is one re-exported from `runtime_core`): the navigator
+/// system converged on the SDK-crate builders `stack-navigator`
+/// (`StackNavigator`) and `swap-navigator` (`SwapNavigator`), which are NOT
+/// used through `ui!` sugar. The old sugar therefore couldn't compile — an
+/// author reaching for it got an inscrutable "cannot find `DrawerNavigator`
+/// in `runtime_core`". We now fail with a pointed message instead.
 ///
-/// Each `Screen(...)` child de-sugars into `.screen(route, |_| {
-/// Screen::new(<body>).title(...)... })`. The body is wrapped in a
-/// closure so it stays lazy — the page tree isn't built until the
-/// route is mounted.
-fn emit_drawer_navigator(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
-    // `initial` is required and feeds DrawerNavigator::new.
-    let initial = match props.iter().find(|p| p.name == "initial") {
-        Some(p) => p.value.clone(),
-        None => {
-            return quote! {
-                ::std::compile_error!(
-                    "DrawerNavigator: the `initial` prop is required (the route to mount first)"
-                )
-            };
-        }
-    };
-
-    // Builder-method calls for every other prop. We don't validate
-    // the names — if the author passes a prop that doesn't exist
-    // as a builder method, rustc will surface that at the call site
-    // with a clearer error message than anything the macro could
-    // emit.
-    let nav_builder_calls = props.iter().filter(|p| p.name != "initial").map(|p| {
-        let n = &p.name;
-        let v = &p.value;
-        quote! { .#n(#v) }
-    });
-
-    // Emit one `.screen(route, |_| Screen::new(body)...)` per
-    // child. Non-Screen children fail compilation with a pointed
-    // message so the constraint is obvious.
-    let kids = children.unwrap_or(&[]);
-    let mut screen_calls: Vec<TokenStream2> = Vec::new();
-    for kid in kids {
-        match kid {
-            UiNode::Component {
-                name,
-                props: screen_props,
-                children: screen_children,
-                chain: _,
-            } if name.to_string().to_ascii_lowercase() == "screen" => {
-                // `route` is required on Screen.
-                let route = match screen_props.iter().find(|p| p.name == "route") {
-                    Some(p) => p.value.clone(),
-                    None => {
-                        return quote! {
-                            ::std::compile_error!(
-                                "Screen: the `route` prop is required (a `Route<P>` const)"
-                            )
-                        };
-                    }
-                };
-                // Build the body Element from the Screen's children
-                // and wrap it in a render closure so the framework
-                // can rebuild lazily on each Select.
-                let body_nodes: &[UiNode] = screen_children.as_deref().unwrap_or(&[]);
-                let body_expr = emit_block_as_primitive(body_nodes);
-                // Builder-method calls for every other Screen prop
-                // (`title`, `header_background`, etc.).
-                let screen_builder_calls = screen_props.iter().filter(|p| p.name != "route").map(|p| {
-                    let n = &p.name;
-                    let v = &p.value;
-                    quote! { .#n(#v) }
-                });
-                screen_calls.push(quote! {
-                    .screen(#route, |_| {
-                        ::runtime_core::Screen::new(#body_expr)
-                            #(#screen_builder_calls)*
-                    })
-                });
-            }
-            UiNode::Component { name, .. } => {
-                let got = name.to_string();
-                let msg = format!(
-                    "DrawerNavigator children must be Screen(...) elements; got `{}`",
-                    got
-                );
-                return quote! { ::std::compile_error!(#msg) };
-            }
-            _ => {
-                return quote! {
-                    ::std::compile_error!(
-                        "DrawerNavigator children must be Screen(...) elements"
-                    )
-                };
-            }
-        }
-    }
-
+/// (Backend-side `NodeKind::DrawerNavigator` plumbing in the GPU engine is
+/// left in place — whether a drawer navigator returns via the SDK-crate
+/// pattern is a framework-author call, tracked separately; this only removes
+/// the dead author-facing macro path.)
+fn emit_drawer_navigator(_props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
     quote! {
-        ::runtime_core::DrawerNavigator::new(#initial)
-            #(#nav_builder_calls)*
-            #(#screen_calls)*
+        ::std::compile_error!(
+            "DrawerNavigator has no `ui!` sugar. Use a navigator SDK crate's builder API: \
+             `stack_navigator::StackNavigator::new(&ROUTE).screen(...)` for a push/pop stack, \
+             or `swap_navigator::SwapNavigator::new(&ROUTE)` for tab/drawer-style swapping. \
+             See the `navigation` guide (read_guide) and the `stack_two_screens` recipe."
+        )
     }
 }
 
@@ -3881,6 +3803,33 @@ mod tests {
         let out = parse_and_emit(quote! {});
         assert!(out.contains("view"));
         assert!(out.contains("Vec :: new"));
+    }
+
+    /// Regression (arena drift, 2026-07-22): the `DrawerNavigator` `ui!`
+    /// sugar emitted `::runtime_core::DrawerNavigator::new(...)` — a type
+    /// that does not exist — so any use failed with an inscrutable
+    /// "cannot find DrawerNavigator in runtime_core". It must now emit a
+    /// `compile_error!` that points at the real navigator builders, and
+    /// must NOT emit the dead `runtime_core::DrawerNavigator` path.
+    #[test]
+    fn regression_drawer_navigator_sugar_emits_guiding_compile_error() {
+        let out = parse_and_emit(quote! {
+            DrawerNavigator(initial = HOME) {
+                Screen(route = HOME) { HomeScreen() }
+            }
+        });
+        assert!(
+            out.contains("compile_error"),
+            "DrawerNavigator sugar must emit a compile_error, got: {out}"
+        );
+        assert!(
+            out.contains("StackNavigator") || out.contains("SwapNavigator"),
+            "the error must point at the real navigator builders"
+        );
+        assert!(
+            !out.contains("DrawerNavigator :: new"),
+            "the dead `runtime_core::DrawerNavigator::new` path must be gone"
+        );
     }
 
     #[test]

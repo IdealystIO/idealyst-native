@@ -15,7 +15,7 @@
 
 use runtime_core::{
     component, text, FontFamily, FontWeight, IdealystSchema, IntoElement, Element, Reactive,
-    StyleApplication, StyleRules, TextAlign,
+    Role, StyleApplication, StyleRules, TextAlign,
 };
 
 use idea_theme::extensible::{installed_typography_sheet, ToneRef, TypographyKindRef};
@@ -74,6 +74,16 @@ pub struct TypographyProps {
     /// `*Align` field as a VariantEnum by convention.
     #[cfg_attr(feature = "docs", doc_control(skip))]
     pub align: TextAlign,
+    /// Accessibility role override. Default `None` = AUTO: a heading `kind`
+    /// (`display`, `h1`…`h6`, or a custom kind whose `is_heading()` is true)
+    /// gets `Role::Header` so screen readers, locators, and platform a11y
+    /// trees see a real heading — matching what the visual scale implies;
+    /// non-heading kinds get no role (natural text). Set `Some(role)` to
+    /// force a specific role, including `Some(Role::Text)` to opt a heading
+    /// kind OUT of the heading role (e.g. large text that isn't a section
+    /// title).
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    pub a11y_role: Option<Role>,
 }
 
 impl Default for TypographyProps {
@@ -86,6 +96,7 @@ impl Default for TypographyProps {
             font: Reactive::Static(None),
             weight: Reactive::Static(None),
             align: Reactive::Static(TextAlign::Left),
+            a11y_role: Reactive::Static(None),
         }
     }
 }
@@ -94,15 +105,15 @@ impl Default for TypographyProps {
 /// Caption, …) using the theme's type scale — the standard way to put
 /// text on screen with consistent typography.
 ///
-/// **Accessibility**: `kind` sets the visual type scale ONLY — a heading
-/// `kind` (H1…H6) does not confer an accessibility heading role, so screen
-/// readers announce the text as plain text. Visual style does not imply
-/// semantics: a screen or section title that assistive tech should treat
-/// as a heading needs the role set explicitly via the primitive-level
-/// `a11y_role(Role::Header)` (e.g. `text(title).a11y_role(Role::Header)`
-/// with a matching style, or `a11y_role = Role::Header` on a wrapping
-/// primitive). Locators and platform accessibility checks key on roles,
-/// not font sizes.
+/// **Accessibility**: a heading `kind` (`display`, `h1`…`h6`) automatically
+/// gets `Role::Header`, so screen readers, locators, and platform a11y
+/// trees treat it as a real heading — the visual scale and the semantics
+/// stay in sync by default. Override with the `a11y_role` prop:
+/// `a11y_role = Some(Role::Text)` opts a heading kind OUT (large text that
+/// isn't a section title); `a11y_role = Some(other)` forces a specific
+/// role. A reactive `kind` that changes heading-ness after build does NOT
+/// re-derive the role (the role is resolved once at build) — pass an
+/// explicit `a11y_role` if you animate between heading and body kinds.
 #[component]
 pub fn Typography(props: &TypographyProps) -> Element {
     let content = props.content.clone();
@@ -172,10 +183,26 @@ pub fn Typography(props: &TypographyProps) -> Element {
         }
     };
 
+    // Resolve the accessibility role ONCE at build. Explicit `a11y_role`
+    // wins; otherwise a heading kind auto-derives `Role::Header`. Reading
+    // `kind.get()` here is a build-time snapshot — a reactive kind that
+    // later flips heading-ness won't re-derive (documented on the component
+    // + `a11y_role` prop); the static kind case is the overwhelming norm.
+    let role = match props.a11y_role.get() {
+        Some(r) => Some(r),
+        None if props.kind.get().is_heading() => Some(Role::Header),
+        None => None,
+    };
+
+    let apply_role = |el: runtime_core::Bound<_>| match role {
+        Some(r) => el.a11y_role(r),
+        None => el,
+    };
+
     if style_is_reactive {
-        text(content).with_style(make_style).into_element()
+        apply_role(text(content).with_style(make_style)).into_element()
     } else {
-        text(content).with_style(make_style()).into_element()
+        apply_role(text(content).with_style(make_style())).into_element()
     }
 }
 
@@ -266,5 +293,55 @@ mod tests {
             Some(FontFamily::Typeface(got)) => assert_eq!(got.id, tf.id),
             other => panic!("expected the typeface font_family, got {other:?}"),
         }
+    }
+
+    fn a11y_role(t: Element) -> Option<Role> {
+        match t {
+            Element::Text { accessibility, .. } => accessibility.role,
+            _ => panic!("Typography renders a text node"),
+        }
+    }
+
+    /// Regression (arena nav-notes, 2026-07-21): a heading `kind` produced
+    /// large text with NO heading role, so locators/screen readers saw
+    /// plain text and the "title as a heading" requirement was unearnable.
+    /// A heading kind must now auto-attach `Role::Header`.
+    #[test]
+    fn regression_heading_kind_auto_attaches_header_role() {
+        install_idea_theme(light_theme());
+        for kind in [
+            TypographyKindRef::from(idea_theme::extensible::typography::H1),
+            TypographyKindRef::from(idea_theme::extensible::typography::H2),
+            TypographyKindRef::from(idea_theme::extensible::typography::H3),
+            TypographyKindRef::from(idea_theme::extensible::typography::Display),
+        ] {
+            let props = TypographyProps {
+                kind: Reactive::Static(kind.clone()),
+                ..Default::default()
+            };
+            assert_eq!(
+                a11y_role(Typography(&props)),
+                Some(Role::Header),
+                "kind {:?} must auto-attach Role::Header",
+                kind.key()
+            );
+        }
+    }
+
+    #[test]
+    fn body_kind_gets_no_role_and_explicit_override_wins() {
+        install_idea_theme(light_theme());
+        // Body (non-heading) → natural text, no role.
+        assert_eq!(a11y_role(Typography(&TypographyProps::default())), None);
+
+        // Explicit Role::Text opts a heading kind OUT of the heading role.
+        let opted_out = TypographyProps {
+            kind: Reactive::Static(TypographyKindRef::from(
+                idea_theme::extensible::typography::H1,
+            )),
+            a11y_role: Reactive::Static(Some(Role::Text)),
+            ..Default::default()
+        };
+        assert_eq!(a11y_role(Typography(&opted_out)), Some(Role::Text));
     }
 }

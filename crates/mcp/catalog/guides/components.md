@@ -170,11 +170,14 @@ Every primitive accepts a11y props (`a11y_label`, `a11y_role`, `a11y_hint`,
 (`.a11y_role(Role::Header)`). Highlights of `runtime_core::accessibility::Role`:
 `Header`, `Link`, `List`, `ListItem`, `Button`.
 
-The rule that trips people: **visual style does not imply semantics.** A
-screen title needs `text(title).a11y_role(Role::Header)` — idea-ui's
-`Typography(kind = H1)` sets only the visual type scale, not a heading role.
-Locators, screen readers, and the arena's platform-truth checks all key on
-roles, not font sizes. Similarly, icon-only buttons need an `a11y_label`.
+The rule that trips people: **visual style does not imply semantics** — but
+the framework closes the common gap for you. idea-ui's `Typography` with a
+heading `kind` (`display`, `h1`…`h6`) auto-attaches `Role::Header`, so a
+titled heading is a real heading to screen readers, locators, and the
+arena's platform-truth checks (override with `a11y_role = Some(Role::Text)`
+for large-but-not-a-heading text). For a bare `text()` primitive there's no
+such inference — set `text(title).a11y_role(Role::Header)` yourself. And
+icon-only buttons always need an explicit `a11y_label`.
 
 ## Methods — imperative handles
 
