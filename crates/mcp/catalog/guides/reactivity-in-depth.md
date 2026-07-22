@@ -226,9 +226,13 @@ intended.
   plain `let` is a build-time snapshot; the `if` then dispatches on a plain
   `bool` → static. Keep derivations behind `move ||`:
   `let too_short = memo(move || name.get().len() < 3);` (a `ReadSignal<bool>`
-  condition is live), or inline the read — a visible `.get()` in a `ui!` `if`
-  condition is auto-promoted to a reactive `when`. Rule of thumb: **a `let`
-  freezes, a closure flows.** Debug builds warn at runtime on an untracked
+  condition dispatches to the reactive path by type), or inline the read into
+  the condition — under the 0.4.0 inverted gate any `ui!` `if`/`match` condition
+  that *might read a signal* (a `.get()`, or **any** call anywhere in the
+  condition — `if name.get().len() < 3`, `if is_short(name)`) lowers to a
+  reactive `when`/`switch`; only a *provably signal-free* condition (a literal,
+  a bare `bool` path, or a comparison of call-free operands) stays static. Rule
+  of thumb: **a `let` freezes, a closure — or a call in the condition — flows.** Debug builds warn at runtime on an untracked
   `.get()` during a component build (naming the component), and the
   `snapshot-condition` lint flags the pattern at the `let`. Build-time
   snapshots are legitimate when intentional — a structural choice that

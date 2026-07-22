@@ -109,8 +109,10 @@ that type:
 ```rust
     // ✓ ReadSignal<bool> — recomputes when `name` changes.
     let too_short = memo(move || name.get().len() < 3);
-    // …or inline it; a visible `.get()` in the condition is auto-promoted:
-    //   if name.get().len() < 3 { … }
+    // …or inline the read into the condition. Under the 0.4.0 inverted gate,
+    // any condition that might read a signal (a `.get()` or any call) is
+    // reactive; only a provably signal-free condition stays static:
+    //   if name.get().len() < 3 { … }   // reactive
 ```
 
 One sentence to remember: **a `let` freezes, a closure flows.** Every

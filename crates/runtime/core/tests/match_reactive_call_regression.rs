@@ -242,3 +242,51 @@ fn b5_flat_match_default_arm_clones_noncopy_capture_and_rerenders() {
         rt.events()
     );
 }
+
+/// 0.4.0 inverted gate: a `match` whose scrutinee is a **method call** reading a
+/// signal (`match model.current()`) is now reactive. Pre-0.4.0 only the free-call
+/// shape (`is_reactive_call_shape`, `Expr::Call` with bare-signal args) and a
+/// literal `.get()` were caught — a `MethodCall` scrutinee fell through to the
+/// static plain-`match` and silently froze. This is the `if`/`match` asymmetry
+/// the inverted gate erases: any call-containing scrutinee lowers to `switch`.
+#[derive(Clone, Copy)]
+struct Model {
+    screen: Signal<Screen>,
+}
+
+impl Model {
+    // Reads the signal, but the `.get()` is invisible at the call site.
+    fn current(&self) -> Screen {
+        self.screen.get()
+    }
+}
+
+#[test]
+fn match_method_call_scrutinee_is_reactive() {
+    let rt = TestRuntime::new();
+    let model = Model { screen: signal(Screen::Summary) };
+
+    let tree: Element = ui! {
+        view {
+            match model.current() {
+                Screen::Summary => { text { "summary".to_string() } }
+                Screen::Detail => { text { "detail".to_string() } }
+                Screen::Other => { text { "other".to_string() } }
+            }
+        }
+    };
+    let _owner = rt.render(tree);
+    assert_eq!(count_text(&rt.events(), "summary"), 1, "initial arm = summary");
+    assert_eq!(count_text(&rt.events(), "detail"), 0);
+
+    // Change the signal the method reads — the active arm must rebuild.
+    // Pre-0.4.0 this stayed "summary" forever.
+    rt.backend_mut().clear_events();
+    model.screen.set(Screen::Detail);
+    assert_eq!(
+        count_text(&rt.events(), "detail"),
+        1,
+        "method-call scrutinee rebuilds the arm on the hidden signal (events: {:?})",
+        rt.events()
+    );
+}

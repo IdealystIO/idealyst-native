@@ -169,13 +169,20 @@ pub fn ChartBox(props: ChartBoxProps) -> Element {
     let eyebrow_style = move || StyleApplication::new(ChartEyebrow::sheet());
     let title_style = move || StyleApplication::new(ChartTitle::sheet());
     let body_style = move || StyleApplication::new(ChartBody::sheet());
+    // 0.4.0: `if !eyebrow.is_empty()` now lowers reactively (it contains a
+    // method call), which would move the `String` into the condition closure.
+    // These are static presence checks over plain props, so hoist them to a
+    // `let bool` — a bare-path condition dispatches to the static `StaticCond`
+    // path with borrowed captures. See migration-0-3-0-to-0-4-0 guide.
+    let has_eyebrow = !eyebrow.is_empty();
+    let has_body = !body.is_empty();
     ui! {
         view(style = card) {
-            if !eyebrow.is_empty() {
+            if has_eyebrow {
                 text(style = eyebrow_style) { eyebrow }
             }
             text(style = title_style) { title }
-            if !body.is_empty() {
+            if has_body {
                 text(style = body_style) { body }
             }
         }

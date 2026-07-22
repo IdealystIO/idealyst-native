@@ -1,14 +1,19 @@
-//! `ui!`'s `if` lowering, 0.1.0 semantics — the fix for the 0.0.1 silent-freeze
-//! footgun plus the guard against over-reaching into gratuitous reactivity.
+//! `ui!`'s `if` lowering, 0.4.0 **inverted gate** — reactive is the safe default,
+//! static is the proven-safe optimization.
 //!
-//! The rule `emit_if` implements:
-//!   - A `.get()` anywhere in the condition, OR a **top-level call** condition
-//!     (`if use_focus()()`, `if is_active(state)`) → reactive `when(move || cond,
-//!     …)`. A call can read a signal that isn't spelled `.get()` at the call
-//!     site; in 0.0.1 those were treated as static and silently frozen.
-//!   - A pure **structural** condition (`if a == b`, `if !v.is_empty()`,
-//!     `if x && y`) reads no signal by construction → plain static `if`, captures
-//!     BORROWED (no `'static`/`Clone` ceremony).
+//! The rule `emit_if` implements (`condition_may_read_signal`):
+//!   - A condition that **might read a signal** — ANY call / method-call /
+//!     `.get()` *anywhere* in the tree (`if sig.get() > 0`, `if a.get() < b.get()`,
+//!     `if items.len() > 0`, `if is_active(state)`), or an unrecognized shape →
+//!     reactive `when(move || cond, …)`. The Effect subscribes to whatever the
+//!     closure reads; a static one is an inert, ~free effect. Pre-0.4.0 this gate
+//!     assumed static unless it spotted a *top-level* call or a literal `.get()`,
+//!     so a call buried in a comparison/negation (`if items.len() > 0`,
+//!     `if foo(x) < bar(y)`) silently froze.
+//!   - A **provably signal-free** condition — a bare path/field (type-driven
+//!     `StaticCond`/`ReactiveCond`), or a literal / `&&`/`||`/`!` / comparison of
+//!     call-free operands (`if a == b`, `if x && y`, `if kind == Kind::Scope`) →
+//!     plain static `if`, captures BORROWED (no `'static`/`Clone` ceremony).
 
 #[path = "common/mod.rs"]
 mod common;
@@ -96,4 +101,86 @@ fn structural_condition_stays_static_with_borrowed_capture() {
     // than moving it into a reactive closure.
     assert_eq!(shared.as_str(), "hi");
     assert_eq!(count_create_text(&rt.events(), "hi"), 1, "static branch mounted once");
+}
+
+/// 0.4.0 headline fix: a signal read BURIED IN A COMPARISON — not a top-level
+/// call, no visible `.get()` at the `if` site — is now reactive. Pre-0.4.0 the
+/// gate only caught top-level calls / literal `.get()`, so `if count() > 1`
+/// lowered STATIC and silently froze. The inverted gate lowers any
+/// call-containing condition reactively.
+#[test]
+fn comparison_with_buried_signal_read_is_reactive() {
+    let rt = TestRuntime::new();
+    let n: Signal<i32> = signal(0);
+    // `count()` reads `n` internally; buried inside `count() > 1`, a `Binary`
+    // that is neither a top-level call nor spells `.get()`.
+    let count = move || n.get();
+
+    let tree: Element = ui! {
+        view {
+            if count() > 1 {
+                text { "high".to_string() }
+            } else {
+                text { "low".to_string() }
+            }
+        }
+    };
+    let _owner = rt.render(tree);
+    assert_eq!(count_create_text(&rt.events(), "low"), 1, "initial branch = low");
+    assert_eq!(count_create_text(&rt.events(), "high"), 0);
+
+    // Flipping the signal read by the buried call must rebuild — pre-0.4.0 this
+    // stayed "low" forever.
+    rt.backend_mut().clear_events();
+    n.set(5);
+    assert_eq!(
+        count_create_text(&rt.events(), "high"),
+        1,
+        "buried-call comparison rebuilds on the hidden signal (events: {:?})",
+        rt.events()
+    );
+    assert!(count_clear_children(&rt.events()) >= 1, "old branch cleared before rebuild");
+}
+
+/// A `.get()` buried inside a compound comparison (`a.get() < b.get()`) — the
+/// exact shape the design discussion centered on. Both signals are subscribed;
+/// the branch flips when the comparison result flips.
+#[test]
+fn compound_get_comparison_is_reactive() {
+    let rt = TestRuntime::new();
+    let x: Signal<i32> = signal(1);
+    let y: Signal<i32> = signal(5);
+
+    let tree: Element = ui! {
+        view {
+            if x.get() < y.get() {
+                text { "less".to_string() }
+            } else {
+                text { "gte".to_string() }
+            }
+        }
+    };
+    let _owner = rt.render(tree);
+    assert_eq!(count_create_text(&rt.events(), "less"), 1, "1 < 5 → less");
+
+    // Change x so it no longer holds: 9 < 5 is false → rebuild to "gte".
+    rt.backend_mut().clear_events();
+    x.set(9);
+    assert_eq!(
+        count_create_text(&rt.events(), "gte"),
+        1,
+        "compound `.get()` comparison rebuilds when the result flips (events: {:?})",
+        rt.events()
+    );
+
+    // A change to x that does NOT flip the comparison must NOT rebuild — proof
+    // `when`'s value-dedup survives the inverted gate.
+    rt.backend_mut().clear_events();
+    x.set(20); // still 20 >= 5 → "gte" unchanged
+    assert_eq!(
+        count_create_text(&rt.events(), "gte"),
+        0,
+        "no rebuild when the boolean is unchanged (dedup preserved, events: {:?})",
+        rt.events()
+    );
 }
