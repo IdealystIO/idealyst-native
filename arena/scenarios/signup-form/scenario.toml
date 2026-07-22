@@ -1,0 +1,23 @@
+# PUBLIC — the `prompt` below is the ONLY task framing the implementation
+# agent receives. Requirements only; no hints about how to use the MCP.
+id = "signup-form"
+
+prompt = """
+Build a signup form.
+
+Requirements:
+- The form has three fields: Name, Email, and Password.
+- Validate the input:
+  - Email must look like an email address.
+  - Password must be at least 8 characters long.
+- When a field's value is invalid, show an inline error message beneath
+  that field explaining what's wrong.
+- The Submit button is disabled until every field is valid.
+- Submitting the form (with all fields valid) shows a success message.
+
+Target the web platform.
+"""
+
+platforms = ["web"]
+token_budget = 1_500_000
+runs = 5

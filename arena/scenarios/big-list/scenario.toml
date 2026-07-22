@@ -1,0 +1,28 @@
+# PUBLIC — the `prompt` below is the ONLY task framing the implementation
+# agent receives. Requirements only; no hint about how to use the MCP and no
+# mention of the primitive under test (the virtualizer / recycled list). The
+# efficiency requirement is stated as an observable constraint, not an API
+# name — discovering the right primitive through the MCP is the test.
+id = "big-list"
+
+prompt = """
+Build a screen that shows a long, scrollable list and stays responsive.
+
+Requirements:
+- Display a list of at least 500 items (e.g. a numbered or labelled row per
+  item). The list scrolls.
+- Render the list efficiently: only the rows actually visible in the viewport
+  should be realized at any given moment. The app must NOT build all 500+ rows
+  up front and keep them all mounted — as the user scrolls, off-screen rows are
+  released and on-screen rows are created.
+- Above the list, provide a text field. As the user types into it, the list
+  narrows live to only the items whose text matches what has been typed.
+  Clearing the field restores the full list.
+
+Target the web platform.
+"""
+
+platforms = ["web"]
+token_budget = 1_500_000
+runs = 5
+services = []

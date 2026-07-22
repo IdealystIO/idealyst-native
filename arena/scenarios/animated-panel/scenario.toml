@@ -1,0 +1,23 @@
+# PUBLIC — the `prompt` below is the ONLY task framing the implementation
+# agent receives. Requirements only; no hints about how to use the MCP.
+id = "animated-panel"
+
+prompt = """
+Build a single-screen app with an expandable details panel.
+
+Requirements:
+- The screen shows a header row with a control (e.g. a button) that expands
+  and collapses a details panel below it.
+- Activating the control the first time reveals the panel's body content;
+  activating it again hides that content. It works as a repeatable toggle.
+- The panel does not just pop in and out instantly: opening animates it into
+  view and closing animates it out (for example it slides and/or fades),
+  and the closing animation plays before the content disappears.
+- The panel starts collapsed (its body content is hidden on first load).
+
+Target the web platform.
+"""
+
+platforms = ["web"]
+token_budget = 1_500_000
+runs = 5

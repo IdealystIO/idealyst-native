@@ -1,0 +1,24 @@
+# PUBLIC — requirements only; exercises the navigation surface of the MCP
+# (navigators guide, the swap navigator + author-supplied tab-bar chrome).
+# No hints about which API to reach for.
+id = "swap-tabs"
+
+prompt = """
+Build a three-tab app.
+
+Requirements:
+- The app has exactly three tabs, labelled "Home", "Search", and "Profile".
+- A tab bar showing all three labels is visible at all times, on every tab.
+- Tapping a tab shows that tab's screen; the currently selected tab is
+  visibly indicated in the tab bar.
+- Each tab's screen shows distinct content: its tab name as a prominent
+  on-screen title, plus a short line of body text unique to that tab.
+- Switching tabs swaps the visible screen — there is no back stack and no
+  push/pop navigation.
+
+Target the web platform.
+"""
+
+platforms = ["web"]
+token_budget = 1_500_000
+runs = 5

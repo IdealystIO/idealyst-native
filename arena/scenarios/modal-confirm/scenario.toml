@@ -1,0 +1,25 @@
+# PUBLIC — the `prompt` below is the ONLY task framing the implementation
+# agent receives. Requirements only; no hints about how to use the MCP.
+id = "modal-confirm"
+
+prompt = """
+Build a small "manage items" screen.
+
+Requirements:
+- Show a list of a few items (seed it with 3–4 rows). Each row shows the
+  item's name and has a "Delete" button.
+- Clicking a row's Delete button opens a confirmation dialog that asks the
+  user to confirm the deletion (e.g. "Delete this item?") and offers two
+  choices: "Confirm" and "Cancel".
+- The confirmation dialog must float ABOVE the page as an overlay — a modal
+  layered over the rest of the content, not an inline element pushed into the
+  row or the page flow.
+- Choosing "Confirm" removes that row from the list and closes the dialog.
+- Choosing "Cancel" closes the dialog and leaves the list unchanged.
+
+Target the web platform.
+"""
+
+platforms = ["web"]
+token_budget = 1_500_000
+runs = 5

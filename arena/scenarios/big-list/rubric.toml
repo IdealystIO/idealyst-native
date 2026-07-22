@@ -1,0 +1,89 @@
+# SECRET — never enters the implementation agent's context. Each item is
+# atomic and objectively checkable at its declared tier. Items derive strictly
+# from the scenario's stated requirements:
+#   - "render efficiently, only visible rows realized"  → uses-virtualization
+#   - "text field that narrows the list live as you type" → filter state +
+#     filtering logic + the two outcome checks.
+# Nothing subjective; nothing the prompt didn't ask for.
+#
+# The POINT of this scenario: a plain `scroll_view` + keyed `for` would render
+# the requested list AND satisfy a generic "reconciling list" check — but it
+# mounts all 500+ rows at once, violating the "only visible rows realized"
+# requirement. So the discriminating decision item (`uses-virtualization`)
+# rewards the recycled/windowed primitive SPECIFICALLY (`virtualizer` /
+# `flat_list`), and does NOT credit a `scroll_view` + `for` loop.
+#
+# Calibration policy (inherited from todo-app, 2026-07-20): decision items test
+# the CAPABILITY, not a specific library. A component-library wrapper that
+# expands to the virtualizer primitive is a legitimate choice when the library
+# is a project dep — but note that the recycled-list *primitive* (flat_list /
+# virtualizer) is the framework-level capability here; a non-recycling list
+# component would not satisfy the efficiency requirement. The principled
+# long-term check is the robot/playwright tier (does it actually window at
+# runtime); the static item is the source-level proxy.
+scenario_id = "big-list"
+
+# --- compile floor -----------------------------------------------------------
+
+[[item]]
+id = "builds-web"
+description = "The produced project builds for web."
+points = 20
+class = "decision"
+tier = "compile"
+verifier = "compile"
+assertion = { target = "web" }
+
+# --- decision items (source-verifiable: did the agent pick the right APIs) ---
+
+[[item]]
+id = "uses-virtualization"
+description = "Renders the long list through the framework's recycled/windowed list primitive (`flat_list` or the underlying `virtualizer`), which realizes only the visible rows — NOT a plain `scroll_view` + `for` loop that mounts every row. This is the discriminating item: the prompt's 'only visible rows realized' requirement is satisfiable ONLY by the virtualized primitive."
+points = 20
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "flat_list|virtualizer", in = "src/**/*.rs" }
+
+[[item]]
+id = "uses-filter-state"
+description = "Holds the filter/search query in reactive state (signal) so the list updates live as the user types, rather than reading the field imperatively."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "\\bsignal\\s*\\(|signal!|Signal<", in = "src/**/*.rs" }
+
+[[item]]
+id = "narrows-the-list"
+description = "Actually narrows the collection by the query — a filter/predicate over the items (`.filter(...)`, `.retain(...)`, a `.contains(...)` / `.starts_with(...)` match) rather than only styling or hiding rows."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "\\.filter\\s*\\(|\\.retain\\s*\\(|\\.contains\\s*\\(|\\.starts_with\\s*\\(", in = "src/**/*.rs" }
+
+# --- outcome items (platform truth via Playwright; each gated on a decision) -
+
+[[item]]
+id = "list-renders"
+description = "The long list renders: visible item rows are present on screen after load."
+points = 20
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-virtualization"
+# Capability policy: assert that item rows are VISIBLE, not that all 500 are in
+# the DOM — a correctly virtualized list realizes only a viewport-sized window,
+# so counting every row would penalize the right answer.
+assertion = { action = "after the page loads, confirm the list shows multiple item rows on screen (a scrollable list of labelled/numbered rows is visible)" }
+
+[[item]]
+id = "filter-narrows"
+description = "Typing in the filter field reduces the visible set to matching items."
+points = 15
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-filter-state"
+assertion = { action = "note some item rows the list shows initially, then type a query into the filter field that matches only SOME items, and confirm the visible rows change to only matching items (the set is narrower / different from before)" }
