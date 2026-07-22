@@ -1,0 +1,67 @@
+# SECRET — never enters the implementation agent's context.
+#
+# The planted anti-pattern: the item list is rendered by a coarse reactive
+# closure that, on every change, rebuilds a fresh `Vec<Element>` by pushing
+# each row (`children.push(ui! { … })`) in a loop and splatting it as
+# children. That builds the child list OUTSIDE the `ui!` macro, so the
+# reconciliation keys never reach the walker and the list is reconciled
+# positionally — every add/remove tears down and recreates all N rows
+# (CLAUDE.md §9.3 forbids exactly this shape). The correct fix is an
+# in-macro keyed reactive loop, `for item in items, key = item.id { … }`,
+# which lowers to `Element::Each` and reconciles by key, touching only the
+# row that changed. Items below verify the fix went in WITHOUT changing
+# behavior and WITHOUT a from-scratch rewrite — strictly what the prompt
+# asked for ("improve list rendering, don't change behavior, don't rewrite").
+scenario_id = "perf"
+
+# --- compile floor -----------------------------------------------------------
+
+[[item]]
+id = "builds-web"
+description = "The improved project still builds for web."
+points = 20
+class = "decision"
+tier = "compile"
+verifier = "compile"
+assertion = { target = "web" }
+
+# --- decision items (source-verifiable: did the agent pick the right API) -----
+
+[[item]]
+id = "uses-keyed-for"
+description = "The list is rendered through an in-macro keyed reactive `for` (`for item in items, key = … { }`) — the sole constructor of the key-reconciling `Element::Each` — rather than a hand-built child Vec."
+points = 20
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "for\\s+\\w+\\s+in\\s+[^{}\\n]*,\\s*key\\s*=", in = "src/**/*.rs" }
+
+[[item]]
+id = "no-out-of-macro-vec-push"
+description = "The out-of-macro child-building anti-pattern is gone: no row element is pushed into a `Vec` via `.push(ui! { … })` / `.push(jsx! { … })`. This matches ONLY macro-built elements pushed into a collection (the shipped anti-pattern), not legitimate data pushes like `items.push(Item { … })`."
+points = 15
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "\\.push\\s*\\(\\s*(ui|jsx)\\s*!", in = "src/**/*.rs", absent = true }
+
+[[item]]
+id = "did-not-rewrite"
+description = "The PERF-8842 module marker survives — the agent fixed the rendering, it did not rewrite the app (the prompt forbade a rewrite)."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "PERF-8842", in = "src/**/*.rs" }
+
+# --- outcome item (platform truth via Playwright; gated on the fix) -----------
+
+[[item]]
+id = "add-remove-still-works"
+description = "Behavior is unchanged after the fix: a typed item can still be added as a visible row and then removed via its Remove control."
+points = 25
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-keyed-for"
+assertion = { action = "type 'Buy milk' into the New item field and press Add so a 'Buy milk' row appears in the list, then press that row's Remove button and confirm the 'Buy milk' row is gone from the list" }

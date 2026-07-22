@@ -1,0 +1,24 @@
+# PUBLIC — the `prompt` below is the ONLY task framing the implementation
+# agent receives. This scenario ships a working-but-slow app (assets/): the
+# agent must fix the list-rendering ANTI-PATTERN without changing behavior
+# or rewriting from scratch. Requirements only — no hint about which API to
+# reach for; discovering the keyed reactive `for` through the MCP is the test.
+id = "perf"
+
+prompt = """
+This project contains a small item-list app. You can type a label, press
+Add to append a row, and each row has a Remove button. It works, but it is
+slow: every add or remove rebuilds the entire list from scratch, so it janks
+badly once there are many rows.
+
+Improve its list-rendering performance so that changing the list no longer
+rebuilds every row. Do not change what the app does — the same add and remove
+behavior must still work — and do not rewrite the app from scratch; fix the
+rendering approach.
+
+Target the web platform.
+"""
+
+platforms = ["web"]
+token_budget = 1_500_000
+runs = 5

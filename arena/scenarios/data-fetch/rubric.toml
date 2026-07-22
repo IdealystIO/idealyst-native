@@ -1,0 +1,100 @@
+# SECRET — never enters the implementation agent's context. Each item is
+# atomic and objectively checkable at its declared tier. Items are derived
+# strictly from the scenario's stated requirements: fetch a list over HTTP,
+# render it, and cover the loading / error / empty / loaded states.
+#
+# Capability policy (mirrors todo-app): items test the CAPABILITY, not one
+# specific symbol. The net SDK (`net::Client`) is the primary capability
+# under test; the async-state + reactive-render pattern is the secondary.
+# Component-library wrappers over the same primitives are legitimate.
+#
+# Why the loading indicator is a STATIC item, not a Playwright one: the app
+# is served from the same origin over loopback (`python3 -m http.server`),
+# so `/stats.json` resolves in well under one frame. The loading state
+# flashes sub-frame and is NOT reliably observable by a Playwright locator —
+# asserting it at runtime would false-negative a correct app. It is instead
+# verified in source (the app renders a distinct branch while `loading`).
+scenario_id = "data-fetch"
+
+# --- compile floor -----------------------------------------------------------
+
+[[item]]
+id = "builds-web"
+description = "The produced project builds for web."
+points = 20
+class = "decision"
+tier = "compile"
+verifier = "compile"
+assertion = { target = "web" }
+
+# --- decision items (source-verifiable: did the agent pick the right APIs) ---
+
+[[item]]
+id = "uses-net-client"
+description = "Fetches over HTTP using the net SDK's `net::Client` (Client::new()/builder + a request), rather than stubbing the data or hard-coding it."
+points = 20
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "net::Client|Client::new\\s*\\(|Client::builder\\s*\\(", in = "src/**/*.rs" }
+
+[[item]]
+id = "uses-async-state"
+description = "Drives the fetch through the framework's async-state machinery — a reactive `resource(...)` or a `spawn_async(...)` task — rather than blocking or faking async."
+points = 15
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "\\bresource\\s*\\(|spawn_async\\s*\\(", in = "src/**/*.rs" }
+
+[[item]]
+id = "renders-reactive-state"
+description = "Renders the fetched state reactively — a reactive conditional (`when(...)`) or reactive state (signal/memo) — so the UI swaps between states as the request resolves instead of building once."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "\\bsignal\\s*\\(|signal!|Signal<|\\bwhen\\s*\\(|\\bmemo\\s*\\(", in = "src/**/*.rs" }
+
+[[item]]
+id = "renders-loading-state"
+description = "Renders a distinct loading affordance while the request is in flight (reads the resource `loading()` state / matches `NetworkState::Loading`, or shows an activity indicator). Source-verified — see the loopback rationale in the header."
+points = 8
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "\\.loading\\s*\\(\\)|NetworkState::Loading|activity_indicator\\s*\\(", in = "src/**/*.rs" }
+
+[[item]]
+id = "handles-error-state"
+description = "Branches on the fetch failing — reads the resource `error()` accessor or matches `NetworkState::Error` to drive an error state."
+points = 7
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "\\.error\\s*\\(\\)|NetworkState::Error", in = "src/**/*.rs" }
+
+[[item]]
+id = "handles-empty-state"
+description = "Distinguishes a successful-but-empty result — checks the loaded list's emptiness (`is_empty()` / zero length) to drive an empty state."
+points = 5
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "is_empty\\s*\\(\\)|\\.len\\s*\\(\\)\\s*==\\s*0", in = "src/**/*.rs" }
+
+# --- outcome item (platform truth via Playwright; gated on a decision) --------
+
+[[item]]
+id = "loaded-rows-render"
+description = "After the app loads its data from /stats.json, the fetched items are visibly rendered as rows."
+points = 15
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-net-client"
+# The served fixture (assets/stats.json) contains a stat named "Active users"
+# with value 1280. Assert the fetched data reached the DOM without pinning to
+# a widget-specific role (capability policy) — the item may render its `name`,
+# its `value`, or both.
+assertion = { action = "wait for the app to finish loading its data, then confirm the fetched stat items are displayed — e.g. a visible row containing the text 'Active users' (or its value '1280')" }

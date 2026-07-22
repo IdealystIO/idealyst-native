@@ -1,0 +1,32 @@
+# PUBLIC — the `prompt` below is the ONLY task framing the implementation
+# agent receives. Requirements only; no hints about how to use the MCP.
+#
+# This scenario ships a data fixture (assets/stats.json) — NOT an app. The
+# overlay drops `stats.json` at the project root, and the web build stages
+# every non-excluded root file into `dist/web/`, so the served bundle
+# exposes it at the same-origin URL `/stats.json`. The agent writes the app
+# that FETCHES it. Naming the fixture URL is a necessary given (like a real
+# API base); everything else is requirements only.
+id = "data-fetch"
+
+prompt = """
+Build a screen that loads a list of items from the server and displays them.
+
+The items are served as JSON at the relative URL `/stats.json` (same origin
+as the app — a `stats.json` fixture ships in the project root and is served
+alongside your web build). Each item is an object with a `name` (string) and
+a `value` (number); the payload is a JSON array of these objects.
+
+Requirements:
+- Fetch the list over HTTP from `/stats.json` and render the returned items.
+- While the request is in flight, show a loading indicator.
+- If the request fails, show an error state.
+- If the request succeeds but the list is empty, show an empty state.
+- When the request succeeds with items, render each item.
+
+Target the web platform.
+"""
+
+platforms = ["web"]
+token_budget = 1_500_000
+runs = 5

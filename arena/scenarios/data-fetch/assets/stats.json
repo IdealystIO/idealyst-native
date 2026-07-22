@@ -1,0 +1,6 @@
+[
+  { "id": 1, "name": "Active users", "value": 1280 },
+  { "id": 2, "name": "Errors today", "value": 3 },
+  { "id": 3, "name": "Latency p95 (ms)", "value": 214 },
+  { "id": 4, "name": "Uptime (%)", "value": 99 }
+]
