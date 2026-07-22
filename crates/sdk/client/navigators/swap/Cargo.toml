@@ -23,6 +23,11 @@ license.workspace = true
 # Recording handler for the runtime-server sidecar's recorder backend.
 # Host-side only; off by default. Mirrors tab/drawer.
 runtime-server = ["dep:dev-server", "dep:wire"]
+# Compile-checked usage recipes for the docs/MCP catalog. Off in every
+# production build (the `recipe!` macro then expands to nothing). Must be
+# THIS crate's own feature — the `#[cfg(feature = "catalog")]` gate on
+# `src/recipes.rs` only sees this crate's features, not runtime-core's.
+catalog = ["runtime-core/catalog"]
 
 [dependencies]
 runtime-core = { workspace = true }

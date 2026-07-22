@@ -24,6 +24,34 @@ backlog (task-board MCP is disconnected).
 
 Batch-3 note: markdown-viewer refuted the strong "external SDK won't render without register_extensions" prediction — it rendered correctly. So the registration trap is confirmed at SOURCE level for `table` (data-table feedback) but its runtime impact varies by SDK/approach; don't overclaim. clipboard + code-split both discovered + used their SDK/macro cleanly (low bypass) — these SDKs ARE discoverable, unlike i18n/swap/table.
 
+## ESCALATE — framework bugs (NOT doc-fixes; code changes outside crates/mcp/catalog/)
+
+These are broken APIs. Documentation cannot make them work — the CODE must
+change. Doc edits here are interim stopgaps only, clearly labeled.
+
+- **`form` SDK `Form!` is incompatible with `ui!`** (signup-form). `ui! { Form(...) }`
+  does not compile: `FormProps` has no `BuildElement` impl and there's no
+  `pub type Form = FormProps` alias; the crate ships a dead
+  `#[macro_export] macro_rules! Form!` that `ui!` no longer invokes, and its own
+  `form_via_ui_macro` test is written against the removed lowering (it would fail
+  to build). CODE FIX in `crates/sdk/client/form/src/lib.rs`: give `FormProps` a
+  real `BuildElement` (or `#[component(children)] fn Form`), delete the dead
+  macro, fix the self-test. Interim doc stopgap: reword the terse `sdks.rs:209`
+  entry to steer to `Field` + signal validation (the working path) — but the SDK
+  is what's broken.
+- **`text` f-string silently renders `{item.name}` as a literal** (modal-confirm).
+  Only a bare identifier is interpolated; a field path / index / method call in
+  braces passes through as literal text with NO compile error — a silent, clean-
+  building rendering bug any list/detail screen hits. FRAMEWORK DECISION in
+  `crates/runtime/macros/src/ui.rs`: either interpolate field paths, or emit a
+  `compile_error!` for a non-identifier slot. Interim doc stopgap: caveat on the
+  `text` primitive entry — but the silent-wrong-output is a macro defect.
+
+(Borderline, noted not escalated: External UI SDKs render a placeholder instead
+of erroring when unregistered under `--local` — a UX sharpness issue, but
+registration IS required by design via `defer_external_registration`, so the
+primary fix is documentation. See P1 below.)
+
 ## META-FINDING: SDK discoverability is the weakest link
 
 Sharp split. **Primitive/reactivity** scenarios (big-list, modal-confirm,

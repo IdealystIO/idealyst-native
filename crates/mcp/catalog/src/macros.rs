@@ -93,10 +93,10 @@ inventory::submit! {
 inventory::submit! {
     MacroEntry {
         name: "lazy",
-        invocation: "lazy!(path::to::Component)",
+        invocation: "lazy! { <ui-block> }",
         kind: MacroKind::Markup,
         module_path: "runtime_macros",
-        docs: "Marks a code-splitting boundary: the wrapped subtree builds behind a lazily-loaded chunk on backends that support splitting (web), and inline elsewhere. The body hoists into a `#[wasm_split]` async fn; code (and static data) reachable ONLY from it moves into the chunk and loads on first mount. v1 has no captures — create the signals/closures the chunk needs inside the block. Heavy `External` SDK? Splitting the render is not enough: an eagerly-registered handler still anchors the whole SDK in `main.wasm`. Register it from INSIDE the `lazy!` body via the SDK's `register_lazy()` (built on `defer_external_registration`) so the handler rides the chunk too. See the `lazy` module in runtime-macros for constraints and naming, and [[defer_external_registration]].",
+        docs: "Marks a code-splitting boundary. Takes a BRACE BLOCK of `ui!`-style markup — `lazy! { text { \"loaded on demand\" } }`, NOT `lazy!(path::to::Component)` — and is written as a child inside an enclosing `ui!` (`{ lazy! { … } }`). The block builds behind a lazily-loaded chunk on backends that support splitting (web), and inline elsewhere. The body hoists into a `#[wasm_split]` async fn returning `Element`; code (and static data) reachable ONLY from it moves into the chunk and loads on first mount. **No captures** — the wasm-split fn is a plain `fn`, not an `Fn`, so the block can't reference enclosing variables; create the signals/closures the chunk needs inside the block, or use a lazy component (`#[component(lazy)]` / `#[lazy_component]`) to pass props across the boundary (see the `lazy-loading` guide). Heavy `External` SDK? Splitting the render is not enough: an eagerly-registered handler still anchors the whole SDK in `main.wasm`. Register it from INSIDE the `lazy!` body via the SDK's `register_lazy()` (built on `defer_external_registration`) so the handler rides the chunk too. See the `lazy` module in runtime-macros for constraints and naming, and [[defer_external_registration]].",
         expansion: "",
         _seal: (),
     }
@@ -136,7 +136,7 @@ inventory::submit! {
         invocation: "animated!(initial)",
         kind: MacroKind::Animation,
         module_path: "runtime_core",
-        docs: "Construct an `AnimatedValue<T>` — the per-frame motion handle passed to `.animate(...)` and bound to a prop via `.bind(node_ref, AnimProp::…)`. `T` is inferred from the initial value (`f32` for scalar motion, a 4-tuple for color).",
+        docs: "Construct an `AnimatedValue<T>` — the per-frame motion handle passed to `.animate(...)` and bound to a prop via `.bind(node_ref, AnimProp::…)`. `T` is inferred from the initial value (`f32` for scalar motion, a 4-tuple for color). AnimatedValue is for **continuous motion of a prop on an already-mounted node**. For **appearing/disappearing** (toast, panel, modal, disclosure — anything gated by an open/closed `Signal<bool>`), do NOT drive it imperatively with `animated!`/`.animate()` — that fades the node but never unmounts it. Use the **`presence` primitive** instead: it owns mount/unmount timing and plays declarative `enter`/`exit` animations. See [[reactivity]] § Animations and `describe_recipe(\"animated_toast\")`.",
         expansion: "AnimatedValue::new(initial)",
         _seal: (),
     }

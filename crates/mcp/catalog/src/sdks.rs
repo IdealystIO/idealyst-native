@@ -91,7 +91,8 @@ sdk!(
     "i18n",
     SdkCategory::Data,
     SdkKind::Api,
-    "Lightweight, Rust-native internationalization — runtime half."
+    "Localization / translation / multi-language — the internationalization SDK (locale, language switcher, i18n). Declare translations inline with the `i18n!` macro inside a `mod t`: `i18n::i18n! { locales: { En = \"en\" (default), Es = \"es\" } greeting(name) { En: \"Hello, {name}\", Es: \"Hola, {name}\" } }` — a missing translation or bad `{placeholder}` is a COMPILE error. Each message becomes a fn returning `Reactive<String>`, so pass it straight to any reactive-text prop: `Typography(content = t::greeting(\"Ada\"))` / `text(t::tagline())`. Switch language live with the generated typed `t::set_locale(t::Locale::Es)` (or untyped `i18n::set_locale_code(\"es\")`) — every visible translated string re-renders in place, no manual refresh, every backend. Bundled locales compile into the binary; `(lazy)` locales fetch a JSON pack on demand (feature `lazy-fetch`). See the [[i18n]] guide.",
+    guide = "i18n"
 );
 
 // ---------------------------------------------------------------------
@@ -138,7 +139,7 @@ sdk!(
     "video",
     SdkCategory::Media,
     SdkKind::External,
-    "Third-party `Video` playback primitive (`Element::External`)."
+    "Third-party `Video` playback primitive (`Element::External`). WEB REGISTRATION REQUIRED: call `video::register(&mut backend)` from your wasm32 `register_extensions` or it renders an unsupported-`External` placeholder (runtime, not compile-time); native self-registers. See the `sdks` guide's \"Registering External UI SDKs\" section."
 );
 sdk!(
     "video-decode",
@@ -173,37 +174,37 @@ sdk!(
     "webview",
     SdkCategory::Ui,
     SdkKind::External,
-    "Third-party `WebView` primitive. The canonical single-crate cfg-gated `Element::External` pattern."
+    "Third-party `WebView` primitive. The canonical single-crate cfg-gated `Element::External` pattern. WEB REGISTRATION REQUIRED: call `webview::register(&mut backend)` from your wasm32 `register_extensions` — without it the primitive renders an `External \"…Props\" not supported` placeholder (runtime, not compile-time); native self-registers. See the `sdks` guide's \"Registering External UI SDKs\" section."
 );
 sdk!(
     "maps",
     SdkCategory::Ui,
     SdkKind::External,
-    "Third-party `MapView` primitive."
+    "Third-party `MapView` primitive. WEB REGISTRATION REQUIRED: call `maps::register(&mut backend)` from your wasm32 `register_extensions` or it renders an unsupported-`External` placeholder (runtime, not compile-time); native self-registers. See the `sdks` guide's \"Registering External UI SDKs\" section."
 );
 sdk!(
     "svg",
     SdkCategory::Ui,
     SdkKind::External,
-    "Third-party SVG renderer."
+    "Third-party SVG renderer. WEB REGISTRATION REQUIRED: call `svg::register(&mut backend)` from your wasm32 `register_extensions` or it renders an unsupported-`External` placeholder (runtime, not compile-time); native self-registers. See the `sdks` guide's \"Registering External UI SDKs\" section."
 );
 sdk!(
     "markdown",
     SdkCategory::Ui,
     SdkKind::External,
-    "CommonMark/GFM document primitive."
+    "CommonMark/GFM document primitive. WEB REGISTRATION REQUIRED: call `markdown::register(&mut backend)` from your wasm32 `register_extensions` or it renders an unsupported-`External` placeholder (runtime, not compile-time); native self-registers. See the `sdks` guide's \"Registering External UI SDKs\" section."
 );
 sdk!(
     "codeblock",
     SdkCategory::Ui,
     SdkKind::External,
-    "Read-only colored-text (code) panel primitive."
+    "Read-only colored-text (code) panel primitive. WEB REGISTRATION REQUIRED: call `codeblock::register(&mut backend)` from your wasm32 `register_extensions` (and the SSR bootstrap, so first paint matches) or it renders an unsupported-`External` placeholder (runtime, not compile-time); native self-registers. See the `sdks` guide's \"Registering External UI SDKs\" section."
 );
 sdk!(
     "table",
     SdkCategory::Ui,
     SdkKind::External,
-    "Cross-platform table — a real `<table>` on web."
+    "Cross-platform table — a real `<table>` on web. WEB REGISTRATION REQUIRED: call `table::register(&mut backend)` from your wasm32 `register_extensions` or it renders an unsupported-`External` placeholder (runtime, not compile-time); native self-registers. Before hand-rolling a grid from `view`/`text`, reach for this SDK. See the `sdks` guide's \"Registering External UI SDKs\" section."
 );
 sdk!(
     "form",
@@ -215,7 +216,7 @@ sdk!(
     "toolbar",
     SdkCategory::Ui,
     SdkKind::External,
-    "Third-party `Toolbar` SDK."
+    "Third-party `Toolbar` SDK. WEB REGISTRATION REQUIRED: call `toolbar::register(&mut backend)` from your wasm32 `register_extensions` or it renders an unsupported-`External` placeholder (runtime, not compile-time); native self-registers. See the `sdks` guide's \"Registering External UI SDKs\" section."
 );
 sdk!(
     "menu",
@@ -244,7 +245,7 @@ sdk!(
     "swap-navigator",
     SdkCategory::Ui,
     SdkKind::Api,
-    "Flat screen-swap navigator (the Select model) — one visible screen, no back stack; the substrate for TAB and DRAWER experiences (chrome = author layout with idea-ui-nav's AppShell / TabBar / Drawer). Same builder shape as the stack: `SwapNavigator::new(&HOME).screen(HOME, |_| Screen::new(...)).layout(|nav| ... { nav.outlet } ...).bind(nav_ref)`; import the `SwapBuilder` extension trait. See the [[navigation]] guide.",
+    "Tabs and drawers: this is the tab-bar / drawer / bottom-nav / screen-switcher SDK — there is NO separate tab- or drawer-navigator crate. A flat screen-swap navigator (the Select model) — one visible screen, no back stack — is the substrate; the tab bar / drawer is author layout wrapping the navigator's `{ nav.outlet }` with idea-ui-nav's `TabBar` / `Drawer` / `AppShell`, wired to `nav.active_route` + `nav.on_select`. Same builder shape as the stack: `SwapNavigator::new(&HOME).screen(HOME, |_| Screen::new(...)).screen(SEARCH, ...).layout(|nav| ui!{ view { { nav.outlet } TabBar(items = vec![TabItem::new(\"home\", \"Home\")], active_route = nav.active_route, on_select = nav.on_select) } }).bind(nav_ref)`; import the `SwapBuilder` extension trait (`use swap_navigator::{SwapBuilder, SwapHandle, SwapNavigator};`) or `.screen(...)` won't resolve. `swap_three_screens_tab_bar` recipe registers once this crate is a dependency. See the [[navigation]] guide.",
     guide = "navigation"
 );
 

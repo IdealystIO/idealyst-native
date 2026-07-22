@@ -26,6 +26,12 @@ license.workspace = true
 [features]
 default = []
 
+# Compile-checked usage recipes for the docs/MCP catalog. Off in every
+# production build (the `recipe!` macro then expands to nothing). Must be
+# THIS crate's own feature — the `#[cfg(feature = "catalog")]` gate on
+# `src/recipes.rs` only sees this crate's features, not runtime-core's.
+catalog = ["runtime-core/catalog"]
+
 # Ready-made network pack loader for opt-in locales: fetches
 # `<base>/<code>.json` via the `net` SDK and drives it on the framework
 # async driver. Opt-in — without it the crate has no `net` dependency and

@@ -42,7 +42,7 @@ dep, the SDK's functions are importable (`use net::Client;`).
 | **`credentials`** | Cross-platform **secure** storage for secrets (auth tokens, API keys) — Keychain / Keystore on device. Web errors rather than faking security. |
 | **`files`** | Cross-platform blob/file storage for **binary data** (recordings, downloads). |
 | **`file-export`** | Save a file to a user-chosen location through the platform's native "save" UI (no permission prompt). |
-| **`i18n`** | Lightweight, Rust-native internationalization — runtime half. |
+| **`i18n`** | Localization / translation / multi-language — the internationalization SDK. Declare translations inline with the `i18n!` macro in a `mod t` (`locales: { En = "en" (default), Es = "es" } greeting(name) { En: "Hello, {name}", Es: "Hola, {name}" }`); a missing translation or bad `{placeholder}` is a COMPILE error. Each message is a fn returning `Reactive<String>` you pass to any reactive-text prop (`Typography(content = t::greeting("Ada"))`). Switch language live with `t::set_locale(t::Locale::Es)` / `i18n::set_locale_code("es")` — every visible translated string re-renders in place. Bundled locales compile in; `(lazy)` locales fetch a JSON pack (feature `lazy-fetch`). Full walkthrough in the [[i18n]] guide. |
 
 ## Media & capture
 
@@ -59,7 +59,11 @@ dep, the SDK's functions are importable (`use net::Client;`).
 ## UI primitives & extensions (`Element::External`)
 
 These are third-party UI primitives wired through `Element::External` + a
-per-backend registry — add the crate and call the primitive in `ui!`.
+per-backend registry. Adding the crate and calling the primitive in `ui!` is
+**not sufficient on web**: the primitive's handler must also be **registered**
+with the backend, or it renders an `External "…Props" not supported`
+placeholder at runtime (not a compile error). See "Registering External UI
+SDKs (required for web)" just below.
 
 | Crate | What it gives you |
 |---|---|
@@ -75,6 +79,37 @@ per-backend registry — add the crate and call the primitive in `ui!`.
 | **`form`** | Third-party `Form` SDK. |
 | **`toolbar`** | Third-party `Toolbar` SDK. |
 | **`menu`** | OS-level menu-bar SDK (desktop). |
+
+### Registering External UI SDKs (required for web)
+
+Every `Element::External` UI SDK (`webview`, `maps`, `svg`, `markdown`,
+`codeblock`, `table`, `toolbar`, `video`) exposes a per-target
+`register(&mut backend)` that installs its handler. On **native** the SDK
+also self-registers via `inventory::submit!`, so the call is often a no-op
+belt-and-suspenders. On **web under the CLI `--local` build** that inventory
+submission can be dead-stripped, so the primitive renders the framework's
+`External "…Props" not supported on web` placeholder (a runtime message, not
+a compile error) unless the app calls `register` explicitly.
+
+Call it from your crate's `register_extensions` — the per-target hook the
+CLI-generated wrapper invokes before mount — on the wasm32 arm:
+
+```rust
+#[cfg(target_arch = "wasm32")]
+pub fn register_extensions(backend: &mut backend_web::WebBackend) {
+    table::register(backend);      // real <table> handler
+    markdown::register(backend);   // CommonMark handler
+    // …one line per External UI SDK you render on web.
+}
+```
+
+`register` is defined for every target (a no-op on backends without a
+binding), so a native/iOS/Android `register_extensions` can call the same
+lines harmlessly — but the web arm is the one that's actually load-bearing.
+SSR needs the same handlers so first paint matches (see the website's
+`examples/serve.rs`, which calls `codeblock::register(b)` alongside the web
+build). This is the **basic** requirement; the next section is the advanced
+variant that defers registration into a code-split chunk.
 
 ### Code-splitting a heavy extension (web)
 

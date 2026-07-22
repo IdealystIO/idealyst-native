@@ -1,7 +1,7 @@
 +++
-title = "Navigation"
+title = "Navigation — stacks, tabs, drawers & screens"
 order = 50
-tags = ["navigation"]
+tags = ["navigation", "tabs", "tab-bar", "drawer", "screens", "swap", "outlet", "stack", "router", "navigator"]
 +++
 
 # Navigation
@@ -63,6 +63,65 @@ nav.get().map(|h| h.push(&DETAIL, ())).unwrap_or_default(); // pushes /detail
 **Typed route params**: a route can carry a typed payload that also round-trips through the URL. Declare `const NOTE: Route<NoteId> = Route::<NoteId>::new("note", "/note/:slug");`, implement `RouteParams` for `NoteId` (`to_path` fills `:slug`; `from_segments` parses it back), and the `.screen(NOTE, |params: NoteId| ...)` closure receives the typed value — including on a web cold load of `/note/<slug>`. Pushing with the wrong param shape is a compile error.
 
 The compile-checked **`stack_two_screens` recipe** (visible in `list_recipes` once `stack-navigator = { workspace = true }` is in your `Cargo.toml`) is the full list + detail skeleton with a typed param and a layout shell — copy-paste it as a starting point.
+
+## Building a swap (tab) navigator
+
+**Tabs and drawers are the swap navigator**, not a separate crate. A `swap-navigator` is a flat set of co-equal screens — selecting one swaps the single visible screen (no back stack). The tab bar (or drawer) is *author layout* wrapped around the navigator's outlet: idea-ui-nav ships a ready-made `TabBar` you wire to the navigator's reactive `active_route` / `on_select`.
+
+Same fluent builder as the stack — there is **no `ui!` tag sugar**. Import the `SwapBuilder` extension trait, or `.screen(...)` / `.layout(...)` won't resolve ("no method named `screen`"):
+
+```rust
+use idea_ui_nav::{TabBar, TabItem};
+use runtime_core::{component, ui, Element, Ref, Route, Screen};
+// SwapBuilder is the EXTENSION TRAIT that adds `.screen(...)` / `.layout(...)` /
+// `.bind(...)` to the builder — omitting it fails with "no method named `screen`".
+use swap_navigator::{SwapBuilder, SwapHandle, SwapNavigator};
+
+const HOME: Route<()> = Route::<()>::new("home", "/");
+const SEARCH: Route<()> = Route::<()>::new("search", "/search");
+const PROFILE: Route<()> = Route::<()>::new("profile", "/profile");
+
+#[component]
+pub fn app() -> Element {
+    let nav: Ref<SwapHandle> = Ref::new();
+
+    let builder = SwapNavigator::new(&HOME)
+        .screen(HOME, |_| Screen::new(home_page()))
+        .screen(SEARCH, |_| Screen::new(search_page()))
+        .screen(PROFILE, |_| Screen::new(profile_page()))
+        // The layout OWNS the tree and splats `{ nav.outlet }` exactly once.
+        // The outlet fills by default (`flex: 1 1 0`), so it takes the
+        // remaining height and the bar sits below it.
+        .layout(|nav| ui! {
+            view {
+                { nav.outlet }
+                TabBar(
+                    items = vec![
+                        TabItem::new("home", "Home"),
+                        TabItem::new("search", "Search"),
+                        TabItem::new("profile", "Profile"),
+                    ],
+                    active_route = nav.active_route,
+                    on_select = nav.on_select,
+                )
+            }
+        });
+
+    ui! { builder.bind(nav) }
+}
+```
+
+`TabItem::new(route_name, label)` — the first argument is the **route name** (`"home"`), matching the name in the `Route` const so `on_select` selects the right screen. `nav.active_route` drives which tab reads as active; `nav.on_select` is the tap handler. Because the swap navigator has no stack, back/forward on web maps to selecting the previous/next screen.
+
+> **Outlet ordering trap.** A braced `{ nav.outlet }` placed *directly after* a component call (like `TabBar(...)`) is parsed as that component's children block (see the `.layout(...)` shell traps below). Splat the outlet **before** the `TabBar` — as above — or wrap either in its own `view { … }` slot so the outlet stays a sibling. For a bottom bar with a growing content area, wrap `{ nav.outlet }` in a `view(style = grow)` (`flex_grow: 1`) inside a column shell.
+
+Switch screens imperatively through the bound handle with typed params:
+
+```rust
+nav.get().map(|h| h.select(&SEARCH, ()));
+```
+
+The compile-checked **`swap_three_screens_tab_bar` recipe** (visible in `list_recipes` once `swap-navigator = { workspace = true }` is in your `Cargo.toml`) is the full three-screen + tab-bar skeleton — copy-paste it as a starting point.
 
 ## Writing a `.layout(...)` shell
 

@@ -38,9 +38,21 @@
 //! formatter via [`install_formatter`]; it receives the same
 //! `(template, args)` and can do anything.
 
+// Lets code inside this crate refer to itself by its external name, so the
+// captured `recipes` source shows the `i18n::i18n! { … }` invocation an app
+// author writes verbatim (mirrors `extern crate self as runtime_core` in core).
+// The generated message code also references the crate as `::i18n`, so this is
+// what lets an in-crate `i18n! { … }` (the recipe) resolve at all.
+extern crate self as i18n;
+
 mod format;
 mod locale;
 mod packs;
+
+/// Compile-checked usage recipes (docs / MCP catalog). Present only under the
+/// `catalog` feature — see [`recipes`].
+#[cfg(feature = "catalog")]
+pub mod recipes;
 
 pub use format::{clear_formatter, format, install_formatter};
 pub use locale::{current_locale_code, set_locale_code};

@@ -8,6 +8,15 @@ tags = ["components", "core"]
 
 `#[component]` turns a free function into a reusable composable. The macro handles three things at once: it rewrites the body for reactivity, generates the dispatch glue `ui!`/`jsx!` use (a `Name` tag alias plus a `BuildElement` impl on its props — no per-component `macro_rules!`), and registers a [[ComponentEntry]] in the MCP catalog so AI/tooling can discover it.
 
+> **Before hand-rolling composite UI, check for an SDK.** Tables/grids,
+> code panels, rendered markdown, maps, SVG, and web views all ship as
+> first-party `Element::External` SDKs — don't rebuild a table out of
+> `view`/`text` or a code panel out of styled spans. Run `list_sdks` /
+> `describe_sdk` (or read the [[sdks]] guide) first: `table`, `codeblock`,
+> `markdown`, `maps`, `svg`, `webview`, `toolbar`, `video`. These need an
+> explicit web registration step — see the sdks guide's "Registering
+> External UI SDKs (required for web)".
+
 ## A minimal component
 
 A component takes **exactly one** parameter — a props struct (`&Props` for a

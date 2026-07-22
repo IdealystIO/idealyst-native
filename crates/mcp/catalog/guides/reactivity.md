@@ -69,6 +69,56 @@ Pair either form with `on_cleanup(…)` for teardown — the callback fires befo
 
 ## Animations
 
+**Pick the tool by the question you're answering — there are two.**
+
+1. **"This thing appears and disappears"** (a toast, a panel, a modal, a
+   disclosure) → the **`presence` primitive**. Presence owns mount/unmount
+   *timing*: it keeps the subtree alive long enough to play a declarative
+   `exit` before tearing it down, and applies the `enter` state before the
+   first paint. This is the tool for anything gated by an open/closed
+   `Signal<bool>`. Reaching for `animated!` here is the common trap — an
+   imperative `.animate()` fades the node but never unmounts it, so the panel
+   stays in the tree and never actually hides.
+2. **"This prop moves on a node that's already mounted"** (a live progress
+   bar, a drag follower, a color pulse) → **`animated!` + [[AnimatedValue]]**,
+   the per-frame motion handle.
+
+### Appearing / disappearing → `presence`
+
+`presence` sits between an open/closed signal and the subtree it shows. Drive
+it with `present = move || open.get()`; declare `enter` / `exit` as
+`PresenceAnim`s. The animatable vocabulary (`PresenceState`) is deliberately
+narrow — opacity + 2D translate + uniform scale — which covers fade, slide,
+and zoom on every backend.
+
+```rust
+let open = signal(false);
+ui! {
+    presence(
+        present = move || open.get(),
+        enter = PresenceAnim::new(
+            PresenceState::default().opacity(0.0).translate_y(8.0),
+            200,
+            Easing::EaseOut,
+        ),
+        exit = PresenceAnim::new(
+            PresenceState::default().opacity(0.0).translate_y(8.0),
+            150,
+            Easing::EaseIn,
+        ),
+    ) {
+        view { text { "I fade + slide in on open, and out on close" } }
+    }
+}
+```
+
+`presence` is a **lowercase primitive** tag; `present` / `enter` / `exit` are
+its props. `PresenceAnim::fade(ms, easing)` is a one-liner for the opacity-only
+case. See `describe_recipe("animated_toast")` for the full appearing-and-leaving
+pattern.
+
+### Continuous motion on a mounted node → `animated!`
+
 [[AnimatedValue]] is the per-frame motion handle. Construct one with `animated!`:
 
 ```rust

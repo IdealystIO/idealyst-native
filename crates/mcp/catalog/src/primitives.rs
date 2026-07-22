@@ -5,11 +5,22 @@
 //! privacy boundary. That's the lock — third-party crates can read every
 //! `pub` field but cannot submit their own entries.
 //!
-//! Drift between this table and the `Element` enum in
-//! `runtime-core::primitive` is caught by:
-//! - `tests/primitive_coverage.rs` — asserts every enum variant has a
-//!   matching entry name here (compile-time exhaustive match).
-//! - `.claude/audits/primitive-catalog.md` — human-readable drift audit.
+//! Most entries correspond 1:1 to an `Element` enum variant in
+//! `runtime-core::primitive`, but the table is keyed by the author-facing
+//! `ui!`/`jsx!` TAG (see `canonical_primitive` in
+//! `crates/runtime/macros/src/primitives.rs`), not by the variant. So it
+//! also carries COMPOSITIONS that are real tags yet have no dedicated
+//! variant — `overlay` / `anchored_overlay` lower to `Element::Portal`.
+//! Conversely, some `Element` variants (`Portal`, `Pressable`) are NOT
+//! author tags; they're catalogued with a caveat steering to the tag that
+//! is (`overlay`, the `idea-ui` wrapper).
+//!
+//! Drift between this table and the framework is caught by
+//! `.claude/audits/primitive-catalog.md` — a human-readable drift audit.
+//! (There is no `tests/primitive_coverage.rs`; the emission/round-trip
+//! coverage lives in `tests/registers_component.rs`, which asserts a core
+//! subset is present rather than an exhaustive variant match — precisely so
+//! tag-only compositions like `overlay` can be listed without a variant.)
 
 use crate::{PrimitiveCategory, PrimitiveEntry, PropFieldSpec};
 
@@ -73,13 +84,13 @@ inventory::submit! {
     PrimitiveEntry {
         name: "text",
         pascal_name: "Text",
-        docs: "Renders a string. A literal interpolates `{name}` placeholders f-string-style — signal slots are LIVE by type, `Display` values bake in (`text { \"count: {count}\" }`); a closure is reactive (`text { move || … }`); plain literals are static. Backends use native text widgets (`UILabel`, `TextView`, `<span>`, `NSTextField`).",
+        docs: "Renders a string. A literal interpolates `{name}` placeholders f-string-style — signal slots are LIVE by type, `Display` values bake in (`text { \"count: {count}\" }`); a closure is reactive (`text { move || … }`); plain literals are static. Backends use native text widgets (`UILabel`, `TextView`, `<span>`, `NSTextField`). KNOWN LIMITATION (interim doc caveat — tracked framework bug, not final behavior): only a BARE identifier is a real interpolation slot (`{count}`). A field path, index, or method call inside braces — `{item.name}`, `{items[0]}`, `{obj.field()}` — is NOT interpolated; it renders LITERALLY as the text `{item.name}` with NO compile error. Any list/detail screen hits this silently. Workaround: pull the value into a local first (`let name = item.name.clone(); text { \"{name}\" }`) or, when it must stay reactive, use a closure that reads it directly: `text { move || item.name.clone() }`.",
         props: &[
             PropFieldSpec {
                 name: "source",
                 type_str: "TextSource",
-                doc: "Static string, f-string literal (`\"count: {count}\"` — slots live-or-static by type), or reactive closure (`move || format!(…)` for positional/Debug formatting).",
-                constraint: "",
+                doc: "Static string, f-string literal (`\"count: {count}\"` — slots live-or-static by type), or reactive closure (`move || format!(…)` for positional/Debug formatting). INTERPOLATION LIMITATION (known bug): only a bare identifier is a slot — a field path/index/call (`{item.name}`) renders literally with no error. Use a reactive closure (`move || item.name.clone()`) for anything that isn't a plain variable name.",
+                constraint: "brace slots take a BARE identifier only; `{a.b}` / `{a[0]}` / `{a()}` are NOT interpolated (render literally) — use a closure",
             },
             COMMON_STYLE_FIELD,
             COMMON_REF_FILL_FIELD,
@@ -141,7 +152,7 @@ inventory::submit! {
     PrimitiveEntry {
         name: "pressable",
         pascal_name: "Pressable",
-        docs: "Tappable region with no native chrome — for building custom-looking interactive surfaces. Use `Button` if you want the platform's native button. Authors typically reach for this via the `idea-ui` styled wrapper rather than the bare primitive.",
+        docs: "Tappable region with no native chrome — for building custom-looking interactive surfaces. Use `Button` if you want the platform's native button. CAVEAT: `pressable` is NOT an author `ui!`/`jsx!` tag — it's absent from the macro's primitive tag table, so `ui! { pressable() { … } }` will NOT compile. It's an `Element` variant the framework and compositions build directly (e.g. `overlay`'s dismiss backdrop). Authors reach for a tappable surface via the `idea-ui` styled wrapper (`Pressable`, a PascalCase `#[component]`) rather than the bare primitive; for a native button use `button`.",
         props: &[
             PropFieldSpec {
                 name: "children",
@@ -583,7 +594,7 @@ inventory::submit! {
     PrimitiveEntry {
         name: "portal",
         pascal_name: "Portal",
-        docs: "Renders children at the root of the view tree regardless of where the `Portal` appears. Used for modals, tooltips, and any UI that should escape layout / overflow clipping.",
+        docs: "Renders children at the root of the view tree regardless of where the `Portal` appears. Used for modals, tooltips, and any UI that should escape layout / overflow clipping. CAVEAT: `portal` is NOT an author `ui!`/`jsx!` tag — there is no `portal` primitive in the macro's tag table, so `ui! { portal() { … } }` will NOT compile. It's the low-level `Element` variant that the `overlay` / `anchored_overlay` compositions lower to. For modals/drawers/sheets use `overlay` (viewport-anchored, with backdrop + focus-trap wiring); for popovers/tooltips/dropdowns/menus use `anchored_overlay`. Reach for the bare `Element::Portal` only when hand-assembling a backdrop-less teleport that the compositions can't express.",
         props: &[
             PropFieldSpec {
                 name: "children",
@@ -602,20 +613,169 @@ inventory::submit! {
     PrimitiveEntry {
         name: "presence",
         pascal_name: "Presence",
-        docs: "Enter/exit animation surface. Wrap children whose mount/unmount should animate — the framework keeps the children in the tree long enough for the exit animation to complete before unmounting.",
+        docs: "THE canonical primitive for animated show/hide. Wrap children whose mount/unmount should animate — the framework applies the `enter` state before first paint then interpolates to rest, and on hide plays the `exit` state before actually dropping the subtree. This is the DECLARATIVE animation tool (contrast the imperative `animated!` value driver): reach for `presence` whenever a panel/modal/toast should fade or slide in and out. The prop is `present` (a reactive `Fn() -> bool`) — NOT `when` (that's the `when` control-flow primitive; a `presence` with a `when` prop silently never hides). `enter`/`exit` are `PresenceAnim` values built from a `PresenceState` (opacity + 2D translate + uniform scale — the cross-backend-cheap vocabulary) plus a duration and `Easing`.",
         props: &[
             PropFieldSpec {
-                name: "when",
+                name: "present",
                 type_str: "impl Fn() -> bool",
-                doc: "Reactive presence predicate.",
+                doc: "Reactive presence predicate. Children mount + play `enter` when it flips true; play `exit` then unmount when it flips false. Defaults to always-present if unset — real call sites always bind it. This is the prop, NOT `when`.",
+                constraint: "builder method `.present(..)` — set it or the subtree never hides",
+            },
+            PropFieldSpec {
+                name: "enter",
+                type_str: "PresenceAnim",
+                doc: "Entrance animation: the `PresenceState` applied before first paint, interpolated back to rest over `duration_ms`/`easing`. Build via `PresenceAnim::new(PresenceState::rest().opacity(0.0).translate_y(8.0), 200, Easing::EaseOut)` or the `PresenceAnim::fade(ms, easing)` helper.",
+                constraint: "builder method `.enter(anim)`",
+            },
+            PropFieldSpec {
+                name: "exit",
+                type_str: "PresenceAnim",
+                doc: "Exit animation: the `PresenceState` interpolated toward before the scope drops. Same shape as `enter` (mirror it for a symmetric fade/slide). A mid-exit flip back to `present` reverses the in-flight interpolation without rebuilding the child.",
+                constraint: "builder method `.exit(anim)`",
+            },
+            PropFieldSpec {
+                name: "children",
+                type_str: "Vec<Element>",
+                doc: "Animated subtree. Rebuilt only on a real mount (first appearance, or after a full exit completes) — signals/refs inside survive a near-miss flicker.",
+                constraint: "",
+            },
+        ],
+        category: PrimitiveCategory::Composition,
+        backends: ALL_BACKENDS,
+        _seal: (),
+    }
+}
+
+// `overlay` / `anchored_overlay` are COMPOSITIONS, not `Element` enum
+// variants: the `ui!` macro lowers them to `Element::Portal` (adding the
+// backdrop + focus-trap wiring around the caller's children — see
+// `emit_overlay`/`emit_anchored_overlay` in `crates/runtime/macros/src/ui.rs`
+// and the builders in `crates/runtime/core/src/primitives/overlay.rs`). They
+// ARE first-class author `ui!`/`jsx!` tags (in `canonical_primitive`), which
+// is why they're catalogued here even though they have no dedicated variant.
+inventory::submit! {
+    PrimitiveEntry {
+        name: "overlay",
+        pascal_name: "Overlay",
+        docs: "THE modal / drawer / full-screen-sheet tag. Viewport-anchored composition that teleports its children above everything (lowering to `Element::Portal`) and wires the backdrop scrim + focus trap for you. Use it for confirm dialogs, modals, bottom sheets, drawers — anything centered or edge-pinned over a dimmed background. Gate visibility with reactive control flow (`when(open, || ui!{ overlay(...) { … } })`) or wrap in `presence` for an animated open/close. For popovers/tooltips/dropdowns/context-menus anchored to a specific element, use `anchored_overlay` instead. Defaults: `Center` placement, `Dismiss` backdrop (tap-scrim-to-close), focus-trap ON.",
+        props: &[
+            PropFieldSpec {
+                name: "placement",
+                type_str: "ViewportPlacement",
+                doc: "Where the content sits in the viewport (`Center`, edges, corners). Default `Center`.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "backdrop",
+                type_str: "BackdropMode",
+                doc: "Scrim behavior: `Dismiss` (tap the scrim fires `on_dismiss` — default), `Opaque` (scrim swallows taps, host drives close), or `None` (no scrim, viewport behind stays interactive).",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "on_dismiss",
+                type_str: "impl Fn()",
+                doc: "Called when the backdrop is tapped under `BackdropMode::Dismiss` (and by the framework's dismiss path). Typical body flips your open signal false: `move || open.set(false)`. Runs batched.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "trap_focus",
+                type_str: "bool",
+                doc: "Keep keyboard/AT focus inside the overlay while open. Default `true` (modal semantics).",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "backdrop_style",
+                type_str: "Option<StyleSource>",
+                doc: "Style override for the scrim layer (e.g. tint / opacity). Ignored when `backdrop = None`.",
                 constraint: "",
             },
             PropFieldSpec {
                 name: "children",
                 type_str: "Vec<Element>",
-                doc: "Animated subtree.",
+                doc: "The overlay content, rendered above the backdrop. Wrapped in a styleable content view (see `with_style`).",
                 constraint: "",
             },
+            PropFieldSpec {
+                name: "with_style",
+                type_str: "IntoStyleSource",
+                doc: "Style for the content wrapper view. Builder-only: chain `.with_style(..)` after the `ui!` call — not an inline `ui!` prop.",
+                constraint: "builder method `.with_style(..)` — not lowered as an inline prop",
+            },
+            PropFieldSpec {
+                name: "click_through",
+                type_str: "bool",
+                doc: "Make the portal root `pointer-events: none` so empty areas pass clicks to the page beneath (e.g. a full-width toast strip); interactive descendants opt back in with `pointer_events: Auto`. Web-only effect; no-op on native. Builder-only.",
+                constraint: "builder method `.click_through(..)` — web-only; pair with `backdrop = None`",
+            },
+            COMMON_REF_FILL_FIELD,
+        ],
+        category: PrimitiveCategory::Composition,
+        backends: ALL_BACKENDS,
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    PrimitiveEntry {
+        name: "anchored_overlay",
+        pascal_name: "AnchoredOverlay",
+        docs: "Element-anchored overlay for popovers, tooltips, dropdowns, and context menus — content positioned relative to a target element rather than the viewport. Like `overlay`, it's a composition that lowers to `Element::Portal`, but it takes a required `target` (an `AnchorTarget`, typically a `Ref` to the trigger) and positions with `side`/`align`/`offset`. Defaults suit the typical popover: side `Below`, align `Start`, offset `0`, backdrop `None` (page behind stays interactive), focus-trap OFF. For centered/edge modals use `overlay`.",
+        props: &[
+            PropFieldSpec {
+                name: "target",
+                type_str: "AnchorTarget",
+                doc: "REQUIRED. The element to anchor to (usually a `Ref` filled by the trigger). Passed positionally by the lowering; omitting it is a compile error.",
+                constraint: "required — `target = ...`",
+            },
+            PropFieldSpec {
+                name: "side",
+                type_str: "ElementSide",
+                doc: "Which side of the target the content sits on (`Above`/`Below`/`Start`/`End`). Default `Below`.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "align",
+                type_str: "ElementAlign",
+                doc: "Cross-axis alignment against the target edge (`Start`/`Center`/`End`). Default `Start`.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "offset",
+                type_str: "f32",
+                doc: "Gap in px between the target and the content along `side`. Default `0`.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "backdrop",
+                type_str: "BackdropMode",
+                doc: "Scrim behavior. Default `None` (page stays interactive — typical popover UX). Set `Dismiss` for a click-away scrim that fires `on_dismiss`.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "on_dismiss",
+                type_str: "impl Fn()",
+                doc: "Fired by the dismiss path (and a `Dismiss` backdrop tap). Flip your open signal false here. Runs batched.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "trap_focus",
+                type_str: "bool",
+                doc: "Keep focus inside the popover while open. Default `false` (popovers usually don't trap).",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "backdrop_style",
+                type_str: "Option<StyleSource>",
+                doc: "Style override for the scrim layer. Ignored under `backdrop = None`.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "children",
+                type_str: "Vec<Element>",
+                doc: "Popover / menu content, positioned against `target`.",
+                constraint: "",
+            },
+            COMMON_REF_FILL_FIELD,
         ],
         category: PrimitiveCategory::Composition,
         backends: ALL_BACKENDS,
