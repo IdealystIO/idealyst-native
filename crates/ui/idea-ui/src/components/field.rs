@@ -837,6 +837,18 @@ mod tests {
         panic!("Field tree has no text_input node");
     }
 
+    /// Resolve a Field input's style to `StyleRules`, whether the source is
+    /// `Static` or `Reactive`. Since the D9 focus-ring fix a non-adorned
+    /// Field's input is ALWAYS a reactive closure (see the component body),
+    /// so behavioral assertions resolve through whichever variant is present.
+    fn resolve_input_style(field: Element) -> runtime_core::StyleRules {
+        match input_style_source(field) {
+            StyleSource::Static(app) => (*resolve_style(&app)).clone(),
+            StyleSource::Reactive(f) => (*resolve_style(&f())).clone(),
+            _ => panic!("unexpected input style source variant (not Static/Reactive)"),
+        }
+    }
+
     fn theme() {
         install_idea_theme(light_theme());
     }
@@ -880,33 +892,31 @@ mod tests {
         );
     }
 
-    // An explicit tone (or a static error) keeps the static fast path —
-    // no per-Field Effect, no first-paint flicker.
+    // D9 (updated for the always-reactive focus-ring path): an EXPLICIT tone
+    // overrides the error-derived tone. The static-fast-path guarantee this
+    // test once asserted is gone by design (the non-adorned input now always
+    // carries one style Effect for the macOS focus ring — see the component
+    // body); what still must hold is the tone-precedence behavior, verified
+    // by resolving the reactive closure.
     #[test]
-    fn fixed_tone_uses_static_style_source() {
+    fn explicit_tone_overrides_error_derived_tone() {
         theme();
-        // Static error: tone is fixed at build → Static.
-        let props = FieldProps {
-            error: Reactive::Static(Some("bad".into())),
-            ..Default::default()
-        };
-        assert!(
-            matches!(input_style_source(Field(&props)), StyleSource::Static(_)),
-            "a static error fixes the tone at build → static fast path"
-        );
-
-        // Explicit tone with a reactive error: explicit tone wins → Static.
+        // Explicit Warning tone + a reactive error: the explicit tone wins,
+        // so the resolved border color must NOT change when the error flips.
         let err: Signal<Option<String>> = Signal::new(None);
         let props = FieldProps {
             error: err.into(),
-            // Hand-written struct literals don't get `ui!`'s `.into()`, so a
-            // now-reactive prop is set with an explicit `Static`.
             tone: Reactive::Static(Some(tones::Warning.into())),
             ..Default::default()
         };
-        assert!(
-            matches!(input_style_source(Field(&props)), StyleSource::Static(_)),
-            "an explicit tone overrides error-derived tone → static fast path"
+        let border_no_err = resolve_input_style(Field(&props)).border_top_color.clone();
+        err.set(Some("bad".into()));
+        let border_err = resolve_input_style(Field(&props)).border_top_color.clone();
+        assert!(border_no_err.is_some(), "explicit tone sets a border color");
+        assert_eq!(
+            border_no_err, border_err,
+            "an explicit tone must override the error-derived tone — the border \
+             color stays the Warning tone regardless of the error signal"
         );
     }
 
@@ -918,10 +928,7 @@ mod tests {
             min_height: Reactive::Static(Some(48.0)),
             ..Default::default()
         };
-        let rules = match input_style_source(Field(&props)) {
-            StyleSource::Static(app) => resolve_style(&app),
-            _ => panic!("a Field without a reactive error is static"),
-        };
+        let rules = resolve_input_style(Field(&props));
         assert_eq!(
             rules.min_height,
             Some(Tokenized::Literal(Length::Px(48.0))),
@@ -937,10 +944,7 @@ mod tests {
             width: Reactive::Static(Some(240.0)),
             ..Default::default()
         };
-        let rules = match input_style_source(Field(&props)) {
-            StyleSource::Static(app) => resolve_style(&app),
-            _ => unreachable!(),
-        };
+        let rules = resolve_input_style(Field(&props));
         assert_eq!(rules.width, Some(Tokenized::Literal(Length::Px(240.0))));
     }
 
@@ -994,18 +998,22 @@ mod tests {
         );
     }
 
-    // All-`Static` style props keep the build-time fast path — one resolution,
-    // no per-Field apply-style Effect.
+    // Since the D9 focus-ring fix, a non-adorned Field's input style is
+    // ALWAYS a reactive closure (it reads a `focused` signal to overlay the
+    // theme focus ring — the sheet's `__state_focused` overlay doesn't
+    // repaint a native input's border on macOS). The former all-static fast
+    // path is intentionally gone; this test pins the new invariant so it
+    // isn't silently regressed back.
     #[test]
-    fn all_static_style_props_use_static_fast_path() {
+    fn non_adorned_input_is_reactive_for_focus_ring() {
         theme();
         let props = FieldProps {
             size: Reactive::Static(FieldSize::Lg),
             ..Default::default()
         };
         assert!(
-            matches!(input_style_source(Field(&props)), StyleSource::Static(_)),
-            "static style props must keep the no-Effect fast path"
+            matches!(input_style_source(Field(&props)), StyleSource::Reactive(_)),
+            "a non-adorned Field input carries a reactive style for the focus ring"
         );
     }
 
