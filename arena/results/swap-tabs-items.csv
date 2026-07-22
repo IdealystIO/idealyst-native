@@ -1,0 +1,6 @@
+recorded_at_epoch,scenario_id,run_id,item_id,passed,skipped,neutralized,awarded,points
+1784741166,swap-tabs,run-1,builds-web,true,false,false,20,20
+1784741166,swap-tabs,run-1,uses-swap-navigator,false,false,false,0,15
+1784741166,swap-tabs,run-1,declares-three-screens,false,false,false,0,15
+1784741166,swap-tabs,run-1,tab-bar-renders,false,true,false,0,20
+1784741166,swap-tabs,run-1,switching-changes-content,false,true,false,0,25

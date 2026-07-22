@@ -1,0 +1,27 @@
+# PUBLIC — the `prompt` below is the ONLY task framing the implementation
+# agent receives. Requirements only; no hints about how to use the MCP.
+id = "icon-dashboard"
+
+prompt = """
+Build a small dashboard screen with an icon toolbar.
+
+Requirements:
+- A top toolbar with three buttons, each combining an icon with a text label:
+  a "Home" button (house icon), a "Search" button (magnifying-glass icon),
+  and a "Settings" button (gear icon).
+- Below the toolbar, a row of three stat cards. Each card is led by its own
+  distinct icon and shows a title and a value:
+    - "Users" — led by a people/users icon
+    - "Growth" — led by an upward-trend icon
+    - "Revenue" — led by a wallet or money icon
+- Every icon must be a real named vector icon (not an emoji, an image file,
+  or a text character).
+- The icon-bearing controls must be usable by assistive technology — each
+  toolbar button must expose an accessible name.
+
+Target the web platform.
+"""
+
+platforms = ["web"]
+token_budget = 1_500_000
+runs = 5

@@ -68,3 +68,7 @@ stack-navigator = { workspace = true, features = ["runtime-server"] }
 # External-payload-over-wire round-trip test: `code_block(...)` is an
 # `Element::External` whose payload must serialize across the wire.
 codeblock = { workspace = true }
+# Repro for the wgpu-replay stack overflow on idea-ui Card scenes (arena #8):
+# mount real Cards through the record→replay→GPU chain.
+idea-ui = { workspace = true }
+idea-theme = { workspace = true }

@@ -1,0 +1,80 @@
+# SECRET — never enters the implementation agent's context. Each item is
+# atomic and objectively checkable at its declared tier. Items derive strictly
+# from the scenario's stated requirements: (1) it builds, (2) the shared cart is
+# wired through CONTEXT rather than threaded as a prop through every component,
+# (3) the empty-vs-filled Header display is a real conditional in the tree, and
+# (4) adding actually updates the Header at runtime.
+#
+# This scenario targets REACTIVE CONTROL FLOW + CONTEXT. Prop-drilling the cart
+# down the tree would technically satisfy the "shared cart" requirement, so the
+# `uses-context` item exists specifically to reward the provide/inject pattern
+# the scenario is probing — the whole reason the prompt says "without passing
+# the cart down through every component."
+scenario_id = "shared-cart"
+
+# --- compile floor -----------------------------------------------------------
+
+[[item]]
+id = "builds-web"
+description = "The produced project builds for web."
+points = 20
+class = "decision"
+tier = "compile"
+verifier = "compile"
+assertion = { target = "web" }
+
+# --- decision items (source-verifiable: did the agent pick the right APIs) ---
+
+# Calibration policy (mirrors todo-app, 2026-07-20): items test the CAPABILITY,
+# not a specific library. The framework's context surface is `provide` /
+# `inject` / `inject_or` / `with_inject` (crates/runtime/core, re-exported from
+# runtime_core) — verified live against a scaffolded probe. `provide(...)` at a
+# scope root plus `inject::<T>()` in a descendant is the exact idiom, and it is
+# the discriminator against prop-drilling: a solution that threads the cart as a
+# prop calls NEITHER. Matching any of these names is strong evidence the agent
+# discovered context. A component-library context helper, if one existed, would
+# be a legitimate alternative — none does today, so the framework API is the
+# check.
+[[item]]
+id = "uses-context"
+description = "Shares the cart via the context API (provide/inject) so the Header and list read one state without prop-drilling the cart through every component."
+points = 20
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "provide\\s*\\(|inject\\s*(::<|\\()|inject_or\\b|with_inject\\b", in = "src/**/*.rs" }
+
+# The empty-vs-filled Header is a genuine conditional in the render tree, not
+# two always-mounted branches. Accepts the explicit reactive builders
+# (`when(...)` / `switch(...)`) OR the `ui!` `if`/`match` sugar that lowers to
+# them — and for the sugar it requires a live signal read (`.get()`) in the
+# condition, which is exactly what promotes a `ui!` `if` to a reactive `when`
+# (a bare `let flag = sig.get(); if flag {}` freezes at build time and is NOT
+# the reactive conditional the scenario asks for). Verified live: the probe's
+# `if cart.count.get() == 0 { … } else { … }` inside `ui!` matches.
+[[item]]
+id = "uses-conditional-rendering"
+description = "Chooses the empty message vs the count/total with a conditional in the ui! tree (when/switch builder, or an if/match with a live signal read in the condition)."
+points = 15
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "\\bwhen\\s*\\(|\\bswitch\\s*\\(|\\bif\\s+[^\\n{;]*\\.get\\s*\\(\\s*\\)|\\bmatch\\s+[^\\n{;]*\\.get\\s*\\(\\s*\\)", in = "src/**/*.rs" }
+
+# --- outcome item (platform truth via Playwright; gated on a decision) -------
+
+# Capability policy: the "Add" control may be a button, a pressable view, or a
+# labeled component depending on the widget chosen — assert the BEHAVIOR (the
+# Header's summary changes from empty to a non-zero count), not a widget role.
+# Gated on `uses-context`: if the context wiring is right but the Header still
+# doesn't update, that's a framework finding (divergence neutralization), not
+# an agent deduction.
+[[item]]
+id = "add-updates-header"
+description = "Pressing Add on a product row updates the shared Header: the empty-cart message is replaced by a non-zero item count/total."
+points = 25
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-context"
+assertion = { action = "confirm the header first shows an empty-cart message, then press the 'Add' control on the first product row and confirm the header now shows a non-zero item count (and a running total)" }

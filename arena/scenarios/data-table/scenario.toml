@@ -1,0 +1,32 @@
+# PUBLIC — the `prompt` below is the ONLY task framing the implementation
+# agent receives. Requirements only; no hints about how to use the MCP or
+# which SDK/component to reach for.
+id = "data-table"
+
+prompt = """
+Build a screen that displays a small dataset in a sortable table.
+
+Seed the app with these 8 people — each has a name (string), a role
+(string), and a score (number):
+
+  Ada Lovelace       Engineer     92
+  Alan Turing        Researcher   99
+  Grace Hopper       Engineer     95
+  Katherine Johnson  Analyst      97
+  Linus Torvalds     Engineer     88
+  Margaret Hamilton  Lead         96
+  Dennis Ritchie     Researcher   91
+  Barbara Liskov     Professor    94
+
+Requirements:
+- Display all 8 rows in a table laid out in columns, with a column header
+  for each field: Name, Role, and Score.
+- Each column header is clickable. Clicking a header sorts the rows by that
+  column and the visible row order updates to reflect the new sort.
+
+Target the web platform.
+"""
+
+platforms = ["web"]
+token_budget = 1_500_000
+runs = 5

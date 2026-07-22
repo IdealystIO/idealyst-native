@@ -1,0 +1,89 @@
+# SECRET — never enters the implementation agent's context. Each item is
+# atomic and objectively checkable at its declared tier. Items derive strictly
+# from the scenario's stated requirements; nothing subjective, nothing the
+# scenario didn't ask for.
+#
+# Capability policy (mirrors todo-app / themed-settings): items test the
+# CAPABILITY, not a specific library. A confirmation surface that FLOATS above
+# the page is satisfied by any of the framework's overlay mechanisms — the
+# `portal` primitive, the `overlay` / `anchored_overlay` compositions, or a
+# component-library wrapper such as idea-ui's `Modal`/`Dialog`. The arena must
+# not steer toward or away from any one library; the principled "did it really
+# float above the page" check is the playwright tier (all overlay surfaces
+# render into a window-level portal at runtime).
+scenario_id = "modal-confirm"
+
+# --- compile floor -----------------------------------------------------------
+
+[[item]]
+id = "builds-web"
+description = "The produced project builds for web."
+points = 20
+class = "decision"
+tier = "compile"
+verifier = "compile"
+assertion = { target = "web" }
+
+# --- decision items (source-verifiable: did the agent pick the right APIs) ---
+
+[[item]]
+id = "uses-overlay-surface"
+description = "The confirmation is rendered through an overlay/portal surface that escapes page flow (portal / overlay / anchored_overlay primitive, or a component-library modal wrapper such as Modal/Dialog) — not an inline view toggled inside the row."
+points = 15
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+# `overlay\s*\(` also matches the tail of `anchored_overlay(`; `portal(` covers
+# the raw primitive; `\bModal\b`/`\bDialog\b` cover component-library wrappers
+# (matches `Modal(`/`Dialog(`, not `ModalProps`).
+assertion = { pattern = "overlay\\s*\\(|\\bportal\\s*\\(|\\bModal\\b|\\bDialog\\b", in = "src/**/*.rs" }
+
+[[item]]
+id = "uses-reactive-state"
+description = "Both the item list and the dialog's open state live in reactive state (signal) so the UI updates when a row is deleted or the dialog opens/closes."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "\\bsignal\\s*\\(|signal!|Signal<", in = "src/**/*.rs" }
+
+[[item]]
+id = "uses-list-rendering"
+description = "Renders the rows through a reconciling list mechanism — flat_list/virtualizer or a keyed reactive `for` — rather than a hand-rolled index loop of views."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "flat_list|virtualizer|for\\s+.*\\s+in\\s+[^{}\\n]*key\\s*=", in = "src/**/*.rs" }
+
+# --- outcome items (platform truth via Playwright; each gated on a decision) -
+
+[[item]]
+id = "delete-opens-confirm"
+description = "Clicking a row's Delete button opens the confirmation dialog asking to confirm the deletion, offering Confirm and Cancel."
+points = 20
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-overlay-surface"
+assertion = { action = "click the 'Delete' control on the first list row, then confirm that a confirmation dialog appears asking the user to confirm deleting the item and offering both a 'Confirm' and a 'Cancel' choice" }
+
+[[item]]
+id = "confirm-removes-row"
+description = "Choosing Confirm in the dialog removes that row from the list."
+points = 20
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-reactive-state"
+assertion = { action = "note the first row's item name, click its 'Delete' control, then activate 'Confirm' in the confirmation dialog, and verify the dialog closes and that row's name is no longer present in the list" }
+
+[[item]]
+id = "cancel-keeps-row"
+description = "Choosing Cancel in the dialog dismisses it and leaves the list unchanged."
+points = 15
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-overlay-surface"
+assertion = { action = "note the first row's item name, click its 'Delete' control, then activate 'Cancel' in the confirmation dialog, and verify the dialog closes and that same row is still present in the list" }

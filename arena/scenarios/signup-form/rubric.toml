@@ -1,0 +1,139 @@
+# SECRET — never enters the implementation agent's context. Each item is
+# atomic and objectively checkable at its declared tier. Items derive
+# strictly from the scenario's stated requirements (three fields, the two
+# validation rules, an inline error, a validity-gated submit, a success
+# message) — nothing subjective, nothing the scenario didn't ask for.
+#
+# --- CAPABILITY POLICY (2026-07-22) ------------------------------------------
+# Items test the CAPABILITY, not a specific library. There are two idiomatic
+# ways to build this in a project that deps idea-ui + the `form` SDK, and BOTH
+# must satisfy every decision item:
+#
+#   A. idea-ui `Field` (its `error` prop is the inline error slot) + manual
+#      signal/memo validation. This is the working idiomatic path today — the
+#      `ui!` macro dispatches PascalCase tags via `BuildElement`, and `Field`
+#      is a `#[component]` so `ui! { Field(...) }` works.
+#   B. the `form` SDK's `Form`/`on_submit` container wrapping the framework's
+#      `text_input` primitive, with the same manual signal/memo validation.
+#      (NB: the `form` SDK ships no validation of its own — it's a `<form>`
+#      container; validation is manual signal work either way. As of the probe
+#      on 2026-07-22 the `form` SDK's `Form!` macro is NOT usable through `ui!`
+#      — `ui!` is BuildElement-only and `FormProps` has no `BuildElement` impl,
+#      so a `Form(` tag inside `ui!` fails to compile. An agent can still reach
+#      the SDK via the `form(FormProps { .. })` fn or the `Form!` macro
+#      directly. Do NOT require the `form` SDK — path A must fully satisfy.)
+#
+# The text-input item therefore accepts `Field` OR the `text_input` primitive;
+# validation items assert the RULES (an `@`-check, an 8-char length compare),
+# which are identical across both paths. The outcome tier asserts BEHAVIOR
+# (error appears, submit gates, success shows), library-agnostic.
+scenario_id = "signup-form"
+
+# --- compile floor -----------------------------------------------------------
+
+[[item]]
+id = "builds-web"
+description = "The produced project builds for web."
+points = 20
+class = "decision"
+tier = "compile"
+verifier = "compile"
+assertion = { target = "web" }
+
+# --- decision items (source-verifiable: did the agent pick the right APIs) ---
+
+[[item]]
+id = "three-input-fields"
+description = "Has three text-entry fields (Name/Email/Password) — idea-ui `Field` or the `text_input` primitive, at least 3 of them."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "text_input\\s*\\(|Field\\s*[\\(\\{]", in = "src/**/*.rs", min_count = 3 }
+
+[[item]]
+id = "uses-reactive-state"
+description = "Holds the field values in reactive state (signal) so validation + the UI update on change."
+points = 8
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "\\bsignal\\s*\\(|signal!|Signal<", in = "src/**/*.rs" }
+
+[[item]]
+id = "validates-email"
+description = "Validates the email as an email address — an `@`-based format check or an email helper — rather than accepting any non-empty string."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+# `'@'`/`"@"` (contains/find/split on the at-sign), or a named email check.
+# A bare `@` would false-match the `you@example.com` placeholder text, so the
+# pattern requires the char/str LITERAL form used by real validation code.
+assertion = { pattern = "'@'|\"@\"|is_email|is_valid_email|EmailAddress", in = "src/**/*.rs" }
+
+[[item]]
+id = "validates-password-length"
+description = "Enforces the password's 8-character minimum with a length comparison."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+# `len()`/`chars().count()` compared, or a comparison against the literal 8
+# (`>= 8`, `< 8`, `8 <=`, `> 7`, …). Either shape proves the rule is coded.
+assertion = { pattern = "len\\(\\)\\s*[<>]=?|count\\(\\)\\s*[<>]=?|[<>]=?\\s*8\\b|\\b8\\s*[<>]=?", in = "src/**/*.rs" }
+
+[[item]]
+id = "submit-gated-on-validity"
+description = "The Submit button's disabled state is bound to a derived validity condition (memo/rx!/negated `.get()`), not a static literal or left ungated."
+points = 12
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+# `disabled = <reactive/derived expr>` (memo/rx!/valid/`!`/`.get()`), or the
+# builder `.disabled(<reactive expr>)`. A `disabled = false`/`true` literal or
+# no disabled binding does NOT match — so a passing decision here genuinely
+# means "gated on state", making an outcome failure a real framework finding.
+assertion = { pattern = "disabled\\s*=\\s*[^,\\n]*(memo|rx!|valid|!|\\.get\\(\\))|\\.disabled\\s*\\([^)\\n]*(memo|rx!|valid|!|\\.get)", in = "src/**/*.rs" }
+
+# --- outcome items (platform truth via Playwright; each gated on a decision) -
+
+[[item]]
+id = "invalid-email-shows-error"
+description = "Entering an invalid email surfaces a visible inline error beneath the email field."
+points = 12
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "validates-email"
+assertion = { action = "type a plainly-invalid email such as 'notanemail' into the Email field (and give it focus/blur or trigger validation as the form expects), then confirm a visible inline error/validation message appears beneath the Email field" }
+
+[[item]]
+id = "invalid-input-keeps-submit-disabled"
+description = "While any field is invalid, the Submit button stays disabled (non-interactive)."
+points = 10
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "submit-gated-on-validity"
+assertion = { action = "with an invalid email (e.g. 'notanemail') and/or a too-short password entered, confirm the Submit button is disabled / non-interactive (activating it does not submit)" }
+
+[[item]]
+id = "valid-input-enables-submit"
+description = "Filling every field with valid values enables the Submit button."
+points = 10
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "submit-gated-on-validity"
+assertion = { action = "fill Name with 'Ada', Email with 'ada@example.com', and Password with 'password123' (8+ chars), then confirm the Submit button becomes enabled" }
+
+[[item]]
+id = "submit-shows-success"
+description = "Submitting the form with all fields valid shows a success message."
+points = 15
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "submit-gated-on-validity"
+assertion = { action = "fill Name 'Ada', Email 'ada@example.com', Password 'password123', activate Submit, then confirm a success message becomes visible" }

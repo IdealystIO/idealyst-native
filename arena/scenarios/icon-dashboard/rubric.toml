@@ -1,0 +1,85 @@
+# SECRET — never enters the implementation agent's context. Each item is
+# atomic and objectively checkable at its declared tier. Items derive strictly
+# from the scenario's stated requirements (an icon toolbar + three icon-led
+# stat cards, real named vector icons, accessibly-named toolbar controls);
+# nothing subjective and nothing the scenario didn't ask for.
+scenario_id = "icon-dashboard"
+
+# Calibration policy (matches todo-app / themed-settings): items test the
+# CAPABILITY, not a specific library. The icon primitive `icon(DATA)` and the
+# idea-ui `Icon`/`IconButton`/`Button(leading_icon = …)` wrappers all satisfy
+# the icon items — the MCP serves dep docs and the arena must not steer toward
+# or away from any one library. There is exactly one icon pack in the tree
+# (`icons-lucide`), so matching its SCREAMING_SNAKE constant names is matching
+# "a real named vector icon," regardless of which rendering API wraps it.
+
+# --- compile floor -----------------------------------------------------------
+
+[[item]]
+id = "builds-web"
+description = "The produced project builds for web."
+points = 20
+class = "decision"
+tier = "compile"
+verifier = "compile"
+assertion = { target = "web" }
+
+# --- decision items (source-verifiable: did the agent pick the right APIs) ---
+
+[[item]]
+id = "renders-vector-icons"
+description = "Renders vector icons via the `icon` primitive or a component-library wrapper (idea-ui `Icon`/`IconButton`, or a `Button` with `leading_icon`/`trailing_icon`)."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+# `\bicon\s*\(` matches the `icon(DATA)` primitive but NOT `icon_button(` /
+# `icon = Some(` (no `(` immediately follows `icon`). `\bIcon\s*\(` matches the
+# idea-ui `Icon(...)` component. `leading_icon`/`trailing_icon`/`IconButton`
+# cover the button-with-icon wrappers.
+assertion = { pattern = "\\bicon\\s*\\(|\\bIcon\\s*\\(|IconButton|leading_icon|trailing_icon", in = "src/**/*.rs" }
+
+[[item]]
+id = "uses-multiple-named-icons"
+description = "Uses several distinct real named vector icons (the scenario calls for six: house, search, gear, users, upward-trend, wallet/money). Matches the lucide constant names as they appear in imports and call sites."
+points = 15
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+# Each named icon appears at least once (grouped `use icons_lucide::{HOME,
+# SEARCH, …}` alone yields one match per name). Anchored word boundaries keep
+# `USER` from double-counting inside `USERS`. Synonyms are included so a
+# reasonable substitution (e.g. HOUSE for HOME, COG for SETTINGS, DOLLAR_SIGN
+# for WALLET) still counts — the requirement is "several distinct named
+# icons," not one exact list. min_count 6 = the six the scenario asks for.
+min_count = 6
+assertion = { pattern = "\\b(HOME|HOUSE|SEARCH|SETTINGS|COG|SLIDERS|USERS|USER_ROUND|USER|TRENDING_UP|TRENDING_DOWN|ARROW_UP_RIGHT|CHART_LINE|WALLET|DOLLAR_SIGN|CREDIT_CARD|BANKNOTE|COINS|BELL|ACTIVITY|BAR_CHART_3)\\b", in = "src/**/*.rs" }
+
+[[item]]
+id = "icon-controls-accessibly-named"
+description = "Icon-bearing toolbar controls expose an accessible name — either a labeled button API that carries visible text (`button(\"Home\", …)`, `Button(label = …, leading_icon = …)`) or an explicit `a11y_label`."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+# Capability policy: accept an explicit a11y_label OR the labeled-button-with-
+# icon path (a `Button`/`button` whose text supplies the accessible name while
+# a `leading_icon`/`trailing_icon` sits beside it) OR a labeled button
+# primitive whose first arg is the accessible-name string literal.
+assertion = { pattern = "a11y_label|leading_icon|trailing_icon|\\bbutton\\s*\\(\\s*\"|\\bButton\\s*\\(\\s*label\\s*=", in = "src/**/*.rs" }
+
+# --- outcome items (platform truth via Playwright; gated on a decision) -------
+
+[[item]]
+id = "toolbar-renders-with-controls"
+description = "The top toolbar renders with the three labeled icon buttons; each exposes its accessible name."
+points = 20
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "renders-vector-icons"
+# Capability policy: assert the observable — a toolbar control named "Settings"
+# is present and reachable by its accessible name. The Home/Search/Settings
+# buttons carry visible text per the scenario, so the accessible name is the
+# button label regardless of which button widget was chosen.
+assertion = { action = "observe the initial page; confirm a top toolbar with buttons labeled Home, Search, and Settings is present", expect_role = "button", expect_name = "Settings" }

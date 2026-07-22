@@ -1,0 +1,7 @@
+recorded_at_epoch,scenario_id,run_id,item_id,passed,skipped,neutralized,awarded,points
+1784740719,big-list,run-1,builds-web,true,false,false,20,20
+1784740719,big-list,run-1,uses-virtualization,true,false,false,20,20
+1784740719,big-list,run-1,uses-filter-state,true,false,false,10,10
+1784740719,big-list,run-1,narrows-the-list,true,false,false,10,10
+1784740719,big-list,run-1,list-renders,true,false,false,20,20
+1784740719,big-list,run-1,filter-narrows,true,false,false,15,15

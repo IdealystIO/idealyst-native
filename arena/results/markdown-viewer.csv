@@ -1,0 +1,2 @@
+recorded_at_epoch,scenario_id,run_id,framework_commit,model,rubric_points,max_points,final_score,agent_total_tokens,mcp_payload_tokens,total_calls,duplicate_calls,mcp_calls,mcp_errors,mcp_tools_used,doc_bypass_reads,items_passed,items_failed,items_skipped,items_neutralized,lint_clean,lint_diagnostics,judge_visual_polish,judge_layout_sanity,judge_accessibility,judge_error_handling,judge_code_organization
+1784741649,markdown-viewer,run-1,aeb55b9f,claude-opus-4-8,30,45,33.850,345126,14442,57,0,25,2,14,5,2,1,1,0,,,,,,,

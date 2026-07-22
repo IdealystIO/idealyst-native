@@ -1,0 +1,79 @@
+# SECRET — never enters the implementation agent's context. Each item is
+# atomic and objectively checkable at its declared tier. Items derive strictly
+# from the scenario's stated requirements: write a `#[server]` function that
+# stores + returns messages, wire the client to the server, and have the
+# client call the server function.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# NO LIVE / NO PLAYWRIGHT TIER — deliberate, harness-imposed.
+#
+# The arena's `live` step serves a STATIC web bundle over loopback
+# (`python3 -m http.server`). There is NO running application server, so the
+# `#[server]` call cannot be exercised end-to-end: the generated client stub
+# POSTs to `/_srv/<fn>`, which the static file server 404s. Asserting the
+# round-trip at runtime would false-negative a CORRECT app for a reason the
+# agent cannot control. This scenario is therefore COMPILE + STATIC tiers only
+# — it tests whether the agent can WRITE correct server-function code from the
+# MCP docs, not whether a full-stack deployment serves it. There is
+# intentionally no `outcome` / `playwright` item.
+#
+# The live full-stack outcome (stand up the `--features server` binary, drive
+# the round-trip in a browser) is a HARNESS FOLLOW-UP: it needs the run loop to
+# build + launch the server bin and point the served bundle at it, which the
+# current static-serve `live` step does not do.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# Verified API shape (probed against crates/api/server, 2026-07-22):
+#   use server::{server, ServerError};
+#   #[server] pub async fn sign(...) -> Result<Vec<Msg>, ServerError> { .. }
+#   server::configure(server::ClientConfig::new(base_url));  // client-only,
+#                              // gated #[cfg(not(feature = "server"))] in the SDK
+#   server::router() / server::install_state() / server::use_state();
+#                              // server-only, gated #[cfg(feature = "server")]
+#   client call site:  sign(name, body).await   // the macro-generated stub
+# A web build (default features, NO `server` feature) compiles the `#[server]`
+# fn: the macro emits the client stub and gates the real body + all server-only
+# references behind `#[cfg(feature = "server")]`, so the body never compiles for
+# web. This was confirmed by scaffolding a probe and running `idealyst build
+# --web` to a clean bundle.
+scenario_id = "server-guestbook"
+
+# --- compile floor -----------------------------------------------------------
+
+[[item]]
+id = "builds-web"
+description = "The produced project builds for web with the server function present (the `#[server]` macro emits the client stub; the web build compiles cleanly)."
+points = 25
+class = "decision"
+tier = "compile"
+verifier = "compile"
+assertion = { target = "web" }
+
+# --- decision items (source-verifiable: did the agent pick the right APIs) ---
+
+[[item]]
+id = "uses-server-fn"
+description = "Declares an isomorphic server function with the `#[server]` attribute macro, rather than hand-rolling a fetch or stubbing the data client-side. Matches `#[server]` / `#[server(...)]` but not the streaming siblings `#[server::sse]` / `#[channel]` / `#[subscription]`."
+points = 25
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "#\\[server[\\](]", in = "src/**/*.rs" }
+
+[[item]]
+id = "wires-server-config"
+description = "Wires the client/server boundary — installs the client origin via `server::configure(...)` / `ClientConfig` (the documented client-side wiring), or, if the agent stood up a full server binary, registers the handlers via `server::router()` / `server::install_state()`. Either architecture passes."
+points = 20
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "configure\\s*\\(|ClientConfig|server::router\\s*\\(|install_state\\s*\\(", in = "src/**/*.rs" }
+
+[[item]]
+id = "client-calls-server-fn"
+description = "The client actually invokes the server function asynchronously — an awaited call expression (`some_fn(...).await`), which is how the macro-generated client stub is called. In a client-only idealyst UI (otherwise synchronous) an awaited call is the server round-trip. The regex flavor (Rust `regex`, no backreferences) cannot correlate the awaited name back to the `#[server]` fn's declared name, so this asserts the awaited-call shape; `uses-server-fn` covers the declaration."
+points = 20
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "\\)\\s*\\.await", in = "src/**/*.rs" }

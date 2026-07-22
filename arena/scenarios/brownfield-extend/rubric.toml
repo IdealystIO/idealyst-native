@@ -1,0 +1,106 @@
+# SECRET — never enters the implementation agent's context. Each item is
+# atomic and objectively checkable at its declared tier. Items derive
+# strictly from the scenario's stated requirements + framework docs.
+#
+# The scenario ships a complete, compiling task dashboard (assets/src):
+#   store.rs               TaskStore — the shared reactive source of truth.
+#                          Owns `tasks` + `priority_filter` signals and a
+#                          `visible` memo derived from them. Every panel
+#                          reads this ONE store.
+#   components/dashboard.rs  Dashboard → Header + Toolbar + TaskList
+#   components/header.rs     Header → Card + StatBadge (Total/Done/Showing)
+#   components/toolbar.rs    Toolbar → priority-filter buttons (All/High/…)
+#   components/task_list.rs  TaskList → keyed `for` over `store.visible`
+#   components/task_row.rs   TaskRow → one task + a done toggle
+#   components/stat_badge.rs StatBadge, components/card.rs Card (shared surface)
+#
+# The correct extension adds a `Signal<bool>` filter to the STORE, folds
+# it into the `visible` derivation, and adds ONE control to the existing
+# TOOLBAR — the Header's "Showing" count and the TaskList then reflect it
+# for free because both already read `store.visible`. The introspection
+# under test is whether the agent discovers that shared data-flow (via the
+# catalog's find_uses / find_dependencies / describe_component) instead of
+# re-filtering in each component or rebuilding the app.
+scenario_id = "brownfield-extend"
+
+# --- compile floor -----------------------------------------------------------
+
+[[item]]
+id = "builds-web"
+description = "The extended project still builds for web."
+points = 20
+class = "decision"
+tier = "compile"
+verifier = "compile"
+assertion = { target = "web" }
+
+# --- decision items (source-verifiable: did the integration touch the RIGHT
+#     existing components, wired in rather than reimplemented) ----------------
+
+[[item]]
+id = "toolbar-has-completed-control"
+description = "The new hide-completed control was added to the EXISTING Toolbar component (toolbar.rs), not bolted on elsewhere. The starting toolbar.rs only mentions priorities (All/High/Normal/Low); any 'hide'/'complete' vocabulary there is the agent's added control."
+points = 12
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "[Hh]ide|[Cc]omplet", in = "src/components/toolbar.rs" }
+
+[[item]]
+id = "filter-state-through-store"
+description = "The filter's state lives in the shared TaskStore as a boolean signal (so the derived `visible` view — read by both Header and TaskList — can fold it in), rather than a private component-local flag. The starting store.rs has only `Signal<Vec<Task>>` and `Signal<Option<Priority>>` — a bool signal is new."
+points = 12
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "signal\\s*\\(\\s*(true|false)\\b|Signal<\\s*bool\\s*>", in = "src/store.rs" }
+
+[[item]]
+id = "list-binds-shared-view"
+description = "The TaskList still renders the store's derived `visible` view rather than re-filtering `tasks` itself — proof the filter was wired into shared state, not duplicated into the list. Guards against a parallel reimplementation that would let the list and the Header's count drift apart."
+points = 8
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "visible", in = "src/components/task_list.rs" }
+
+[[item]]
+id = "did-not-reimplement"
+description = "The seven existing components all survive as definitions (the prompt forbade a from-scratch rebuild). Each of Card/StatBadge/Header/TaskRow/TaskList/Toolbar/Dashboard is still defined — a rewrite that collapses or renames them drops the count below seven."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "fn\\s+(Card|StatBadge|Header|TaskRow|TaskList|Toolbar|Dashboard)\\b", in = "src/**/*.rs", min_count = 7 }
+
+# --- outcome items (platform truth via Playwright; each gated on a decision) -
+
+[[item]]
+id = "hide-completed-hides-rows"
+description = "Turning the filter on removes completed tasks from the list while incomplete ones remain."
+points = 20
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "toolbar-has-completed-control"
+assertion = { action = "activate the 'Hide completed' control in the toolbar, then confirm the completed task 'Review pull requests' is no longer shown in the list while the incomplete task 'Water the office plants' remains visible" }
+
+[[item]]
+id = "header-count-reflects-filter"
+description = "The Header's 'Showing' count tracks the filtered list — both reflect the same shared view."
+points = 15
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "filter-state-through-store"
+assertion = { action = "note the Header's 'Showing' count, then activate the 'Hide completed' control, and confirm the Showing count decreases (the seed has completed tasks, so hiding them lowers it)" }
+
+[[item]]
+id = "combines-with-priority-filter"
+description = "The new filter composes with the existing priority filter — a task shows only when it passes both."
+points = 10
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "toolbar-has-completed-control"
+assertion = { action = "activate the 'Hide completed' control AND select the 'High' priority filter, then confirm the completed high-priority task 'Prepare demo script' is hidden while the incomplete high-priority task 'Draft the launch post' remains" }

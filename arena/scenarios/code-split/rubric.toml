@@ -1,0 +1,79 @@
+# SECRET — never enters the implementation agent's context. Each item is atomic
+# and objectively checkable at its declared tier. Items derive strictly from the
+# scenario's stated requirements plus the framework's documented code-splitting
+# surface — nothing subjective, nothing the scenario didn't ask for.
+#
+# Capability policy (mirrors todo-app / themed-settings): items test the
+# CAPABILITY, not a specific library. Code-splitting is a framework-level
+# capability with a single documented author surface: the `lazy!` markup macro,
+# which carves its wrapped subtree into a separate wasm chunk on the web backend
+# (and compiles inline on backends without splitting). There is no component-
+# library wrapper for it, so the "did the agent split the panel's code" decision
+# is checked directly for `lazy!`; the reactive open-state decision accepts any
+# signal-based state (incl. a component-library wrapper that exposes one). The
+# principled "did the chunk actually defer + load on demand" check is the
+# playwright tier — the split chunk is only fetched when the subtree first
+# mounts.
+scenario_id = "code-split"
+
+# --- compile floor -----------------------------------------------------------
+
+[[item]]
+id = "builds-web"
+description = "The produced project builds for web."
+points = 20
+class = "decision"
+tier = "compile"
+verifier = "compile"
+assertion = { target = "web" }
+
+# --- decision items (source-verifiable: did the agent pick the right APIs) ---
+
+# The `lazy!` macro is the framework's code-splitting boundary. VERIFIED against
+# the real macro (crates/runtime/macros/src/lazy.rs): the author form is the
+# BRACE / block form `lazy! { <ui-block> }` — the MCP catalog's one-line
+# `invocation: "lazy!(path::to::Component)"` is misleading (the body is a `ui!`
+# block coerced via `IntoElement`, not a path). A verified probe with
+# `lazy! { ui! { ... } }` builds for web and emits a separate
+# `module_0___idealyst_lazy_body_*.wasm` chunk + `__wasm_split.js` loader. The
+# pattern therefore tolerates any invocation delimiter (`lazy! {`, `lazy!(`,
+# `lazy![`) so a correct submission in either spelling scores.
+[[item]]
+id = "uses-lazy"
+description = "The Report panel's subtree is carved behind the framework's code-splitting boundary (the `lazy!` macro), so its code lands in a separate on-demand chunk rather than the main bundle."
+points = 20
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "lazy\\s*!\\s*[({\\[]", in = "src/**/*.rs" }
+
+# Whether the panel is open must be reactive app state, so pressing the button
+# updates the UI. `signal(...)` is the canonical constructor; `Signal<` /
+# `ReadSignal<` / `WriteSignal<` cover a state value threaded through props (incl.
+# a component-library wrapper that owns the open flag).
+[[item]]
+id = "open-state-is-reactive"
+description = "Whether the Report panel is open lives in reactive state (a signal), not a non-reactive local, so pressing the button re-renders the tree."
+points = 15
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "\\bsignal\\s*\\(|signal!|Signal<|ReadSignal<|WriteSignal<", in = "src/**/*.rs" }
+
+# --- outcome items (platform truth via Playwright; each gated on a decision) --
+
+# The whole point of the scenario: the panel's content must be ABSENT until the
+# button is pressed, then APPEAR. On web this is backed by the lazy chunk being
+# fetched + mounted on demand — but the locator only asserts the observable UX
+# (content hidden → revealed on press), never the network detail. Gated on
+# `uses-lazy`: if the agent split the code correctly but the panel doesn't render
+# on the platform, that's a framework finding (neutralized), not a deduction.
+[[item]]
+id = "panel-reveals-on-press"
+description = "The Report panel content is not shown initially; pressing 'Show report' reveals the (lazily-loaded) panel with its 'Report details' heading and body text."
+points = 25
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-lazy"
+assertion = { action = "confirm the page initially shows only the 'Show report' button and that no 'Report details' panel text is present, then click the 'Show report' button and verify that a Report panel with the heading 'Report details' and its body text now appears", expect_name = "Report details" }

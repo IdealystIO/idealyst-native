@@ -1,0 +1,84 @@
+# SECRET — never enters the implementation agent's context. Items derive
+# strictly from the stated requirements plus the framework's documented
+# navigation surface. A flat set of co-equal, tab-switched screens is the
+# SwapNavigator's job — there is NO tab-navigator/drawer-navigator crate; the
+# swap navigator + author-supplied tab-bar chrome (idea-ui-nav `TabBar`, or a
+# hand-built bar) is the canonical form (see the `navigation` guide and the
+# swap-demo example). The navigator itself renders only a single outlet; the
+# tab bar is author layout wrapped around `{nav.outlet}`.
+#
+# Capability policy (mirrors nav-notes / todo-app): items test the CAPABILITY,
+# not one symbol. A component-library wrapper counts wherever it legitimately
+# provides the capability. The `SwapNavigator` builder is the primary — and
+# only — navigator capability for a flat tab layout, so the decision item names
+# it directly.
+scenario_id = "swap-tabs"
+
+# --- compile floor -----------------------------------------------------------
+
+[[item]]
+id = "builds-web"
+description = "The produced project builds for web."
+points = 20
+class = "decision"
+tier = "compile"
+verifier = "compile"
+assertion = { target = "web" }
+
+# --- decision items (source-verifiable: did the agent pick the right APIs) ---
+
+# The real builder form is `SwapNavigator::new(&ROUTE).screen(ROUTE, |p|
+# Screen::new(..)).layout(|nav| … {nav.outlet} …)`. Matching `SwapNavigator`
+# proves the agent routed a flat tab UI through the navigator system rather
+# than hand-rolling show/hide state — which is what the swap navigator exists
+# to replace (there is no separate tab/drawer navigator).
+[[item]]
+id = "uses-swap-navigator"
+description = "The tab UI goes through the swap navigator (SwapNavigator builder), not hand-rolled show/hide state."
+points = 15
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "SwapNavigator", in = "src/**/*.rs" }
+
+# Three tabs ⇒ at least three registered screens. Builder `.screen(` calls or
+# `Screen::new(` constructions both count (the canonical form uses both per
+# screen, so this floors at three of either).
+[[item]]
+id = "declares-three-screens"
+description = "At least three screen declarations exist (Home + Search + Profile) — builder `.screen(` calls or `Screen::new(` constructions."
+points = 15
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "\\.screen\\s*\\(|Screen::new\\s*\\(", in = "src/**/*.rs", min_count = 3 }
+
+# --- outcome items (observable behavior on the running web build) ------------
+
+# The tab bar is author chrome wrapped around the navigator's single outlet, so
+# it must be present on the initial (Home) screen too. Seeing the "Profile" tab
+# while Home is showing proves the persistent bar renders. Neutralizes to a
+# framework finding if the navigator decision passed but the bar never paints.
+[[item]]
+id = "tab-bar-renders"
+description = "A persistent tab bar with all three tab labels renders on the initial screen."
+points = 20
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-swap-navigator"
+assertion = { action = "observe the initial page state; a tab bar with the tabs 'Home', 'Search' and 'Profile' should be visible", expect_name = "Profile" }
+
+# Switching tabs must swap the visible screen. Start on Home, tap the Search
+# tab, and confirm the Search screen's own on-screen title replaces the Home
+# content. The screen title (not the tab label) is the anchor: it only appears
+# once the Search screen is mounted into the outlet.
+[[item]]
+id = "switching-changes-content"
+description = "Tapping a tab swaps the visible screen to that tab's distinct content."
+points = 25
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "declares-three-screens"
+assertion = { action = "click the tab labelled 'Search', then confirm the Search screen's content (its on-screen title and body) has replaced the Home screen's content", expect_name = "Search" }

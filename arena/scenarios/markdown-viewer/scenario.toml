@@ -1,0 +1,41 @@
+# PUBLIC — the `prompt` below is the ONLY task framing the implementation
+# agent receives. Requirements only; no hints about how to use the MCP.
+id = "markdown-viewer"
+
+prompt = """
+Build a screen that renders a given Markdown document as formatted content.
+
+Render exactly this Markdown source:
+
+# Project Notes
+
+The **quarterly** review is complete. Key points below.
+
+## Highlights
+
+- Revenue grew this quarter
+- Two new hires joined the team
+- The mobile app shipped
+
+## Example
+
+Run the build with:
+
+```
+cargo build --release
+```
+
+Requirements:
+- The document must be rendered as formatted content, not shown as raw
+  Markdown text.
+- The top heading ("Project Notes") must appear as a large heading.
+- The bullet list must render as a bulleted list, one visible item per point.
+- The bold word ("quarterly") must appear emphasized.
+- The fenced code block must render in a monospaced style.
+
+Target the web platform.
+"""
+
+platforms = ["web"]
+token_budget = 1_500_000
+runs = 5

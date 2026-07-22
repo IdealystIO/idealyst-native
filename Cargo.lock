@@ -6976,6 +6976,8 @@ dependencies = [
  "dev-client",
  "dev-server",
  "headless-screenshot",
+ "idea-theme",
+ "idea-ui",
  "image",
  "runtime-core",
  "runtime-server-shell-native",

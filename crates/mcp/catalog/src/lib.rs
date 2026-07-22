@@ -580,9 +580,11 @@ pub struct SdkEntry {
     /// Whether the crate's surface is plain functions/types (`Api`) or a
     /// `ui!` primitive wired through `Element::External` (`External`).
     pub kind: SdkKind,
-    /// Slug of the guide (this slice's prose home) for cross-reference —
-    /// always `"sdks"` today; present so a future per-SDK guide can
-    /// override it.
+    /// Slug of the guide (this slice's prose home) for cross-reference.
+    /// Defaults to `"sdks"`; entries with a dedicated guide override it
+    /// (e.g. the navigator crates point at `"navigation"`). `describe_sdk`
+    /// surfaces this so an agent lands on the guide that documents the
+    /// crate's actual API shape.
     pub guide: &'static str,
     #[doc(hidden)]
     pub _seal: (),

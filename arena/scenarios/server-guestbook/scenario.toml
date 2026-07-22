@@ -1,0 +1,30 @@
+# PUBLIC — the `prompt` below is the ONLY task framing the implementation
+# agent receives. Requirements only; no hints about how to use the MCP.
+#
+# This scenario targets the `server` SDK — full-stack server functions
+# (`#[server] async fn`). It asks the agent to write an isomorphic RPC
+# function whose body runs server-side and whose call site compiles into a
+# client stub on the web build. The agent must discover `#[server]`,
+# `server::configure` / `ClientConfig`, and how the client awaits the stub
+# from the MCP's `server-functions` guide + the `server` SDK docs.
+id = "server-guestbook"
+
+prompt = """
+Build a guestbook.
+
+Add a server function that keeps a list of guest messages on the server and
+returns it. It should support two operations: sign the guestbook (append a new
+message — a name and a body — and return the updated list) and list the
+existing messages. Keep the messages in memory on the server side; no database
+is required.
+
+Then build a client screen that talks to that server function: on load it
+fetches and displays the existing messages, and it lets the user submit a new
+message which is sent to the server and reflected back in the displayed list.
+
+Target the web platform.
+"""
+
+platforms = ["web"]
+token_budget = 1_500_000
+runs = 5

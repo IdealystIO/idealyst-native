@@ -1120,17 +1120,17 @@ where
 
 /// Build a reactive header-style closure for a navigator's bundled
 /// `.header(...)` call. The closure is handed the current `IdeaTheme`
-/// reference and returns the SDK's `HeaderStyle` (each SDK defines
-/// its own — `stack_navigator::HeaderStyle`, `drawer_navigator::HeaderStyle`,
-/// etc.). Re-invoked on every theme swap.
+/// reference and returns the SDK's `HeaderStyle` (each navigator SDK
+/// defines its own — e.g. `stack_navigator::HeaderStyle`). Re-invoked on
+/// every theme swap.
 ///
 /// Generic over `HS` so authors can use `idea_header` with whichever
 /// navigator SDK they're driving:
 ///
 /// ```ignore
-/// use drawer_navigator::HeaderStyle;
+/// use stack_navigator::{HeaderStyle, StackNavigator};
 ///
-/// DrawerNavigator::new(&ROUTE)
+/// StackNavigator::new(&ROUTE)
 ///     .header(idea_header::<HeaderStyle, _>(|t| HeaderStyle {
 ///         background: Some(t.colors().surface.value().clone()),
 ///         title: Some(t.colors().text.value().clone()),

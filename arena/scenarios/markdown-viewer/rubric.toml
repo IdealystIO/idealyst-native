@@ -1,0 +1,72 @@
+# SECRET — never enters the implementation agent's context. Each item is
+# atomic and objectively checkable at its declared tier. Items derive
+# strictly from the scenario's stated requirements: render a supplied
+# Markdown document as formatted content (large heading, bulleted list,
+# bold word, monospaced fenced code block) on web.
+#
+# --- Capability policy -------------------------------------------------------
+# The scenario tests the "render a Markdown document" capability. The `markdown`
+# SDK (CommonMark/GFM document primitive, `Element::External`) is the direct fit
+# and renders headings/lists/bold/fenced-code from source in one primitive.
+#
+# The `codeblock` SDK (colored code panel) is OPTIONAL here: `markdown` renders
+# fenced code blocks itself (a monospaced `<pre>` on web), so the code-block
+# requirement is satisfied by the markdown primitive alone. An agent that
+# additionally composes `codeblock` for the fence is fine but not required —
+# the `renders-code-block` item accepts EITHER the markdown source's own fence
+# OR an explicit `code_block(...)` call.
+#
+# Items test the CAPABILITY, not a specific library, but the `markdown`
+# primitive is itself the capability under test: hand-parsing the Markdown into
+# framework `text`/`view` nodes is the failure mode this scenario exists to
+# catch, so `uses-markdown` requires the real primitive (component `Markdown` or
+# the `markdown::markdown` builder), not a bespoke parser.
+scenario_id = "markdown-viewer"
+
+# --- compile floor -----------------------------------------------------------
+
+[[item]]
+id = "builds-web"
+description = "The produced project builds for web."
+points = 20
+class = "decision"
+tier = "compile"
+verifier = "compile"
+assertion = { target = "web" }
+
+# --- decision items (source-verifiable: did the agent pick the right APIs) ---
+
+[[item]]
+id = "uses-markdown"
+description = "Renders the document through the real `markdown` SDK primitive — the `Markdown` component or the `markdown::markdown(...)` builder — rather than hand-parsing the Markdown into `text`/`view` nodes."
+points = 15
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "\\bMarkdown\\s*[({]|markdown::markdown\\s*\\(", in = "src/**/*.rs" }
+
+[[item]]
+id = "renders-code-block"
+description = "A fenced code block is rendered — satisfied by the `markdown` source's own fenced block (```) which the primitive renders monospaced, OR by an explicit `codeblock` SDK `code_block(...)` panel."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "code_block\\s*\\(|```", in = "src/**/*.rs" }
+
+# --- outcome items (platform truth via Playwright; gated on a decision) -------
+
+[[item]]
+id = "shows-heading-and-list"
+description = "The rendered page shows the formatted document: the top heading text and the bullet-list items are visible as content (not raw Markdown)."
+points = 25
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-markdown"
+# Capability policy: the heading may be any heading element and the list may be
+# any bulleted-list rendering (semantic <ul>/<li> or marker rows) depending on
+# the primitive — assert that the CONTENT is visibly rendered, not a specific
+# role. Load the page (no interaction needed) and confirm all listed strings
+# appear as rendered text.
+assertion = { action = "on initial page load with no interaction, confirm the page shows the heading text 'Project Notes' AND all three bullet items as visible content: 'Revenue grew this quarter', 'Two new hires joined the team', and 'The mobile app shipped'" }

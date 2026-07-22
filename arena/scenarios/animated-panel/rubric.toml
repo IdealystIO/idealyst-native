@@ -1,0 +1,69 @@
+# SECRET — never enters the implementation agent's context. Each item is
+# atomic and objectively checkable at its declared tier. Items derive strictly
+# from the scenario's stated requirements: an animated (not instant) show/hide
+# of a details panel, driven by a repeatable toggle, starting collapsed.
+# Nothing subjective and nothing the scenario didn't ask for.
+scenario_id = "animated-panel"
+
+# --- compile floor -----------------------------------------------------------
+
+[[item]]
+id = "builds-web"
+description = "The produced project builds for web."
+points = 20
+class = "decision"
+tier = "compile"
+verifier = "compile"
+assertion = { target = "web" }
+
+# --- decision items (source-verifiable: did the agent pick the right APIs) ---
+
+# Capability policy (mirrors todo-app / themed-settings, 2026-07-20): items test
+# the CAPABILITY — "is there a real enter/exit animation surface" — not a
+# specific API or library. The framework's answer to animated mount/unmount is
+# the `presence` primitive (it keeps the subtree mounted long enough for the
+# exit animation to play, which a plain `when` + stylesheet `transitions` block
+# CANNOT do — `when` tears the subtree down instantly, so the exit never
+# animates). Equivalent surfaces satisfy this item:
+#   - the `presence` primitive (with PresenceAnim / PresenceState enter+exit);
+#   - a manual per-frame `AnimatedValue` (`animated!` / `.animate(...)` /
+#     `timeline!` / `animate_at!`) driving opacity/translate/scale on the panel;
+#   - an idea-ui wrapper that is itself an animated show/hide surface (Toast,
+#     Modal) when idea-ui is a project dep — the MCP serves dep docs and the
+#     arena must never steer toward or away from any one library.
+# What does NOT satisfy: an instant `when`/`if` mount toggle with no animation
+# surface, or a bare stylesheet `transitions` block (no exit animation on
+# unmount). The animated-behavior *outcome* is confirmed at the playwright tier.
+[[item]]
+id = "uses-animation-surface"
+description = "The show/hide goes through a real enter/exit animation surface (presence primitive, or a manual AnimatedValue / timeline, or an animated idea-ui wrapper) — not an instant when/if mount toggle."
+points = 20
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "presence\\s*\\(|PresenceAnim|PresenceState|animated!|timeline!|animate_at!|\\.animate\\s*\\(|AnimatedValue|Toast\\s*[\\(\\{]|Modal\\s*[\\(\\{]", in = "src/**/*.rs" }
+
+[[item]]
+id = "uses-reactive-state"
+description = "The open/collapsed state lives in reactive state (signal) so toggling drives the UI and the presence predicate."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "\\bsignal\\s*\\(|signal!|Signal<", in = "src/**/*.rs" }
+
+# --- outcome item (platform truth via Playwright; gated on a decision) --------
+
+[[item]]
+id = "panel-toggles-open-then-closed"
+description = "Activating the control reveals the panel body, and activating it again hides the body — a working repeatable show/hide."
+points = 25
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-animation-surface"
+# Behavior only — the body text and the exact trigger widget are the agent's
+# choice, so assert the observable show-then-hide, not a specific name/role.
+# (If this fails while the decision above passed, divergence-neutralization
+# treats it as a framework finding, not an agent deduction — see score.rs.)
+assertion = { action = "Confirm the panel body content is hidden on load. Activate the expand/toggle control and confirm the panel's body content becomes visible. Then activate the control again and confirm the body content is hidden once more." }

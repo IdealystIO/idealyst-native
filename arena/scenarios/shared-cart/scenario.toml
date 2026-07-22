@@ -1,0 +1,28 @@
+# PUBLIC — the `prompt` below is the ONLY task framing the implementation
+# agent receives. Requirements only; no hints about how to use the MCP. In
+# particular it does NOT name context (provide/inject) or the reactive
+# control-flow builders — discovering those from the docs is the point.
+id = "shared-cart"
+
+prompt = """
+Build a mini shop screen.
+
+Requirements:
+- Show a product list: several rows, each with a product name, a price, and
+  an "Add" button that adds that product to a cart.
+- Show a Header at the top of the screen with a live summary of the cart:
+  the number of items in it and the running total price. Pressing "Add" on any
+  row must update the Header immediately.
+- The Header and the product list are SEPARATE components. They must read and
+  write ONE shared cart — adding from the list has to update the Header without
+  passing the cart down through every component in between as parameters.
+- When the cart is empty, the Header shows a short "your cart is empty" style
+  message instead of the count and total; once something has been added it
+  shows the count and total. Choose the display based on that condition.
+
+Target the web platform.
+"""
+
+platforms = ["web"]
+token_budget = 1_500_000
+runs = 5

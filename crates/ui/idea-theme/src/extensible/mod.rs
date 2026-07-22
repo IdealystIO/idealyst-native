@@ -356,6 +356,25 @@ pub trait TypographyKind: 'static {
     fn font_weight(&self) -> FontWeight;
     fn line_height(&self) -> Tokenized<f32>;
     fn letter_spacing(&self) -> Tokenized<f32>;
+
+    /// Whether this kind is a semantic HEADING (not just large text).
+    /// `Typography` reads this to attach an accessibility heading role
+    /// automatically — so screen readers, locators, and platform a11y
+    /// trees see a real heading, matching what the visual scale implies.
+    ///
+    /// Default: derived from [`key`](Self::key) — the built-in `display`
+    /// and `h1`…`h6` kinds return `true`, everything else `false`. A
+    /// custom kind that is conceptually a heading but keyed otherwise
+    /// (e.g. `"brand-title"`) should override this to return `true`; a
+    /// custom kind keyed like a heading that should NOT be one can
+    /// override to `false`.
+    fn is_heading(&self) -> bool {
+        let key = self.key();
+        key == "display"
+            || (key.len() == 2
+                && key.as_bytes()[0] == b'h'
+                && key.as_bytes()[1].is_ascii_digit())
+    }
 }
 
 /// Typed handle wrapping `Rc<dyn TypographyKind>`. See [`ToneRef`].
