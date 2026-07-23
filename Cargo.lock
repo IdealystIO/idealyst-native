@@ -7133,6 +7133,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nested-nav-demo"
+version = "0.4.0"
+dependencies = [
+ "backend-terminal",
+ "backend-web",
+ "dev-server",
+ "runtime-core",
+ "swap-navigator",
+]
+
+[[package]]
 name = "net"
 version = "0.4.0"
 dependencies = [

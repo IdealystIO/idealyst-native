@@ -242,6 +242,7 @@ members = [
     "crates/sdk/client/microphone/examples/mic-demo",
     "crates/sdk/client/navigators/stack/examples/stack-demo",
     "crates/sdk/client/navigators/swap/examples/swap-demo",
+    "crates/sdk/client/navigators/swap/examples/nested-nav-demo",
     "crates/sdk/client/pdf/examples/pdf-demo",
     "crates/sdk/client/screen-recorder/examples/screen-recorder-demo",
     "crates/sdk/client/screen-recorder/examples/screenshare-preview-demo",

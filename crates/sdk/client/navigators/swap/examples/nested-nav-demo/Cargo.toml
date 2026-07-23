@@ -1,0 +1,29 @@
+[package]
+name = "nested-nav-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Nested navigators with two simultaneous sidebars — a primary section sidebar (outer swap) whose 'Reports' screen body is a second swap navigator with its own secondary tool sidebar. Both `.layout(...)` chromes render at once."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+sidecar = ["dep:dev-server", "swap-navigator/runtime-server"]
+
+[dependencies]
+runtime-core = { workspace = true }
+swap-navigator = { workspace = true }
+dev-server = { workspace = true, optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))'.dependencies]
+backend-terminal = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Nested Nav Demo"
+bundle_id = "ai.truday.idealyst.nestednavdemo"
+version   = "0.0.1"
+targets   = ["web"]
