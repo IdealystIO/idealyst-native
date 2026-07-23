@@ -45,6 +45,7 @@ mod tests;
 #[cfg(feature = "async-driver")]
 pub mod async_executor;
 #[cfg(feature = "async-driver")]
+#[cfg(feature = "prim-lazy")]
 pub mod dynlink;
 mod assets;
 mod defaults;
@@ -63,12 +64,14 @@ pub mod render_loop;
 pub mod scheduler;
 mod style;
 pub mod time_source;
+#[cfg(feature = "prim-navigator")]
 pub mod url_provider;
 mod viewport_observer;
 
 #[cfg(feature = "async-driver")]
 pub use async_executor::install_async_executor;
 #[cfg(feature = "async-driver")]
+#[cfg(feature = "prim-lazy")]
 pub use dynlink::{host_reserve, install_dynlink_loader};
 #[cfg(feature = "runtime-server")]
 pub use dev_transport::{connect_web, WebClientHandle};
@@ -260,15 +263,28 @@ std::thread_local! {
     /// SSR/hydration case seeds this set without injecting (the rule is
     /// already in the server `<head>`); the live page injects on first
     /// sight; chunks then find it present and skip.
-    static FONT_FACES_PRESENT: std::cell::RefCell<std::collections::HashSet<String>> =
-        std::cell::RefCell::new(std::collections::HashSet::new());
+    static FONT_FACES_PRESENT: std::cell::RefCell<FxHashSet<String>> =
+        std::cell::RefCell::new(FxHashSet::default());
+}
+
+/// EXPERIMENT (External-anchoring probe): run `f` with the ambient WebBackend —
+/// the most-recently-installed one, reached weakly. This lets a lazy chunk build
+/// an external's node ITSELF (running the SDK handler inside the chunk) instead
+/// of routing through the main-resident `ExternalRegistry` + `call_indirect`,
+/// which anchors the handler's code (and its wgpu/vello deps) in `main.wasm`.
+/// Returns `None` if no backend is installed or it's currently borrowed.
+pub fn with_ambient_backend<R>(f: impl FnOnce(&mut WebBackend) -> R) -> Option<R> {
+    let weak = WEB_BACKEND_HANDLE.with(|h| h.borrow().clone())?;
+    let rc = weak.upgrade()?;
+    let mut b = rc.try_borrow_mut().ok()?;
+    Some(f(&mut b))
 }
 
 use runtime_core::{
     AssetId, AssetSource, AssetTag, Backend, ButtonHandle, StyleRules, SystemFallback,
     TypefaceFace, TypefaceId,
 };
-use std::collections::HashMap;
+use runtime_core::{FxHashMap, FxHashSet};
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
@@ -278,6 +294,7 @@ use web_sys::{Document, Node};
 /// on each navigator container. Returns `None` when `node` isn't an
 /// Element or the attribute isn't present — every Backend trait nav
 /// method gracefully no-ops in that case.
+#[cfg(feature = "prim-navigator")]
 fn nav_id_from_node(node: &Node) -> Option<u32> {
     let elem: web_sys::Element = node.clone().dyn_into().ok()?;
     elem.get_attribute("data-navigator-id")?.parse().ok()
@@ -287,10 +304,14 @@ fn nav_id_from_node(node: &Node) -> Option<u32> {
 /// SDK handler is registered for the given node. Keeps the
 /// fallback handle inert without depending on the helpers crate
 /// (which would be circular: helpers depends on backend-web).
+#[cfg(feature = "prim-navigator")]
 struct NoopNavOps;
+#[cfg(feature = "prim-navigator")]
 impl runtime_core::primitives::navigator::NavigatorOps for NoopNavOps {}
+#[cfg(feature = "prim-navigator")]
 static NOOP_NAV_OPS: NoopNavOps = NoopNavOps;
 
+#[cfg(feature = "prim-navigator")]
 thread_local! {
     /// Counter for backend-assigned navigator ids (backend-neutral handlers
     /// that don't stamp their own `data-navigator-id`). Based high so it can't
@@ -298,6 +319,7 @@ thread_local! {
     /// stamps for the legacy handlers.
     static BACKEND_NAV_ID: std::cell::Cell<u32> = const { std::cell::Cell::new(1_000_000) };
 }
+#[cfg(feature = "prim-navigator")]
 fn next_backend_nav_id() -> u32 {
     BACKEND_NAV_ID.with(|c| {
         let id = c.get();
@@ -376,7 +398,7 @@ pub struct WebBackend {
     /// the listeners for one node (pointerenter, pointerleave,
     /// pointerdown, pointerup, focusin, focusout) plus the
     /// pointer-event-type closures so the JS side keeps them alive.
-    pub(crate) state_listeners: HashMap<u32, Vec<Closure<dyn FnMut(web_sys::Event)>>>,
+    pub(crate) state_listeners: FxHashMap<u32, Vec<Closure<dyn FnMut(web_sys::Event)>>>,
     /// Has the `@keyframes ui-spin` rule been injected? First
     /// ActivityIndicator creation injects it; later creations skip
     /// the work.
@@ -384,6 +406,7 @@ pub struct WebBackend {
     /// Has the virtualizer JS shim been injected? First Virtualizer
     /// creation injects `runtime/js/virtualizer.js` into a
     /// `<script>` tag in the document head.
+    #[cfg(feature = "prim-virtualizer")]
     pub(crate) virtualizer_shim_injected: bool,
     /// Has the local-render batch executor (`runtime/js/batch.js`)
     /// been injected? First batched `Element::Repeat` triggers
@@ -453,7 +476,7 @@ pub struct WebBackend {
     /// Set of node ids the JS side has been told about. We register
     /// each styled node ONCE on its first apply (1 FFI hop /
     /// node-lifetime); subsequent applies hit the batched path.
-    pub(crate) class_nodes_registered: std::collections::HashSet<u32>,
+    pub(crate) class_nodes_registered: FxHashSet<u32>,
     /// Per-microtask buffer of (node_id, class_name) updates.
     /// Flushed via one FFI call to `__idealystApplyClassesBatch`.
     /// All bookkeeping (lengths, scheduling, FFI shipping) lives in
@@ -498,7 +521,8 @@ pub struct WebBackend {
     /// queued-but-not-yet-fired JS callbacks from reaching a
     /// freed-Signal arena slot after the surrounding scope has
     /// dropped.
-    pub(crate) virtualizer_instances: HashMap<u32, primitives::virtualizer::VirtualizerInstance>,
+    #[cfg(feature = "prim-virtualizer")]
+    pub(crate) virtualizer_instances: FxHashMap<u32, primitives::virtualizer::VirtualizerInstance>,
     /// Monotonic id counter for virtualizer containers, written as
     /// `data-virtualizer-id` on the container `<div>`. Same trick as
     /// `data-graphics-id`: lets `release_virtualizer` look up the
@@ -506,27 +530,30 @@ pub struct WebBackend {
     /// which gets cleared by `on_node_unstyled` before our cleanup
     /// hook runs (style effects drop before the virtualizer cleanup
     /// effect within a single `Scope::drop` batch).
+    #[cfg(feature = "prim-virtualizer")]
     pub(crate) next_virtualizer_id: u32,
     /// Per-Graphics-canvas runtime state — wgpu device, user closures,
     /// pending-paint flag, etc. Keyed by node id so `make_handle` can
     /// look up the matching instance after `create`. The `Rc` is the
     /// shared owner; the handle wraps the same Rc so `request_redraw`
     /// reaches the scheduler with no backend round-trip.
+    #[cfg(feature = "prim-graphics")]
     pub(crate) graphics_instances:
-        HashMap<u32, std::rc::Rc<std::cell::RefCell<primitives::graphics::GraphicsInstance>>>,
+        FxHashMap<u32, std::rc::Rc<std::cell::RefCell<primitives::graphics::GraphicsInstance>>>,
     /// Monotonic id counter for Graphics canvases. Written as the
     /// `data-graphics-id` attribute on each `<canvas>` so
     /// `make_handle` / `release` can look the instance up from a
     /// fresh `&Node` after the create call returned. Distinct from
     /// per-Node ids (those live in a JS-side `WeakMap` keyed by
     /// DOM identity; see [`WebBackend::node_id`]).
+    #[cfg(feature = "prim-graphics")]
     pub(crate) next_graphics_id: u32,
     /// Shared `<style>` element holding every active CSS rule.
     pub(crate) style_element: Option<web_sys::HtmlStyleElement>,
     /// Pre-generated classes from `register_stylesheet`. Content-keyed,
     /// shared, refcounted (refcount tracks how many active
     /// registrations hold them — not how many nodes apply them).
-    pub(crate) pregen: HashMap<String, PregenEntry>,
+    pub(crate) pregen: FxHashMap<String, PregenEntry>,
     /// Pointer-keyed mirror of `pregen` for the hot apply path. When
     /// the framework's resolution cache returns the same
     /// `Rc<StyleRules>` instance for many nodes (e.g. 10000 rows of
@@ -537,11 +564,11 @@ pub struct WebBackend {
     /// Populated by `register_stylesheet` alongside the content-keyed
     /// `pregen` map. Cleared on `unregister_stylesheet` /
     /// theme change.
-    pub(crate) pregen_by_ptr: HashMap<*const runtime_core::StyleRules, String>,
+    pub(crate) pregen_by_ptr: FxHashMap<*const runtime_core::StyleRules, String>,
     /// Per-node dynamic class slot — `node_id -> (class_name, content_key)`.
     /// At most one dynamic class per node. Replaced atomically when
     /// the node's resolved style changes.
-    pub(crate) dynamic: HashMap<u32, DynamicSlot>,
+    pub(crate) dynamic: FxHashMap<u32, DynamicSlot>,
     /// Content-keyed pool of dynamic CSS rules, refcounted across the
     /// cohort of nodes that resolved to the same `(base + overlays)`
     /// content. Populated lazily on `apply_styled_states` slow-path
@@ -551,7 +578,7 @@ pub struct WebBackend {
     /// fan-out minted N identical rules + did N `insert_rule` / N
     /// `delete_rule` calls; deduped, the first node mints and the
     /// rest just bump the refcount.
-    pub(crate) dynamic_by_content: HashMap<String, DynamicRule>,
+    pub(crate) dynamic_by_content: FxHashMap<String, DynamicRule>,
     /// Pointer-keyed mirror of `dynamic_by_content` for the hot apply
     /// path. The framework's `RESOLUTION_CACHE` hands us the SAME
     /// `Rc<StyleRules>` for repeated `(sheet, variants, overrides)`
@@ -572,7 +599,7 @@ pub struct WebBackend {
     /// dereference; (b) the `RESOLUTION_CACHE` keeps the Rc alive
     /// for as long as its content is reachable, which is at least
     /// as long as we hold any `DynamicSlot` referencing it.
-    pub(crate) dynamic_by_ptr: HashMap<*const runtime_core::StyleRules, std::rc::Rc<DynamicPtrEntry>>,
+    pub(crate) dynamic_by_ptr: FxHashMap<*const runtime_core::StyleRules, std::rc::Rc<DynamicPtrEntry>>,
     /// Indices in the shared `<style>` sheet that previously held a
     /// dynamic rule and are now available for re-use. See
     /// `insert_rule` / `delete_rule` in [`crate::style`] — instead
@@ -610,26 +637,28 @@ pub struct WebBackend {
     /// instance entry in `release_portal` is what frees the
     /// JS-side closures and prevents late-firing events from
     /// reaching a freed `Signal` slot.
+    #[cfg(feature = "prim-portal")]
     pub(crate) portal_instances: primitives::portal::PortalInstances,
     /// Monotonic id counter for portals. Same pattern as
     /// `next_navigator_id` — stamped as `data-portal-id` on the
     /// portal root.
+    #[cfg(feature = "prim-portal")]
     pub(crate) next_portal_id: u32,
     /// Asset id → resolved URL. Filled by `register_asset`; queried
     /// by `register_typeface` (for the `@font-face` `src: url(...)`)
     /// and, in a follow-up, by the `Image` primitive's `<img src>`.
-    pub(crate) asset_urls: HashMap<AssetId, String>,
+    pub(crate) asset_urls: FxHashMap<AssetId, String>,
     /// Ids whose `asset_urls` entry is a `blob:` URL backed by
     /// `URL.createObjectURL` (i.e. `AssetSource::Embedded`). Used by
     /// `unregister_asset` to call `URL.revokeObjectURL` and free the
     /// Blob's backing storage. Bundled / Remote URLs are owned by
     /// the page / CDN — not in this set, never revoked.
-    pub(crate) blob_asset_urls: std::collections::HashSet<AssetId>,
+    pub(crate) blob_asset_urls: FxHashSet<AssetId>,
     /// Typeface id → indices into the shared `<style>` sheet for the
     /// `@font-face` rules emitted at registration. Lets
     /// `unregister_typeface` reclaim the slots through the regular
     /// `delete_rule` recycle path.
-    pub(crate) font_face_rule_indices: HashMap<TypefaceId, Vec<u32>>,
+    pub(crate) font_face_rule_indices: runtime_core::collections::SmallIdMap<TypefaceId, Vec<u32>>,
     /// Registry of third-party `Element::External` handlers,
     /// populated by `register_external::<T>(...)` calls from
     /// per-platform leaf crates (e.g. `idealyst-maps-web::register`).
@@ -642,6 +671,7 @@ pub struct WebBackend {
     /// SDK leaf crates (e.g. `stack_navigator::register`).
     /// `create_navigator` looks the factory up by presentation
     /// TypeId; unregistered kinds panic at create time.
+    #[cfg(feature = "prim-navigator")]
     pub(crate) navigator_handlers:
         runtime_core::NavigatorRegistry<WebBackend>,
     /// Per-navigator-instance SDK handler. Keyed by the navigator id
@@ -657,8 +687,9 @@ pub struct WebBackend {
     /// independent handle out of the map, drop the map borrow, then
     /// call `&mut B`-taking methods on the handler without
     /// double-borrowing `self`.
+    #[cfg(feature = "prim-navigator")]
     pub(crate) nav_handler_instances:
-        HashMap<u32, std::rc::Rc<std::cell::RefCell<Box<dyn runtime_core::NavigatorHandler<WebBackend>>>>>,
+        FxHashMap<u32, std::rc::Rc<std::cell::RefCell<Box<dyn runtime_core::NavigatorHandler<WebBackend>>>>>,
     /// Per-node animated-property state. Tracks the most recent
     /// values written via `Backend::set_animated_f32` /
     /// `set_animated_color` so compound properties like CSS
@@ -758,7 +789,9 @@ inventory::collect!(WebExternalRegistrar);
 /// one (carrying a `fn(&mut WebBackend)`); [`WebBackend::new`] drains it so the
 /// app needn't call `<nav>::register` per platform.
 /// See [[project_inventory_self_registration]].
+#[cfg(feature = "prim-navigator")]
 pub struct WebNavigatorRegistrar(pub fn(&mut WebBackend));
+#[cfg(feature = "prim-navigator")]
 inventory::collect!(WebNavigatorRegistrar);
 
 impl WebBackend {
@@ -1161,6 +1194,7 @@ impl WebBackend {
         for r in inventory::iter::<WebExternalRegistrar> {
             (r.0)(self);
         }
+        #[cfg(feature = "prim-navigator")]
         for r in inventory::iter::<WebNavigatorRegistrar> {
             (r.0)(self);
         }
@@ -1210,8 +1244,9 @@ impl WebBackend {
             _app_key_closure: None,
             _link_click_closures: Vec::new(),
             _touch_closures: Vec::new(),
-            state_listeners: HashMap::new(),
+            state_listeners: FxHashMap::default(),
             spinner_keyframes_injected: false,
+            #[cfg(feature = "prim-virtualizer")]
             virtualizer_shim_injected: false,
             batch_shim_injected: false,
             batch_fn: None,
@@ -1230,7 +1265,7 @@ impl WebBackend {
             ),
             class_batch_shim_injected: false,
             class_register_fn: None,
-            class_nodes_registered: std::collections::HashSet::new(),
+            class_nodes_registered: FxHashSet::default(),
             class_queue: crate::batch_queue::StringBatchQueue::new(
                 "__idealystApplyClassesBatch",
             ),
@@ -1245,29 +1280,37 @@ impl WebBackend {
                 "__idealystReleaseClassBindingsBatch",
             ),
             next_class_binding_id: 0,
-            virtualizer_instances: HashMap::new(),
+            #[cfg(feature = "prim-virtualizer")]
+            virtualizer_instances: FxHashMap::default(),
+            #[cfg(feature = "prim-virtualizer")]
             next_virtualizer_id: 0,
-            graphics_instances: HashMap::new(),
+            #[cfg(feature = "prim-graphics")]
+            graphics_instances: FxHashMap::default(),
+            #[cfg(feature = "prim-graphics")]
             next_graphics_id: 0,
             style_element: None,
-            pregen: HashMap::new(),
-            pregen_by_ptr: HashMap::new(),
-            dynamic: HashMap::new(),
-            dynamic_by_content: HashMap::new(),
-            dynamic_by_ptr: HashMap::new(),
+            pregen: FxHashMap::default(),
+            pregen_by_ptr: FxHashMap::default(),
+            dynamic: FxHashMap::default(),
+            dynamic_by_content: FxHashMap::default(),
+            dynamic_by_ptr: FxHashMap::default(),
             free_rule_indices: Vec::new(),
             theme_root_rule_index: None,
             app_bg_rule_index: None,
             scrollbar_rule_indices: Vec::new(),
-            portal_instances: HashMap::new(),
+            #[cfg(feature = "prim-portal")]
+            portal_instances: FxHashMap::default(),
+            #[cfg(feature = "prim-portal")]
             next_portal_id: 0,
-            asset_urls: HashMap::new(),
-            blob_asset_urls: std::collections::HashSet::new(),
-            font_face_rule_indices: HashMap::new(),
+            asset_urls: FxHashMap::default(),
+            blob_asset_urls: FxHashSet::default(),
+            font_face_rule_indices: runtime_core::collections::SmallIdMap::new(),
             external_handlers: runtime_core::ExternalRegistry::new(),
+            #[cfg(feature = "prim-navigator")]
             navigator_handlers: runtime_core::NavigatorRegistry::new(),
-            nav_handler_instances: HashMap::new(),
-            animated_states: HashMap::new(),
+            #[cfg(feature = "prim-navigator")]
+            nav_handler_instances: FxHashMap::default(),
+            animated_states: FxHashMap::default(),
             introspection_roots: js_sys::Set::new(&wasm_bindgen::JsValue::UNDEFINED),
         };
         backend.drain_self_registrars();
@@ -1300,6 +1343,7 @@ impl WebBackend {
     /// factory produces a fresh handler per
     /// `Element::Navigator { type_id: TypeId::of::<P>(), .. }`
     /// mounted in the tree.
+    #[cfg(feature = "prim-navigator")]
     pub fn register_navigator<P, F>(&mut self, factory: F)
     where
         P: 'static,
@@ -1913,7 +1957,7 @@ impl WebBackend {
     ///   elements are GC'd, so no explicit registry teardown is
     ///   needed.
     /// - **No Rust-side cache.** An earlier pointer-keyed
-    ///   `HashMap<*const Node, u32>` fast cache had a stale-id
+    ///   `FxHashMap<*const Node, u32>` fast cache had a stale-id
     ///   bug: a freed wrapper's address could be reused by a
     ///   completely unrelated wrapper, and the cache would
     ///   return the prior wrapper's id for the new wrapper —
@@ -2606,6 +2650,7 @@ impl Backend for WebBackend {
         Some(self.impl_mint_class_for_app(app))
     }
 
+    #[cfg(feature = "prim-image")]
     fn create_image(
         &mut self,
         src: &str,
@@ -2620,14 +2665,17 @@ impl Backend for WebBackend {
         node
     }
 
+    #[cfg(feature = "prim-image")]
     fn update_image_src(&mut self, node: &Self::Node, src: &str) {
         primitives::image::update_src(self, node, src)
     }
 
+    #[cfg(feature = "prim-image")]
     fn update_image_alt(&mut self, node: &Self::Node, alt: Option<&str>) {
         primitives::image::update_alt(node, alt)
     }
 
+    #[cfg(feature = "prim-image")]
     fn install_image_load_handler(
         &mut self,
         node: &Self::Node,
@@ -2636,6 +2684,7 @@ impl Backend for WebBackend {
         primitives::image::install_load(self, node, handler);
     }
 
+    #[cfg(feature = "prim-image")]
     fn install_image_error_handler(
         &mut self,
         node: &Self::Node,
@@ -2644,6 +2693,7 @@ impl Backend for WebBackend {
         primitives::image::install_error(self, node, handler);
     }
 
+    #[cfg(feature = "prim-icon")]
     fn create_icon(
         &mut self,
         data: &runtime_core::primitives::icon::IconData,
@@ -2658,10 +2708,12 @@ impl Backend for WebBackend {
         node
     }
 
+    #[cfg(feature = "prim-icon")]
     fn update_icon_color(&mut self, node: &Self::Node, color: &runtime_core::Color) {
         primitives::icon::update_color(node, color)
     }
 
+    #[cfg(feature = "prim-icon")]
     fn update_icon_data(
         &mut self,
         node: &Self::Node,
@@ -2670,10 +2722,12 @@ impl Backend for WebBackend {
         primitives::icon::update_data(self, node, data)
     }
 
+    #[cfg(feature = "prim-icon")]
     fn update_icon_stroke(&mut self, node: &Self::Node, progress: f32) {
         primitives::icon::update_stroke(node, progress)
     }
 
+    #[cfg(feature = "prim-icon")]
     fn animate_icon_stroke(
         &mut self,
         node: &Self::Node,
@@ -2687,6 +2741,7 @@ impl Backend for WebBackend {
         primitives::icon::animate_stroke(node, from, to, duration_ms, easing, infinite)
     }
 
+    #[cfg(feature = "prim-text-input")]
     fn create_text_input(
         &mut self,
         initial_value: &str,
@@ -2711,22 +2766,27 @@ impl Backend for WebBackend {
         node
     }
 
+    #[cfg(feature = "prim-text-input")]
     fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
         primitives::text_input::update_value(node, value)
     }
 
+    #[cfg(feature = "prim-text-input")]
     fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
         primitives::text_input::update_secure(node, secure)
     }
 
+    #[cfg(feature = "prim-text-input")]
     fn set_text_input_focus_handler(&mut self, node: &Self::Node, handler: Rc<dyn Fn(bool)>) {
         primitives::text_input::set_focus_handler(self, node, handler);
     }
 
+    #[cfg(feature = "prim-text-input")]
     fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
         primitives::text_input::update_placeholder(node, placeholder)
     }
 
+    #[cfg(feature = "prim-text-input")]
     fn create_text_area(
         &mut self,
         initial_value: &str,
@@ -2753,10 +2813,12 @@ impl Backend for WebBackend {
         node
     }
 
+    #[cfg(feature = "prim-text-input")]
     fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
         primitives::text_area::update_value(node, value)
     }
 
+    #[cfg(feature = "prim-text-input")]
     fn make_text_area_handle(
         &self,
         node: &Self::Node,
@@ -2764,6 +2826,7 @@ impl Backend for WebBackend {
         primitives::text_area::make_handle(node)
     }
 
+    #[cfg(feature = "prim-toggle")]
     fn create_toggle(
         &mut self,
         initial_value: bool,
@@ -2775,6 +2838,7 @@ impl Backend for WebBackend {
         node
     }
 
+    #[cfg(feature = "prim-toggle")]
     fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
         primitives::toggle::update_value(node, value)
     }
@@ -2793,6 +2857,7 @@ impl Backend for WebBackend {
         node
     }
 
+    #[cfg(feature = "prim-slider")]
     fn create_slider(
         &mut self,
         initial_value: f32,
@@ -2808,10 +2873,12 @@ impl Backend for WebBackend {
         node
     }
 
+    #[cfg(feature = "prim-slider")]
     fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
         primitives::slider::update_value(node, value)
     }
 
+    #[cfg(feature = "prim-activity")]
     fn create_activity_indicator(
         &mut self,
         size: runtime_core::primitives::activity_indicator::ActivityIndicatorSize,
@@ -2823,6 +2890,7 @@ impl Backend for WebBackend {
         node
     }
 
+    #[cfg(feature = "prim-activity")]
     fn update_activity_indicator_size(
         &mut self,
         node: &Self::Node,
@@ -2831,6 +2899,7 @@ impl Backend for WebBackend {
         primitives::activity_indicator::update_size(node, size)
     }
 
+    #[cfg(feature = "prim-virtualizer")]
     fn create_virtualizer(
         &mut self,
         callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
@@ -2843,14 +2912,17 @@ impl Backend for WebBackend {
         node
     }
 
+    #[cfg(feature = "prim-virtualizer")]
     fn virtualizer_data_changed(&mut self, node: &Self::Node) {
         primitives::virtualizer::data_changed(self, node)
     }
 
+    #[cfg(feature = "prim-virtualizer")]
     fn release_virtualizer(&mut self, node: &Self::Node) {
         primitives::virtualizer::release(self, node)
     }
 
+    #[cfg(feature = "prim-graphics")]
     fn create_graphics(
         &mut self,
         on_ready: runtime_core::primitives::graphics::OnReady,
@@ -2868,10 +2940,12 @@ impl Backend for WebBackend {
         node
     }
 
+    #[cfg(feature = "prim-graphics")]
     fn release_graphics(&mut self, node: &Self::Node) {
         primitives::graphics::release(self, node)
     }
 
+    #[cfg(feature = "prim-graphics")]
     fn make_graphics_handle(
         &self,
         node: &Self::Node,
@@ -2889,6 +2963,7 @@ impl Backend for WebBackend {
     // whatever DOM work they need without going through the backend.
     // ------------------------------------------------------------------
 
+    #[cfg(feature = "prim-navigator")]
     fn create_navigator(
         &mut self,
         type_id: std::any::TypeId,
@@ -2936,6 +3011,7 @@ impl Backend for WebBackend {
         node
     }
 
+    #[cfg(feature = "prim-navigator")]
     fn navigator_attach_initial(
         &mut self,
         navigator: &Self::Node,
@@ -2949,6 +3025,7 @@ impl Backend for WebBackend {
         handler.borrow_mut().attach_initial(self, screen, scope_id, options);
     }
 
+    #[cfg(feature = "prim-navigator")]
     fn release_navigator(&mut self, node: &Self::Node) {
         let Some(id) = nav_id_from_node(node) else { return };
         let handler = self.nav_handler_instances.remove(&id);
@@ -2956,6 +3033,7 @@ impl Backend for WebBackend {
         handler.borrow_mut().release(self);
     }
 
+    #[cfg(feature = "prim-navigator")]
     fn make_navigator_handle(
         &self,
         node: &Self::Node,
@@ -2968,6 +3046,7 @@ impl Backend for WebBackend {
         }
     }
 
+    #[cfg(feature = "prim-navigator")]
     fn apply_navigator_slot_style(
         &mut self,
         navigator: &Self::Node,
@@ -3002,6 +3081,7 @@ impl Backend for WebBackend {
         primitives::link::make_handle(node)
     }
 
+    #[cfg(feature = "prim-portal")]
     fn create_portal(
         &mut self,
         target: runtime_core::primitives::portal::PortalTarget,
@@ -3017,10 +3097,12 @@ impl Backend for WebBackend {
         node
     }
 
+    #[cfg(feature = "prim-portal")]
     fn release_portal(&mut self, node: &Self::Node) {
         primitives::portal::release(self, node)
     }
 
+    #[cfg(feature = "prim-portal")]
     fn make_portal_handle(
         &self,
         node: &Self::Node,
@@ -3079,6 +3161,7 @@ impl Backend for WebBackend {
         // portals/virtualizers/graphics.
     }
 
+    #[cfg(feature = "prim-presence")]
     fn apply_presence(
         &mut self,
         node: &Self::Node,
@@ -3127,7 +3210,7 @@ impl Backend for WebBackend {
         &mut self,
         handler: Option<runtime_core::primitives::key::KeyDownHandler>,
     ) {
-        crate::primitives::text_input::install_app_key_handler(self, handler)
+        crate::primitives::keyboard::install_app_key_handler(self, handler)
     }
 
     fn register_asset(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {
@@ -3403,6 +3486,7 @@ impl Backend for WebBackend {
         runtime_core::TextHandle::new(Rc::new(node.clone()), &WebTextOps)
     }
 
+    #[cfg(feature = "prim-text-input")]
     fn make_text_input_handle(
         &self,
         node: &Self::Node,

@@ -43,7 +43,7 @@ runtime-core = { workspace = true }
 i18n-macros = { workspace = true }
 net = { workspace = true, optional = true }
 # Parsing flat `{ "key": "value" }` locale packs (SSR-inlined or fetched).
-serde_json = "1"
+serde_json = { workspace = true }
 
 # Web-only: the `lazy-fetch` loader resolves a relative pack base
 # (`/locales`) against the document origin, since `net` rejects relative

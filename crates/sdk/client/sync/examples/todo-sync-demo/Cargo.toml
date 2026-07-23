@@ -29,7 +29,7 @@ sync = { workspace = true }
 storage = { workspace = true }
 runtime-core = { workspace = true, features = ["async-driver"] }
 idea-ui = { workspace = true }
-serde = { version = "1", features = ["derive"] }
+serde = { workspace = true }
 dev-server = { workspace = true, optional = true }
 
 # Server-only host deps. Gated by `server` so the wasm client never

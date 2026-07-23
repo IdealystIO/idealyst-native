@@ -42,7 +42,14 @@ pub fn ssr_viewport(mount_selector: &str) -> Option<(f32, f32)> {
         .ok()??;
     let raw = el.get_attribute("data-ssr-viewport")?;
     let (w, h) = raw.split_once('x')?;
-    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+    // `parse_f32_plain`, not `str::parse::<f32>()`: this call was the one
+    // reachable anchor linking core's dec2flt float-parse tables (~5-6 KB)
+    // into every web bundle. The attribute is self-emitted by backend_ssr
+    // (`{w}x{h}`, plain integers) — the tiny parser covers it exactly.
+    Some((
+        runtime_core::num::parse_f32_plain(w.trim())?,
+        runtime_core::num::parse_f32_plain(h.trim())?,
+    ))
 }
 
 pub fn install_viewport_observer() {

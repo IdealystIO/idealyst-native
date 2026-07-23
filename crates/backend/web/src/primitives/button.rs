@@ -43,6 +43,9 @@ pub(crate) fn create(
     if leading_icon.is_some() || trailing_icon.is_some() {
         // Use inline-flex layout for icon + text alignment.
         let _ = button.set_attribute("style", css::BUTTON_CONTENT_STYLE);
+        // Icon slot rides the icon primitive's gate: with `prim-icon`
+        // off, a button renders its label only.
+        #[cfg(feature = "prim-icon")]
         if let Some(icon_data) = leading_icon {
             let svg_node = super::icon::create(b, icon_data, None);
             let _ = button.append_child(&svg_node);
@@ -51,6 +54,9 @@ pub(crate) fn create(
         let span = b.doc.create_element("span").expect("create span");
         span.set_text_content(Some(label));
         let _ = button.append_child(&span);
+        // Icon slot rides the icon primitive's gate: with `prim-icon`
+        // off, a button renders its label only.
+        #[cfg(feature = "prim-icon")]
         if let Some(icon_data) = trailing_icon {
             let svg_node = super::icon::create(b, icon_data, None);
             let _ = button.append_child(&svg_node);

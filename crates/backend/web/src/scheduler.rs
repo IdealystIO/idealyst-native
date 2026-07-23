@@ -94,6 +94,7 @@ fn dispatch_via_promise(f: Box<dyn FnOnce() + 'static>) {
 /// routing with zero extra host wiring. Idempotent + headless-safe.
 pub fn install_scheduler() {
     runtime_core::scheduling::install_scheduler(Box::new(WebScheduler));
+    #[cfg(feature = "prim-navigator")]
     crate::url_provider::install_url_provider();
 }
 

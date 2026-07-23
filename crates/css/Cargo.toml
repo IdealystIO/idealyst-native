@@ -5,4 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-runtime-core = { workspace = true }
+# PATH dep with `default-features = false` (cargo ignores that flag on
+# workspace-inherited deps): this crate only reads style TYPES
+# (StyleRules, enums, Breakpoint) — all ungated — and must not force the
+# `prim-*` default set back on for size-conscious apps via unification.
+runtime-core = { path = "../runtime/core", default-features = false }

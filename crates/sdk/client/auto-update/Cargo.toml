@@ -37,9 +37,9 @@ runtime-core = { workspace = true, features = ["async-driver"] }
 # Reuse the `net` client rather than reaching for platform HTTP.
 net = { workspace = true }
 
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 
 # Version comparison for "is this release newer than what I'm running?".
 semver = "1"

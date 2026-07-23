@@ -114,6 +114,7 @@ where
 /// Construct an `Image` primitive. The `src` argument is reactive
 /// via `IntoImageSource` — pass a `&str`/`String` for a static URL
 /// or a closure for a signal-driven one.
+#[cfg(feature = "prim-image")]
 pub fn image<S: IntoImageSource>(src: S) -> Bound<ImageHandle> {
     Bound::new(Element::Image {
         src: src.into_image_source(),
@@ -147,6 +148,7 @@ pub fn image<S: IntoImageSource>(src: S) -> Bound<ImageHandle> {
 /// matching `RegisterAsset` over the wire ahead of `CreateImage`.
 /// The image's `src` resolves to `"asset://{id}"`; each backend
 /// rewrites that to its real loader path on `create_image`.
+#[cfg(feature = "prim-image")]
 pub fn image_asset(asset: Asset<kinds::Image>) -> Bound<ImageHandle> {
     let id = asset.id;
     Bound::new(Element::Image {
@@ -217,6 +219,7 @@ impl From<Asset<kinds::Image>> for ImageSource {
 /// anything `Into<ImageSource>`, so component props can hold one
 /// `ImageSource` and callers still write `src = Some("https://…".into())`
 /// or `src = Some(LOGO.into())`.
+#[cfg(feature = "prim-image")]
 pub fn image_from(src: impl Into<ImageSource>) -> Bound<ImageHandle> {
     match src.into() {
         // `r.get()` is a reactive read, so a `Signal`/`rx!` URL repaints the

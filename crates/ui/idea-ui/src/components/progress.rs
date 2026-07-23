@@ -177,7 +177,7 @@ pub fn Progress(props: &ProgressProps) -> Element {
             let value = value.clone();
             runtime_core::view(Vec::new())
                 .with_style(move || {
-                    let pct = (value.get().clamp(0.0, 1.0)) * 100.0;
+                    let pct = runtime_core::num::clamp_f32(value.get(), 0.0, 1.0) * 100.0;
                     StyleApplication::new(fill_sheet.clone())
                         .with("appearance", appearance_for())
                         .with_computed(format!("progress-w-{}", pct.round() as i32), move || {

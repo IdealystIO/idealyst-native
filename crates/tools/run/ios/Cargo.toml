@@ -15,4 +15,4 @@ build-ios = { workspace = true }
 icon-gen = { workspace = true }
 # Parses `cargo metadata` JSON to derive the linked Apple frameworks from the
 # dep graph (each SDK declares `[package.metadata.idealyst.ios].frameworks`).
-serde_json = "1"
+serde_json = { workspace = true }

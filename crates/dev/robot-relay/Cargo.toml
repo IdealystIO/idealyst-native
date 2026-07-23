@@ -9,7 +9,7 @@ description = "Robot bridge relay for web (wasm) apps. A browser tab can't bind 
 crate-type = ["rlib"]
 
 [dependencies]
-serde_json = "1"
+serde_json = { workspace = true }
 anyhow = "1"
 # Decode `screenshot` responses to save the PNG host-side (~/.idealyst/screenshots).
 base64 = "0.22"

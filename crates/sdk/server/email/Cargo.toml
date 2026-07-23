@@ -52,9 +52,9 @@ server = { workspace = true }
 backend-email = { workspace = true }
 runtime-core = { workspace = true }
 
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 async-trait = "0.1"
 
 # SES provider deps (behind `ses`).

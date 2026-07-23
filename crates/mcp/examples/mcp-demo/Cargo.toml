@@ -26,7 +26,7 @@ mcp-catalog = { workspace = true }
 mcp-server = { workspace = true }
 # `tokio` for the `--serve` async runtime — small enough as a demo dep.
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-serde_json = "1"
+serde_json = { workspace = true }
 
 # NOTE on third-party catalog flow (e.g. pulling in idea-ui):
 # Adding `idea-ui = { workspace = true }` to this crate compiles

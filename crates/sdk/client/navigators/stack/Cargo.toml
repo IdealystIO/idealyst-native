@@ -23,7 +23,9 @@ runtime-server = ["dep:dev-server", "dep:wire"]
 catalog = ["runtime-core/catalog"]
 
 [dependencies]
-runtime-core = { workspace = true }
+# Forward the navigator gate: depending on this SDK re-enables the
+# walker/backend navigator machinery even under default-features = false.
+runtime-core = { workspace = true, features = ["prim-navigator"] }
 inventory = "0.3"
 dev-server = { workspace = true, optional = true }
 wire = { workspace = true, optional = true }
@@ -42,7 +44,7 @@ mock-backend = { workspace = true }
 mcp-catalog = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-backend-web = { workspace = true }
+backend-web = { workspace = true, features = ["prim-navigator"] }
 
 # Browser-run hydration tests (`tests/hydration_web.rs`): SSR HTML is
 # rendered in-test, injected, and hydrated by the real web backend.

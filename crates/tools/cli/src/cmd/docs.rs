@@ -123,6 +123,8 @@ pub fn run(args: Args) -> Result<()> {
             user_features: Vec::new(),
             bundle_out_dir: Some(bundle_out.clone()),
             gzip: false,
+                brotli: false,
+                primitives: None,
             strip_panics: false,
             // Pure SPA docs site — no SSR/SSG HTML to adopt, so the
             // hydration machinery can DCE out of the wasm.

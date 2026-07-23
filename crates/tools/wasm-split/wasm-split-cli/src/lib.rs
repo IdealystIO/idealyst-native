@@ -1000,6 +1000,7 @@ impl<'a> Splitter<'a> {
         // 4. Intersect: zero only symbols that BOTH (a) heuristic
         //    says are chunk-only AND (b) safe analysis says no live
         //    function directly references.
+        let rematerializable = rematerializable_segments(out);
         let mut dead_per_segment: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
         let mut zeroable: usize = 0;
         let mut zeroable_bytes: usize = 0;
@@ -1008,6 +1009,12 @@ impl<'a> Splitter<'a> {
             let Node::DataSymbol(id) = sym else { continue };
             let Some(symbol) = self.data_symbols.get(id) else { continue };
             if safe_live.contains(id) {
+                skipped_safe_live += 1;
+                continue;
+            }
+            // Only zero what the owning chunk can restore (same gate as
+            // `zero_dead_data`).
+            if !rematerializable.contains(&symbol.which_data_segment) {
                 skipped_safe_live += 1;
                 continue;
             }
@@ -1272,58 +1279,24 @@ impl<'a> Splitter<'a> {
         unused_symbols: &HashSet<Node>,
         min_size: usize,
     ) -> Result<()> {
-        // Collect dead-symbol ranges, indexed by their data-segment
-        // index. The data-symbol parse stores `which_data_segment`
-        // already.
-        let mut dead_per_segment: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
-        let mut dead_bytes_total: usize = 0;
-        let mut skipped_small: usize = 0;
-        for sym in unused_symbols {
-            let Node::DataSymbol(id) = sym else { continue };
-            let Some(symbol) = self.data_symbols.get(id) else { continue };
-            if symbol.symbol_size < min_size {
-                skipped_small += 1;
-                continue;
-            }
-            let range = symbol.segment_offset..symbol.segment_offset + symbol.symbol_size;
-            dead_bytes_total += symbol.symbol_size;
-            dead_per_segment
-                .entry(symbol.which_data_segment)
-                .or_default()
-                .push((range.start, range.end));
-        }
-        if skipped_small > 0 {
+        let stats = zero_dead_data(&self.data_symbols, out, unused_symbols, min_size);
+        if stats.skipped_small > 0 {
             eprintln!(
-                "[wasm-split prune-data] skipped {skipped_small} chunk-only symbols smaller \
+                "[wasm-split prune-data] skipped {} chunk-only symbols smaller \
                  than {min_size} bytes (safety threshold)",
+                stats.skipped_small,
             );
         }
-
-        // Iterate main's data segments in declaration order and zero
-        // every dead range. Walrus indexes segments via `out.data.iter()`;
-        // the parser's `which_data_segment` index matches that order.
-        let data_ids: Vec<_> = out.data.iter().map(|d| d.id()).collect();
-        let mut zeroed_bytes: usize = 0;
-        for (idx, data_id) in data_ids.into_iter().enumerate() {
-            let Some(dead_ranges) = dead_per_segment.get(&idx) else {
-                continue;
-            };
-            let data = out.data.get_mut(data_id);
-            for (lo, hi) in dead_ranges {
-                let lo = *lo;
-                let hi = (*hi).min(data.value.len());
-                if hi <= lo {
-                    continue;
-                }
-                for b in &mut data.value[lo..hi] {
-                    *b = 0;
-                }
-                zeroed_bytes += hi - lo;
-            }
+        if stats.skipped_unrematerializable > 0 {
+            eprintln!(
+                "[wasm-split prune-data] kept {} chunk-only symbols in \
+                 non-rematerializable segments (passive / non-const offset)",
+                stats.skipped_unrematerializable,
+            );
         }
-
         eprintln!(
-            "[wasm-split prune-data] zeroed {zeroed_bytes} of {dead_bytes_total} chunk-only data bytes",
+            "[wasm-split prune-data] zeroed {} of {} chunk-only data bytes",
+            stats.zeroed_bytes, stats.dead_bytes_total,
         );
         Ok(())
     }
@@ -1538,46 +1511,7 @@ impl<'a> Splitter<'a> {
     }
 
     fn clear_data_segments(&self, out: &mut Module, unique_symbols: &HashSet<Node>) {
-        // Preserve the data symbols for this module and then clear them away
-        let data_ids: Vec<_> = out.data.iter().map(|t| t.id()).collect();
-        for (idx, data_id) in data_ids.into_iter().enumerate() {
-            let data = out.data.get_mut(data_id);
-
-            // Take the data out of the vec - zeroing it out unless we patch it in manually
-            let contents = data.value.split_off(0);
-
-            // Zero out the non-primary data segments
-            if idx != 0 {
-                continue;
-            }
-
-            let DataKind::Active { memory, offset } = data.kind else {
-                continue;
-            };
-
-            let ConstExpr::Value(ir::Value::I32(data_offset)) = offset else {
-                continue;
-            };
-
-            // And then assign chunks of the data to new data entries that will override the individual slots
-            for unique in unique_symbols {
-                if let Node::DataSymbol(id) = unique {
-                    if let Some(symbol) = self.data_symbols.get(id) {
-                        if symbol.which_data_segment == idx {
-                            let range =
-                                symbol.segment_offset..symbol.segment_offset + symbol.symbol_size;
-                            let offset = ConstExpr::Value(ir::Value::I32(
-                                data_offset + symbol.segment_offset as i32,
-                            ));
-                            out.data.add(
-                                DataKind::Active { memory, offset },
-                                contents[range].to_vec(),
-                            );
-                        }
-                    }
-                }
-            }
-        }
+        rematerialize_unique_data_segments(&self.data_symbols, out, unique_symbols)
     }
 
     /// Load the funcref table from the main module. This *should* exist for all modules created by
@@ -1897,6 +1831,195 @@ impl<'a> Splitter<'a> {
             shared_funcs.into_iter().collect()
         };
 
+        Ok(())
+    }
+
+    /// Diagnostic (investigation tooling for bundle-size work; `trace`
+    /// subcommand). Recomputes main's reachability BFS with parent
+    /// tracking, prints the shortest root→symbol chain for symbols whose
+    /// mangled name contains any of `patterns`, then a per-crate byte
+    /// attribution of main-only / shared / chunk-only code+data. This is
+    /// read-only over the already-built call graph, so its numbers match
+    /// what `emit()` will do.
+    pub fn debug_trace(&self, patterns: &[String], max_traces_per_pattern: usize) -> Result<()> {
+        // Data-symbol names come from the bindgened module's symbol table
+        // (the same table `data_symbols` was parsed from, so indices line up).
+        let raw = parse_bytes_to_data_segment(self.bindgened)?;
+        let node_name = |n: &Node| -> String {
+            match n {
+                Node::Function(id) => self
+                    .source_module
+                    .funcs
+                    .get(*id)
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("func[{:?}]", id)),
+                Node::DataSymbol(idx) => match raw.symbols.get(*idx) {
+                    Some(SymbolInfo::Data { name, .. }) => format!("data:{name}"),
+                    _ => format!("data[#{idx}]"),
+                },
+            }
+        };
+        let node_size = |n: &Node| -> usize {
+            match n {
+                Node::Function(id) => match &self.source_module.funcs.get(*id).kind {
+                    FunctionKind::Local(l) => l
+                        .original_range
+                        .clone()
+                        .map(|r| r.end - r.start)
+                        .unwrap_or(0),
+                    _ => 0,
+                },
+                Node::DataSymbol(idx) => self
+                    .data_symbols
+                    .get(idx)
+                    .map(|d| d.symbol_size)
+                    .unwrap_or(0),
+            }
+        };
+
+        // BFS from main's roots, remembering each node's parent so we can
+        // reconstruct WHY something is main-reachable.
+        let roots = self.main_roots();
+        let mut parent: HashMap<Node, Option<Node>> = HashMap::new();
+        let mut queue: VecDeque<Node> = VecDeque::new();
+        for r in &roots {
+            if !parent.contains_key(r) {
+                parent.insert(*r, None);
+                queue.push_back(*r);
+            }
+        }
+        while let Some(node) = queue.pop_front() {
+            if let Some(children) = self.call_graph.get(&node) {
+                for child in children {
+                    if !parent.contains_key(child) {
+                        parent.insert(*child, Some(node));
+                        queue.push_back(*child);
+                    }
+                }
+            }
+        }
+
+        let describe_root = |n: &Node| -> String {
+            if let Node::Function(id) = n {
+                if let Some(exp) = self.source_module.exports.get_exported_func(*id) {
+                    return format!("EXPORT \"{}\"", exp.name);
+                }
+                if self
+                    .source_module
+                    .imports
+                    .iter()
+                    .any(|i| matches!(i.kind, ImportKind::Function(f) if f == *id))
+                {
+                    return "IMPORT".to_string();
+                }
+                if self.source_module.start == Some(*id) {
+                    return "START".to_string();
+                }
+            }
+            "ROOT(?)".to_string()
+        };
+
+        for pat in patterns {
+            let mut matches: Vec<&Node> = parent
+                .keys()
+                .filter(|n| node_name(n).contains(pat.as_str()))
+                .collect();
+            matches.sort_by_key(|n| node_name(n));
+            println!(
+                "\n=== pattern {pat:?}: {} main-reachable symbols (showing ≤{max_traces_per_pattern} chains)",
+                matches.len()
+            );
+            for node in matches.into_iter().take(max_traces_per_pattern) {
+                // Walk up to the root.
+                let mut chain = vec![**&node];
+                while let Some(Some(p)) = parent.get(chain.last().unwrap()) {
+                    chain.push(*p);
+                }
+                chain.reverse();
+                println!("--- chain ({} hops):", chain.len() - 1);
+                for (i, link) in chain.iter().enumerate() {
+                    let marker = if i == 0 {
+                        format!("[{}] ", describe_root(link))
+                    } else {
+                        String::new()
+                    };
+                    println!("  {}{}{}", "  ".repeat(i.min(12)), marker, node_name(link));
+                }
+            }
+        }
+
+        // Per-crate attribution: classify every node into main-only /
+        // shared / chunk-only exactly the way emit() does.
+        let chunk_graph: HashSet<Node> = self
+            .split_points
+            .iter()
+            .flat_map(|s| s.reachable_graph.iter().cloned())
+            .collect();
+        const CRATES: &[&str] = &[
+            // order matters: longest/most-specific first, since matching is
+            // substring-based (e.g. "lazy_canvas" must beat "canvas")
+            "lazy_canvas", "eager_canvas", "probe_canvas", "prune_repro", "canvas_vello",
+            "canvas_native", "canvas_core", "vello_encoding", "vello_shaders", "vello",
+            "wgpu_hal", "wgpu_core", "wgpu_types", "wgpu", "naga", "peniko", "kurbo", "skrifa",
+            "read_fonts", "fontique", "swash", "zeno", "cosmic_text", "glyphon", "canvas",
+            "backend_web", "runtime_core", "runtime_layout", "taffy", "idea_ui", "wasm_bindgen",
+            "js_sys", "web_sys", "serde", "futures", "bytemuck", "hashbrown", "alloc", "core",
+            "std",
+        ];
+        let crate_of = |name: &str| -> &'static str {
+            for c in CRATES {
+                if name.contains(c) {
+                    return c;
+                }
+            }
+            "other"
+        };
+        // (crate, class) -> (count, code_bytes, data_bytes)
+        let mut table: BTreeMap<(&'static str, &'static str), (usize, usize, usize)> =
+            BTreeMap::new();
+        for node in self.main_graph.union(&chunk_graph) {
+            let class = match (self.main_graph.contains(node), chunk_graph.contains(node)) {
+                (true, true) => "shared",
+                (true, false) => "main-only",
+                (false, true) => "chunk-only",
+                _ => unreachable!(),
+            };
+            let name = node_name(node);
+            let entry = table.entry((crate_of(&name), class)).or_default();
+            entry.0 += 1;
+            match node {
+                Node::Function(_) => entry.1 += node_size(node),
+                Node::DataSymbol(_) => entry.2 += node_size(node),
+            }
+        }
+        println!("\n=== per-crate attribution (count / code KB / data KB)");
+        println!("{:<16} {:>28} {:>28} {:>28}", "crate", "main-only", "shared", "chunk-only");
+        let crates_in_table: BTreeSet<&'static str> =
+            table.keys().map(|(c, _)| *c).collect();
+        let fmt_cell = |t: Option<&(usize, usize, usize)>| -> String {
+            match t {
+                Some((n, code, data)) => {
+                    format!("{n} / {:.0} / {:.0}", *code as f64 / 1024.0, *data as f64 / 1024.0)
+                }
+                None => "-".to_string(),
+            }
+        };
+        for c in crates_in_table {
+            println!(
+                "{:<16} {:>28} {:>28} {:>28}",
+                c,
+                fmt_cell(table.get(&(c, "main-only"))),
+                fmt_cell(table.get(&(c, "shared"))),
+                fmt_cell(table.get(&(c, "chunk-only"))),
+            );
+        }
+        println!(
+            "\nmain_graph: {} nodes; chunk graph: {} nodes; shared: {}",
+            self.main_graph.len(),
+            chunk_graph.len(),
+            self.main_graph.intersection(&chunk_graph).count()
+        );
         Ok(())
     }
 
@@ -2312,6 +2435,171 @@ fn compute_shared_chunk<'a, T: Eq + std::hash::Hash + Clone + 'a>(
         .collect()
 }
 
+/// Empty a split module's data segments, then re-add an active mini-segment
+/// for each `unique_symbols` data symbol so the chunk initializes ITS data at
+/// the original address when it instantiates against main's memory.
+///
+/// This walks EVERY active const-offset segment — `.rodata` (segment 0) AND
+/// `.data`/`.bss` (later segments). It used to re-add segment 0 only, which
+/// silently dropped chunk-only symbols in `.data` (mutable statics with
+/// non-zero initializers: once-cells, seeded counters, lookup tables). That
+/// was masked while main still shipped its own copy of the bytes, and became
+/// a real corruption under `--data-prune`, which zeroes main's copy across
+/// ALL segments: nobody initialized the symbol, the chunk read zeros, and a
+/// lazy component silently rendered nothing (looked exactly like "the chunk
+/// never loaded"). See `regression_rematerializes_non_rodata_segments`.
+///
+/// Segments that cannot be re-materialized at a fixed address (passive, or a
+/// non-constant offset expression) are skipped here — and the prune pass
+/// refuses to zero symbols in such segments for the same reason (see
+/// `zero_dead_data`), keeping the two passes' assumptions aligned.
+/// Segment indices (declaration order) a chunk can re-materialize at a fixed
+/// address: active with a constant i32 offset. Must mirror the gate in
+/// [`rematerialize_unique_data_segments`] — a prune pass may only zero
+/// symbols in these segments, or nobody ships the bytes.
+fn rematerializable_segments(out: &Module) -> HashSet<usize> {
+    out.data
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| {
+            matches!(
+                d.kind,
+                DataKind::Active {
+                    offset: ConstExpr::Value(ir::Value::I32(_)),
+                    ..
+                }
+            )
+        })
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
+/// Counters from [`zero_dead_data`], surfaced in the build log.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ZeroDeadDataStats {
+    zeroed_bytes: usize,
+    dead_bytes_total: usize,
+    skipped_small: usize,
+    skipped_unrematerializable: usize,
+}
+
+/// Zero every `unused_symbols` (chunk-only) data symbol in main's data
+/// segments, subject to two safety gates:
+///
+/// - `min_size`: symbols smaller than this are kept. The symbol-level call
+///   graph misclassifies small vtables (4-byte function-index slots), and
+///   zeroing one turns into a null-function trap at runtime.
+/// - **Re-materializability**: a symbol is only zeroed if its segment is
+///   active with a constant i32 offset — the same precondition
+///   [`rematerialize_unique_data_segments`] needs to re-add the symbol from
+///   the owning chunk. Zeroing a symbol no chunk can restore means NOBODY
+///   ships the bytes and the chunk reads zeros at runtime.
+fn zero_dead_data(
+    data_symbols: &BTreeMap<usize, DataSymbol>,
+    out: &mut Module,
+    unused_symbols: &HashSet<Node>,
+    min_size: usize,
+) -> ZeroDeadDataStats {
+    let mut stats = ZeroDeadDataStats::default();
+
+    let rematerializable = rematerializable_segments(out);
+
+    // Collect dead-symbol ranges, indexed by their data-segment
+    // index. The data-symbol parse stores `which_data_segment`
+    // already.
+    let mut dead_per_segment: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
+    for sym in unused_symbols {
+        let Node::DataSymbol(id) = sym else { continue };
+        let Some(symbol) = data_symbols.get(id) else { continue };
+        if symbol.symbol_size < min_size {
+            stats.skipped_small += 1;
+            continue;
+        }
+        if !rematerializable.contains(&symbol.which_data_segment) {
+            stats.skipped_unrematerializable += 1;
+            continue;
+        }
+        let range = symbol.segment_offset..symbol.segment_offset + symbol.symbol_size;
+        stats.dead_bytes_total += symbol.symbol_size;
+        dead_per_segment
+            .entry(symbol.which_data_segment)
+            .or_default()
+            .push((range.start, range.end));
+    }
+
+    // Iterate main's data segments in declaration order and zero
+    // every dead range. Walrus indexes segments via `out.data.iter()`;
+    // the parser's `which_data_segment` index matches that order.
+    let data_ids: Vec<_> = out.data.iter().map(|d| d.id()).collect();
+    for (idx, data_id) in data_ids.into_iter().enumerate() {
+        let Some(dead_ranges) = dead_per_segment.get(&idx) else {
+            continue;
+        };
+        let data = out.data.get_mut(data_id);
+        for (lo, hi) in dead_ranges {
+            let lo = *lo;
+            let hi = (*hi).min(data.value.len());
+            if hi <= lo {
+                continue;
+            }
+            for b in &mut data.value[lo..hi] {
+                *b = 0;
+            }
+            stats.zeroed_bytes += hi - lo;
+        }
+    }
+
+    stats
+}
+
+fn rematerialize_unique_data_segments(
+    data_symbols: &BTreeMap<usize, DataSymbol>,
+    out: &mut Module,
+    unique_symbols: &HashSet<Node>,
+) {
+    let data_ids: Vec<_> = out.data.iter().map(|t| t.id()).collect();
+    for (idx, data_id) in data_ids.into_iter().enumerate() {
+        let data = out.data.get_mut(data_id);
+
+        // Take the data out of the vec - zeroing it out unless we patch it in manually
+        let contents = data.value.split_off(0);
+
+        let DataKind::Active { memory, offset } = data.kind else {
+            continue;
+        };
+
+        let ConstExpr::Value(ir::Value::I32(data_offset)) = offset else {
+            continue;
+        };
+
+        // And then assign chunks of the data to new data entries that will override the individual slots
+        for unique in unique_symbols {
+            if let Node::DataSymbol(id) = unique {
+                if let Some(symbol) = data_symbols.get(id) {
+                    if symbol.which_data_segment == idx {
+                        let range =
+                            symbol.segment_offset..symbol.segment_offset + symbol.symbol_size;
+                        if range.end > contents.len() {
+                            tracing::warn!(
+                                "data symbol {id} range {range:?} exceeds segment {idx} len {} — skipping re-materialize",
+                                contents.len()
+                            );
+                            continue;
+                        }
+                        let offset = ConstExpr::Value(ir::Value::I32(
+                            data_offset + symbol.segment_offset as i32,
+                        ));
+                        out.data.add(
+                            DataKind::Active { memory, offset },
+                            contents[range].to_vec(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 struct RawDataSection<'a> {
     data_range: Range<usize>,
     symbols: Vec<SymbolInfo<'a>>,
@@ -2403,6 +2691,160 @@ fn parse_bytes_to_data_segment(bytes: &[u8]) -> Result<RawDataSection<'_>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a module with two active data segments (mirroring rustc's
+    /// `.rodata` at segment 0 and `.data` at segment 1) plus one passive
+    /// segment, and a `data_symbols` table with one symbol per segment.
+    fn two_segment_fixture() -> (Module, BTreeMap<usize, DataSymbol>) {
+        let mut module = Module::default();
+        let memory = module.memories.add_local(false, false, 1, None, None);
+        // segment 0: ".rodata" at 1024
+        module.data.add(
+            DataKind::Active {
+                memory,
+                offset: ConstExpr::Value(ir::Value::I32(1024)),
+            },
+            (0u8..64).collect(),
+        );
+        // segment 1: ".data" at 4096 — the segment the old code dropped
+        module.data.add(
+            DataKind::Active {
+                memory,
+                offset: ConstExpr::Value(ir::Value::I32(4096)),
+            },
+            (100u8..164).collect(),
+        );
+        // segment 2: passive — not re-materializable at a fixed address
+        module.data.add(DataKind::Passive, vec![7u8; 64]);
+
+        let mut data_symbols = BTreeMap::new();
+        // symbol 10: 32 bytes at offset 8 of segment 0
+        data_symbols.insert(
+            10,
+            DataSymbol {
+                index: 10,
+                range: 0..0, // absolute file range: unused by the passes under test
+                segment_offset: 8,
+                symbol_size: 32,
+                which_data_segment: 0,
+            },
+        );
+        // symbol 11: 32 bytes at offset 16 of segment 1 (the B_PALETTE shape)
+        data_symbols.insert(
+            11,
+            DataSymbol {
+                index: 11,
+                range: 0..0,
+                segment_offset: 16,
+                symbol_size: 32,
+                which_data_segment: 1,
+            },
+        );
+        // symbol 12: 32 bytes at offset 0 of the passive segment 2
+        data_symbols.insert(
+            12,
+            DataSymbol {
+                index: 12,
+                range: 0..0,
+                segment_offset: 0,
+                symbol_size: 32,
+                which_data_segment: 2,
+            },
+        );
+        (module, data_symbols)
+    }
+
+    /// Regression for the `--data-prune` chunk-corruption: a chunk-only
+    /// mutable static in `.data` (segment 1) was zeroed in main but never
+    /// re-added to the chunk, because `clear_data_segments` only
+    /// re-materialized segment 0. Nobody shipped the bytes; the lazy
+    /// component read zeros and silently rendered nothing (looked like the
+    /// chunk never loaded). Chunks must re-add unique symbols from EVERY
+    /// active const-offset segment.
+    #[test]
+    fn regression_rematerializes_non_rodata_segments() {
+        let (mut module, data_symbols) = two_segment_fixture();
+        let unique: HashSet<Node> = [Node::DataSymbol(10), Node::DataSymbol(11)].into();
+
+        rematerialize_unique_data_segments(&data_symbols, &mut module, &unique);
+
+        // The three original segments are emptied; two mini-segments were
+        // re-added, one per unique symbol — including the `.data` one.
+        let readded: Vec<(i32, Vec<u8>)> = module
+            .data
+            .iter()
+            .filter(|d| !d.value.is_empty())
+            .map(|d| match d.kind {
+                DataKind::Active {
+                    offset: ConstExpr::Value(ir::Value::I32(off)),
+                    ..
+                } => (off, d.value.clone()),
+                _ => panic!("re-added segment must be active with const offset"),
+            })
+            .collect();
+
+        // segment-0 symbol: bytes 8..40 of (0..64) at address 1024+8
+        assert!(
+            readded.contains(&(1024 + 8, (8u8..40).collect())),
+            "rodata symbol not re-materialized: {readded:?}"
+        );
+        // segment-1 symbol: bytes 16..48 of (100..164) at address 4096+16 —
+        // this is the case the old segment-0-only loop dropped.
+        assert!(
+            readded.contains(&(4096 + 16, (116u8..148).collect())),
+            ".data symbol not re-materialized: {readded:?}"
+        );
+        assert_eq!(readded.len(), 2);
+    }
+
+    /// The prune pass may only zero symbols a chunk can restore. Symbols in
+    /// a passive (or non-const-offset) segment have no fixed address for the
+    /// chunk to re-initialize, so zeroing them would strand zeros — keep
+    /// them and count them instead.
+    #[test]
+    fn regression_prune_skips_unrematerializable_segments() {
+        let (mut module, data_symbols) = two_segment_fixture();
+        let unused: HashSet<Node> = [
+            Node::DataSymbol(10),
+            Node::DataSymbol(11),
+            Node::DataSymbol(12),
+        ]
+        .into();
+
+        let stats = zero_dead_data(&data_symbols, &mut module, &unused, 24);
+
+        assert_eq!(stats.zeroed_bytes, 64, "both active-segment symbols zeroed");
+        assert_eq!(
+            stats.skipped_unrematerializable, 1,
+            "passive-segment symbol must be kept"
+        );
+        assert_eq!(stats.skipped_small, 0);
+
+        let segs: Vec<Vec<u8>> = module.data.iter().map(|d| d.value.clone()).collect();
+        // segment 0: bytes 8..40 zeroed, rest intact
+        assert!(segs[0][8..40].iter().all(|b| *b == 0));
+        assert_eq!(segs[0][0..8], (0u8..8).collect::<Vec<_>>()[..]);
+        // segment 1: bytes 16..48 zeroed — zeroing here is only sound
+        // because chunks now re-materialize .data (see companion test)
+        assert!(segs[1][16..48].iter().all(|b| *b == 0));
+        assert_eq!(segs[1][0..16], (100u8..116).collect::<Vec<_>>()[..]);
+        // passive segment untouched
+        assert!(segs[2].iter().all(|b| *b == 7));
+    }
+
+    /// Below the `min_size` threshold nothing is zeroed regardless of
+    /// segment — small vtable slots are where the call-graph heuristic
+    /// misclassifies.
+    #[test]
+    fn prune_min_size_threshold_still_applies() {
+        let (mut module, data_symbols) = two_segment_fixture();
+        let unused: HashSet<Node> = [Node::DataSymbol(10), Node::DataSymbol(11)].into();
+
+        let stats = zero_dead_data(&data_symbols, &mut module, &unused, 64);
+
+        assert_eq!(stats.zeroed_bytes, 0);
+        assert_eq!(stats.skipped_small, 2);
+    }
 
     // Regression: the shared-function DCE-root exports must use short
     // synthetic `s{n}` names, NOT the function's full mangled symbol.

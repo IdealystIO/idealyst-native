@@ -1,0 +1,14 @@
+[package]
+name = "eager-canvas"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Control for the lazy-canvas experiment: registers the vello renderer EAGERLY (at boot, in main). Comparing main.wasm against lazy-canvas isolates whether lazy registration actually keeps the renderer out of main, or the External registry call_indirect anchors it there regardless."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+runtime-core = { workspace = true }
+canvas = { workspace = true }
+canvas-vello = { path = "../../crates/sdk/client/canvas/vello", default-features = false }

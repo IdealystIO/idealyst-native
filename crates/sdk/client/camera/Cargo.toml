@@ -46,7 +46,7 @@ capabilities = ["camera"]
 frameworks = ["AVFoundation", "CoreMedia", "CoreVideo"]
 
 [dependencies]
-thiserror = "1"
+thiserror = { workspace = true }
 # The platform-agnostic live-source abstraction camera produces. Thin and
 # GPU-free; shared with `screen-recorder` (producer) and `video` (consumer).
 media-stream = { workspace = true }

@@ -28,7 +28,7 @@ server = { workspace = true }
 graphql = { workspace = true }
 runtime-core = { workspace = true, features = ["async-driver"] }
 idea-ui = { workspace = true }
-serde = { version = "1", features = ["derive"] }
+serde = { workspace = true }
 # The typed-operation derive (`GraphQLQuery`) — same crate the SDK uses.
 graphql_client = { version = "0.14", default-features = false, features = [
     "graphql_query_derive",

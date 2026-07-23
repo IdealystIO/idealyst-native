@@ -56,8 +56,8 @@ screenshot = ["dep:headless-screenshot", "dep:base64", "runtime-server", "robot"
 [dependencies]
 runtime-core = { workspace = true }
 wire = { workspace = true }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 # Scene → PNG bridge + the Robot `"screenshot"` verb. Optional, pulled
 # in only by the `screenshot` feature (drags render-wgpu/wgpu). Leaf
@@ -114,7 +114,7 @@ pollster = { version = "0.3", optional = true }
 [dev-dependencies]
 # Used by the `dump_wire` example to pretty-print the captured
 # command stream as JSON.
-serde_json = "1"
+serde_json = { workspace = true }
 # The integration tests under `tests/aas_headless.rs` need the
 # framework's Robot registry populated by the walker. Enabling
 # `runtime-core/robot` as a dev-dep activates that codepath only

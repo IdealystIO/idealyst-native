@@ -497,6 +497,8 @@ fn run_server(args: &Args) -> anyhow::Result<()> {
                 user_features: Vec::new(),
                 bundle_out_dir: Some(args.dir.join("dist").join("web")),
                 gzip: false,
+                brotli: false,
+                primitives: None,
                 strip_panics: false,
                 hydrate: false,
                 prune_dead_data_min: None,

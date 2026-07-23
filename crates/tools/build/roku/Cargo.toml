@@ -16,8 +16,8 @@ crate-type = ["rlib"]
 
 [dependencies]
 anyhow = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 toml = "0.8"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 backend-roku-transpile = { workspace = true }

@@ -981,9 +981,9 @@ fn font_family_from_string_and_str_produce_system() {
 #[test]
 fn should_warn_for_system_font_decision_table() {
     use super::should_warn_for_system_font;
-    use std::collections::HashSet;
+    use rustc_hash::FxHashSet;
 
-    let registered: HashSet<&'static str> = ["Inter", "Source Code Pro"]
+    let registered: FxHashSet<&'static str> = ["Inter", "Source Code Pro"]
         .into_iter()
         .collect();
 
@@ -1697,4 +1697,126 @@ fn style_overrides_wrap_reactive_author_source() {
             "author background survives through the wrap"
         );
     }
+}
+
+/// Guard for the hand-written `Clone for StyleRules` (outlined for wasm
+/// size — see the impl). Every field is `Some` with a value DISTINCT
+/// from every other same-typed field, so a copy-paste slip that clones
+/// field A into slot B fails the `PartialEq` here rather than shipping
+/// silently. No `..Default::default()` on purpose: a new field must be
+/// added to this literal (and to the manual impl) or this fails to
+/// compile.
+#[test]
+fn clone_round_trips_a_fully_populated_struct() {
+    let rules = StyleRules {
+        background: Some(Tokenized::Literal(Color("#c0".into()))),
+        color: Some(Tokenized::token("tok-c1", Color("#f1".into()))),
+        caret_color: Some(Tokenized::Literal(Color("#c2".into()))),
+        border_top_color: Some(Tokenized::token("tok-c3", Color("#f3".into()))),
+        border_right_color: Some(Tokenized::Literal(Color("#c4".into()))),
+        border_bottom_color: Some(Tokenized::token("tok-c5", Color("#f5".into()))),
+        border_left_color: Some(Tokenized::Literal(Color("#c6".into()))),
+        font_size: Some(Tokenized::Literal(Length::Px(100.0))),
+        gap: Some(Tokenized::token("tok-l1", Length::Percent(1.0))),
+        row_gap: Some(Tokenized::Literal(Length::Px(102.0))),
+        column_gap: Some(Tokenized::token("tok-l3", Length::Percent(3.0))),
+        flex_basis: Some(Tokenized::Literal(Length::Px(104.0))),
+        width: Some(Tokenized::token("tok-l5", Length::Percent(5.0))),
+        height: Some(Tokenized::Literal(Length::Px(106.0))),
+        min_width: Some(Tokenized::token("tok-l7", Length::Percent(7.0))),
+        min_height: Some(Tokenized::Literal(Length::Px(108.0))),
+        max_width: Some(Tokenized::token("tok-l9", Length::Percent(9.0))),
+        max_height: Some(Tokenized::Literal(Length::Px(110.0))),
+        padding_top: Some(Tokenized::token("tok-l11", Length::Percent(11.0))),
+        padding_right: Some(Tokenized::Literal(Length::Px(112.0))),
+        padding_bottom: Some(Tokenized::token("tok-l13", Length::Percent(13.0))),
+        padding_left: Some(Tokenized::Literal(Length::Px(114.0))),
+        margin_top: Some(Tokenized::token("tok-l15", Length::Percent(15.0))),
+        margin_right: Some(Tokenized::Literal(Length::Px(116.0))),
+        margin_bottom: Some(Tokenized::token("tok-l17", Length::Percent(17.0))),
+        margin_left: Some(Tokenized::Literal(Length::Px(118.0))),
+        border_top_left_radius: Some(Tokenized::token("tok-l19", Length::Percent(19.0))),
+        border_top_right_radius: Some(Tokenized::Literal(Length::Px(120.0))),
+        border_bottom_left_radius: Some(Tokenized::token("tok-l21", Length::Percent(21.0))),
+        border_bottom_right_radius: Some(Tokenized::Literal(Length::Px(122.0))),
+        top: Some(Tokenized::token("tok-l23", Length::Percent(23.0))),
+        right: Some(Tokenized::Literal(Length::Px(124.0))),
+        bottom: Some(Tokenized::token("tok-l25", Length::Percent(25.0))),
+        left: Some(Tokenized::Literal(Length::Px(126.0))),
+        flex_grow: Some(Tokenized::Literal(300.0)),
+        flex_shrink: Some(Tokenized::Literal(301.0)),
+        border_top_width: Some(Tokenized::Literal(302.0)),
+        border_right_width: Some(Tokenized::Literal(303.0)),
+        border_bottom_width: Some(Tokenized::Literal(304.0)),
+        border_left_width: Some(Tokenized::Literal(305.0)),
+        line_height: Some(Tokenized::Literal(306.0)),
+        letter_spacing: Some(Tokenized::Literal(307.0)),
+        opacity: Some(Tokenized::Literal(308.0)),
+        background_transition: Some(Transition::new(500, Easing::EaseOut)),
+        color_transition: Some(Transition::new(510, Easing::EaseOut)),
+        caret_color_transition: Some(Transition::new(520, Easing::EaseOut)),
+        opacity_transition: Some(Transition::new(530, Easing::EaseOut)),
+        transform_transition: Some(Transition::new(540, Easing::EaseOut)),
+        width_transition: Some(Transition::new(550, Easing::EaseOut)),
+        height_transition: Some(Transition::new(560, Easing::EaseOut)),
+        max_width_transition: Some(Transition::new(570, Easing::EaseOut)),
+        max_height_transition: Some(Transition::new(580, Easing::EaseOut)),
+        min_width_transition: Some(Transition::new(590, Easing::EaseOut)),
+        min_height_transition: Some(Transition::new(600, Easing::EaseOut)),
+        top_transition: Some(Transition::new(610, Easing::EaseOut)),
+        right_transition: Some(Transition::new(620, Easing::EaseOut)),
+        bottom_transition: Some(Transition::new(630, Easing::EaseOut)),
+        left_transition: Some(Transition::new(640, Easing::EaseOut)),
+        padding_top_transition: Some(Transition::new(650, Easing::EaseOut)),
+        padding_right_transition: Some(Transition::new(660, Easing::EaseOut)),
+        padding_bottom_transition: Some(Transition::new(670, Easing::EaseOut)),
+        padding_left_transition: Some(Transition::new(680, Easing::EaseOut)),
+        margin_top_transition: Some(Transition::new(690, Easing::EaseOut)),
+        margin_right_transition: Some(Transition::new(700, Easing::EaseOut)),
+        margin_bottom_transition: Some(Transition::new(710, Easing::EaseOut)),
+        margin_left_transition: Some(Transition::new(720, Easing::EaseOut)),
+        border_top_left_radius_transition: Some(Transition::new(730, Easing::EaseOut)),
+        border_top_right_radius_transition: Some(Transition::new(740, Easing::EaseOut)),
+        border_bottom_left_radius_transition: Some(Transition::new(750, Easing::EaseOut)),
+        border_bottom_right_radius_transition: Some(Transition::new(760, Easing::EaseOut)),
+        border_top_width_transition: Some(Transition::new(770, Easing::EaseOut)),
+        border_right_width_transition: Some(Transition::new(780, Easing::EaseOut)),
+        border_bottom_width_transition: Some(Transition::new(790, Easing::EaseOut)),
+        border_left_width_transition: Some(Transition::new(800, Easing::EaseOut)),
+        border_top_color_transition: Some(Transition::new(810, Easing::EaseOut)),
+        border_right_color_transition: Some(Transition::new(820, Easing::EaseOut)),
+        border_bottom_color_transition: Some(Transition::new(830, Easing::EaseOut)),
+        border_left_color_transition: Some(Transition::new(840, Easing::EaseOut)),
+        display: Some(DisplayKind::Grid),
+        grid_template_columns: Some(vec![TrackSize::Fr(2.0), TrackSize::Px(40.0)]),
+        flex_direction: Some(FlexDirection::RowReverse),
+        flex_wrap: Some(FlexWrap::Wrap),
+        justify_content: Some(JustifyContent::SpaceEvenly),
+        align_items: Some(AlignItems::Baseline),
+        align_content: Some(AlignContent::SpaceBetween),
+        align_self: Some(AlignSelf::FlexEnd),
+        aspect_ratio: Some(0.5625),
+        position: Some(Position::Absolute),
+        font_family: Some(FontFamily::System("Test Sans".into())),
+        font_weight: Some(FontWeight::Black),
+        font_style: Some(FontStyle::Italic),
+        text_align: Some(TextAlign::Justify),
+        underline: Some(true),
+        strikethrough: Some(false),
+        text_transform: Some(TextTransform::Lowercase),
+        overflow: Some(Overflow::Hidden),
+        object_fit: Some(ObjectFit::Cover),
+        shadow: Some(Shadow { x: 1.0, y: 2.0, blur: 3.0, color: Color("#s".into()) }),
+        background_gradient: Some(Gradient {
+            kind: GradientKind::Radial { center: (0.1, 0.9), radius: 1.25, extent: RadialExtent::FarthestCorner },
+            stops: vec![GradientStop { offset: 0.0, color: Color("#g0".into()) },
+                        GradientStop { offset: 1.0, color: Color("#g1".into()) }],
+        }),
+        transform: Some(vec![Transform::TranslateX(Length::Px(9.0)), Transform::Rotate(30.0)]),
+        transform_origin: Some((Length::Px(3.0), Length::Percent(60.0))),
+        cursor: Some(Cursor::Help),
+        user_select: Some(UserSelect::Text),
+        pointer_events: Some(PointerEvents::None),
+    };
+    assert_eq!(rules.clone(), rules);
 }

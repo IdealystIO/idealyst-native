@@ -23,7 +23,7 @@ use runtime_core::{
     TouchPoint,
 };
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use runtime_core::collections::{SmallIdMap, SmallIdSet};
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
@@ -61,8 +61,8 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
     // We also track captured pointers (those for which a handler
     // returned `claim: true`) so future logic — e.g. an element
     // suppressing scroll while claimed — can read it.
-    let active: Rc<RefCell<HashSet<i32>>> = Rc::new(RefCell::new(HashSet::new()));
-    let captured: Rc<RefCell<HashSet<i32>>> = Rc::new(RefCell::new(HashSet::new()));
+    let active: Rc<RefCell<SmallIdSet<i32>>> = Rc::new(RefCell::new(SmallIdSet::new()));
+    let captured: Rc<RefCell<SmallIdSet<i32>>> = Rc::new(RefCell::new(SmallIdSet::new()));
 
     // Element-local coordinates are `client - element_origin`. Reading that
     // origin (`getBoundingClientRect`) forces a synchronous layout flush, and
@@ -74,7 +74,7 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
     // *moving* frame that fights the drag. So we sample the origin ONCE at
     // `pointerdown` and reuse it for the gesture's moves. Keyed by pointer id;
     // dropped on up/cancel.
-    let origins: Rc<RefCell<HashMap<i32, (f64, f64)>>> = Rc::new(RefCell::new(HashMap::new()));
+    let origins: Rc<RefCell<SmallIdMap<i32, (f64, f64)>>> = Rc::new(RefCell::new(SmallIdMap::new()));
 
     // pointerdown — Began.
     {
@@ -404,7 +404,7 @@ fn pressure_to_force(pressure: f32) -> Option<f32> {
 /// capture in `captured`. Suppresses the call on browsers that
 /// haven't implemented it (we fall back to whatever
 /// `add_event_listener` plus `touch-action: none` give us).
-fn capture_pointer(element: &Element, pointer_id: i32, captured: &Rc<RefCell<HashSet<i32>>>) {
+fn capture_pointer(element: &Element, pointer_id: i32, captured: &Rc<RefCell<SmallIdSet<i32>>>) {
     let _ = element.set_pointer_capture(pointer_id);
     captured.borrow_mut().insert(pointer_id);
 }

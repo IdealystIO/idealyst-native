@@ -44,7 +44,7 @@ capabilities = ["microphone"]
 frameworks = ["AVFoundation"]
 
 [dependencies]
-thiserror = "1"
+thiserror = { workspace = true }
 
 # The platform-agnostic live-source abstraction. `microphone` is a *producer*
 # of `AudioStream` (the audio peer of `MediaStream`) via `open_stream()`,

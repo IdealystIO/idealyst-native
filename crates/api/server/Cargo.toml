@@ -42,9 +42,9 @@ net = { workspace = true }
 # token type itself, which is light and trait-free.
 runtime-core = { workspace = true, features = ["async-driver"] }
 
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 inventory = "0.3"
 futures-channel = "0.3"
 

@@ -77,7 +77,7 @@ pub(crate) use components::{
 pub use watch::watch_signal;
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::rc::Rc;
 
 use crate::reactive::{Signal, Ref};
@@ -236,7 +236,7 @@ pub(crate) struct Registry {
     entries: Vec<Option<RegistryEntry>>,
     free: Vec<u32>,
     /// Index: test_id → element id.
-    by_test_id: HashMap<&'static str, ElementId>,
+    by_test_id: FxHashMap<&'static str, ElementId>,
 }
 
 impl Registry {
@@ -244,7 +244,7 @@ impl Registry {
         Self {
             entries: Vec::new(),
             free: Vec::new(),
-            by_test_id: HashMap::new(),
+            by_test_id: FxHashMap::default(),
         }
     }
 

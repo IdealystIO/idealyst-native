@@ -31,11 +31,16 @@ impl WebBackend {
     /// around when dynamically-inserted scripts execute, and some
     /// configurations (CSP, certain WASM hosts) don't run them at
     /// all. Eval-via-Function is unambiguous and reliable.
+    #[cfg(feature = "prim-virtualizer")]
     pub(crate) fn ensure_virtualizer_shim(&mut self) {
         if self.virtualizer_shim_injected {
             return;
         }
-        let src = include_str!("../runtime/js/virtualizer.js");
+        // `OUT_DIR/js-min/` holds build.rs-minified copies of
+        // `runtime/js/*.js` — comments/indentation stripped so the shim
+        // source doesn't ship inside the wasm (~33-54 KB of commentary).
+        // Edit the originals under `runtime/js/`; build.rs re-emits.
+        let src = include_str!(concat!(env!("OUT_DIR"), "/js-min/virtualizer.js"));
         // Wrap in a function that returns nothing and call it. The
         // shim's body is wrapped in an IIFE itself; this outer
         // Function::new_no_args is just our way of executing it.
@@ -53,7 +58,7 @@ impl WebBackend {
         if self.batch_shim_injected {
             return;
         }
-        let src = include_str!("../runtime/js/batch.js");
+        let src = include_str!(concat!(env!("OUT_DIR"), "/js-min/batch.js"));
         let f = js_sys::Function::new_no_args(src);
         let _ = f.call0(&JsValue::NULL);
         self.batch_shim_injected = true;
@@ -69,7 +74,7 @@ impl WebBackend {
         if self.text_batch_shim_injected {
             return;
         }
-        let src = include_str!("../runtime/js/text_batch.js");
+        let src = include_str!(concat!(env!("OUT_DIR"), "/js-min/text_batch.js"));
         let f = js_sys::Function::new_no_args(src);
         let _ = f.call0(&JsValue::NULL);
         self.text_batch_shim_injected = true;
@@ -86,7 +91,7 @@ impl WebBackend {
         if self.text_bindings_shim_injected {
             return;
         }
-        let src = include_str!("../runtime/js/text_bindings.js");
+        let src = include_str!(concat!(env!("OUT_DIR"), "/js-min/text_bindings.js"));
         let f = js_sys::Function::new_no_args(src);
         let _ = f.call0(&JsValue::NULL);
         self.text_bindings_shim_injected = true;
@@ -102,7 +107,7 @@ impl WebBackend {
         if self.class_batch_shim_injected {
             return;
         }
-        let src = include_str!("../runtime/js/class_batch.js");
+        let src = include_str!(concat!(env!("OUT_DIR"), "/js-min/class_batch.js"));
         let f = js_sys::Function::new_no_args(src);
         let _ = f.call0(&JsValue::NULL);
         self.class_batch_shim_injected = true;
@@ -127,7 +132,7 @@ impl WebBackend {
         // for node lookups.
         self.ensure_text_bindings_shim();
         self.ensure_class_batch_shim();
-        let src = include_str!("../runtime/js/class_bindings.js");
+        let src = include_str!(concat!(env!("OUT_DIR"), "/js-min/class_bindings.js"));
         let f = js_sys::Function::new_no_args(src);
         let _ = f.call0(&JsValue::NULL);
         self.class_bindings_shim_injected = true;
@@ -143,7 +148,7 @@ impl WebBackend {
         if self.node_id_shim_injected {
             return;
         }
-        let src = include_str!("../runtime/js/node_ids.js");
+        let src = include_str!(concat!(env!("OUT_DIR"), "/js-min/node_ids.js"));
         let f = js_sys::Function::new_no_args(src);
         let _ = f.call0(&JsValue::NULL);
         self.node_id_shim_injected = true;

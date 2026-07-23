@@ -9,8 +9,8 @@ license.workspace = true
 # independently of in-memory representation.
 
 [dependencies]
-serde = { version = "1", features = ["derive", "rc"] }
-serde_json = "1"
+serde = { workspace = true, features = ["rc"] }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 # Used by the round-trip integration test (tests/roundtrip.rs) that

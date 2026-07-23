@@ -32,7 +32,7 @@ jobs = { workspace = true }
 idealyst-config = { workspace = true, optional = true, features = ["jobs"] }
 runtime-core = { workspace = true, features = ["async-driver"] }
 idea-ui = { workspace = true }
-serde = { version = "1", features = ["derive"] }
+serde = { workspace = true }
 
 # Web client: window.location.origin for `server::configure`.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

@@ -30,7 +30,7 @@
 
 use crate::backend::Backend;
 use std::any::{Any, TypeId};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::rc::Rc;
 
 /// A type-erased handler closure: takes the External primitive's
@@ -47,12 +47,12 @@ pub type ErasedHandler<B> = Rc<dyn Fn(&Rc<dyn Any>, &mut B) -> <B as Backend>::N
 /// on a string-keyed registry, but their `MapViewProps` types have
 /// distinct TypeIds (Rust's type system guarantees uniqueness).
 pub struct ExternalRegistry<B: Backend + 'static> {
-    handlers: HashMap<TypeId, ErasedHandler<B>>,
+    handlers: FxHashMap<TypeId, ErasedHandler<B>>,
 }
 
 impl<B: Backend + 'static> ExternalRegistry<B> {
     pub fn new() -> Self {
-        Self { handlers: HashMap::new() }
+        Self { handlers: FxHashMap::default() }
     }
 
     /// Register `handler` for payload type `T`. Returns the previously
@@ -128,8 +128,8 @@ type ExternalDeserializer = Rc<dyn Fn(&[u8]) -> Option<Rc<dyn Any>>>;
 
 thread_local! {
     static EXTERNAL_SERDE: std::cell::RefCell<
-        HashMap<&'static str, (ExternalSerializer, ExternalDeserializer)>,
-    > = std::cell::RefCell::new(HashMap::new());
+        FxHashMap<&'static str, (ExternalSerializer, ExternalDeserializer)>,
+    > = std::cell::RefCell::new(FxHashMap::default());
 }
 
 /// Register the wire (serialize, deserialize) pair for an external

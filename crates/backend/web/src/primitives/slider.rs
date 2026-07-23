@@ -3,6 +3,10 @@
 //! `step="any"` for continuous values.
 
 use crate::WebBackend;
+// `css_num`, not `f32: Display`: a bare `{}` on an f32 is what pulls core's
+// ~12-15 KB flt2dec float formatter into every bundle. 3-decimal precision
+// is ample for range-input attributes and values.
+use css::css_num;
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
@@ -22,15 +26,15 @@ pub(crate) fn create(
         .expect("create_element input failed")
         .unchecked_into();
     input.set_type("range");
-    let _ = input.set_attribute("min", &min.to_string());
-    let _ = input.set_attribute("max", &max.to_string());
+    let _ = input.set_attribute("min", &css_num(min).to_string());
+    let _ = input.set_attribute("max", &css_num(max).to_string());
     if let Some(s) = step {
-        let _ = input.set_attribute("step", &s.to_string());
+        let _ = input.set_attribute("step", &css_num(s).to_string());
     } else {
         // "any" enables continuous values in the browser.
         let _ = input.set_attribute("step", "any");
     }
-    input.set_value(&initial_value.to_string());
+    input.set_value(&css_num(initial_value).to_string());
 
     // Fire on every `input` event (continuous drag).
     let input_clone = input.clone();
@@ -49,7 +53,7 @@ pub(crate) fn create(
 
 pub(crate) fn update_value(node: &Node, value: f32) {
     if let Ok(input) = node.clone().dyn_into::<web_sys::HtmlInputElement>() {
-        let s = value.to_string();
+        let s = css_num(value).to_string();
         if input.value() != s {
             input.set_value(&s);
         }

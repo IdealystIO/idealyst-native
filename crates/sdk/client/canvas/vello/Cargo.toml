@@ -21,6 +21,15 @@ license.workspace = true
 # generic `register<B>` covers every backend because the GPU surface comes from
 # `Backend::create_graphics`.
 
+[features]
+# On by default so text-drawing canvases keep working. Turn OFF
+# (`default-features = false`) for a canvas that draws no text: it drops vello's
+# glyph pipeline and its font stack (skrifa / read-fonts, ~hundreds of KB of
+# code + data that otherwise strands in the web bundle even when the renderer is
+# code-split). A `DrawOp::Glyphs` run is a no-op with this off.
+default = ["glyphs"]
+glyphs = []
+
 [dependencies]
 runtime-core = { workspace = true }
 canvas-core = { workspace = true }
@@ -54,11 +63,17 @@ pollster = "0.4"
 # adapter/device acquisition is awaited via `wasm-bindgen-futures::spawn_local`.
 # `canvas-native` is the Canvas2D fallback delegate (its `make_2d_rasterizer`),
 # reached on the same `<canvas>` when WebGPU is unavailable.
+# `default-features = false` drops its `self-register` inventory ctor: we only
+# want the rasterizer as a delegate, and the ctor is a link-time anchor that
+# would pin the whole rasterizer + glyph stack in `main.wasm` even when this
+# renderer registers lazily from a wasm-split chunk. Path dep (not workspace)
+# so `default-features = false` actually takes effect — Cargo ignores it on an
+# inherited workspace dep unless the workspace sets it too.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 vello = "0.9"
 wgpu = { version = "29", default-features = false, features = ["webgpu", "wgsl"] }
 raw-window-handle = "0.6"
-canvas-native = { workspace = true }
+canvas-native = { path = "../native", default-features = false }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
@@ -93,8 +108,8 @@ wasm-bindgen-test = "0.3"
 # its glyph id with the same skrifa vello uses internally, so the id it hands
 # the `DrawOp::Glyphs` arm indexes the font the way vello expects.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-skrifa = "0.40"
-serde_json = "1"
+skrifa = "0.42"
+serde_json = { workspace = true }
 # CPU-vs-GPU rasterization benchmark (`bench_cpu_vs_gpu_rasterization`, #[ignore])
 # loads a real PDF page into a canvas Scene. `pdf` depends only on `canvas-core`
 # (no cycle back to `canvas-vello`).

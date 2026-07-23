@@ -15,7 +15,7 @@ docs = ["idea-ui/docs"]
 robot = ["runtime-core/robot", "idea-ui/robot"]
 
 [dependencies]
-runtime-core = { workspace = true }
+runtime-core = { workspace = true, features = ["prim-navigator"] }
 # Same theme as idea-ui, and piggybacks on its components (Tabs strip, Icon,
 # Button) rather than reimplementing chrome from primitives.
 idea-theme = { workspace = true }

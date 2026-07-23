@@ -20,7 +20,7 @@
 //!   the MCP server to enumerate every live Idealyst app on the host.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -47,8 +47,8 @@ thread_local! {
     /// verb without `runtime-core` ever depending on `render-wgpu` /
     /// `dev-client` (which would be a cycle). Handlers run on the UI
     /// thread inside [`BridgeHandle::poll`] / [`invoke_command`].
-    static CUSTOM_COMMANDS: RefCell<HashMap<String, CommandHandler>> =
-        RefCell::new(HashMap::new());
+    static CUSTOM_COMMANDS: RefCell<FxHashMap<String, CommandHandler>> =
+        RefCell::new(FxHashMap::default());
 }
 
 /// Register a custom bridge verb. `name` is the `cmd` an external

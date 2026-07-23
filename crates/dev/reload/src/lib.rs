@@ -327,6 +327,10 @@ fn build_wasm(dir: &Path, opts: &BuildOptions) -> Result<()> {
             // get the default pkg-into-project copy.
             bundle_out_dir: opts.bundle_out_dir.clone(),
             gzip: false,
+            // Dev rebuilds skip the q11 encode; `.br` siblings are a
+            // deploy-artifact concern (`idealyst build --web --release`).
+            brotli: false,
+                primitives: None,
             // Dev keeps panic messages — stripping them is a
             // production-only `idealyst build --web --strip-panics` thing.
             strip_panics: false,

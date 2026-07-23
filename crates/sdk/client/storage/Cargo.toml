@@ -18,8 +18,8 @@ license.workspace = true
 #   - FileStorage            : a JSON file on disk           — Windows / Linux
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 # Only pulled for the `catalog` feature's compile-checked recipes. The core
 # capability has no framework dependency — it's platform shims.

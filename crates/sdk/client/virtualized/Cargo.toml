@@ -26,4 +26,7 @@ license.workspace = true
 # No permissions required.
 
 [dependencies]
-runtime-core = { workspace = true }
+# This SDK renders through `Element::Virtualizer`, so it forwards the
+# primitive's feature: depending on `virtualized` re-enables exactly the
+# primitive it needs, even in an app built with default-features off.
+runtime-core = { workspace = true, features = ["prim-virtualizer"] }

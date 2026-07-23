@@ -1457,6 +1457,8 @@ fn launch_ssr(
                 user_features: Vec::new(),
                 bundle_out_dir: Some(bundle_dir.clone()),
                 gzip: false,
+                brotli: false,
+                primitives: None,
                 strip_panics: false,
                 // Always on in `dev --ssr` mode — the bundle is going
                 // to hydrate the server's DOM.

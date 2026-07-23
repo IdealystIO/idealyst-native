@@ -29,7 +29,7 @@
 use super::host::NavigatorHandler;
 use crate::backend::Backend;
 use std::any::TypeId;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::rc::Rc;
 
 /// Factory closure that produces a fresh handler per navigator
@@ -42,12 +42,12 @@ pub type NavigatorHandlerFactory<B> = Rc<dyn Fn() -> Box<dyn NavigatorHandler<B>
 /// presentation `TypeId`. Backends own one as a field; SDKs register
 /// into it during app bootstrap.
 pub struct NavigatorRegistry<B: Backend + 'static> {
-    factories: HashMap<TypeId, NavigatorHandlerFactory<B>>,
+    factories: FxHashMap<TypeId, NavigatorHandlerFactory<B>>,
 }
 
 impl<B: Backend + 'static> NavigatorRegistry<B> {
     pub fn new() -> Self {
-        Self { factories: HashMap::new() }
+        Self { factories: FxHashMap::default() }
     }
 
     /// Register a navigator kind. `P` is the SDK's presentation

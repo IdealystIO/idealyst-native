@@ -37,9 +37,9 @@
 //! its own control plane while building its screens, so a `Link`
 //! inside a child navigator's screen drives the child by default.
 
-use crate::primitives::navigator::{
-    ambient_navigator, NavCommand, NavigatorControl, Route, RouteParams,
-};
+#[cfg(feature = "prim-navigator")]
+use crate::primitives::navigator::{ambient_navigator, NavCommand};
+use crate::primitives::navigator::{NavigatorControl, Route, RouteParams};
 use crate::{Bound, Element, Ref, RefFill};
 use std::any::Any;
 use std::rc::Rc;
@@ -173,7 +173,11 @@ pub fn link<P: RouteParams + Clone>(
     // activation. The actual dispatch shape (Push vs Select vs SDK-
     // specific) is resolved at activation time via the captured
     // control plane's link-activator (or `Push` as fallback).
+    #[cfg(feature = "prim-navigator")]
     let ambient: Option<Rc<NavigatorControl>> = ambient_navigator();
+    // Navigator compiled out — nothing can have pushed an ambient control.
+    #[cfg(not(feature = "prim-navigator"))]
+    let ambient: Option<Rc<NavigatorControl>> = None;
     let kind = NavKind::Default;
 
     // Type-erased params source. Each activation needs a fresh
@@ -294,6 +298,18 @@ pub(crate) fn make_on_activate(
     kind: NavKind,
     make_params: Rc<dyn Fn() -> Box<dyn Any>>,
 ) -> Rc<dyn Fn()> {
+    #[cfg(not(feature = "prim-navigator"))]
+    {
+        // With `prim-navigator` compiled out no navigator can ever be
+        // built, so no ambient control exists to dispatch into — the
+        // captured `target` is provably `None`. A no-op closure keeps the
+        // Link contract (activation silently drops, same as a link built
+        // outside any screen) while letting the linker discard the whole
+        // NavigatorControl dispatch machinery.
+        let _ = (target, route, url, kind, make_params);
+        return Rc::new(|| {});
+    }
+    #[cfg(feature = "prim-navigator")]
     Rc::new(move || {
         // Born batched — a nav dispatch writes several router signals; coalesce
         // them into one cycle. See `reactive::cycle`.
@@ -313,8 +329,9 @@ pub(crate) fn make_on_activate(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "prim-navigator"))]
 mod tests {
+    use rustc_hash::FxHashMap;
     use super::*;
     use crate::primitives::navigator::{AmbientNavGuard, NavCommand};
     use crate::style::StyleRules;
@@ -329,14 +346,14 @@ mod tests {
         next_id: RefCell<u32>,
         // node id -> the link's on_activate closure (built by the walker
         // from the captured ambient navigator).
-        activations: Rc<RefCell<std::collections::HashMap<u32, Rc<dyn Fn()>>>>,
+        activations: Rc<RefCell<FxHashMap<u32, Rc<dyn Fn()>>>>,
     }
 
     impl LinkTestBackend {
         fn new() -> Self {
             Self {
                 next_id: RefCell::new(0),
-                activations: Rc::new(RefCell::new(std::collections::HashMap::new())),
+                activations: Rc::new(RefCell::new(FxHashMap::default())),
             }
         }
         fn mint(&self) -> u32 {
@@ -348,7 +365,7 @@ mod tests {
 
     /// `LinkOps` that fires the closure stored for the link's node id.
     struct TableLinkOps {
-        activations: Rc<RefCell<std::collections::HashMap<u32, Rc<dyn Fn()>>>>,
+        activations: Rc<RefCell<FxHashMap<u32, Rc<dyn Fn()>>>>,
     }
     impl LinkOps for TableLinkOps {
         fn activate(&self, node: &dyn Any) {

@@ -1262,7 +1262,7 @@ pub trait Backend {
         alt: Option<&str>,
         a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        unimplemented!("create_image not implemented for this backend")
+        self.missing_primitive_placeholder("image (backend compiled without `prim-image`)")
     }
     #[allow(unused_variables)]
     fn update_image_src(&mut self, node: &Self::Node, src: &str) {
@@ -1338,7 +1338,7 @@ pub trait Backend {
         color: Option<&Color>,
         a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        unimplemented!("create_icon not implemented for this backend")
+        self.missing_primitive_placeholder("icon (backend compiled without `prim-icon`)")
     }
 
     /// Update an icon's fill color reactively. Called by the walker's
@@ -1469,7 +1469,7 @@ pub trait Backend {
         secure: bool,
         a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        unimplemented!("create_text_input not implemented for this backend")
+        self.missing_primitive_placeholder("text_input (backend compiled without `prim-text-input`)")
     }
     #[allow(unused_variables)]
     fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {}
@@ -1543,7 +1543,7 @@ pub trait Backend {
         on_key_down: Option<primitives::key::KeyDownHandler>,
         a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        unimplemented!("create_text_area not implemented for this backend")
+        self.missing_primitive_placeholder("text_area (backend compiled without `prim-text-input`)")
     }
     #[allow(unused_variables)]
     fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {}
@@ -1558,7 +1558,7 @@ pub trait Backend {
         on_change: Rc<dyn Fn(bool)>,
         a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        unimplemented!("create_toggle not implemented for this backend")
+        self.missing_primitive_placeholder("toggle (backend compiled without `prim-toggle`)")
     }
     #[allow(unused_variables)]
     fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {}
@@ -1595,7 +1595,7 @@ pub trait Backend {
         on_change: Rc<dyn Fn(f32)>,
         a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        unimplemented!("create_slider not implemented for this backend")
+        self.missing_primitive_placeholder("slider (backend compiled without `prim-slider`)")
     }
     #[allow(unused_variables)]
     fn update_slider_value(&mut self, node: &Self::Node, value: f32) {}
@@ -1608,7 +1608,7 @@ pub trait Backend {
         color: Option<&Color>,
         a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        unimplemented!("create_activity_indicator not implemented for this backend")
+        self.missing_primitive_placeholder("activity_indicator (backend compiled without `prim-activity`)")
     }
 
     /// Update an existing activity indicator's `size` in place. Called by
@@ -1651,7 +1651,7 @@ pub trait Backend {
         layout: primitives::virtualizer::VirtualLayout,
         a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        unimplemented!("create_virtualizer not implemented for this backend")
+        self.missing_primitive_placeholder("virtualizer (backend compiled without `prim-virtualizer`)")
     }
 
     /// Signal that the underlying data set has changed. The backend
@@ -1701,7 +1701,7 @@ pub trait Backend {
         on_lost: primitives::graphics::OnLost,
         a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        unimplemented!("create_graphics not implemented for this backend")
+        self.missing_primitive_placeholder("graphics (backend compiled without `prim-graphics`)")
     }
 
     /// Tear down a Graphics surface. The framework calls this when
@@ -2446,6 +2446,27 @@ pub trait Backend {
     /// `type_id` drives dispatch; `type_name` is for debug/error
     /// messages only.
     #[allow(unused_variables)]
+    /// Fallback node for a primitive family the BACKEND was compiled
+    /// without while the walker still has it — the `prim-*` feature
+    /// mismatch (runtime-core's gate on, this backend crate's forward
+    /// off; e.g. an SDK forwarded `runtime-core/prim-icon` but the
+    /// wrapper restricted the backend with `--primitives`). Renders the
+    /// same "unsupported" placeholder as the walker's own gated-off
+    /// dispatch instead of panicking, so a mismatch degrades to a
+    /// visible, labeled box on every backend uniformly (CLAUDE.md §7).
+    /// Not meant to be overridden.
+    #[doc(hidden)]
+    fn missing_primitive_placeholder(&mut self, label: &'static str) -> Self::Node {
+        struct MissingPrimitive;
+        let payload: Rc<dyn Any> = Rc::new(());
+        self.create_external(
+            std::any::TypeId::of::<MissingPrimitive>(),
+            label,
+            &payload,
+            &crate::accessibility::AccessibilityProps::default(),
+        )
+    }
+
     fn create_external(
         &mut self,
         type_id: std::any::TypeId,
@@ -2493,10 +2514,9 @@ pub trait Backend {
         host: primitives::navigator::NavigatorHost<Self::Node>,
         a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        unimplemented!(
-            "create_navigator not implemented for this backend \
-             (navigator kind: {})",
-            type_name
+        let _ = type_name;
+        self.missing_primitive_placeholder(
+            "navigator (backend compiled without `prim-navigator`)",
         )
     }
 
@@ -2559,9 +2579,10 @@ pub trait Backend {
         scope_id: u64,
         options: Box<dyn std::any::Any>,
     ) {
-        unimplemented!(
-            "navigator_attach_initial not implemented for this backend"
-        )
+        // Feature-mismatch / no-navigator backends: nothing to attach the
+        // screen to — the navigator node is already the placeholder. Drop
+        // the screen instead of panicking.
+        let _ = (navigator, screen, scope_id, options);
     }
 
     /// Create a portal — render `children` (mounted via subsequent
@@ -2599,7 +2620,7 @@ pub trait Backend {
         trap_focus: bool,
         a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        unimplemented!("create_portal not implemented for this backend")
+        self.missing_primitive_placeholder("portal (backend compiled without `prim-portal`)")
     }
 
     /// Tear down a portal's backend-side state. Same contract as

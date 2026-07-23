@@ -195,6 +195,7 @@ pub trait PresenceOps {}
 /// flip-on. Mid-exit reversal does NOT rebuild — the existing scope
 /// is reused so signals and refs inside the child survive a
 /// near-miss flicker.
+#[cfg(feature = "prim-presence")]
 pub fn presence<F>(child: F) -> Bound<PresenceHandle>
 where
     F: Fn() -> Element + 'static,

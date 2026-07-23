@@ -8,6 +8,37 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [features]
+default = ["prim-virtualizer", "prim-icon", "prim-image", "prim-text-input", "prim-toggle", "prim-slider", "prim-activity", "prim-graphics", "prim-portal", "prim-presence", "prim-navigator", "prim-lazy"]
+# Compile in `Element::Virtualizer` support: the windowed-list recycler
+# (`primitives::virtualizer`), the Backend hook overrides, and the
+# embedded `virtualizer.js` shim (~7.5 KB after build.rs minification). Mirrors runtime-core's `prim-virtualizer`
+# — one feature gates every backend identically (CLAUDE.md §7). ON by
+# default; a minimal app disables default features on BOTH runtime-core and
+# this crate to drop the machinery (the walker then renders the standard
+# "not supported" placeholder if a virtualizer arrives over the wire).
+prim-virtualizer = ["runtime-core/prim-virtualizer"]
+# Same shape per family — forwards runtime-core's gate and compiles this
+# backend's implementation module + Backend overrides for it.
+prim-icon = ["runtime-core/prim-icon"]
+prim-image = ["runtime-core/prim-image"]
+prim-text-input = ["runtime-core/prim-text-input"]
+prim-toggle = ["runtime-core/prim-toggle"]
+prim-slider = ["runtime-core/prim-slider"]
+prim-activity = ["runtime-core/prim-activity"]
+prim-graphics = ["runtime-core/prim-graphics"]
+prim-portal = ["runtime-core/prim-portal"]
+prim-presence = ["runtime-core/prim-presence"]
+# Navigator: the URL provider (pushState/popstate/deep links, installed by
+# `install_scheduler`), the `NavigatorRegistry` + per-instance handler map,
+# the inventory registrar SDK web modules submit into, and the Backend
+# navigator overrides. With this off, `install_scheduler` skips the URL
+# provider entirely — url_sync in runtime-core then has no reachability
+# anchor and the linker drops the whole navigator substrate.
+prim-navigator = ["runtime-core/prim-navigator"]
+# Lazy (`#[lazy_component]` / wasm-split): the dynamic-split dynlink loader
+# seam. The chunk-fetch loader itself is generated into the app by
+# wasm-split; this backend carries only the `--dynamic-split` linker glue.
+prim-lazy = ["runtime-core/prim-lazy"]
 # Compile in the in-place hydration machinery: cursor + remount
 # bookkeeping in `WebBackend::hydrate`, the `hydrate_next` /
 # `hydrate_note_fresh` cursor-aware paths in every primitive, the
@@ -57,12 +88,21 @@ debug-node-ids = []
 robot = ["runtime-core/robot"]
 
 [dependencies]
-runtime-core = { workspace = true }
+# PATH dep with `default-features = false`, NOT `workspace = true`: the
+# workspace spec carries runtime-core's default (all-prim) feature set, and
+# cargo ignores `default-features = false` on workspace-inherited deps — a
+# plain `workspace = true` here would force every `prim-*` feature back ON
+# for any app that disabled them (feature unification), silently defeating
+# the whole gating scheme. The `prim-*` forwards above re-enable exactly
+# the families this crate's own features select; this crate's defaults
+# cover all of them, so consumers with default features see no change.
+# (Same precedent as canvas-vello → canvas-native `self-register`.)
+runtime-core = { path = "../../runtime/core", default-features = false }
 css = { workspace = true }
 inventory = "0.3"
 wasm-bindgen = "0.2"
 js-sys = "0.3"
-serde_json = "1"
+serde_json = { workspace = true }
 # Drives `runtime_core::driver::spawn_async` on web. Only required
 # when this backend's `async-driver` feature is on (the host opts in).
 wasm-bindgen-futures = { version = "0.4", optional = true }

@@ -52,7 +52,7 @@ fn norm_pos(v: f32, min: f32, max: f32) -> f32 {
     if max <= min {
         0.0
     } else {
-        ((v - min) / (max - min)).clamp(0.0, 1.0)
+        runtime_core::num::clamp_f32((v - min) / (max - min), 0.0, 1.0)
     }
 }
 
@@ -237,12 +237,12 @@ pub fn Slider(props: &SliderProps) -> Element {
                 return TouchResponse::IGNORED;
             }
             if matches!(ev.phase, TouchPhase::Began | TouchPhase::Moved) {
-                let t = (ev.position.x / w).clamp(0.0, 1.0);
+                let t = runtime_core::num::clamp_f32(ev.position.x / w, 0.0, 1.0);
                 let mut v = min + t * (max - min);
                 if step > 0.0 {
                     v = min + ((v - min) / step).round() * step;
                 }
-                on_change(v.clamp(min, max));
+                on_change(runtime_core::num::clamp_f32(v, min, max));
             }
             TouchResponse::CLAIMED
         })

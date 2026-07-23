@@ -945,6 +945,7 @@ pub trait NavigatorOps {}
 /// handler. Wraps the command dispatcher closure the SDK installs at
 /// `init` time, a depth cache the handle reads, and the reactive
 /// `NavState` mirror chrome subscribes to.
+#[cfg_attr(not(feature = "prim-navigator"), allow(dead_code))]
 pub struct NavigatorControl {
     dispatch: RefCell<Option<Box<dyn Fn(NavCommand)>>>,
     depth: RefCell<usize>,
@@ -1014,6 +1015,7 @@ pub struct NavigatorControl {
     url_sync_id: std::cell::Cell<Option<u64>>,
 }
 
+#[cfg_attr(not(feature = "prim-navigator"), allow(dead_code))]
 impl NavigatorControl {
     pub fn new() -> Self {
         Self {
@@ -1831,6 +1833,7 @@ pub const NAV_ROOT_HYDRATION_CLASS: &str = "idealyst-nav-root";
 
 /// [`outlet_fill_rules`] packaged as the `StyleSource` the walker attaches
 /// to a style-less `NavigatorOutlet`.
+#[cfg_attr(not(feature = "prim-navigator"), allow(dead_code))]
 pub(crate) fn default_outlet_style() -> crate::sources::StyleSource {
     static KEY: u8 = 0;
     let sheet = crate::style::cached_stylesheet(&KEY as *const u8 as usize, || {

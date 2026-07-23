@@ -22,7 +22,7 @@ license.workspace = true
 # web.
 
 [dependencies]
-thiserror = "1"
+thiserror = { workspace = true }
 
 # iOS: resolve the app sandbox's Application Support dir via NSFileManager.
 [target.'cfg(target_os = "ios")'.dependencies]
