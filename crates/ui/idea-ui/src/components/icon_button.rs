@@ -147,6 +147,12 @@ impl Default for IconButtonProps {
 
 /// Renders a square, single-glyph clickable styled by the tone × variant
 /// × size axes of the installed IconButton sheet.
+///
+/// **Cargo features:** requires `prim-icon` (in idea-ui's
+/// default set). A restricted `--primitives` / `default-features = false`
+/// build without it compiles this component out, so using it is a
+/// compile error naming the missing feature — see the 0.4→0.5
+/// migration guide.
 #[component]
 pub fn IconButton(props: &IconButtonProps) -> Element {
     let on_click = props.on_click.clone();

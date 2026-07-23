@@ -121,6 +121,12 @@ impl Default for SliderProps {
 }
 
 /// A horizontal draggable value slider — see the module docs.
+///
+/// **Cargo features:** requires `prim-icon` (in idea-ui's
+/// default set). A restricted `--primitives` / `default-features = false`
+/// build without it compiles this component out, so using it is a
+/// compile error naming the missing feature — see the 0.4→0.5
+/// migration guide.
 #[component]
 pub fn Slider(props: &SliderProps) -> Element {
     let value = props.value.clone();

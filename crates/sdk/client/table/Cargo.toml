@@ -34,12 +34,21 @@ description = "Cross-platform table SDK on Element::External — real <table> on
 crate-type = ["rlib"]
 
 [dependencies]
-runtime-core = { workspace = true }
+# PATH dep with `default-features = false`, NOT `workspace = true`: cargo
+# ignores `default-features = false` on workspace-inherited lines, so a
+# workspace dep here would force every `prim-*` family back ON for any
+# app that disabled them (feature unification) — this crate sits in
+# idea-ui's dep tree, so it must not widen the prim set. The table SDK
+# renders through ungated primitives (views, grid, `Element::External`),
+# so it forwards nothing. (Same contract as backend-web / idea-ui.)
+runtime-core = { path = "../../../runtime/core", default-features = false }
 # Self-registration of the per-backend external handler at construction.
 inventory = "0.3"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-backend-web = { workspace = true }
+# Same unification contract as the runtime-core line above — the
+# workspace spec would re-enable backend-web's default prim set.
+backend-web = { path = "../../../backend/web", default-features = false }
 web-sys = { version = "0.3", features = [
     "Document",
     "Element",

@@ -34,6 +34,7 @@ use runtime_core::{
     StyleApplication, StyleRules, StyleSheet, Tokenized, Transition, VariantEnum, VariantSet,
 };
 
+#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 use crate::components::icon::Icon;
 
 /// Horizontal inset on the BARE (adorned) input. Just enough that the glyph's
@@ -61,6 +62,7 @@ pub use crate::stylesheets::{FieldAppearance, FieldSize};
 ///   (a button, badge, spinner, …).
 ///
 /// Adornments compose into a flex row alongside the input, so any width works.
+#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 #[derive(Clone)]
 pub enum Adornment {
     /// No adornment.
@@ -80,6 +82,7 @@ pub enum Adornment {
     Button(IconData, Rc<dyn Fn()>),
 }
 
+#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 impl Adornment {
     /// Build an [`Adornment::Element`] from a closure: `Adornment::element(move
     /// || ui! { Button(…) })`.
@@ -94,6 +97,7 @@ impl Adornment {
     }
 }
 
+#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 impl Default for Adornment {
     fn default() -> Self {
         Adornment::None
@@ -101,6 +105,7 @@ impl Default for Adornment {
 }
 
 /// Icon point size for an adornment at a given field size.
+#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 fn adornment_icon_px(size: FieldSize) -> f32 {
     match size.as_variant_str() {
         "sm" => 14.0,
@@ -110,12 +115,14 @@ fn adornment_icon_px(size: FieldSize) -> f32 {
 }
 
 /// The muted glyph color shared by `Icon`/`Button` adornments.
+#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 fn adornment_icon_color() -> Color {
     Tokenized::token("color-text-muted", Color("#8a8270".into())).resolve()
 }
 
 /// Resolve an adornment to a renderable element (or `None`). `Icon`/`Button`
 /// are sized from the field `size` and painted in the theme's muted text color.
+#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 fn render_adornment(adornment: &Adornment, size: FieldSize) -> Option<Element> {
     match adornment {
         Adornment::None => None,
@@ -144,6 +151,7 @@ fn render_adornment(adornment: &Adornment, size: FieldSize) -> Option<Element> {
 
 /// Lazy stylesheet for [`Adornment::Button`]: a pointer cursor, centered glyph,
 /// and a subtle hover/press dim. No padding — it stays icon-sized.
+#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 fn adornment_button_sheet() -> Rc<StyleSheet> {
     thread_local! {
         static SHEET: Rc<StyleSheet> = Rc::new(
@@ -180,6 +188,7 @@ fn adornment_button_sheet() -> Rc<StyleSheet> {
 // element-builder isn't comparable — so a bare `Adornment` is the right type.
 #[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 #[derive(IdealystSchema)]
 pub struct FieldProps {
     /// Optional field label. `Reactive<Option<String>>` — static
@@ -249,6 +258,7 @@ pub struct FieldProps {
     pub field_ref: Option<runtime_core::Ref<runtime_core::primitives::text_input::TextInputHandle>>,
 }
 
+#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 impl Default for FieldProps {
     fn default() -> Self {
         Self {
@@ -480,6 +490,7 @@ pub fn build_field_help_sheet(tones: Vec<ToneRef>) -> Rc<StyleSheet> {
     Rc::new(sheet)
 }
 
+#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 fn size_key(size: FieldSize) -> &'static str {
     size.as_variant_str()
 }
@@ -487,6 +498,13 @@ fn size_key(size: FieldSize) -> &'static str {
 /// Renders a labeled text input with optional helper/error text. Composes
 /// an optional label, a `text_input` styled by the size × tone × variant
 /// axes, and a helper/error line (error takes precedence) into a column.
+#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
+///
+/// **Cargo features:** requires `prim-icon` + `prim-activity` + `prim-text-input` (all in idea-ui's
+/// default set). A restricted `--primitives` / `default-features = false`
+/// build without them compiles this component out, so using it is a
+/// compile error naming the missing feature — see the 0.4→0.5
+/// migration guide.
 #[component]
 pub fn Field(props: &FieldProps) -> Element {
     let value = props.value;

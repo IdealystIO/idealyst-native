@@ -27,13 +27,17 @@ use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
 use runtime_core::primitives::overlay::{overlay, BackdropMode};
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide, ViewportPlacement};
 use runtime_core::{
-    component, effect, icon, signal, ui, Color, Element, FillRule, IconData, IdealystSchema,
+    component, effect, signal, ui, Color, Element, FillRule, IconData, IdealystSchema,
     IntoElement, Length, Position, PressableHandle, Reactive, Ref, Signal, StyleApplication,
     StyleRules, StyleSheet, Tokenized, VariantEnum, VariantSet, ViewHandle,
 };
 
 use idea_theme::theme::IdeaThemeRef;
 
+// The `icon` primitive builder only exists under `prim-icon`; only the
+// Select component (gated below) renders it.
+#[cfg(all(feature = "prim-icon", feature = "prim-portal"))]
+use runtime_core::icon;
 use crate::stylesheets::{SelectOption as SelectOptionStyle, SelectTrigger};
 
 /// Full-bleed, fully-transparent backdrop for the open menu: it catches the
@@ -94,6 +98,7 @@ impl SelectOption {
 // live inside the trigger's label text source. `icon` is structural (the
 // chevron is built once into a bound view) — see the TODO in the body.
 #[runtime_core::props]
+#[cfg(all(feature = "prim-icon", feature = "prim-portal"))]
 #[derive(IdealystSchema)]
 pub struct SelectProps {
     /// Controlled selected value — the `id` of the chosen
@@ -115,6 +120,7 @@ pub struct SelectProps {
     pub icon: Option<IconData>,
 }
 
+#[cfg(all(feature = "prim-icon", feature = "prim-portal"))]
 impl Default for SelectProps {
     fn default() -> Self {
         Self {
@@ -132,6 +138,13 @@ impl Default for SelectProps {
 /// option's label (or `placeholder`), opening an anchored menu of
 /// [`SelectOption`] rows. Choosing a row fires `on_change` and closes
 /// the menu.
+#[cfg(all(feature = "prim-icon", feature = "prim-portal"))]
+///
+/// **Cargo features:** requires `prim-icon` + `prim-portal` (both in idea-ui's
+/// default set). A restricted `--primitives` / `default-features = false`
+/// build without them compiles this component out, so using it is a
+/// compile error naming the missing feature — see the 0.4→0.5
+/// migration guide.
 #[component]
 pub fn Select(props: SelectProps) -> Element {
     let value = props.value;
@@ -229,6 +242,7 @@ pub fn Select(props: SelectProps) -> Element {
     }
 }
 
+#[cfg(all(feature = "prim-icon", feature = "prim-portal"))]
 fn menu_build(
     value: Signal<String>,
     options: Rc<Vec<SelectOption>>,

@@ -68,6 +68,12 @@ pub struct SpinnerProps {
 
 /// Renders an indeterminate loading spinner — a thin passthrough to the
 /// framework's `activity_indicator` primitive with a small/large size knob.
+///
+/// **Cargo features:** requires `prim-activity` (in idea-ui's
+/// default set). A restricted `--primitives` / `default-features = false`
+/// build without it compiles this component out, so using it is a
+/// compile error naming the missing feature — see the 0.4→0.5
+/// migration guide.
 #[component]
 pub fn Spinner(props: &SpinnerProps) -> Element {
     fn to_native(s: SpinnerSize) -> ActivityIndicatorSize {

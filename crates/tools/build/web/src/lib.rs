@@ -964,18 +964,24 @@ fn warn_if_app_reenables_prims(project_dir: &Path) {
     let Ok(text) = fs::read_to_string(&manifest_path) else { return };
     let Ok(doc) = text.parse::<toml::Value>() else { return };
     let dep_tables = ["dependencies", "dev-dependencies", "build-dependencies"];
-    let mut offending = false;
+    // `idea-ui`'s default features mirror + forward the prim families its
+    // components use, so a defaults-on idea-ui dep re-widens the prim set
+    // through unification exactly like a defaults-on runtime-core dep.
+    let watched_deps = ["runtime-core", "idea-ui"];
+    let mut offending: Vec<&str> = Vec::new();
     let mut check_table = |table: &toml::Value| {
-        if let Some(dep) = table.get("runtime-core") {
-            let opted_out = dep
-                .get("default-features")
-                .and_then(|v| v.as_bool())
-                .map(|b| !b)
-                .unwrap_or(false);
-            // `{ workspace = true }` inherits the workspace spec, whose
-            // defaults are ON — same problem as a bare version string.
-            if !opted_out {
-                offending = true;
+        for name in watched_deps {
+            if let Some(dep) = table.get(name) {
+                let opted_out = dep
+                    .get("default-features")
+                    .and_then(|v| v.as_bool())
+                    .map(|b| !b)
+                    .unwrap_or(false);
+                // `{ workspace = true }` inherits the workspace spec, whose
+                // defaults are ON — same problem as a bare version string.
+                if !opted_out && !offending.contains(&name) {
+                    offending.push(name);
+                }
             }
         }
     };
@@ -993,12 +999,13 @@ fn warn_if_app_reenables_prims(project_dir: &Path) {
             }
         }
     }
-    if offending {
+    for name in offending {
         eprintln!(
-            "[build-web] ⚠ --primitives is set, but {}'s `runtime-core` dependency keeps \
-default features — cargo feature unification re-enables EVERY prim-* family, so the flag \
-currently changes nothing. Set `runtime-core = {{ ..., default-features = false }}` in the \
-app crate (SDKs you use forward the families they need).",
+            "[build-web] ⚠ --primitives is set, but {}'s `{name}` dependency keeps \
+default features — cargo feature unification re-enables every prim-* family that dependency \
+defaults to, so the flag is (partly) defeated. Set `{name} = {{ ..., default-features = \
+false }}` in the app crate and re-enable only the `prim-*` features you use (idea-ui \
+components are compiled out with their families, so a missing one is a compile error).",
             manifest_path.display(),
         );
     }

@@ -67,8 +67,8 @@ runtime-core = { workspace = true, features = ["prim-icon", "prim-text-input"] }
 
 First-party examples to copy: `virtualized` (prim-virtualizer),
 `swap-navigator` / `stack-navigator` (prim-navigator, including the
-backend-web forward on wasm), `idea-ui` (the six families its components
-use).
+backend-web forward on wasm), `idea-ui` (per-component gating — see the
+next section).
 
 **Migration (crates between an app and runtime-core).** Cargo silently
 ignores `default-features = false` on `workspace = true` dependency lines.
@@ -88,6 +88,53 @@ are unaffected.
 **Status:** landed. Regression coverage in
 `crates/runtime/core/tests/prim_gating.rs` (gated-off placeholder per
 family, backend-mismatch placeholder, default-set anchors).
+
+## idea-ui components are gated by their primitive families
+
+**What changed.** idea-ui now declares the six `prim-*` families its
+components render (`prim-icon`, `prim-image`, `prim-text-input`,
+`prim-activity`, `prim-portal`, `prim-presence`) as its own cargo
+features, each forwarding the same-named runtime-core family. They are
+ALL ON by default — `idea-ui = { workspace = true }` keeps the complete
+component set and existing apps see no change.
+
+With a family disabled, the components that (transitively) render it are
+**compiled out**: using one is a compile error naming the missing
+feature, instead of the component silently rendering the runtime
+"not supported" placeholder. The per-component map lives as `cfg` gates
+in `idea-ui/src/components/mod.rs` (summary in idea-ui's `Cargo.toml`);
+e.g. `prim-icon` alone gates Icon/IconButton/Breadcrumbs/Checkbox/
+Switch/Slider/Pagination, while Button needs icon+activity, Modal needs
+portal+presence, Field needs icon+activity+text-input, and Toast needs
+all four of icon/activity/portal/presence.
+
+Two deliberate fine-grained splits: **Textarea** needs only
+`prim-text-input` (it shares the field module's stylesheets, not the
+Field component), and **Autocomplete** needs text-input+portal (it
+reuses `SelectOption`/`SelectSize` — data types — without the
+icon-rendering Select component).
+
+**Migration (restricted apps).** To build an idea-ui app with a reduced
+primitive set, opt out of defaults on BOTH dep lines and re-enable the
+families you use — the features are same-named on purpose:
+
+```toml
+runtime-core = { version = "…", default-features = false }
+idea-ui = { version = "…", default-features = false, features = [
+    "prim-icon", "prim-portal",   # e.g. buttons/menus, no text inputs
+] }
+```
+
+then build with the matching `--primitives icon,portal`. The build
+prints a warning if either dep line still carries default features
+(unification would silently re-widen the set). `idea-theme` and the
+`table` SDK were converted to `default-features = false` runtime-core
+deps in this release, so idea-ui's whole subtree is unification-clean.
+
+**Status:** landed. Regression coverage in
+`crates/ui/idea-ui/tests/prim_gating.rs` (default-set pin, all-off core
+survival, the Textarea and Autocomplete splits), exercised per feature
+arm via `cargo test -p idea-ui --no-default-features [--features …]`.
 
 ## Release web bundles ship brotli `.br` siblings
 
@@ -153,6 +200,10 @@ pattern — see [[lazy-loading]] for the full transitive-anchor rule.
 - [ ] SDK authors: forward `prim-*` for every gated family your crate
       renders; if your crate sits between apps and runtime-core, path-dep
       runtime-core with `default-features = false`.
+- [ ] idea-ui apps using `--primitives`: also set
+      `idea-ui = { default-features = false, features = ["prim-…"] }`;
+      components whose families are off are compile errors, not
+      placeholders.
 - [ ] Custom backends: expect placeholder rendering (not panics) for
       families you haven't implemented.
 - [ ] Deploy scripts: account for `*.br` siblings in `dist/web`, or pass

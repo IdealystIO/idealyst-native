@@ -9,7 +9,12 @@ description = "Theming abstraction + extensibility for the idealyst design syste
 crate-type = ["rlib"]
 
 [dependencies]
-runtime-core = { workspace = true }
+# PATH dep with `default-features = false` (cargo ignores that flag on
+# `workspace = true` lines): idea-theme sits under idea-ui in every app's
+# dep tree, and a workspace dep would silently re-enable all `prim-*`
+# defaults, defeating idea-ui's per-component gating. Themes only touch
+# style/token types, which are ungated.
+runtime-core = { path = "../../runtime/core", default-features = false }
 
 # Compile-checked usage recipes for the docs/MCP catalog (see
 # src/recipes.rs). Off in every production build — the `recipe!` macro

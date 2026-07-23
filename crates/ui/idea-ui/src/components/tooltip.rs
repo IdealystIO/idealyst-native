@@ -104,6 +104,12 @@ fn hidden_sheet() -> Rc<StyleSheet> {
 /// Renders the trigger wrapped in a hover/long-press anchor; shows a hint
 /// bubble (anchored to the trigger) while hovered (desktop) or briefly on
 /// long-press (touch). See the module docs.
+///
+/// **Cargo features:** requires `prim-portal` (in idea-ui's
+/// default set). A restricted `--primitives` / `default-features = false`
+/// build without it compiles this component out, so using it is a
+/// compile error naming the missing feature — see the 0.4→0.5
+/// migration guide.
 #[component(children)]
 pub fn Tooltip(props: TooltipProps) -> Element {
     let open = signal(false);

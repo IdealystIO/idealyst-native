@@ -17,6 +17,14 @@
 
 use runtime_core::recipe;
 
+// Recipes for prim-gated components carry the same cfg as the component:
+// the `recipe!` macro's `catalog` gate lives in the PROC-MACRO crate, and
+// proc-macro features unify host-side — enabling `catalog` anywhere in the
+// workspace turns emission on for every crate — so a catalog build under
+// restricted prim features would otherwise compile examples of components
+// that don't exist.
+
+#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 recipe!(
     Button,
     /// A primary action button that runs a callback when pressed. The
@@ -36,6 +44,7 @@ recipe!(
     }
 );
 
+#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 recipe!(
     Button,
     /// A full-width call-to-action with a leading icon. `block = true`
@@ -67,6 +76,7 @@ recipe!(
     }
 );
 
+#[cfg(feature = "prim-icon")]
 recipe!(
     Icon,
     /// A sized, optionally tinted vector icon. `data` is an `IconData`
@@ -92,6 +102,7 @@ recipe!(
     }
 );
 
+#[cfg(all(feature = "prim-icon", feature = "prim-portal"))]
 recipe!(
     Select,
     /// A controlled dropdown. The host owns the `value` signal (the
@@ -119,6 +130,7 @@ recipe!(
     }
 );
 
+#[cfg(all(feature = "prim-icon", feature = "prim-activity", feature = "prim-text-input"))]
 recipe!(
     Field,
     /// A labeled, controlled text input. The host owns the `value`
@@ -144,6 +156,7 @@ recipe!(
     }
 );
 
+#[cfg(feature = "prim-icon")]
 recipe!(
     Checkbox,
     /// A controlled checkbox with a label. The host owns the `value:
@@ -167,6 +180,7 @@ recipe!(
     }
 );
 
+#[cfg(feature = "prim-icon")]
 recipe!(
     Switch,
     /// A controlled slide-toggle with an inline label. The host owns the
@@ -229,6 +243,7 @@ recipe!(
     }
 );
 
+#[cfg(all(feature = "prim-portal", feature = "prim-presence"))]
 recipe!(
     Modal,
     /// A centered overlay with a dimming backdrop and a themed surface. The
@@ -331,6 +346,7 @@ recipe!(
     }
 );
 
+#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 recipe!(
     Alert,
     /// A banner with a title, optional body line, an optional trailing
@@ -359,6 +375,7 @@ recipe!(
     }
 );
 
+#[cfg(feature = "prim-portal")]
 recipe!(
     Menu,
     /// An anchored command panel. Anchor it to a trigger via a
@@ -402,6 +419,7 @@ recipe!(
     }
 );
 
+#[cfg(feature = "prim-icon")]
 recipe!(
     IconButton,
     /// A square, single-glyph clickable. Pick a `tone` × `variant` ×
@@ -425,6 +443,7 @@ recipe!(
     }
 );
 
+#[cfg(feature = "prim-icon")]
 recipe!(
     IconButton,
     /// A square icon button rendering a vector (Lucide) icon rather than
@@ -558,6 +577,7 @@ recipe!(
 // Display & status
 // ---------------------------------------------------------------------
 
+#[cfg(feature = "prim-image")]
 recipe!(
     Avatar,
     /// A round user chip. Pass `src` for a photo, or `initials` to render
@@ -628,6 +648,7 @@ recipe!(
     }
 );
 
+#[cfg(feature = "prim-icon")]
 recipe!(
     Slider,
     /// A controlled horizontal value slider. The host owns
@@ -652,6 +673,7 @@ recipe!(
     }
 );
 
+#[cfg(feature = "prim-activity")]
 recipe!(
     Spinner,
     /// A spinning loading indicator for indeterminate waits. `size` picks
@@ -687,6 +709,7 @@ recipe!(
     }
 );
 
+#[cfg(feature = "prim-image")]
 recipe!(
     Image,
     /// A bitmap image. `src` is the URL/path; `alt` is the accessible
@@ -749,6 +772,7 @@ recipe!(
     }
 );
 
+#[cfg(feature = "prim-icon")]
 recipe!(
     Breadcrumbs,
     /// A navigation trail. Build it from `Crumb`s — `Crumb::linked(label,
@@ -774,6 +798,7 @@ recipe!(
     }
 );
 
+#[cfg(feature = "prim-icon")]
 recipe!(
     Pagination,
     /// A page selector. The host owns the current `page` (zero-based)
@@ -911,6 +936,7 @@ recipe!(
     }
 );
 
+#[cfg(feature = "prim-text-input")]
 recipe!(
     Textarea,
     /// A multi-line text input that grows to fit its content. `rows` sets
@@ -941,6 +967,7 @@ recipe!(
 // Overlays (anchored / portal — shown as source, not a live preview)
 // ---------------------------------------------------------------------
 
+#[cfg(feature = "prim-portal")]
 recipe!(
     Popover,
     /// An anchored floating panel. Anchor it to a trigger via a
@@ -977,6 +1004,7 @@ recipe!(
     }
 );
 
+#[cfg(feature = "prim-portal")]
 recipe!(
     Tooltip,
     /// A small hint that wraps its trigger and reveals itself on hover
@@ -998,6 +1026,7 @@ recipe!(
     }
 );
 
+#[cfg(all(feature = "prim-icon", feature = "prim-activity", feature = "prim-portal", feature = "prim-presence"))]
 recipe!(
     ToastHost,
     /// The mount point for transient notifications. Render exactly one

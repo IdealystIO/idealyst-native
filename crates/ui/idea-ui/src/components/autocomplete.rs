@@ -140,6 +140,12 @@ pub(crate) fn filter_indices(
 /// Renders a searchable combobox: a `text_input` that filters an anchored
 /// dropdown of [`SelectOption`] rows, with keyboard navigation and
 /// constrained (id-only) selection.
+///
+/// **Cargo features:** requires `prim-text-input` + `prim-portal` (both in idea-ui's
+/// default set). A restricted `--primitives` / `default-features = false`
+/// build without them compiles this component out, so using it is a
+/// compile error naming the missing feature — see the 0.4→0.5
+/// migration guide.
 #[component]
 pub fn Autocomplete(props: AutocompleteProps) -> Element {
     let value = props.value;

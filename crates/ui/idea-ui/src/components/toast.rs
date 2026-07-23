@@ -355,6 +355,12 @@ impl Default for ToastCardProps {
 /// [`Alert`](crate::Alert) surface, or caller-supplied content) and
 /// fades/slides itself in and out via `presence`, driven by the entry's
 /// `leaving` flag.
+///
+/// **Cargo features:** requires `prim-icon` + `prim-activity` + `prim-portal` + `prim-presence` (all in idea-ui's
+/// default set). A restricted `--primitives` / `default-features = false`
+/// build without them compiles this component out, so using it is a
+/// compile error naming the missing feature — see the 0.4→0.5
+/// migration guide.
 #[component]
 pub fn ToastCard(props: &ToastCardProps) -> Element {
     let entry = props.entry.clone();
@@ -543,6 +549,12 @@ impl Default for ToastHostProps {
 /// root; the `push_toast*` family (from anywhere) enqueues entries that
 /// appear here as a non-modal, touch-passthrough overlay anchored per
 /// `placement`.
+///
+/// **Cargo features:** requires `prim-icon` + `prim-activity` + `prim-portal` + `prim-presence` (all in idea-ui's
+/// default set). A restricted `--primitives` / `default-features = false`
+/// build without them compiles this component out, so using it is a
+/// compile error naming the missing feature — see the 0.4→0.5
+/// migration guide.
 #[component]
 pub fn ToastHost(props: &ToastHostProps) -> Element {
     let q = queue();

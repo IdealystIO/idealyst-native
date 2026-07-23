@@ -103,6 +103,12 @@ impl Default for SwitchProps {
 /// Renders a controlled slide-toggle: a tone-colored pill track with a
 /// thumb that animates between off (left) and on (right), with an
 /// optional inline label.
+///
+/// **Cargo features:** requires `prim-icon` (in idea-ui's
+/// default set). A restricted `--primitives` / `default-features = false`
+/// build without it compiles this component out, so using it is a
+/// compile error naming the missing feature — see the 0.4→0.5
+/// migration guide.
 #[component]
 pub fn Switch(props: &SwitchProps) -> Element {
     let value = props.value;
