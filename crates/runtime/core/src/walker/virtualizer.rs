@@ -18,7 +18,7 @@ use crate::primitives;
 use crate::reactive::{self, Effect};
 use crate::sources::StyleSource;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::rc::Rc;
 
 #[cfg(feature = "debug-stats")]
@@ -123,10 +123,10 @@ fn build_virtualizer<B: Backend + 'static>(
     // Also store measured sizes here. Backends that measure (web
     // ResizeObserver, native layout listeners) push updates via
     // `set_measured_size`; the framework keeps the canonical map.
-    let scopes: Rc<RefCell<HashMap<u64, Box<reactive::Scope>>>> =
-        Rc::new(RefCell::new(HashMap::new()));
-    let measured_sizes: Rc<RefCell<HashMap<u64, f32>>> =
-        Rc::new(RefCell::new(HashMap::new()));
+    let scopes: Rc<RefCell<FxHashMap<u64, Box<reactive::Scope>>>> =
+        Rc::new(RefCell::new(FxHashMap::default()));
+    let measured_sizes: Rc<RefCell<FxHashMap<u64, f32>>> =
+        Rc::new(RefCell::new(FxHashMap::default()));
     let next_scope_id: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
 
     // Shareable closures for the data side. `Rc` so the backend can
@@ -225,8 +225,8 @@ fn build_virtualizer<B: Backend + 'static>(
     // have the backend pass the *index* too. But scope_id is what
     // it stored, and it doesn't know the current index after
     // reorders. So we maintain a scope_id -> key reverse map.
-    let scope_id_to_key: Rc<RefCell<HashMap<u64, primitives::virtualizer::ItemKey>>> =
-        Rc::new(RefCell::new(HashMap::new()));
+    let scope_id_to_key: Rc<RefCell<FxHashMap<u64, primitives::virtualizer::ItemKey>>> =
+        Rc::new(RefCell::new(FxHashMap::default()));
     let set_measured_size: Rc<dyn Fn(u64, f32)> = {
         let measured = measured_sizes.clone();
         let map = scope_id_to_key.clone();

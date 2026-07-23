@@ -331,6 +331,7 @@ pub(crate) fn make_on_activate(
 
 #[cfg(all(test, feature = "prim-navigator"))]
 mod tests {
+    use rustc_hash::FxHashMap;
     use super::*;
     use crate::primitives::navigator::{AmbientNavGuard, NavCommand};
     use crate::style::StyleRules;
@@ -345,14 +346,14 @@ mod tests {
         next_id: RefCell<u32>,
         // node id -> the link's on_activate closure (built by the walker
         // from the captured ambient navigator).
-        activations: Rc<RefCell<std::collections::HashMap<u32, Rc<dyn Fn()>>>>,
+        activations: Rc<RefCell<FxHashMap<u32, Rc<dyn Fn()>>>>,
     }
 
     impl LinkTestBackend {
         fn new() -> Self {
             Self {
                 next_id: RefCell::new(0),
-                activations: Rc::new(RefCell::new(std::collections::HashMap::new())),
+                activations: Rc::new(RefCell::new(FxHashMap::default())),
             }
         }
         fn mint(&self) -> u32 {
@@ -364,7 +365,7 @@ mod tests {
 
     /// `LinkOps` that fires the closure stored for the link's node id.
     struct TableLinkOps {
-        activations: Rc<RefCell<std::collections::HashMap<u32, Rc<dyn Fn()>>>>,
+        activations: Rc<RefCell<FxHashMap<u32, Rc<dyn Fn()>>>>,
     }
     impl LinkOps for TableLinkOps {
         fn activate(&self, node: &dyn Any) {

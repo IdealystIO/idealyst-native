@@ -121,6 +121,12 @@ impl Default for MenuProps {
 /// positioned relative to `target`. Dismisses on Escape and on **outside
 /// click** (a fullscreen transparent catcher behind the panel fires
 /// `on_dismiss`, the universal dropdown/menu behavior — mirrors `Popover`).
+///
+/// **Cargo features:** requires `prim-portal` (in idea-ui's
+/// default set). A restricted `--primitives` / `default-features = false`
+/// build without it compiles this component out, so using it is a
+/// compile error naming the missing feature — see the 0.4→0.5
+/// migration guide.
 #[component(children)]
 pub fn Menu(props: MenuProps) -> Element {
     let target = props
@@ -201,6 +207,12 @@ impl Default for MenuItemProps {
 
 /// Renders one selectable menu row: optional leading element, label,
 /// and optional right-pushed trailing element, in a pressable.
+///
+/// **Cargo features:** requires `prim-portal` (in idea-ui's
+/// default set). A restricted `--primitives` / `default-features = false`
+/// build without it compiles this component out, so using it is a
+/// compile error naming the missing feature — see the 0.4→0.5
+/// migration guide.
 #[component]
 pub fn MenuItem(props: MenuItemProps) -> Element {
     let active = props.active.clone();
@@ -253,6 +265,12 @@ impl Default for MenuLabelProps {
 }
 
 /// Renders a non-interactive section heading inside a menu panel.
+///
+/// **Cargo features:** requires `prim-portal` (in idea-ui's
+/// default set). A restricted `--primitives` / `default-features = false`
+/// build without it compiles this component out, so using it is a
+/// compile error naming the missing feature — see the 0.4→0.5
+/// migration guide.
 #[component]
 pub fn MenuLabel(props: MenuLabelProps) -> Element {
     ui! { text(style = MenuLabelStyle()) { props.text.clone() } }
@@ -268,6 +286,12 @@ impl Default for MenuSeparatorProps {
 }
 
 /// Renders a thin horizontal divider between groups of menu rows.
+///
+/// **Cargo features:** requires `prim-portal` (in idea-ui's
+/// default set). A restricted `--primitives` / `default-features = false`
+/// build without it compiles this component out, so using it is a
+/// compile error naming the missing feature — see the 0.4→0.5
+/// migration guide.
 #[component]
 pub fn MenuSeparator(_props: MenuSeparatorProps) -> Element {
     ui! { view(style = MenuSeparatorStyle()) {} }
@@ -341,6 +365,12 @@ impl Default for SubMenuProps {
 ///
 /// Touch has no hover (`on_hover` is a no-op on iOS/Android), so the flyout
 /// won't expand there — mobile menus are a separate consideration.
+///
+/// **Cargo features:** requires `prim-portal` (in idea-ui's
+/// default set). A restricted `--primitives` / `default-features = false`
+/// build without it compiles this component out, so using it is a
+/// compile error naming the missing feature — see the 0.4→0.5
+/// migration guide.
 #[component]
 pub fn SubMenu(props: SubMenuProps) -> Element {
     let open: Signal<bool> = signal(false);

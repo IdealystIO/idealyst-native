@@ -56,7 +56,7 @@
 
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 thread_local! {
     /// Per-session-thread registry STACK. `&'static str` keys keep
@@ -72,8 +72,8 @@ thread_local! {
     /// rerenders happen inside the same scope and so survive.
     ///
     /// All session methods read/write the TOP scope only.
-    static REGISTRIES: RefCell<Vec<HashMap<&'static str, Box<dyn Any>>>> =
-        RefCell::new(vec![HashMap::new()]);
+    static REGISTRIES: RefCell<Vec<FxHashMap<&'static str, Box<dyn Any>>>> =
+        RefCell::new(vec![FxHashMap::default()]);
 }
 
 /// Push a fresh scope onto the per-thread registry stack. All
@@ -98,7 +98,7 @@ pub struct ScopeGuard {
 }
 
 pub fn push_scope() -> ScopeGuard {
-    REGISTRIES.with(|r| r.borrow_mut().push(HashMap::new()));
+    REGISTRIES.with(|r| r.borrow_mut().push(FxHashMap::default()));
     ScopeGuard { _not_send: std::marker::PhantomData }
 }
 
@@ -119,7 +119,7 @@ impl Drop for ScopeGuard {
 
 /// Read-modify-write helper for the top scope. All other session
 /// APIs go through this so the top-only invariant lives in one place.
-fn with_top<R>(f: impl FnOnce(&mut HashMap<&'static str, Box<dyn Any>>) -> R) -> R {
+fn with_top<R>(f: impl FnOnce(&mut FxHashMap<&'static str, Box<dyn Any>>) -> R) -> R {
     REGISTRIES.with(|r| {
         let mut stack = r.borrow_mut();
         let top = stack

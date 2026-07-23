@@ -6,6 +6,7 @@ pub mod assets;
 mod backend;
 pub mod breakpoint;
 pub mod container_query;
+pub mod collections;
 pub mod color;
 pub mod introspect;
 mod batch;
@@ -212,6 +213,19 @@ pub use reactive::__take_untracked_build_read_warnings;
 /// `[dependencies]`. Same pattern as `__serde_json` above.
 #[doc(hidden)]
 pub use wasm_split as __wasm_split;
+
+/// SipHash-free `HashMap`/`HashSet` for framework-internal collections,
+/// re-exported so backends share one hasher choice without their own
+/// `rustc-hash` dep line. std's default `RandomState` costs ~11 KB of
+/// SipHash machinery in every wasm bundle for DoS resistance these maps
+/// don't need: they're keyed by framework-minted ids, node pointers, and
+/// author-authored strings — never attacker-controlled input — and on
+/// `wasm32-unknown-unknown` the "random" seed has no OS entropy source
+/// anyway. Maps in **public API signatures** (route params, debug-stats
+/// summaries) deliberately stay `std::collections::HashMap` so author
+/// code sees the ordinary type. Same rationale as `reactive.rs`'s
+/// long-standing Fx usage.
+pub use rustc_hash::{FxHashMap, FxHashSet};
 
 pub use assets::{
     Asset, AssetId, AssetKind, AssetSource, AssetTag, SystemFallback, Typeface, TypefaceFace,

@@ -37,6 +37,7 @@ use std::rc::Rc;
 use super::animator::{Animator, AnimatorFactory};
 use super::clock::{register_guarded, TickRegistration};
 use super::Animatable;
+use rustc_hash::FxHashMap;
 
 /// A reactive scalar (or compound) value that can be driven by
 /// [`Animator`]s. Cheap to clone — clones share state.
@@ -317,8 +318,8 @@ fn drive<T: Animatable>(inner: Rc<RefCell<Inner<T>>>, dt: std::time::Duration) -
 #[cfg(debug_assertions)]
 thread_local! {
     /// key = value-identity ptr → (cumulative secs, tick count, last-logged secs).
-    static LONG_ANIM: RefCell<std::collections::HashMap<usize, (f64, u32, f64)>> =
-        RefCell::new(std::collections::HashMap::new());
+    static LONG_ANIM: RefCell<FxHashMap<usize, (f64, u32, f64)>> =
+        RefCell::new(FxHashMap::default());
 }
 
 /// See the call site in [`drive`]. Tracks per-value cumulative animation time

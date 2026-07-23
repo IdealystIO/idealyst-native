@@ -201,6 +201,12 @@ fn label_typography_style(resolved: &StyleRules) -> Rc<StyleSheet> {
 
 /// Renders a styled, clickable button whose appearance is driven by
 /// the tone × variant × size × shape axes of the installed Button sheet.
+///
+/// **Cargo features:** requires `prim-icon` + `prim-activity` (both in idea-ui's
+/// default set). A restricted `--primitives` / `default-features = false`
+/// build without them compiles this component out, so using it is a
+/// compile error naming the missing feature — see the 0.4→0.5
+/// migration guide.
 #[component]
 pub fn Button(props: &ButtonProps) -> Element {
     let label = props.label.clone();

@@ -147,6 +147,12 @@ impl Default for AlertProps {
 /// Renders a banner with a bold title, optional body line, an optional
 /// trailing action slot, and an optional close affordance, styled by the
 /// tone × variant axes.
+///
+/// **Cargo features:** requires `prim-icon` + `prim-activity` (both in idea-ui's
+/// default set). A restricted `--primitives` / `default-features = false`
+/// build without them compiles this component out, so using it is a
+/// compile error naming the missing feature — see the 0.4→0.5
+/// migration guide.
 #[component]
 pub fn Alert(props: AlertProps) -> Element {
     let tone = props.tone.clone();

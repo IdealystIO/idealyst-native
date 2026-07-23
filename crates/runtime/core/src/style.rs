@@ -36,7 +36,8 @@
 //! caching immune to allocator-reuse hazards.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::rc::Rc;
 
 use crate::assets::TypefaceId;
@@ -949,7 +950,7 @@ impl Transition {
 /// like `padding: 16` is expanded by the `stylesheet!` macro at
 /// compile time and by builder methods at runtime — the data model
 /// itself has only per-side state.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 pub struct StyleRules {
     // --- Color + text ---
     pub background: Option<Tokenized<Color>>,
@@ -1139,6 +1140,127 @@ pub struct StyleRules {
     pub border_right_color_transition: Option<Transition>,
     pub border_bottom_color_transition: Option<Transition>,
     pub border_left_color_transition: Option<Transition>,
+}
+
+// `Clone` is written by hand ONLY to carry `#[inline(never)]`: the derived
+// impl compiles to ~6 KB of wasm (104 per-field `Option` clones), and LTO
+// inlined a second full copy of it into the walker's
+// `with_default_text_font`, shipping the struct-clone twice. Outlining pins
+// exactly one copy; the call overhead is irrelevant next to the clone
+// itself. The struct-literal body is compiler-checked for completeness — a
+// new field fails compilation here until it's added. Correctness (no
+// crossed same-typed fields) is pinned by
+// `clone_round_trips_a_fully_populated_struct` in this module's tests.
+impl Clone for StyleRules {
+    #[inline(never)]
+    fn clone(&self) -> Self {
+        Self {
+            background: self.background.clone(),
+            color: self.color.clone(),
+            caret_color: self.caret_color.clone(),
+            font_size: self.font_size.clone(),
+            display: self.display.clone(),
+            grid_template_columns: self.grid_template_columns.clone(),
+            flex_direction: self.flex_direction.clone(),
+            flex_wrap: self.flex_wrap.clone(),
+            justify_content: self.justify_content.clone(),
+            align_items: self.align_items.clone(),
+            align_content: self.align_content.clone(),
+            gap: self.gap.clone(),
+            row_gap: self.row_gap.clone(),
+            column_gap: self.column_gap.clone(),
+            flex_grow: self.flex_grow.clone(),
+            flex_shrink: self.flex_shrink.clone(),
+            flex_basis: self.flex_basis.clone(),
+            align_self: self.align_self.clone(),
+            width: self.width.clone(),
+            height: self.height.clone(),
+            min_width: self.min_width.clone(),
+            min_height: self.min_height.clone(),
+            max_width: self.max_width.clone(),
+            max_height: self.max_height.clone(),
+            aspect_ratio: self.aspect_ratio.clone(),
+            padding_top: self.padding_top.clone(),
+            padding_right: self.padding_right.clone(),
+            padding_bottom: self.padding_bottom.clone(),
+            padding_left: self.padding_left.clone(),
+            margin_top: self.margin_top.clone(),
+            margin_right: self.margin_right.clone(),
+            margin_bottom: self.margin_bottom.clone(),
+            margin_left: self.margin_left.clone(),
+            border_top_left_radius: self.border_top_left_radius.clone(),
+            border_top_right_radius: self.border_top_right_radius.clone(),
+            border_bottom_left_radius: self.border_bottom_left_radius.clone(),
+            border_bottom_right_radius: self.border_bottom_right_radius.clone(),
+            border_top_width: self.border_top_width.clone(),
+            border_right_width: self.border_right_width.clone(),
+            border_bottom_width: self.border_bottom_width.clone(),
+            border_left_width: self.border_left_width.clone(),
+            border_top_color: self.border_top_color.clone(),
+            border_right_color: self.border_right_color.clone(),
+            border_bottom_color: self.border_bottom_color.clone(),
+            border_left_color: self.border_left_color.clone(),
+            position: self.position.clone(),
+            top: self.top.clone(),
+            right: self.right.clone(),
+            bottom: self.bottom.clone(),
+            left: self.left.clone(),
+            font_family: self.font_family.clone(),
+            font_weight: self.font_weight.clone(),
+            font_style: self.font_style.clone(),
+            line_height: self.line_height.clone(),
+            letter_spacing: self.letter_spacing.clone(),
+            text_align: self.text_align.clone(),
+            underline: self.underline.clone(),
+            strikethrough: self.strikethrough.clone(),
+            text_transform: self.text_transform.clone(),
+            opacity: self.opacity.clone(),
+            overflow: self.overflow.clone(),
+            object_fit: self.object_fit.clone(),
+            shadow: self.shadow.clone(),
+            background_gradient: self.background_gradient.clone(),
+            transform: self.transform.clone(),
+            transform_origin: self.transform_origin.clone(),
+            cursor: self.cursor.clone(),
+            user_select: self.user_select.clone(),
+            pointer_events: self.pointer_events.clone(),
+            background_transition: self.background_transition.clone(),
+            color_transition: self.color_transition.clone(),
+            caret_color_transition: self.caret_color_transition.clone(),
+            opacity_transition: self.opacity_transition.clone(),
+            transform_transition: self.transform_transition.clone(),
+            width_transition: self.width_transition.clone(),
+            height_transition: self.height_transition.clone(),
+            max_width_transition: self.max_width_transition.clone(),
+            max_height_transition: self.max_height_transition.clone(),
+            min_width_transition: self.min_width_transition.clone(),
+            min_height_transition: self.min_height_transition.clone(),
+            top_transition: self.top_transition.clone(),
+            right_transition: self.right_transition.clone(),
+            bottom_transition: self.bottom_transition.clone(),
+            left_transition: self.left_transition.clone(),
+            padding_top_transition: self.padding_top_transition.clone(),
+            padding_right_transition: self.padding_right_transition.clone(),
+            padding_bottom_transition: self.padding_bottom_transition.clone(),
+            padding_left_transition: self.padding_left_transition.clone(),
+            margin_top_transition: self.margin_top_transition.clone(),
+            margin_right_transition: self.margin_right_transition.clone(),
+            margin_bottom_transition: self.margin_bottom_transition.clone(),
+            margin_left_transition: self.margin_left_transition.clone(),
+            border_top_left_radius_transition: self.border_top_left_radius_transition.clone(),
+            border_top_right_radius_transition: self.border_top_right_radius_transition.clone(),
+            border_bottom_left_radius_transition: self.border_bottom_left_radius_transition.clone(),
+            border_bottom_right_radius_transition: self.border_bottom_right_radius_transition.clone(),
+            border_top_width_transition: self.border_top_width_transition.clone(),
+            border_right_width_transition: self.border_right_width_transition.clone(),
+            border_bottom_width_transition: self.border_bottom_width_transition.clone(),
+            border_left_width_transition: self.border_left_width_transition.clone(),
+            border_top_color_transition: self.border_top_color_transition.clone(),
+            border_right_color_transition: self.border_right_color_transition.clone(),
+            border_bottom_color_transition: self.border_bottom_color_transition.clone(),
+            border_left_color_transition: self.border_left_color_transition.clone(),
+        }
+    }
 }
 
 impl StyleRules {
@@ -1614,8 +1736,8 @@ thread_local! {
     /// `grid_row_style` in the idea-ui-docs build). Collapsing all sheet
     /// caches into this single key keeps the key count flat no matter how
     /// many stylesheets the binary links.
-    static STYLESHEET_CACHE: RefCell<HashMap<usize, Rc<StyleSheet>>> =
-        RefCell::new(HashMap::new());
+    static STYLESHEET_CACHE: RefCell<FxHashMap<usize, Rc<StyleSheet>>> =
+        RefCell::new(FxHashMap::default());
 }
 
 /// Returns the thread-cached `Rc<StyleSheet>` for `key`, building and
@@ -1677,7 +1799,7 @@ pub struct StyleSheet {
     /// time. The cache survives token updates because tokenized
     /// `StyleRules` carry token *names* (not values) so the rule
     /// content is token-stable.
-    variant_cache: std::cell::RefCell<HashMap<VariantSet, Rc<StyleRules>>>,
+    variant_cache: std::cell::RefCell<FxHashMap<VariantSet, Rc<StyleRules>>>,
 }
 
 impl StyleSheet {
@@ -1693,7 +1815,7 @@ impl StyleSheet {
             state_axes: Vec::new(),
             breakpoint_axes: Vec::new(),
             container_axes: Vec::new(),
-            variant_cache: std::cell::RefCell::new(HashMap::new()),
+            variant_cache: std::cell::RefCell::new(FxHashMap::default()),
         }
     }
 
@@ -1706,7 +1828,7 @@ impl StyleSheet {
             state_axes: Vec::new(),
             breakpoint_axes: Vec::new(),
             container_axes: Vec::new(),
-            variant_cache: std::cell::RefCell::new(HashMap::new()),
+            variant_cache: std::cell::RefCell::new(FxHashMap::default()),
         }
     }
 
@@ -2256,8 +2378,8 @@ thread_local! {
     /// token that hasn't been installed yet). That keeps subscriptions
     /// consistent across install order — the same `Signal` exists
     /// whether install happens before or after the first resolve.
-    static TOKEN_REGISTRY: RefCell<HashMap<&'static str, crate::Signal<TokenValue>>> =
-        RefCell::new(HashMap::new());
+    static TOKEN_REGISTRY: RefCell<FxHashMap<&'static str, crate::Signal<TokenValue>>> =
+        RefCell::new(FxHashMap::default());
 
     /// Memoization: `(stylesheet pointer, variants, override content)`
     /// → `Rc<StyleRules>`. Strong refs are held by `REGISTRATIONS`
@@ -2270,8 +2392,8 @@ thread_local! {
     /// invalidate this cache — they update the backend's variable
     /// layer (web) and re-fire styled effects (mobile) so the cached
     /// rules are re-applied with the new fallbacks.
-    static RESOLUTION_CACHE: RefCell<HashMap<ResolutionKey, Rc<StyleRules>>> =
-        RefCell::new(HashMap::new());
+    static RESOLUTION_CACHE: RefCell<FxHashMap<ResolutionKey, Rc<StyleRules>>> =
+        RefCell::new(FxHashMap::default());
 
     /// Each currently-registered stylesheet, with the rules that were
     /// pre-generated for it and a `Weak<StyleSheet>` used to detect
@@ -2279,8 +2401,8 @@ thread_local! {
     /// framework calls `Backend::register_stylesheet` exactly once per
     /// sheet and tracks the rules so we can later call
     /// `unregister_stylesheet` to free backend-side state.
-    static REGISTRATIONS: RefCell<HashMap<RegKey, Registration>> =
-        RefCell::new(HashMap::new());
+    static REGISTRATIONS: RefCell<FxHashMap<RegKey, Registration>> =
+        RefCell::new(FxHashMap::default());
 
     /// Rule sets queued for `unregister_stylesheet` calls. Populated
     /// by the sweep-dead-stylesheets pass. Drained by
@@ -2341,8 +2463,8 @@ thread_local! {
     /// framework calls `register_asset` + `register_typeface` once
     /// per unique `TypefaceId` no matter how many stylesheets — or
     /// rules within a stylesheet — reference the same typeface.
-    static REGISTERED_TYPEFACES: RefCell<HashSet<TypefaceId>> =
-        RefCell::new(HashSet::new());
+    static REGISTERED_TYPEFACES: RefCell<crate::collections::SmallIdSet<TypefaceId>> =
+        RefCell::new(crate::collections::SmallIdSet::new());
 
     /// Debug-only: the `family_name` of every typeface registered this
     /// session (populated alongside [`REGISTERED_TYPEFACES`] in
@@ -2360,15 +2482,15 @@ thread_local! {
     /// not a runtime predicate). The whole machinery compiles out when
     /// `debug_assertions` is off.
     #[cfg(debug_assertions)]
-    static REGISTERED_FAMILY_NAMES: RefCell<HashSet<&'static str>> =
-        RefCell::new(HashSet::new());
+    static REGISTERED_FAMILY_NAMES: RefCell<FxHashSet<&'static str>> =
+        RefCell::new(FxHashSet::default());
 
     /// Debug-only dedup for [`maybe_warn_unregistered_system_font`]:
     /// each suspicious `System(name)` warns exactly once per thread, so
     /// a stylesheet applied to thousands of nodes doesn't spam the log.
     #[cfg(debug_assertions)]
-    static WARNED_SYSTEM_FONTS: RefCell<HashSet<String>> =
-        RefCell::new(HashSet::new());
+    static WARNED_SYSTEM_FONTS: RefCell<FxHashSet<String>> =
+        RefCell::new(FxHashSet::default());
 
     /// Debug-only dedup for the "resolve on an unthemed thread while
     /// *another* thread is themed" warning (see
@@ -2932,7 +3054,7 @@ const KNOWN_SYSTEM_FAMILIES: &[&str] = &[
 #[cfg(debug_assertions)]
 pub(crate) fn should_warn_for_system_font(
     name: &str,
-    registered: &HashSet<&'static str>,
+    registered: &FxHashSet<&'static str>,
 ) -> bool {
     let trimmed = name.trim();
     // A comma stack is an intentional fallback list — not a bare face.

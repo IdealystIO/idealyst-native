@@ -172,6 +172,12 @@ impl Default for PopoverProps {
 /// target yet. When `target` is `None` there's nothing to anchor to, so
 /// this renders an empty (no-op) element rather than panicking. The host
 /// supplies a real `AnchorTarget` once the trigger is bound.
+///
+/// **Cargo features:** requires `prim-portal` (in idea-ui's
+/// default set). A restricted `--primitives` / `default-features = false`
+/// build without it compiles this component out, so using it is a
+/// compile error naming the missing feature — see the 0.4→0.5
+/// migration guide.
 #[component(children)]
 pub fn Popover(props: PopoverProps) -> Element {
     // No anchor → nothing to position against. Degrade to an empty,

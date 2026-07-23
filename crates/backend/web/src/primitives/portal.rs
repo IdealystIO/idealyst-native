@@ -35,7 +35,7 @@ use runtime_core::primitives::portal::{
     ViewportPlacement, ViewportRect,
 };
 use std::cell::RefCell;
-use std::collections::HashMap;
+use runtime_core::FxHashMap;
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
@@ -101,7 +101,7 @@ pub(crate) struct PortalInstance {
 }
 
 /// All live portal instances, keyed by `data-portal-id`.
-pub(crate) type PortalInstances = HashMap<u32, PortalInstance>;
+pub(crate) type PortalInstances = FxHashMap<u32, PortalInstance>;
 
 /// Base inline style applied to every portal root before the
 /// target-specific positioning rules are layered on top.

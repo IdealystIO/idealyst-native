@@ -1004,7 +1004,16 @@ pub fn with_inject<T: 'static, R>(f: impl FnOnce(&T) -> R) -> Option<R> {
 ///   the scope drops.
 /// - Outside any reactive context, the callback is dropped immediately.
 pub fn on_cleanup<F: FnOnce() + 'static>(f: F) {
-    let mut slot: Option<Box<dyn FnOnce()>> = Some(Box::new(f));
+    // Thin generic shim: box here, work in the non-generic inner —
+    // otherwise every distinct cleanup closure (there are dozens across
+    // the walker and primitives) monomorphizes the whole arena/scope
+    // attach sequence. Same wasm-size split as `Effect::create`.
+    on_cleanup_boxed(Box::new(f));
+}
+
+#[inline(never)]
+fn on_cleanup_boxed(f: Box<dyn FnOnce()>) {
+    let mut slot: Option<Box<dyn FnOnce()>> = Some(f);
 
     // Active-effect path: attach to the currently-running effect's
     // cleanup list so the callback fires on its next re-run / drop.
@@ -2318,15 +2327,31 @@ impl Effect {
     ///
     /// Either way the effect runs once immediately and re-runs when a
     /// signal it read changes.
+    /// Thin generic shim: box the closure, delegate to the non-generic
+    /// [`Self::create_boxed`]. The split matters for wasm size — this
+    /// constructor has 50+ distinct closure call sites across the walker
+    /// and primitives, and a generic body would monomorphize the whole
+    /// arena-insert + register + first-run sequence once **per closure
+    /// type** (std's `thread::spawn` uses the same shape for the same
+    /// reason). Only the `Box::new` lives in generic code.
+    ///
+    /// Reactive-profile identity: capture the author-code creation site
+    /// here, BEFORE `run_effect` runs the closure (which could itself
+    /// create nested effects and shift the build stack). `#[track_caller]`
+    /// on this and the `new`/`scoped`/`new_with_stable_deps` wrappers
+    /// propagates the location past them to author code; zero cost when
+    /// `debug-stats` off.
     #[track_caller]
     pub(crate) fn create<F: FnMut() + 'static>(f: F, register: bool) -> Self {
-        // Reactive-profile identity: capture the author-code creation site
-        // AND the innermost `#[component]` building right now, BEFORE
-        // `run_effect` runs the closure (which could itself create nested
-        // effects and shift the build stack). `#[track_caller]` on this and
-        // the `new`/`scoped`/`new_with_stable_deps` wrappers propagates the
-        // location past them to author code; zero cost when `debug-stats` off.
-        let location = std::panic::Location::caller();
+        Self::create_boxed(Box::new(f), register, std::panic::Location::caller())
+    }
+
+    #[inline(never)]
+    fn create_boxed(
+        f: Box<dyn FnMut()>,
+        register: bool,
+        location: &'static std::panic::Location<'static>,
+    ) -> Self {
         let component = current_build_component();
         // Capture the owner chain at creation time so re-runs can
         // restore it. `with_scope` keeps these pointers valid for as
@@ -2335,7 +2360,7 @@ impl Effect {
             ACTIVE_SCOPE.with(|s| s.borrow().clone());
         let id = ARENA.with(|a| {
             a.borrow_mut().insert_effect(EffectInner {
-                run: Some(Box::new(f)),
+                run: Some(f),
                 cleanups: Vec::new(),
                 owning_stack,
                 stable_deps: false,
@@ -2436,12 +2461,21 @@ impl Effect {
     /// text bindings — not part of the public API.
     #[track_caller]
     pub(crate) fn new_with_stable_deps<F: FnMut() + 'static>(f: F) -> Self {
+        // Thin generic shim over the non-generic worker — same wasm-size
+        // split as [`Self::create`]; see the comment there.
+        Self::stable_deps_boxed(Box::new(f), std::panic::Location::caller())
+    }
+
+    #[inline(never)]
+    fn stable_deps_boxed(
+        f: Box<dyn FnMut()>,
+        location: &'static std::panic::Location<'static>,
+    ) -> Self {
         // Reactive-profile identity, same as `create`. This constructor is the
         // walker's node-binding path (text/style effects), so the entry
         // recorded here is what `debug::label_effect` later attaches
         // "text#<id>" / "style#<id>" to — without it the label would have no
         // slot and be silently dropped.
-        let location = std::panic::Location::caller();
         let component = current_build_component();
         let owning_stack: Vec<*mut Scope> =
             ACTIVE_SCOPE.with(|s| s.borrow().clone());
@@ -2451,7 +2485,7 @@ impl Effect {
         // sees `stable_deps: true` and short-circuits.
         let id = ARENA.with(|a| {
             a.borrow_mut().insert_effect(EffectInner {
-                run: Some(Box::new(f)),
+                run: Some(f),
                 cleanups: Vec::new(),
                 owning_stack,
                 stable_deps: false,

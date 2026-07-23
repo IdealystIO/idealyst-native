@@ -41,9 +41,88 @@ pub fn insertion_sort_by<T>(v: &mut [T], mut cmp: impl FnMut(&T, &T) -> core::cm
     }
 }
 
+/// Parse a plain decimal number (`"1280"`, `"-3.5"`, `"812.75"`) to `f32`
+/// without `f32::from_str`.
+///
+/// Why: std's float parser links core's full dec2flt machinery — the
+/// correctly-rounded slow path plus its power tables, ~5-6 KB of wasm —
+/// and ONE reachable call site pays all of it (the web backend's
+/// `ssr_viewport` attribute read was that site). The framework's inputs
+/// here are self-emitted, small, plain decimals (viewport dimensions,
+/// never scientific notation / inf / NaN), where integer math is exact
+/// far beyond the needed precision.
+///
+/// Accepts: optional `-`/`+`, digits, optional `.` + up to 9 fraction
+/// digits (further digits are truncated, not rounded). Rejects
+/// everything else — including empty input, bare `.`, exponents, and
+/// values whose integer part overflows u64. NOT a general float parser;
+/// author-facing surfaces that accept arbitrary floats should keep
+/// `str::parse`.
+pub fn parse_f32_plain(s: &str) -> Option<f32> {
+    let b = s.as_bytes();
+    let (neg, rest) = match b.first()? {
+        b'-' => (true, &b[1..]),
+        b'+' => (false, &b[1..]),
+        _ => (false, b),
+    };
+    let mut int: u64 = 0;
+    let mut i = 0;
+    while i < rest.len() && rest[i].is_ascii_digit() {
+        int = int.checked_mul(10)?.checked_add((rest[i] - b'0') as u64)?;
+        i += 1;
+    }
+    let int_digits = i;
+    let mut frac: u64 = 0;
+    let mut frac_scale: u64 = 1;
+    let mut frac_digits = 0;
+    if i < rest.len() && rest[i] == b'.' {
+        i += 1;
+        while i < rest.len() && rest[i].is_ascii_digit() {
+            if frac_digits < 9 {
+                frac = frac * 10 + (rest[i] - b'0') as u64;
+                frac_scale *= 10;
+                frac_digits += 1;
+            }
+            i += 1;
+        }
+        if frac_digits == 0 && int_digits == 0 {
+            return None; // bare "." / "-."
+        }
+    } else if int_digits == 0 {
+        return None; // no digits at all
+    }
+    if i != rest.len() {
+        return None; // trailing junk (incl. exponents)
+    }
+    let v = int as f64 + (frac as f64 / frac_scale as f64);
+    Some(if neg { -v as f32 } else { v as f32 })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{clamp_f32, insertion_sort_by};
+    use super::{clamp_f32, insertion_sort_by, parse_f32_plain};
+
+    /// Regression for the bug this fn exists to prevent: `ssr_viewport`'s
+    /// `str::parse::<f32>()` was the lone anchor keeping core's dec2flt
+    /// float-parse machinery (~5-6 KB) in every web bundle.
+    #[test]
+    fn regression_parse_f32_plain_matches_std_for_framework_inputs() {
+        for s in ["0", "1280", "800", "812.75", "-3.5", "+2.25", "0.125", "99999.999"] {
+            let ours = parse_f32_plain(s).unwrap();
+            let std = s.parse::<f32>().unwrap();
+            assert!(
+                (ours - std).abs() <= f32::EPSILON * std.abs().max(1.0),
+                "{s}: {ours} vs {std}"
+            );
+        }
+        // Rejections: not a general float parser.
+        for s in ["", ".", "-", "1e3", "1.2.3", " 1", "1 ", "abc", "NaN", "inf"] {
+            assert!(parse_f32_plain(s).is_none(), "must reject {s:?}");
+        }
+        // Truncation beyond 9 fraction digits, never a panic/overflow.
+        assert!(parse_f32_plain("1.12345678901234").is_some());
+        assert!(parse_f32_plain("99999999999999999999999999").is_none(), "u64 overflow rejected");
+    }
 
     #[test]
     fn insertion_sort_sorts_and_is_stable() {

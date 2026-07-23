@@ -104,6 +104,12 @@ fn nav_button(glyph: &str, target: Option<usize>, on_change: Rc<dyn Fn(usize)>) 
 /// window never slid — only the fine-grained active-highlight updated).
 /// `switch` re-runs the builder with the live page on every change, so the
 /// targets, the sliding window, and the highlight all stay correct.
+///
+/// **Cargo features:** requires `prim-icon` (in idea-ui's
+/// default set). A restricted `--primitives` / `default-features = false`
+/// build without it compiles this component out, so using it is a
+/// compile error naming the missing feature — see the 0.4→0.5
+/// migration guide.
 #[component]
 pub fn Pagination(props: PaginationProps) -> Element {
     let page = props.page;

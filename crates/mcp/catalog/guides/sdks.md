@@ -165,11 +165,18 @@ embedded JS shims. All twelve families are gated: `prim-virtualizer`
 URL sync + Link's nav dispatch), and `prim-lazy` (`#[lazy_component]` chunk
 mounting). The supported opt-out is two-sided (cargo unifies features
 across the build graph, so both edits must land together): the app crate
-sets `default-features = false` on its `runtime-core` dependency, and the
-build names the families the app's own code uses —
+sets `default-features = false` on its `runtime-core` dependency — and on
+`idea-ui` if it uses the component library, re-enabling the same-named
+`prim-*` features it needs — and the build names the families the app's
+own code uses —
 `idealyst build --web --release --primitives icon,text-input` (or
-`--primitives none` for a text/view-only bundle). The build warns when the
-app-side edit is missing, and an unknown family name is a hard error. A
+`--primitives none` for a text/view-only bundle). The build warns when
+either app-side edit is missing, and an unknown family name is a hard
+error. idea-ui components are themselves gated per family (a component
+compiles only when every family it renders is enabled — e.g. Button needs
+icon+activity, Modal needs portal+presence), so using a gated-out
+component is a compile error naming the feature, never a silent
+placeholder; see [[migration-0-4-0-to-0-5-0]] for the map. A
 view+text-only baseline drops from ~548 KB to ~392 KB raw (~133 KB brotli
 over the wire). An SDK that renders through a gated primitive forwards the
 feature on its runtime-core dep (see `virtualized`, `swap-navigator`,

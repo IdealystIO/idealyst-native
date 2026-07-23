@@ -218,7 +218,13 @@ fn parse_rgb_body(s: &str, has_alpha: bool) -> Result<Rgba, ColorParseError> {
     // Slice between the first `(` and the trailing `)`. We've already
     // matched on the function name, so the open paren is guaranteed.
     let open = s.find('(').ok_or(ColorParseError::InvalidComponents)?;
-    let inner = s[open + 1..]
+    // `.get(..)` not `[..]`: the range is valid ('(' is one byte, found
+    // by `find`), but the indexing form links `str::slice_error_fail` +
+    // char-Debug escape tables into every bundle. See `num::parse_f32_plain`
+    // for the same principle on the component parses below.
+    let inner = s
+        .get(open + 1..)
+        .ok_or(ColorParseError::InvalidComponents)?
         .strip_suffix(')')
         .ok_or(ColorParseError::InvalidComponents)?;
     let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
@@ -226,14 +232,17 @@ fn parse_rgb_body(s: &str, has_alpha: bool) -> Result<Rgba, ColorParseError> {
     if parts.len() < need {
         return Err(ColorParseError::InvalidComponents);
     }
-    let r = parts[0].parse::<f32>().map_err(|_| ColorParseError::InvalidComponents)?;
-    let g = parts[1].parse::<f32>().map_err(|_| ColorParseError::InvalidComponents)?;
-    let b = parts[2].parse::<f32>().map_err(|_| ColorParseError::InvalidComponents)?;
-    let a_raw = if has_alpha {
-        parts[3].parse::<f32>().map_err(|_| ColorParseError::InvalidComponents)?
-    } else {
-        1.0
+    // `parse_f32_plain`, not `str::parse::<f32>()`: rgb()/rgba()
+    // components are plain decimals, and std's parser drags core's
+    // dec2flt tables (~5-6 KB of wasm) in via this one path. Inputs the
+    // tiny parser rejects (exponents, inf/NaN) were invalid here anyway.
+    let comp = |i: usize| -> Result<f32, ColorParseError> {
+        crate::num::parse_f32_plain(parts[i]).ok_or(ColorParseError::InvalidComponents)
     };
+    let r = comp(0)?;
+    let g = comp(1)?;
+    let b = comp(2)?;
+    let a_raw = if has_alpha { comp(3)? } else { 1.0 };
     // Lenient alpha: `rgba(r, g, b, 255)` is in the wild, even though
     // CSS spec is `0..=1`. Treat anything `> 1.0` as a `0..=255` byte.
     let a_byte = if a_raw > 1.0 {

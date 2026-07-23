@@ -82,6 +82,12 @@ impl Default for CheckboxProps {
 /// Renders a tappable row: a tone/variant-styled box that shows a
 /// checkmark when `value` is true, plus the optional `label`. Tapping
 /// anywhere on the row fires `on_change` with the toggled value.
+///
+/// **Cargo features:** requires `prim-icon` (in idea-ui's
+/// default set). A restricted `--primitives` / `default-features = false`
+/// build without it compiles this component out, so using it is a
+/// compile error naming the missing feature — see the 0.4→0.5
+/// migration guide.
 #[component]
 pub fn Checkbox(props: &CheckboxProps) -> Element {
     let value = props.value;

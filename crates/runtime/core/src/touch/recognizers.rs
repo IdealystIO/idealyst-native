@@ -1722,7 +1722,7 @@ mod tests {
     use super::*;
     use crate::scheduling::{install_scheduler, ScheduleHandle, Scheduler};
     use std::cell::{Cell, RefCell};
-    use std::collections::HashSet;
+    use rustc_hash::{FxHashMap, FxHashSet};
 
     // -----------------------------------------------------------------
     // Test scheduler — a deterministic, manually-advanced clock for
@@ -1750,7 +1750,7 @@ mod tests {
         static QUEUE: RefCell<Vec<TimerEntry>> = RefCell::new(Vec::new());
         static NOW_MS: Cell<u64> = const { Cell::new(0) };
         static NEXT_ID: Cell<u64> = const { Cell::new(0) };
-        static CANCELLED: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
+        static CANCELLED: RefCell<FxHashSet<u64>> = RefCell::new(FxHashSet::default());
     }
 
     struct TimerEntry {
@@ -1836,7 +1836,7 @@ mod tests {
             *q = keep;
             ready
         });
-        let cancelled_snapshot: HashSet<u64> = CANCELLED.with(|c| c.borrow().clone());
+        let cancelled_snapshot: FxHashSet<u64> = CANCELLED.with(|c| c.borrow().clone());
         for entry in ready {
             if !cancelled_snapshot.contains(&entry.id) {
                 (entry.cb)();

@@ -121,26 +121,37 @@ pub use breakpoint::{
 // and the `*Props` struct + any companion enums. `ui! { Foo(...) }` resolves
 // `Foo` via the type alias, while direct fn-call sites resolve to the fn —
 // they coexist in different namespaces. See [[project_buildelement_dispatch]].
+#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 pub use components::alert::{Alert, AlertClose, AlertProps};
+#[cfg(all(feature = "prim-text-input", feature = "prim-portal"))]
 pub use components::autocomplete::{Autocomplete, AutocompleteProps};
+#[cfg(feature = "prim-image")]
 pub use components::avatar::{Avatar, AvatarColor, AvatarProps, AvatarSize};
 pub use components::badge::{Badge, BadgeProps};
+#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 pub use components::button::{Button, ButtonProps};
+#[cfg(feature = "prim-icon")]
 pub use components::breadcrumbs::{Breadcrumbs, BreadcrumbsProps, Crumb};
 pub use components::card::{Card, CardPadding, CardProps};
 pub use components::center::{Center, CenterProps};
+#[cfg(feature = "prim-icon")]
 pub use components::checkbox::{Checkbox, CheckboxProps};
 pub use components::chip::{Chip, ChipProps};
 pub use components::grid::{Grid, GridProps};
+#[cfg(feature = "prim-icon")]
 pub use components::icon::{Icon, IconProps};
+#[cfg(feature = "prim-image")]
 pub use components::image::{Image, ImageProps};
 pub use components::link::{Link, LinkProps};
 pub use components::list::{List, ListItem, ListItemProps, ListProps};
+#[cfg(feature = "prim-portal")]
 pub use components::menu::{
     Menu, MenuEntry, MenuItem, MenuItemProps, MenuLabel, MenuLabelProps, MenuProps, MenuSeparator,
     MenuSeparatorProps, SubMenu, SubMenuProps,
 };
+#[cfg(feature = "prim-icon")]
 pub use components::pagination::{Pagination, PaginationProps};
+#[cfg(feature = "prim-portal")]
 pub use components::tooltip::{Tooltip, TooltipProps};
 pub use components::radio::{
     Radio, RadioAxis, RadioGroup, RadioGroupProps, RadioOption, RadioProps,
@@ -151,28 +162,44 @@ pub use components::collapsible::{
     CollapsibleTransition,
 };
 pub use components::divider::{Divider, DividerAxis, DividerProps};
-pub use components::field::{Adornment, Field, FieldAppearance, FieldProps, FieldSize};
+#[cfg(all(feature = "prim-icon", feature = "prim-activity", feature = "prim-text-input"))]
+pub use components::field::{Adornment, Field, FieldProps};
+// Style-level types, not component code — usable (e.g. by Textarea)
+// whether or not the Field component itself is compiled in.
+pub use stylesheets::{FieldAppearance, FieldSize};
+#[cfg(feature = "prim-icon")]
 pub use components::icon_button::{IconButton, IconButtonProps, IconButtonSize};
+#[cfg(all(feature = "prim-portal", feature = "prim-presence"))]
 pub use components::modal::{Modal, ModalContent, ModalProps};
+#[cfg(feature = "prim-portal")]
 pub use components::popover::{Popover, PopoverProps};
 pub use components::progress::{Progress, ProgressProps};
 pub use components::segmented_control::{
     SegmentOption, SegmentedControl, SegmentedControlProps,
 };
-pub use components::select::{Select, SelectOption, SelectProps, SelectSize};
+#[cfg(all(feature = "prim-icon", feature = "prim-portal"))]
+pub use components::select::{Select, SelectProps};
+// Data/style types shared with Autocomplete — no icon dependency.
+#[cfg(feature = "prim-portal")]
+pub use components::select::{SelectOption, SelectSize};
 pub use components::skeleton::{Skeleton, SkeletonProps, SkeletonWidth};
+#[cfg(feature = "prim-icon")]
 pub use components::slider::{Slider, SliderProps};
 pub use components::spacer::{Spacer, SpacerProps};
+#[cfg(feature = "prim-activity")]
 pub use components::spinner::{Spinner, SpinnerProps, SpinnerSize};
 pub use components::stack::{
     Stack, StackAlign, StackAxis, StackGap, StackJustify, StackPadding, StackProps,
 };
 pub use components::surface::{Surface, SurfaceColor, SurfaceProps};
+#[cfg(feature = "prim-icon")]
 pub use components::switch::{Switch, SwitchProps};
 pub use components::table::{Table, TableCell, TableCellProps, TableProps, TableRow, TableRowProps};
 pub use components::tabs::{Tab, TabIndicator, Tabs, TabsProps};
 pub use components::tag::{Tag, TagProps};
+#[cfg(feature = "prim-text-input")]
 pub use components::textarea::{Textarea, TextareaProps};
+#[cfg(all(feature = "prim-icon", feature = "prim-activity", feature = "prim-portal", feature = "prim-presence"))]
 pub use components::toast::{
     dismiss_toast, push_toast, push_toast_node, push_toast_with, Toast, ToastCard, ToastCardProps,
     ToastEntry, ToastHost, ToastHostProps, ToastPlacement,

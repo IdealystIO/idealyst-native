@@ -140,6 +140,12 @@ fn row_bounds(rows: u32, max_rows: u32, has_min_height_override: bool) -> (Optio
 /// Renders a controlled multi-line text input with optional label,
 /// helper/error text, and tone, auto-growing between the `rows` floor
 /// and the `max_rows` cap.
+///
+/// **Cargo features:** requires `prim-text-input` (in idea-ui's
+/// default set). A restricted `--primitives` / `default-features = false`
+/// build without it compiles this component out, so using it is a
+/// compile error naming the missing feature — see the 0.4→0.5
+/// migration guide.
 #[component]
 pub fn Textarea(props: &TextareaProps) -> Element {
     let value = props.value;
