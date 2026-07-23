@@ -1,0 +1,43 @@
+# PUBLIC — requirements only; exercises the NESTED navigation surface of the
+# MCP (navigation guide, the swap/stack navigators, author `.layout(...)`
+# chrome, and — the crux — nesting one navigator inside another screen so BOTH
+# hierarchies render their own persistent chrome at once). No hints about which
+# API to reach for, and deliberately no mention of "navigator", "sidebar
+# component", "outlet", or "nesting".
+id = "nested-nav"
+
+prompt = """
+Build a dashboard application with a two-level sidebar navigation structure.
+
+Primary navigation:
+- A primary sidebar is visible at all times, listing three sections:
+  "Overview", "Reports", and "Settings".
+- Selecting a section shows that section's screen in the main content area, and
+  the currently selected section is visibly indicated in the primary sidebar.
+- "Overview" and "Settings" are simple screens: each shows its section name as
+  a prominent on-screen title plus a short line of body text.
+
+Secondary navigation (inside "Reports" only):
+- The "Reports" section has its OWN secondary sidebar, distinct from the primary
+  one and placed on the opposite side (e.g. primary sidebar on the left, the
+  secondary one on the right).
+- The secondary sidebar lists three report tools: "Summary", "Trends", and
+  "Exports". Selecting a tool shows that tool's screen in the Reports work area.
+  Each tool screen shows its tool name as a title plus a short unique line of
+  body text.
+- While the user is in "Reports", BOTH sidebars are visible at the same time —
+  the primary sidebar (sections) AND the secondary sidebar (report tools) — each
+  wrapping their respective content.
+- The secondary sidebar appears ONLY inside "Reports". Selecting "Overview" or
+  "Settings" from the primary sidebar shows that section without the secondary
+  sidebar.
+
+Selecting an entry in either sidebar swaps the relevant content in place; no
+back-stack / push-pop navigation is required.
+
+Target the web platform.
+"""
+
+platforms = ["web"]
+token_budget = 2_000_000
+runs = 5

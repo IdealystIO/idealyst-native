@@ -1,0 +1,150 @@
+# SECRET — never enters the implementation agent's context. Items derive
+# strictly from the stated requirements plus the framework's documented
+# navigation surface.
+#
+# What this scenario probes: a NESTED navigator structure where BOTH levels
+# render their own persistent author chrome (a "sidebar") simultaneously. The
+# canonical form is an outer navigator (the primary sidebar `.layout(...)`
+# wrapping its `{nav.outlet}`) whose "Reports" screen BODY is itself a second
+# navigator (the secondary sidebar `.layout(...)` wrapping ITS `{nav.outlet}`).
+# The outlet model composes per-navigator — each navigator wraps only its own
+# outlet and only ever swaps its own outlet's child — so the two chromes nest:
+#   primary sidebar -> primary outlet
+#      -> secondary sidebar -> secondary outlet -> the tool screen
+# Both `swap` and `stack` are valid at either level (a sidebar that switches
+# co-equal screens is `swap`'s natural shape; a drill-down would be `stack`);
+# the rubric is agnostic to which. Verified to work end-to-end by
+# `crates/dev/mock-backend/tests/nested_dual_layout.rs` (swap-in-swap and
+# stack-in-swap, both sidebars rendering at once, each switching independently).
+#
+# Capability policy (mirrors swap-tabs / nav-notes / todo-app): items test the
+# CAPABILITY, not one symbol. A component-library nav wrapper (e.g. an idea-ui
+# AppShell / TabBar used as the `.layout(...)` chrome) counts wherever it
+# legitimately provides the capability. The navigator builders
+# (`SwapNavigator` / `StackNavigator` + `.screen(...)` + `.layout(...)` +
+# `.bind(...)`) are the primary — and only — navigator capability, so the
+# decision items name them directly.
+#
+# The architectural crux — is the secondary navigator NESTED (a screen body of
+# the primary) rather than a flat sibling — is NOT robustly detectable by a
+# source regex, so it is proven BEHAVIORALLY by the outcome tier: two sidebars
+# render together inside Reports (both-sidebars-simultaneously) AND the
+# secondary sidebar vanishes outside Reports (secondary-is-contextual). A flat
+# side-by-side pair of navigators, or a single navigator with always-on chrome,
+# fails the contextual item.
+scenario_id = "nested-nav"
+
+# --- compile floor -----------------------------------------------------------
+
+[[item]]
+id = "builds-web"
+description = "The produced project builds for web."
+points = 20
+class = "decision"
+tier = "compile"
+verifier = "compile"
+assertion = { target = "web" }
+
+# --- decision items (source-verifiable: did the agent pick the right APIs) ---
+
+# Two-level navigation ⇒ at least TWO navigator instances. Matching two
+# `SwapNavigator::new` / `StackNavigator::new` construction sites proves the
+# agent routed BOTH hierarchies through the navigator system rather than
+# hand-rolling section/tool state with show/hide signals — the exact thing the
+# navigators exist to replace.
+[[item]]
+id = "uses-nested-navigators"
+description = "The two-level structure goes through the navigator system: at least two navigator builders (SwapNavigator/StackNavigator::new), not hand-rolled show/hide state."
+points = 15
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "(Swap|Stack)Navigator::new", in = "src/**/*.rs", min_count = 2 }
+
+# THE crux the structure hinges on: BOTH hierarchies supply their own persistent
+# chrome, so there must be at least TWO `.layout(...)` closures — one per
+# navigator. A structure with a single `.layout` (or none) cannot render two
+# sidebars from the navigator system; it would have hand-rolled the second.
+[[item]]
+id = "dual-layout-chrome"
+description = "Both navigator hierarchies supply their own persistent chrome — at least two `.layout(...)` closures (primary sidebar + secondary sidebar)."
+points = 25
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "\\.layout\\s*\\(", in = "src/**/*.rs", min_count = 2 }
+
+# Three sections + three report tools ⇒ at least five distinct screens (Overview,
+# Settings, Summary, Trends, Exports — plus the Reports host). Builder `.screen(`
+# calls or `Screen::new(` constructions both count; floored at five to tolerate a
+# shared screen-building helper.
+[[item]]
+id = "declares-screens"
+description = "At least five screen declarations exist across the two levels — builder `.screen(` calls or `Screen::new(` constructions."
+points = 10
+class = "decision"
+tier = "static"
+verifier = "static_ast"
+assertion = { pattern = "\\.screen\\s*\\(|Screen::new\\s*\\(", in = "src/**/*.rs", min_count = 5 }
+
+# --- outcome items (observable behavior on the running web build) ------------
+
+# The primary sidebar is author chrome wrapped around the outer navigator's
+# outlet, so it must be present on the initial screen. Seeing a section label
+# that isn't the initial screen proves the persistent primary bar renders.
+# Neutralizes to a framework finding if the nested-navigator decision passed but
+# the primary chrome never paints.
+[[item]]
+id = "primary-sidebar-renders"
+description = "A persistent primary sidebar listing all three sections renders on the initial screen."
+points = 15
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "uses-nested-navigators"
+assertion = { action = "observe the initial page state; a primary sidebar listing the sections 'Overview', 'Reports' and 'Settings' should be visible", expect_name = "Settings" }
+
+# THE crux outcome: on a route nested in both hierarchies, BOTH sidebars render
+# at once. Select 'Reports' in the primary sidebar, then confirm the secondary
+# report-tool sidebar appears ALONGSIDE the still-present primary sidebar. A
+# secondary-only label ('Trends') visible while the primary sections are also
+# visible proves the two chromes compose. Neutralizes to a framework finding if
+# the dual-layout decision passed but the two never render together.
+[[item]]
+id = "both-sidebars-simultaneously"
+description = "Inside 'Reports', BOTH sidebars render at the same time: the primary section sidebar and the secondary report-tool sidebar."
+points = 25
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "dual-layout-chrome"
+assertion = { action = "click 'Reports' in the primary sidebar, then confirm BOTH sidebars are visible simultaneously: the primary sidebar still lists 'Overview'/'Reports'/'Settings', AND a distinct secondary sidebar now lists the report tools 'Summary'/'Trends'/'Exports'", expect_name = "Trends" }
+
+# The nesting discriminator: the secondary sidebar is a NESTED screen body, not
+# always-on chrome or a flat sibling. From Reports, select 'Overview' on the
+# primary sidebar; the secondary report-tool sidebar must be GONE (it belongs to
+# the Reports screen only). A flat side-by-side navigator pair, or a single
+# navigator with static two-sidebar chrome, fails here — the secondary would
+# persist on Overview.
+[[item]]
+id = "secondary-is-contextual"
+description = "The secondary sidebar appears ONLY inside 'Reports' — selecting 'Overview' from the primary sidebar shows Overview with no secondary report-tool sidebar."
+points = 20
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "dual-layout-chrome"
+assertion = { action = "starting inside 'Reports', click 'Overview' in the primary sidebar; confirm the Overview screen (its title/body) is shown and the secondary report-tool sidebar listing 'Summary'/'Trends'/'Exports' is NO LONGER visible — it must appear only inside 'Reports'", expect_name = "Overview" }
+
+# Independent inner navigation: switching the SECONDARY sidebar swaps only the
+# Reports work area, leaving BOTH sidebars mounted. Inside Reports, click a
+# different tool and confirm the work area changed while the sidebars persist.
+[[item]]
+id = "tool-switch-swaps-work-area"
+description = "Selecting a different report tool in the secondary sidebar swaps the Reports work area to that tool's content while both sidebars stay visible."
+points = 15
+class = "outcome"
+tier = "playwright"
+verifier = "ux_locator"
+depends_on = "declares-screens"
+assertion = { action = "inside 'Reports' (the 'Summary' tool showing by default), click 'Trends' in the secondary sidebar; confirm the Reports work area now shows the Trends tool's own content (title and body) and that both the primary and secondary sidebars remain visible", expect_name = "Trends" }
