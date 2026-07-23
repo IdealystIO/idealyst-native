@@ -5,26 +5,28 @@ edition.workspace = true
 license.workspace = true
 
 # Native GTK4 backend for `runtime_core::Backend`. Uses `gtk4-rs` to
-# create real GTK widgets — `gtk::Button`, `gtk::Label`,
-# `gtk::Entry` (TextInput), `gtk::Switch`, `gtk::Scale` (Slider) —
-# parented under a `gtk::Window` owned by the host shell.
+# create real GTK widgets — a custom `IdealystView` (GtkFixed subclass
+# that paints background/gradient/border/clip via GSK) for `view` /
+# `pressable`, `gtk::Label` (Text, styled via Pango), `gtk::Button`,
+# `gtk::Entry` (TextInput), `gtk::Switch` (Toggle), `gtk::Scale`
+# (Slider) — parented under a `gtk::Window` owned by the host shell
+# (see the `host-gtk` crate). Layout is a Taffy pass; styling +
+# transforms + the per-frame animation fast-path are implemented, so
+# an animated app (the `welcome` example) renders natively.
 #
-# Status: scaffold. The crate is structured but most primitives are
-# placeholder labels — author code mounts without panicking and a
-# follow-up PR (driven by someone with a Linux+GTK test environment)
-# replaces each placeholder with the real GTK widget. The lib body
-# is gated on `cfg(target_os = "linux")` so workspace builds on
-# macOS / Windows hosts compile this to an empty rlib without
-# pulling `gtk4` into the dep graph.
+# The lib body is gated on `cfg(target_os = "linux")` so workspace
+# builds on macOS / Windows hosts compile this to an empty rlib
+# without pulling `gtk4` into the dep graph.
 #
-# Test plan (when a Linux env is available):
-# 1. Install GTK 4 development headers via the distro package
-#    manager (`libgtk-4-dev` on Debian/Ubuntu, `gtk4-devel` on
-#    Fedora, etc.).
-# 2. `cargo check --target x86_64-unknown-linux-gnu -p backend-linux`
-# 3. Wire a tiny host that creates a `gtk::Application`, hands its
-#    `gtk::Window` to `LinuxBackend::new(window)`, and drives the
-#    framework's render loop.
+# Requirements (Linux host): GTK ≥ 4.12 dev headers (`libgtk-4-dev` /
+# `gtk4-devel`) and Pango ≥ 1.56 — the latter for
+# `PangoFontMap::add_font_file`, used to register embedded `face!`
+# fonts at runtime (Pango 1.56 shipped with GNOME 48 / early 2025;
+# GTK 4.14+ distros ship it).
+#
+# Scope: `view` / `text` / layout / styling / animation are complete;
+# image / icon / virtualizer / navigator / portal / external render a
+# labeled placeholder (never panic) pending a general-purpose pass.
 
 [lib]
 crate-type = ["rlib"]
@@ -34,8 +36,11 @@ runtime-core = { workspace = true }
 runtime-layout = { workspace = true }
 
 # `gtk4-rs` provides the safe Rust bindings to GTK4. The `v4_X` feature
-# flags gate API coverage by GTK version; `v4_12` is a reasonable
-# default (matches the version on current Ubuntu LTS, Debian stable,
-# Fedora). Adjust if the target environment ships an older GTK.
+# flags gate API coverage by GTK version; `v4_12` covers everything
+# this backend calls (GskFixed transforms, GSK snapshot nodes,
+# subclassing). `pango` is re-exported by `gtk4`, but its `add_font_file`
+# binding is gated behind `v1_56`, which `gtk4/v4_12` doesn't enable —
+# so we depend on `pango` directly with `v1_56` to unify the feature on.
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk4 = { version = "0.9", features = ["v4_12"] }
+pango = { version = "0.20", features = ["v1_56"] }

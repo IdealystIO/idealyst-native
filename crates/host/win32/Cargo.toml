@@ -1,0 +1,56 @@
+[package]
+name = "host-win32"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Win32 host shell for the `backend-windows` native backend. Owns the
+# top-level HWND + window class, runs the Win32 message pump, installs
+# a message-loop-integrated scheduler, constructs `WindowsBackend`, and
+# drives `runtime_core::mount`. Mirrors `host-appkit` (the AppKit host
+# for `backend-macos`): the *host* owns the window and event loop, the
+# *backend* only builds and positions child controls.
+#
+# The real implementation is gated on `cfg(target_os = "windows")`; on
+# other hosts the crate exposes a type-checking stub so workspace-wide
+# `cargo check` compiles from macOS / Linux without pulling the
+# `windows` crate into the dep graph.
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+runtime-core = { workspace = true }
+
+# The `welcome` example app backs the `smoke` example — a manual
+# end-to-end check that the host opens a window and mounts a real app.
+# Pure rlib, cheap, and reuses the workspace's cached build artifacts.
+[dev-dependencies]
+welcome = { workspace = true }
+
+[[example]]
+name = "smoke"
+path = "examples/smoke.rs"
+
+[[example]]
+name = "smoke_min"
+path = "examples/smoke_min.rs"
+
+[[example]]
+name = "smoke_interactive"
+path = "examples/smoke_interactive.rs"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+backend-windows = { workspace = true }
+# Same `windows` crate + version as `backend-windows`. Features cover
+# window-class registration, the message pump, and module-handle
+# lookup for the window class's hInstance.
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_LibraryLoader",
+    # TerminateProcess / GetCurrentProcess for the exit-without-teardown
+    # path (see `hard_exit` in app.rs).
+    "Win32_System_Threading",
+] }

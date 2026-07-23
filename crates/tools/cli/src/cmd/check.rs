@@ -145,7 +145,7 @@ fn triple_for(target: Target, ios_device: bool) -> CheckTriple {
         // purposes: their platform code compiles for the host triple, so
         // checking against `<host>` exercises it. (A real ship build still
         // goes through the per-target wrapper crates.)
-        Target::Macos | Target::Terminal | Target::Roku => CheckTriple::Host,
+        Target::Macos | Target::Terminal | Target::Roku | Target::Linux => CheckTriple::Host,
     }
 }
 
@@ -162,7 +162,7 @@ fn resolve_targets(platforms: &[Platform], manifest_targets: &[Target]) -> Resul
                 None => anyhow::bail!(
                     "platform `{p}` has no type-check target (it's a dev-host / preview, \
                      not a build target). Pass a buildable platform: web, ios, android, \
-                     macos, terminal, roku."
+                     macos, terminal, linux, roku."
                 ),
             }
         }
@@ -187,6 +187,7 @@ fn platform_to_target(p: Platform) -> Option<Target> {
         Platform::Android => Some(Target::Android),
         Platform::Macos => Some(Target::Macos),
         Platform::Terminal => Some(Target::Terminal),
+        Platform::Linux => Some(Target::Linux),
         Platform::Roku => Some(Target::Roku),
         Platform::Sim | Platform::RuntimeServer | Platform::Server => None,
     }

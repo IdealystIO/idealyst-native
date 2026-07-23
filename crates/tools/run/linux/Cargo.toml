@@ -1,0 +1,18 @@
+[package]
+name = "run-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Linux (GTK4) launcher for `idealyst run linux` and
+# `idealyst dev --linux`.
+#
+# Calls `build-linux` to produce the GTK binary, then either runs it
+# in the foreground (`run` — one-shot `idealyst run linux`, blocks
+# until the window closes) or spawns it detached (`run_spawn` — the
+# `dev` orchestrator keeps the Child so Ctrl-C can tear it down).
+
+[dependencies]
+anyhow = "1"
+build-linux = { workspace = true }
+build-ios = { workspace = true }

@@ -498,6 +498,7 @@ fn platform_category(p: Platform) -> Option<Category> {
         Platform::Sim
         | Platform::Macos
         | Platform::Terminal
+        | Platform::Linux
         | Platform::RuntimeServer
         | Platform::Server => None,
     }

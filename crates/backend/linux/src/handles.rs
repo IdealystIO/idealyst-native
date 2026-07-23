@@ -1,0 +1,120 @@
+//! Node handles — the bridge from `Ref<ViewHandle>` / `Ref<TextHandle>`
+//! back to the backend.
+//!
+//! `AnimatedValue::bind(ref, prop)` fills a `Ref` with a handle built by
+//! [`Backend::make_view_handle`](runtime_core::Backend::make_view_handle)
+//! / `make_text_handle`, then drives per-frame writes through that
+//! handle's [`ViewOps`] / [`TextOps`]. The default trait impls return a
+//! **no-op** handle, so a backend that doesn't build real ones silently
+//! drops every animation (the value ticks, nothing paints). This module
+//! supplies handles that route `set_animated_*` and `frame()` back into
+//! the [`LinuxBackend`].
+//!
+//! The handle's state carries a `Weak` reference to the backend (which
+//! lives in an `Rc<RefCell<LinuxBackend>>` owned by the host) plus the
+//! node. Ops upgrade the weak and `try_borrow_mut` — `try_` because a
+//! handle write could, in principle, land while the mount walk still
+//! holds the backend borrow; skipping then is safe since the animation
+//! clock re-applies within a frame.
+
+use std::any::Any;
+use std::cell::RefCell;
+use std::rc::Weak;
+
+use runtime_core::animation::AnimProp;
+use runtime_core::primitives::portal::ViewportRect;
+use runtime_core::{Backend, TextHandle, TextOps, ViewHandle, ViewOps};
+
+use crate::{LinuxBackend, LinuxNode};
+
+/// State stored inside a `ViewHandle` / `TextHandle`: how to reach the
+/// backend, and which node this handle targets.
+pub(crate) struct HandleState {
+    pub backend: Weak<RefCell<LinuxBackend>>,
+    pub node: LinuxNode,
+}
+
+impl HandleState {
+    fn with_backend_mut(&self, f: impl FnOnce(&mut LinuxBackend, &LinuxNode)) {
+        if let Some(b) = self.backend.upgrade() {
+            if let Ok(mut b) = b.try_borrow_mut() {
+                f(&mut b, &self.node);
+            }
+        }
+    }
+}
+
+// =========================================================================
+// View handle
+// =========================================================================
+
+struct LinuxViewOps;
+static LINUX_VIEW_OPS: LinuxViewOps = LinuxViewOps;
+
+impl ViewOps for LinuxViewOps {
+    fn set_animated_f32(&self, node: &dyn Any, prop: AnimProp, value: f32) {
+        if let Some(state) = node.downcast_ref::<HandleState>() {
+            state.with_backend_mut(|b, n| b.set_animated_f32(n, prop, value));
+        }
+    }
+
+    fn set_animated_color(&self, node: &dyn Any, prop: AnimProp, value: [f32; 4]) {
+        if let Some(state) = node.downcast_ref::<HandleState>() {
+            state.with_backend_mut(|b, n| b.set_animated_color(n, prop, value));
+        }
+    }
+
+    fn frame(&self, node: &dyn Any) -> Option<ViewportRect> {
+        let state = node.downcast_ref::<HandleState>()?;
+        let b = state.backend.upgrade()?;
+        let b = b.try_borrow().ok()?;
+        b.node_frame(state.node.id).map(|(x, y, w, h)| ViewportRect {
+            x,
+            y,
+            width: w,
+            height: h,
+        })
+    }
+
+    fn absolute_frame(&self, node: &dyn Any) -> Option<ViewportRect> {
+        // The welcome scene reads this only on the root (page) node,
+        // whose parent-relative frame IS window-relative; good enough
+        // for the viewport size the orbit math needs.
+        self.frame(node)
+    }
+}
+
+pub(crate) fn make_view_handle(backend: &LinuxBackend, node: &LinuxNode) -> ViewHandle {
+    ViewHandle::new(
+        std::rc::Rc::new(HandleState {
+            backend: backend.self_ref(),
+            node: node.clone(),
+        }) as std::rc::Rc<dyn Any>,
+        &LINUX_VIEW_OPS,
+    )
+}
+
+// =========================================================================
+// Text handle
+// =========================================================================
+
+struct LinuxTextOps;
+static LINUX_TEXT_OPS: LinuxTextOps = LinuxTextOps;
+
+impl TextOps for LinuxTextOps {
+    fn set_animated_color(&self, node: &dyn Any, prop: AnimProp, value: [f32; 4]) {
+        if let Some(state) = node.downcast_ref::<HandleState>() {
+            state.with_backend_mut(|b, n| b.set_animated_color(n, prop, value));
+        }
+    }
+}
+
+pub(crate) fn make_text_handle(backend: &LinuxBackend, node: &LinuxNode) -> TextHandle {
+    TextHandle::new(
+        std::rc::Rc::new(HandleState {
+            backend: backend.self_ref(),
+            node: node.clone(),
+        }) as std::rc::Rc<dyn Any>,
+        &LINUX_TEXT_OPS,
+    )
+}

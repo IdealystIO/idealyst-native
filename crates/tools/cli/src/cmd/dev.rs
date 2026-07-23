@@ -234,6 +234,12 @@ pub struct Args {
     #[arg(long)]
     pub terminal: bool,
 
+    /// Build and run as a native Linux GTK4 app (`host-gtk` +
+    /// `backend-linux`). Local-mount only for now — no runtime-server
+    /// hot-reload, so source edits require a rebuild + relaunch.
+    #[arg(long)]
+    pub linux: bool,
+
     /// Launch every platform the host can build for in parallel —
     /// web + android always; ios + macos additionally on darwin.
     /// Targets that fail to launch don't abort the others. Useful
@@ -902,6 +908,9 @@ fn resolve_targets(args: &Args, manifest_targets: &[Target]) -> Result<Vec<Targe
     if args.terminal {
         from_flags.push(Target::Terminal);
     }
+    if args.linux {
+        from_flags.push(Target::Linux);
+    }
 
     if !from_flags.is_empty() {
         return Ok(dedup_preserve_order(from_flags));
@@ -919,7 +928,7 @@ fn resolve_targets(args: &Args, manifest_targets: &[Target]) -> Result<Vec<Targe
     }
     anyhow::bail!(
         "no targets to run: pass `--all`, or `--web` / `--ios` / `--android` / \
-         `--macos`, or add `targets = [\"web\", ...]` to \
+         `--macos` / `--terminal` / `--linux`, or add `targets = [\"web\", ...]` to \
          `[package.metadata.idealyst.app]`"
     )
 }
@@ -933,6 +942,9 @@ fn all_targets_for_host() -> Vec<Target> {
     if cfg!(target_os = "macos") {
         targets.push(Target::Ios);
         targets.push(Target::Macos);
+    }
+    if cfg!(target_os = "linux") {
+        targets.push(Target::Linux);
     }
     targets
 }
@@ -1017,7 +1029,64 @@ fn launch_target(
         ),
         Target::Macos => launch_macos(dir, args, children, macos_app_pid, runtime_server_port),
         Target::Terminal => launch_terminal(dir, args, runtime_server_port),
+        Target::Linux => launch_linux(dir, args, children, macos_app_pid),
     }
+}
+
+/// Linux (GTK) launcher — build the local-mount wrapper via
+/// `build-linux` (with the `dev` feature so the Robot bridge auto-
+/// starts), then `run-linux` spawns it detached and the `Child` is
+/// tracked so Ctrl-C tears it down. The GTK host has no runtime-server
+/// (dev-host streaming) variant yet, so `dev --linux` is local-mount
+/// only — no live hot-reload. `--runtime-server` / the default
+/// runtime-server mode fall back to local with a note.
+fn launch_linux(
+    dir: &Path,
+    args: &Args,
+    children: Arc<Mutex<Vec<Child>>>,
+    app_pid: Arc<Mutex<Option<u32>>>,
+) -> Result<()> {
+    if !args.local {
+        crate::dlog!(
+            "dev linux",
+            "hot-reload (runtime-server) isn't wired for the GTK host yet — running local-mount \
+             (edits require a rebuild + relaunch)"
+        );
+    }
+    crate::dlog!("dev linux", "building + launching native GTK app…");
+    let source = crate::framework_source::resolve(dir)?;
+    let app_name = project_app_name(dir);
+    pre_launch_clear_registry(dir);
+
+    let mut env_vars = dev_env_vars(dir, args, &app_name, None, None);
+    // Tell the app which process launched it so its launcher-watchdog
+    // exits when this CLI dies (matches the macOS path).
+    env_vars.push((
+        "IDEALYST_LAUNCHER_PID".to_string(),
+        std::process::id().to_string(),
+    ));
+
+    let artifact = run_linux::run(
+        dir,
+        run_linux::RunOptions {
+            release: false,
+            mode: run_linux::RunMode::Local,
+            source,
+            background: true,
+            user_features: dev_user_features_macos(),
+            env_vars,
+        },
+    )
+    .context("linux dev launch failed")?;
+    crate::dlog!("dev linux", "running detached ({})", artifact.binary.display());
+
+    if let Some(child) = artifact.child {
+        *app_pid.lock().unwrap() = Some(child.id());
+        children.lock().unwrap().push(child);
+    }
+    write_catalog_path(dir, &artifact.binary);
+    track_project_root(dir);
+    Ok(())
 }
 
 /// Terminal launcher — build the TTY binary via `build-terminal`,
@@ -2196,6 +2265,7 @@ impl Args {
             android: self.android,
             macos: self.macos,
             terminal: self.terminal,
+            linux: self.linux,
             all: self.all,
             ssr: self.ssr,
             static_only: self.static_only,

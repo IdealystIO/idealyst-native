@@ -1440,6 +1440,7 @@ name = "backend-linux"
 version = "0.4.0"
 dependencies = [
  "gtk4",
+ "pango",
  "runtime-core",
  "runtime-layout",
 ]
@@ -1827,6 +1828,15 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml 0.8.23",
+]
+
+[[package]]
+name = "build-linux"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "build-ios",
+ "tempfile",
 ]
 
 [[package]]
@@ -5148,6 +5158,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "host-gtk"
+version = "0.4.0"
+dependencies = [
+ "backend-linux",
+ "gtk4",
+ "runtime-core",
+]
+
+[[package]]
 name = "host-ios-mobile"
 version = "0.4.0"
 dependencies = [
@@ -5225,6 +5244,16 @@ dependencies = [
  "render-wgpu",
  "runtime-core",
  "winit",
+]
+
+[[package]]
+name = "host-win32"
+version = "0.4.0"
+dependencies = [
+ "backend-windows",
+ "runtime-core",
+ "welcome",
+ "windows 0.58.0",
 ]
 
 [[package]]
@@ -5759,6 +5788,7 @@ dependencies = [
  "backend-roku-transpile",
  "build-android",
  "build-ios",
+ "build-linux",
  "build-macos",
  "build-roku",
  "build-runtime-server",
@@ -5787,6 +5817,7 @@ dependencies = [
  "robot-test",
  "run-android",
  "run-ios",
+ "run-linux",
  "run-macos",
  "run-roku",
  "run-terminal",
@@ -9243,6 +9274,15 @@ dependencies = [
  "build-ios",
  "icon-gen",
  "serde_json",
+]
+
+[[package]]
+name = "run-linux"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "build-ios",
+ "build-linux",
 ]
 
 [[package]]
@@ -12763,6 +12803,14 @@ version = "0.4.0"
 dependencies = [
  "dev-server",
  "runtime-core",
+]
+
+[[package]]
+name = "welcome-gtk"
+version = "0.4.0"
+dependencies = [
+ "host-gtk",
+ "welcome",
 ]
 
 [[package]]

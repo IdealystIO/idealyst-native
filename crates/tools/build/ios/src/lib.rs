@@ -357,6 +357,9 @@ pub enum Target {
     /// TTY app via `backend-terminal` + `host-terminal`. Foreground
     /// crossterm grid in the current shell.
     Terminal,
+    /// Native Linux app via `backend-linux` (GTK4) + `host-gtk`. Uses
+    /// real GTK widgets in a `gtk::ApplicationWindow`.
+    Linux,
 }
 
 impl Target {
@@ -372,8 +375,9 @@ impl Target {
             "roku" => Ok(Target::Roku),
             "macos" => Ok(Target::Macos),
             "terminal" => Ok(Target::Terminal),
+            "linux" => Ok(Target::Linux),
             other => anyhow::bail!(
-                "unknown target {:?}; expected one of: web, ios, android, roku, macos, terminal",
+                "unknown target {:?}; expected one of: web, ios, android, roku, macos, terminal, linux",
                 other
             ),
         }
@@ -389,6 +393,7 @@ impl Target {
             Target::Roku => "roku",
             Target::Macos => "macos",
             Target::Terminal => "terminal",
+            Target::Linux => "linux",
         }
     }
 }

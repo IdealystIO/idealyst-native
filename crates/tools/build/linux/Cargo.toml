@@ -1,0 +1,29 @@
+[package]
+name = "build-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Linux GTK4-host build orchestration for `idealyst build --linux`
+# (and `idealyst run linux` / `idealyst dev --linux`).
+#
+# Same shape as `build-terminal` / `build-macos`: generate a tiny
+# binary wrapper under `<wrapper_root>/<project>/linux/`, depend on
+# `host-gtk` + the user crate, `cargo build` it, return the produced
+# binary's path. The wrapper's `main()` calls
+# `host_gtk::run_with(opts, register_extensions, app)`.
+#
+# Only the local-mount mode exists today: the GTK host has no
+# runtime-server (dev-host streaming) variant yet, so hot-reload via
+# the sidecar isn't wired. `idealyst dev --linux` therefore builds a
+# local-mount wrapper with the Robot bridge (`dev` feature) enabled.
+
+[dependencies]
+anyhow = "1"
+# Re-uses `build-ios`'s manifest parser + framework-source helper the
+# same way `build-macos` / `build-terminal` do (wrapper-root +
+# shared-target-dir conventions live there).
+build-ios = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

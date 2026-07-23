@@ -31,6 +31,10 @@ pub enum Platform {
     /// terminal. Supports `--runtime-server` like the other native
     /// targets.
     Terminal,
+    /// Native Linux via `backend-linux` (GTK4) + `host-gtk`. Uses real
+    /// GTK widgets in a `gtk::ApplicationWindow`. Local-mount only for
+    /// now (no runtime-server hot-reload yet).
+    Linux,
     /// The project's own application server — the `#[server]` RPC /
     /// API backend declared as
     /// `[package.metadata.idealyst.app].server_bin`. Not a render
@@ -50,6 +54,7 @@ impl Platform {
             Platform::Sim => "sim",
             Platform::Macos => "macos",
             Platform::Terminal => "terminal",
+            Platform::Linux => "linux",
             Platform::Server => "server",
         }
     }

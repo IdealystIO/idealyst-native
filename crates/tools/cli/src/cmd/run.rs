@@ -435,9 +435,35 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
             eprintln!("  binary: {}", artifact.binary.display());
             Ok(())
         }
+        Platform::Linux => {
+            if args.runtime_server {
+                anyhow::bail!(
+                    "`--runtime-server` isn't supported for linux yet (the GTK host has no \
+                     dev-host streaming variant); run without it for a local-mount launch"
+                );
+            }
+            let source = crate::framework_source::resolve(&args.dir)?;
+            let artifact = run_linux::run(
+                &args.dir,
+                run_linux::RunOptions {
+                    release: args.release,
+                    mode: run_linux::RunMode::Local,
+                    source,
+                    // One-shot `idealyst run linux` is a foreground
+                    // session — block on the window so Ctrl-C tears it down.
+                    background: false,
+                    user_features: Vec::new(),
+                    env_vars: Vec::new(),
+                },
+            )?;
+            eprintln!();
+            eprintln!("[idealyst run linux] exited");
+            eprintln!("  binary: {}", artifact.binary.display());
+            Ok(())
+        }
         Platform::Server => run_server(&args),
         _ => anyhow::bail!(
-            "run for {} is not implemented yet — only ios, android, roku, sim, macos, terminal, and server are wired today",
+            "run for {} is not implemented yet — only ios, android, roku, sim, macos, terminal, linux, and server are wired today",
             args.platform,
         ),
     }

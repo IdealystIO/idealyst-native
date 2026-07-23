@@ -45,6 +45,11 @@ members = [
     "crates/gpu-backend/host/appkit",
     "crates/gpu-backend/host/terminal",
     "crates/gpu-backend/host/wgpu-accesskit",
+
+    # Native desktop hosts for the OS-widget backends: GTK4 for
+    # `backend-linux`, Win32 for `backend-windows`.
+    "crates/host/gtk",
+    "crates/host/win32",
     "crates/gpu-backend/painter/ios-sim",
     "crates/gpu-backend/painter/android-sim",
     "crates/gpu-backend/variant/phone",
@@ -200,6 +205,7 @@ members = [
     "crates/tools/build/ssr",
     "crates/tools/build/serverless-lambda",
     "crates/tools/build/terminal",
+    "crates/tools/build/linux",
     "crates/tools/dev-tui",
     "crates/tools/docs-app",
     "crates/tools/run/android",
@@ -207,6 +213,7 @@ members = [
     "crates/tools/run/roku",
     "crates/tools/run/macos",
     "crates/tools/run/terminal",
+    "crates/tools/run/linux",
     "crates/tools/port/core",
     "crates/tools/port/tsx",
     "crates/tools/port/react",
@@ -267,6 +274,8 @@ members = [
     # Curated example apps. `welcome` is load-bearing: `idealyst new`
     # embeds its sources verbatim (cli/src/cmd/scaffold_template.rs).
     "examples/welcome",
+    # Runs `welcome` natively on the GTK backend (host-gtk). Linux-only.
+    "examples/welcome-gtk",
     "examples/fiddle",
     "examples/baseline",
     "examples/lazy-canvas",
@@ -365,6 +374,8 @@ build-serverless-lambda = { path = "crates/tools/build/serverless-lambda" }
 run-macos = { path = "crates/tools/run/macos" }
 build-terminal = { path = "crates/tools/build/terminal" }
 run-terminal = { path = "crates/tools/run/terminal" }
+build-linux = { path = "crates/tools/build/linux" }
+run-linux = { path = "crates/tools/run/linux" }
 dev-tui = { path = "crates/tools/dev-tui" }
 lint = { path = "crates/tools/lint" }
 configure = { path = "crates/tools/configure" }
@@ -388,6 +399,7 @@ backend-ssr = { path = "crates/backend/ssr" }
 backend-email = { path = "crates/backend/email" }
 backend-windows = { path = "crates/backend/windows" }
 backend-linux = { path = "crates/backend/linux" }
+host-gtk = { path = "crates/host/gtk" }
 welcome = { path = "examples/welcome" }
 render-api = { path = "crates/gpu-backend/api" }
 render-wgpu = { path = "crates/gpu-backend/engine" }
@@ -400,6 +412,7 @@ host-android-mobile = { path = "crates/gpu-backend/host/android-mobile" }
 host-macos-desktop = { path = "crates/gpu-backend/host/macos-desktop" }
 host-wgpu = { path = "crates/gpu-backend/host/wgpu" }
 host-appkit = { path = "crates/gpu-backend/host/appkit" }
+host-win32 = { path = "crates/host/win32" }
 host-terminal = { path = "crates/gpu-backend/host/terminal" }
 host-wgpu-accesskit = { path = "crates/gpu-backend/host/wgpu-accesskit" }
 variant-phone = { path = "crates/gpu-backend/variant/phone" }

@@ -1,0 +1,27 @@
+[package]
+name = "host-gtk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# GTK4 desktop host shell for the native `backend-linux` GTK backend.
+#
+# The AppKit/winit hosts' Linux-widget analog: `run(opts, app)` opens a
+# real `gtk::ApplicationWindow`, constructs a `LinuxBackend` rooted at
+# it, mounts the app tree, and drives the framework's scheduler on the
+# GLib main loop so `after_ms` / `raf_loop` (and therefore every
+# `AnimatedValue`) advance. The app tree is host-triple-agnostic — the
+# same `app()` that runs on web/iOS/Android renders here as native GTK.
+#
+# Lib body is gated on `cfg(target_os = "linux")` (it references
+# `LinuxBackend`, itself Linux-only); empty rlib elsewhere.
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+runtime-core = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk4 = { version = "0.9", features = ["v4_12"] }
+backend-linux = { workspace = true }

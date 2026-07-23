@@ -1,0 +1,22 @@
+[package]
+name = "welcome-gtk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Runs the platform-agnostic `welcome` app natively on the GTK4 backend (backend-linux) via host-gtk — the proof that the same author tree renders as real native Linux widgets. Linux-only; run with `cargo run -p welcome-gtk`."
+
+[[bin]]
+name = "welcome-gtk"
+path = "src/main.rs"
+
+[dependencies]
+# The app under test — its `app()` entry is host-triple-agnostic; we
+# mount it directly, exactly as the CLI-generated web/iOS/Android
+# wrappers do on their platforms.
+welcome = { workspace = true }
+
+# The GTK host + native GTK backend. Linux-only (empty rlibs elsewhere),
+# so this binary only does anything on Linux; on other hosts `main` is
+# a no-op stub.
+[target.'cfg(target_os = "linux")'.dependencies]
+host-gtk = { workspace = true }

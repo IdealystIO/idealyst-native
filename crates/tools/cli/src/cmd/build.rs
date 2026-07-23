@@ -344,8 +344,24 @@ fn build_target(target: Target, dir: &std::path::Path, args: &Args) -> Result<Op
         Target::Roku => build_roku_target(dir, args)?,
         Target::Macos => build_macos_target(dir, args)?,
         Target::Terminal => build_terminal_target(dir, args)?,
+        Target::Linux => build_linux_target(dir, args)?,
     }
     Ok(None)
+}
+
+fn build_linux_target(dir: &std::path::Path, args: &Args) -> Result<()> {
+    let source = crate::framework_source::resolve(dir)?;
+    let artifact = build_linux::build(
+        dir,
+        build_linux::BuildOptions {
+            release: args.release,
+            mode: build_linux::BuildMode::Local,
+            source,
+            user_features: Vec::new(),
+        },
+    )?;
+    eprintln!("[build linux] success → {}", artifact.binary.display());
+    Ok(())
 }
 
 fn build_terminal_target(dir: &std::path::Path, args: &Args) -> Result<()> {
