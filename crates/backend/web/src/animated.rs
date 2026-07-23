@@ -32,7 +32,7 @@
 //! static base to compose into the animated value should also
 //! bind a scale-animated value seeded at 0.5.
 
-use std::collections::HashMap;
+use runtime_core::FxHashMap;
 
 // `css_num`, not `f32: Display` — a bare `{}` on an f32 anywhere reinstates
 // core's ~12-15 KB flt2dec float formatter in every bundle (see css::css_num).
@@ -299,7 +299,7 @@ fn rgba_css(value: [f32; 4]) -> String {
 /// unmounted. Keys are the same `u32` node-ids the rest of the
 /// per-node state tables use (state listeners, dynamic class
 /// slots, etc.).
-pub(crate) type AnimatedStateMap = HashMap<u32, AnimatedNodeState>;
+pub(crate) type AnimatedStateMap = FxHashMap<u32, AnimatedNodeState>;
 
 /// Build an inline `background-image` CSS value from the cached
 /// gradient shape + current stop colors. Mirrors the static

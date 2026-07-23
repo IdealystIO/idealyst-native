@@ -263,8 +263,8 @@ std::thread_local! {
     /// SSR/hydration case seeds this set without injecting (the rule is
     /// already in the server `<head>`); the live page injects on first
     /// sight; chunks then find it present and skip.
-    static FONT_FACES_PRESENT: std::cell::RefCell<std::collections::HashSet<String>> =
-        std::cell::RefCell::new(std::collections::HashSet::new());
+    static FONT_FACES_PRESENT: std::cell::RefCell<FxHashSet<String>> =
+        std::cell::RefCell::new(FxHashSet::default());
 }
 
 /// EXPERIMENT (External-anchoring probe): run `f` with the ambient WebBackend —
@@ -284,7 +284,7 @@ use runtime_core::{
     AssetId, AssetSource, AssetTag, Backend, ButtonHandle, StyleRules, SystemFallback,
     TypefaceFace, TypefaceId,
 };
-use std::collections::HashMap;
+use runtime_core::{FxHashMap, FxHashSet};
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
@@ -398,7 +398,7 @@ pub struct WebBackend {
     /// the listeners for one node (pointerenter, pointerleave,
     /// pointerdown, pointerup, focusin, focusout) plus the
     /// pointer-event-type closures so the JS side keeps them alive.
-    pub(crate) state_listeners: HashMap<u32, Vec<Closure<dyn FnMut(web_sys::Event)>>>,
+    pub(crate) state_listeners: FxHashMap<u32, Vec<Closure<dyn FnMut(web_sys::Event)>>>,
     /// Has the `@keyframes ui-spin` rule been injected? First
     /// ActivityIndicator creation injects it; later creations skip
     /// the work.
@@ -476,7 +476,7 @@ pub struct WebBackend {
     /// Set of node ids the JS side has been told about. We register
     /// each styled node ONCE on its first apply (1 FFI hop /
     /// node-lifetime); subsequent applies hit the batched path.
-    pub(crate) class_nodes_registered: std::collections::HashSet<u32>,
+    pub(crate) class_nodes_registered: FxHashSet<u32>,
     /// Per-microtask buffer of (node_id, class_name) updates.
     /// Flushed via one FFI call to `__idealystApplyClassesBatch`.
     /// All bookkeeping (lengths, scheduling, FFI shipping) lives in
@@ -522,7 +522,7 @@ pub struct WebBackend {
     /// freed-Signal arena slot after the surrounding scope has
     /// dropped.
     #[cfg(feature = "prim-virtualizer")]
-    pub(crate) virtualizer_instances: HashMap<u32, primitives::virtualizer::VirtualizerInstance>,
+    pub(crate) virtualizer_instances: FxHashMap<u32, primitives::virtualizer::VirtualizerInstance>,
     /// Monotonic id counter for virtualizer containers, written as
     /// `data-virtualizer-id` on the container `<div>`. Same trick as
     /// `data-graphics-id`: lets `release_virtualizer` look up the
@@ -539,7 +539,7 @@ pub struct WebBackend {
     /// reaches the scheduler with no backend round-trip.
     #[cfg(feature = "prim-graphics")]
     pub(crate) graphics_instances:
-        HashMap<u32, std::rc::Rc<std::cell::RefCell<primitives::graphics::GraphicsInstance>>>,
+        FxHashMap<u32, std::rc::Rc<std::cell::RefCell<primitives::graphics::GraphicsInstance>>>,
     /// Monotonic id counter for Graphics canvases. Written as the
     /// `data-graphics-id` attribute on each `<canvas>` so
     /// `make_handle` / `release` can look the instance up from a
@@ -553,7 +553,7 @@ pub struct WebBackend {
     /// Pre-generated classes from `register_stylesheet`. Content-keyed,
     /// shared, refcounted (refcount tracks how many active
     /// registrations hold them — not how many nodes apply them).
-    pub(crate) pregen: HashMap<String, PregenEntry>,
+    pub(crate) pregen: FxHashMap<String, PregenEntry>,
     /// Pointer-keyed mirror of `pregen` for the hot apply path. When
     /// the framework's resolution cache returns the same
     /// `Rc<StyleRules>` instance for many nodes (e.g. 10000 rows of
@@ -564,11 +564,11 @@ pub struct WebBackend {
     /// Populated by `register_stylesheet` alongside the content-keyed
     /// `pregen` map. Cleared on `unregister_stylesheet` /
     /// theme change.
-    pub(crate) pregen_by_ptr: HashMap<*const runtime_core::StyleRules, String>,
+    pub(crate) pregen_by_ptr: FxHashMap<*const runtime_core::StyleRules, String>,
     /// Per-node dynamic class slot — `node_id -> (class_name, content_key)`.
     /// At most one dynamic class per node. Replaced atomically when
     /// the node's resolved style changes.
-    pub(crate) dynamic: HashMap<u32, DynamicSlot>,
+    pub(crate) dynamic: FxHashMap<u32, DynamicSlot>,
     /// Content-keyed pool of dynamic CSS rules, refcounted across the
     /// cohort of nodes that resolved to the same `(base + overlays)`
     /// content. Populated lazily on `apply_styled_states` slow-path
@@ -578,7 +578,7 @@ pub struct WebBackend {
     /// fan-out minted N identical rules + did N `insert_rule` / N
     /// `delete_rule` calls; deduped, the first node mints and the
     /// rest just bump the refcount.
-    pub(crate) dynamic_by_content: HashMap<String, DynamicRule>,
+    pub(crate) dynamic_by_content: FxHashMap<String, DynamicRule>,
     /// Pointer-keyed mirror of `dynamic_by_content` for the hot apply
     /// path. The framework's `RESOLUTION_CACHE` hands us the SAME
     /// `Rc<StyleRules>` for repeated `(sheet, variants, overrides)`
@@ -599,7 +599,7 @@ pub struct WebBackend {
     /// dereference; (b) the `RESOLUTION_CACHE` keeps the Rc alive
     /// for as long as its content is reachable, which is at least
     /// as long as we hold any `DynamicSlot` referencing it.
-    pub(crate) dynamic_by_ptr: HashMap<*const runtime_core::StyleRules, std::rc::Rc<DynamicPtrEntry>>,
+    pub(crate) dynamic_by_ptr: FxHashMap<*const runtime_core::StyleRules, std::rc::Rc<DynamicPtrEntry>>,
     /// Indices in the shared `<style>` sheet that previously held a
     /// dynamic rule and are now available for re-use. See
     /// `insert_rule` / `delete_rule` in [`crate::style`] — instead
@@ -647,18 +647,18 @@ pub struct WebBackend {
     /// Asset id → resolved URL. Filled by `register_asset`; queried
     /// by `register_typeface` (for the `@font-face` `src: url(...)`)
     /// and, in a follow-up, by the `Image` primitive's `<img src>`.
-    pub(crate) asset_urls: HashMap<AssetId, String>,
+    pub(crate) asset_urls: FxHashMap<AssetId, String>,
     /// Ids whose `asset_urls` entry is a `blob:` URL backed by
     /// `URL.createObjectURL` (i.e. `AssetSource::Embedded`). Used by
     /// `unregister_asset` to call `URL.revokeObjectURL` and free the
     /// Blob's backing storage. Bundled / Remote URLs are owned by
     /// the page / CDN — not in this set, never revoked.
-    pub(crate) blob_asset_urls: std::collections::HashSet<AssetId>,
+    pub(crate) blob_asset_urls: FxHashSet<AssetId>,
     /// Typeface id → indices into the shared `<style>` sheet for the
     /// `@font-face` rules emitted at registration. Lets
     /// `unregister_typeface` reclaim the slots through the regular
     /// `delete_rule` recycle path.
-    pub(crate) font_face_rule_indices: HashMap<TypefaceId, Vec<u32>>,
+    pub(crate) font_face_rule_indices: runtime_core::collections::SmallIdMap<TypefaceId, Vec<u32>>,
     /// Registry of third-party `Element::External` handlers,
     /// populated by `register_external::<T>(...)` calls from
     /// per-platform leaf crates (e.g. `idealyst-maps-web::register`).
@@ -689,7 +689,7 @@ pub struct WebBackend {
     /// double-borrowing `self`.
     #[cfg(feature = "prim-navigator")]
     pub(crate) nav_handler_instances:
-        HashMap<u32, std::rc::Rc<std::cell::RefCell<Box<dyn runtime_core::NavigatorHandler<WebBackend>>>>>,
+        FxHashMap<u32, std::rc::Rc<std::cell::RefCell<Box<dyn runtime_core::NavigatorHandler<WebBackend>>>>>,
     /// Per-node animated-property state. Tracks the most recent
     /// values written via `Backend::set_animated_f32` /
     /// `set_animated_color` so compound properties like CSS
@@ -1244,7 +1244,7 @@ impl WebBackend {
             _app_key_closure: None,
             _link_click_closures: Vec::new(),
             _touch_closures: Vec::new(),
-            state_listeners: HashMap::new(),
+            state_listeners: FxHashMap::default(),
             spinner_keyframes_injected: false,
             #[cfg(feature = "prim-virtualizer")]
             virtualizer_shim_injected: false,
@@ -1265,7 +1265,7 @@ impl WebBackend {
             ),
             class_batch_shim_injected: false,
             class_register_fn: None,
-            class_nodes_registered: std::collections::HashSet::new(),
+            class_nodes_registered: FxHashSet::default(),
             class_queue: crate::batch_queue::StringBatchQueue::new(
                 "__idealystApplyClassesBatch",
             ),
@@ -1281,36 +1281,36 @@ impl WebBackend {
             ),
             next_class_binding_id: 0,
             #[cfg(feature = "prim-virtualizer")]
-            virtualizer_instances: HashMap::new(),
+            virtualizer_instances: FxHashMap::default(),
             #[cfg(feature = "prim-virtualizer")]
             next_virtualizer_id: 0,
             #[cfg(feature = "prim-graphics")]
-            graphics_instances: HashMap::new(),
+            graphics_instances: FxHashMap::default(),
             #[cfg(feature = "prim-graphics")]
             next_graphics_id: 0,
             style_element: None,
-            pregen: HashMap::new(),
-            pregen_by_ptr: HashMap::new(),
-            dynamic: HashMap::new(),
-            dynamic_by_content: HashMap::new(),
-            dynamic_by_ptr: HashMap::new(),
+            pregen: FxHashMap::default(),
+            pregen_by_ptr: FxHashMap::default(),
+            dynamic: FxHashMap::default(),
+            dynamic_by_content: FxHashMap::default(),
+            dynamic_by_ptr: FxHashMap::default(),
             free_rule_indices: Vec::new(),
             theme_root_rule_index: None,
             app_bg_rule_index: None,
             scrollbar_rule_indices: Vec::new(),
             #[cfg(feature = "prim-portal")]
-            portal_instances: HashMap::new(),
+            portal_instances: FxHashMap::default(),
             #[cfg(feature = "prim-portal")]
             next_portal_id: 0,
-            asset_urls: HashMap::new(),
-            blob_asset_urls: std::collections::HashSet::new(),
-            font_face_rule_indices: HashMap::new(),
+            asset_urls: FxHashMap::default(),
+            blob_asset_urls: FxHashSet::default(),
+            font_face_rule_indices: runtime_core::collections::SmallIdMap::new(),
             external_handlers: runtime_core::ExternalRegistry::new(),
             #[cfg(feature = "prim-navigator")]
             navigator_handlers: runtime_core::NavigatorRegistry::new(),
             #[cfg(feature = "prim-navigator")]
-            nav_handler_instances: HashMap::new(),
-            animated_states: HashMap::new(),
+            nav_handler_instances: FxHashMap::default(),
+            animated_states: FxHashMap::default(),
             introspection_roots: js_sys::Set::new(&wasm_bindgen::JsValue::UNDEFINED),
         };
         backend.drain_self_registrars();
@@ -1957,7 +1957,7 @@ impl WebBackend {
     ///   elements are GC'd, so no explicit registry teardown is
     ///   needed.
     /// - **No Rust-side cache.** An earlier pointer-keyed
-    ///   `HashMap<*const Node, u32>` fast cache had a stale-id
+    ///   `FxHashMap<*const Node, u32>` fast cache had a stale-id
     ///   bug: a freed wrapper's address could be reused by a
     ///   completely unrelated wrapper, and the cache would
     ///   return the prior wrapper's id for the new wrapper —

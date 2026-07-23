@@ -17,7 +17,7 @@ use crate::reactive::{self, Effect, Signal};
 use crate::sources::StyleSource;
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::rc::Rc;
 
 pub(super) fn build<B: Backend + 'static>(
@@ -48,8 +48,8 @@ pub(super) fn build<B: Backend + 'static>(
 
     // Per-screen scope registry — framework owns scopes; SDK handler
     // holds opaque scope ids.
-    let scopes: Rc<RefCell<HashMap<u64, Box<reactive::Scope>>>> =
-        Rc::new(RefCell::new(HashMap::new()));
+    let scopes: Rc<RefCell<FxHashMap<u64, Box<reactive::Scope>>>> =
+        Rc::new(RefCell::new(FxHashMap::default()));
     let next_scope_id: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
 
     let screens = Rc::new(screens);

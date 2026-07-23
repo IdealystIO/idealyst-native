@@ -514,30 +514,30 @@ pub fn tokenized_color_css(t: &runtime_core::Tokenized<runtime_core::Color>) -> 
 /// no per-node re-realization needed on web (see
 /// `Backend::update_styled_text`).
 pub fn text_run_style_css(style: &runtime_core::TextRunStyle) -> String {
-    let mut parts: Vec<String> = Vec::new();
+    let mut out = String::new();
     if let Some(ff) = &style.font_family {
         match ff {
             runtime_core::FontFamily::System(name) => {
-                parts.push(format!("font-family: {}", name));
+                push_decl(&mut out, "font-family", name);
             }
             runtime_core::FontFamily::Typeface(tf) => {
-                parts.push(format!("font-family: \"{}\"", tf.family_name));
+                push_decl(&mut out, "font-family", &format!("\"{}\"", tf.family_name));
             }
         }
     }
     if let Some(w) = style.font_weight {
-        parts.push(format!("font-weight: {}", font_weight_css(w)));
+        push_decl(&mut out, "font-weight", font_weight_css(w));
     }
     if let Some(s) = &style.font_size {
-        parts.push(format!("font-size: {}", tokenized_length_css(s)));
+        push_decl(&mut out, "font-size", &tokenized_length_css(s));
     }
     if let Some(c) = &style.color {
-        parts.push(format!("color: {}", tokenized_color_css(c)));
+        push_decl(&mut out, "color", &tokenized_color_css(c));
     }
     if let Some(b) = &style.background {
-        parts.push(format!("background-color: {}", tokenized_color_css(b)));
+        push_decl(&mut out, "background-color", &tokenized_color_css(b));
     }
-    parts.join("; ")
+    out
 }
 
 /// Render a `Gradient` as a CSS `linear-gradient(...)` / `radial-gradient(...)`
@@ -899,10 +899,63 @@ pub fn rules_to_css_text(rules: &StyleRules) -> String {
     rules_to_css_with_shadow(rules, ShadowKind::Text)
 }
 
+/// Append one `name: value` declaration, `"; "`-separated — the direct-write
+/// equivalent of collecting `format!("{name}: {value}")` strings and
+/// `join("; ")`-ing them (the writer's original shape). Shared by every
+/// declaration site so the `format!` expansion machinery appears once,
+/// not once per property (see [`rules_to_css_with_shadow`]'s size note).
+fn push_decl(out: &mut String, name: &str, value: &str) {
+    if !out.is_empty() {
+        out.push_str("; ");
+    }
+    out.push_str(name);
+    out.push_str(": ");
+    out.push_str(value);
+}
+
 /// [`rules_to_css`] with an explicit [`ShadowKind`] for the `shadow`
 /// field. All other declarations are identical regardless of kind.
+///
+/// **Size note.** This is the framework's largest single wasm function,
+/// so it's written as a tag-dispatched property table in emission order
+/// rather than ~85 straight-line `if let … parts.push(format!(…))`
+/// blocks: each inline `format!` expands its own `Arguments` pieces +
+/// argument marshalling (~130 B of wasm), and 85 of those dominated the
+/// function (~12.6 KB post `-Oz`). The table form pays a few stores per
+/// entry and shares one formatting path per value shape (~5 KB). Output
+/// is byte-identical — pinned by `tests/golden_rules_to_css.rs`, which
+/// matters beyond size: class names are minted from this output, so a
+/// byte change splits web/SSR class identity.
 pub fn rules_to_css_with_shadow(rules: &StyleRules, shadow_kind: ShadowKind) -> String {
-    let mut parts: Vec<String> = Vec::new();
+    use runtime_core::{Color, Length, Tokenized};
+
+    /// One property's value slot. Borrowing tags defer formatting to the
+    /// emission loop (nothing runs for `None` fields); `Owned` carries the
+    /// handful of pre-rendered specials (gradient, transform list, …),
+    /// whose `.map(...)` also only runs when the field is set.
+    enum V<'a> {
+        /// `Option<Tokenized<Length>>` → [`tokenized_length_css`].
+        Len(&'a Option<Tokenized<Length>>),
+        /// `Option<Tokenized<Color>>` → [`tokenized_color_css`].
+        Col(&'a Option<Tokenized<Color>>),
+        /// `Option<Tokenized<f32>>` raw number → [`tokenized_f32_css`].
+        Num(&'a Option<Tokenized<f32>>),
+        /// `Option<Tokenized<f32>>` px-suffixed → [`tokenized_px_f32_css`].
+        Px(&'a Option<Tokenized<f32>>),
+        /// Border width: px-suffixed value plus a paired
+        /// `border-<side>-style: solid` (second field is that property
+        /// name) so the browser actually paints the line.
+        PxSolid(&'a Option<Tokenized<f32>>, &'static str),
+        /// Pre-resolved keyword (fieldless-enum properties).
+        Kw(Option<&'static str>),
+        /// `user-select`: emitted twice, with and without the `-webkit-`
+        /// prefix, so Safari (which still needs the prefix) honors it.
+        Sel(Option<&'static str>),
+        /// Pre-rendered value string (specials).
+        Owned(Option<String>),
+    }
+
+    let mut out = String::new();
 
     let uses_flex = rules.flex_direction.is_some()
         || rules.flex_wrap.is_some()
@@ -919,201 +972,176 @@ pub fn rules_to_css_with_shadow(rules: &StyleRules, shadow_kind: ShadowKind) -> 
     // `flex` and collapse to one column — the exact bug this guards against.
     match rules.display {
         Some(runtime_core::DisplayKind::Grid) => {
-            parts.push("display: grid".to_string());
+            push_decl(&mut out, "display", "grid");
         }
         Some(runtime_core::DisplayKind::Flex) => {
-            parts.push("display: flex".to_string());
+            push_decl(&mut out, "display", "flex");
             if rules.flex_direction.is_none() {
-                parts.push("flex-direction: column".to_string());
+                push_decl(&mut out, "flex-direction", "column");
             }
         }
         None if uses_flex => {
-            parts.push("display: flex".to_string());
+            push_decl(&mut out, "display", "flex");
             if rules.flex_direction.is_none() {
-                parts.push("flex-direction: column".to_string());
+                push_decl(&mut out, "flex-direction", "column");
             }
         }
         None => {}
     }
-    if let Some(cols) = &rules.grid_template_columns {
-        parts.push(format!("grid-template-columns: {}", track_list_css(cols)));
-    }
 
-    // Color + text.
-    if let Some(t) = &rules.background { parts.push(format!("background: {}", tokenized_color_css(t))); }
-    if let Some(g) = &rules.background_gradient {
-        parts.push(format!("background-image: {}", gradient_css(g)));
-    }
-    if let Some(t) = &rules.color { parts.push(format!("color: {}", tokenized_color_css(t))); }
-    if let Some(t) = &rules.caret_color { parts.push(format!("caret-color: {}", tokenized_color_css(t))); }
-    if let Some(t) = &rules.font_size { parts.push(format!("font-size: {}", tokenized_length_css(t))); }
-
-    // Flex container.
-    if let Some(v) = rules.flex_direction { parts.push(format!("flex-direction: {}", flex_direction_css(v))); }
-    if let Some(v) = rules.flex_wrap { parts.push(format!("flex-wrap: {}", flex_wrap_css(v))); }
-    if let Some(v) = rules.justify_content { parts.push(format!("justify-content: {}", justify_content_css(v))); }
-    if let Some(v) = rules.align_items { parts.push(format!("align-items: {}", align_items_css(v))); }
-    if let Some(v) = rules.align_content { parts.push(format!("align-content: {}", align_content_css(v))); }
-    if let Some(t) = &rules.gap { parts.push(format!("gap: {}", tokenized_length_css(t))); }
-    if let Some(t) = &rules.row_gap { parts.push(format!("row-gap: {}", tokenized_length_css(t))); }
-    if let Some(t) = &rules.column_gap { parts.push(format!("column-gap: {}", tokenized_length_css(t))); }
-
-    // Flex item.
-    if let Some(t) = &rules.flex_grow { parts.push(format!("flex-grow: {}", tokenized_f32_css(t))); }
-    if let Some(t) = &rules.flex_shrink { parts.push(format!("flex-shrink: {}", tokenized_f32_css(t))); }
-    if let Some(t) = &rules.flex_basis { parts.push(format!("flex-basis: {}", tokenized_length_css(t))); }
-    if let Some(v) = rules.align_self { parts.push(format!("align-self: {}", align_self_css(v))); }
-
-    // Sizing.
-    if let Some(t) = &rules.width { parts.push(format!("width: {}", tokenized_length_css(t))); }
-    if let Some(t) = &rules.height { parts.push(format!("height: {}", tokenized_length_css(t))); }
-    if let Some(t) = &rules.min_width { parts.push(format!("min-width: {}", tokenized_length_css(t))); }
-    if let Some(t) = &rules.min_height { parts.push(format!("min-height: {}", tokenized_length_css(t))); }
-    if let Some(t) = &rules.max_width { parts.push(format!("max-width: {}", tokenized_length_css(t))); }
-    if let Some(t) = &rules.max_height { parts.push(format!("max-height: {}", tokenized_length_css(t))); }
-    if let Some(ar) = rules.aspect_ratio { parts.push(format!("aspect-ratio: {}", css_num(ar))); }
-
-    // Per-side padding.
-    if let Some(t) = &rules.padding_top { parts.push(format!("padding-top: {}", tokenized_length_css(t))); }
-    if let Some(t) = &rules.padding_right { parts.push(format!("padding-right: {}", tokenized_length_css(t))); }
-    if let Some(t) = &rules.padding_bottom { parts.push(format!("padding-bottom: {}", tokenized_length_css(t))); }
-    if let Some(t) = &rules.padding_left { parts.push(format!("padding-left: {}", tokenized_length_css(t))); }
-
-    // Per-side margin.
-    if let Some(t) = &rules.margin_top { parts.push(format!("margin-top: {}", tokenized_length_css(t))); }
-    if let Some(t) = &rules.margin_right { parts.push(format!("margin-right: {}", tokenized_length_css(t))); }
-    if let Some(t) = &rules.margin_bottom { parts.push(format!("margin-bottom: {}", tokenized_length_css(t))); }
-    if let Some(t) = &rules.margin_left { parts.push(format!("margin-left: {}", tokenized_length_css(t))); }
-
-    // Per-corner border radius.
-    if let Some(t) = &rules.border_top_left_radius { parts.push(format!("border-top-left-radius: {}", tokenized_length_css(t))); }
-    if let Some(t) = &rules.border_top_right_radius { parts.push(format!("border-top-right-radius: {}", tokenized_length_css(t))); }
-    if let Some(t) = &rules.border_bottom_left_radius { parts.push(format!("border-bottom-left-radius: {}", tokenized_length_css(t))); }
-    if let Some(t) = &rules.border_bottom_right_radius { parts.push(format!("border-bottom-right-radius: {}", tokenized_length_css(t))); }
-
-    // Per-side border width + color. Emit `solid` style so the browser
-    // actually paints the line.
-    if let Some(t) = &rules.border_top_width {
-        parts.push(format!("border-top-width: {}", tokenized_border_width_css(t)));
-        parts.push("border-top-style: solid".to_string());
-    }
-    if let Some(t) = &rules.border_right_width {
-        parts.push(format!("border-right-width: {}", tokenized_border_width_css(t)));
-        parts.push("border-right-style: solid".to_string());
-    }
-    if let Some(t) = &rules.border_bottom_width {
-        parts.push(format!("border-bottom-width: {}", tokenized_border_width_css(t)));
-        parts.push("border-bottom-style: solid".to_string());
-    }
-    if let Some(t) = &rules.border_left_width {
-        parts.push(format!("border-left-width: {}", tokenized_border_width_css(t)));
-        parts.push("border-left-style: solid".to_string());
-    }
-    if let Some(t) = &rules.border_top_color { parts.push(format!("border-top-color: {}", tokenized_color_css(t))); }
-    if let Some(t) = &rules.border_right_color { parts.push(format!("border-right-color: {}", tokenized_color_css(t))); }
-    if let Some(t) = &rules.border_bottom_color { parts.push(format!("border-bottom-color: {}", tokenized_color_css(t))); }
-    if let Some(t) = &rules.border_left_color { parts.push(format!("border-left-color: {}", tokenized_color_css(t))); }
-
-    // Position.
-    if let Some(v) = rules.position { parts.push(format!("position: {}", position_css(v))); }
-    if let Some(t) = &rules.top { parts.push(format!("top: {}", tokenized_length_css(t))); }
-    if let Some(t) = &rules.right { parts.push(format!("right: {}", tokenized_length_css(t))); }
-    if let Some(t) = &rules.bottom { parts.push(format!("bottom: {}", tokenized_length_css(t))); }
-    if let Some(t) = &rules.left { parts.push(format!("left: {}", tokenized_length_css(t))); }
-
-    // Typography. `Typeface` family-names are quoted so the CSS engine
-    // never confuses them with generic keywords; `System` strings pass
-    // through verbatim (they often carry a comma-separated stack).
-    if let Some(ff) = &rules.font_family {
-        match ff {
-            runtime_core::FontFamily::System(name) => {
-                parts.push(format!("font-family: {}", name));
-            }
-            runtime_core::FontFamily::Typeface(tf) => {
-                parts.push(format!("font-family: \"{}\"", tf.family_name));
-            }
-        }
-    }
-    if let Some(v) = rules.font_weight { parts.push(format!("font-weight: {}", font_weight_css(v))); }
-    if let Some(v) = rules.font_style { parts.push(format!("font-style: {}", font_style_css(v))); }
-    if let Some(t) = &rules.line_height { parts.push(format!("line-height: {}", tokenized_px_f32_css(t))); }
-    if let Some(t) = &rules.letter_spacing { parts.push(format!("letter-spacing: {}", tokenized_px_f32_css(t))); }
-    if let Some(v) = rules.text_align { parts.push(format!("text-align: {}", text_align_css(v))); }
     // Underline + strikethrough are independent booleans; combine into
-    // one `text-decoration-line` shorthand.
+    // one `text-decoration-line` shorthand (emitted at its slot below).
     let underline = rules.underline.unwrap_or(false);
     let strikethrough = rules.strikethrough.unwrap_or(false);
-    if underline || strikethrough {
+    let deco: Option<String> = if underline || strikethrough {
         let mut deco = String::new();
         if underline { deco.push_str("underline"); }
         if strikethrough {
             if !deco.is_empty() { deco.push(' '); }
             deco.push_str("line-through");
         }
-        parts.push(format!("text-decoration-line: {}", deco));
+        Some(deco)
     } else if rules.underline == Some(false) || rules.strikethrough == Some(false) {
-        parts.push("text-decoration-line: none".to_string());
-    }
-    if let Some(v) = rules.text_transform { parts.push(format!("text-transform: {}", text_transform_css(v))); }
+        Some("none".to_string())
+    } else {
+        None
+    };
 
-    // Visual.
-    if let Some(t) = &rules.opacity { parts.push(format!("opacity: {}", tokenized_f32_css(t))); }
-    if let Some(v) = rules.overflow { parts.push(format!("overflow: {}", overflow_css(v))); }
-    if let Some(v) = rules.object_fit { parts.push(format!("object-fit: {}", object_fit_css(v))); }
-    if let Some(sh) = &rules.shadow {
-        // `text-shadow` and `box-shadow` share the same
-        // `<x> <y> <blur> <color>` value grammar (text-shadow simply has
-        // no spread term, which our `Shadow` doesn't carry either), so
-        // only the property name differs by node kind.
-        let prop = match shadow_kind {
-            ShadowKind::Box => "box-shadow",
-            ShadowKind::Text => "text-shadow",
-        };
-        parts.push(format!(
-            "{}: {}px {}px {}px {}",
-            prop,
-            css_num(sh.x),
-            css_num(sh.y),
-            css_num(sh.blur),
-            sh.color.0
-        ));
-    }
-    if let Some(xs) = &rules.transform {
-        if !xs.is_empty() {
-            let joined: Vec<String> = xs.iter().map(transform_css).collect();
-            parts.push(format!("transform: {}", joined.join(" ")));
+    // `text-shadow` and `box-shadow` share the same `<x> <y> <blur>
+    // <color>` value grammar (text-shadow simply has no spread term,
+    // which our `Shadow` doesn't carry either), so only the property
+    // name differs by node kind.
+    let shadow_prop = match shadow_kind {
+        ShadowKind::Box => "box-shadow",
+        ShadowKind::Text => "text-shadow",
+    };
+
+    // Every remaining property in emission order. `Typeface`
+    // family-names are quoted so the CSS engine never confuses them with
+    // generic keywords; `System` strings pass through verbatim (they
+    // often carry a comma-separated stack).
+    let decls = [
+        ("grid-template-columns", V::Owned(rules.grid_template_columns.as_deref().map(track_list_css))),
+        ("background", V::Col(&rules.background)),
+        ("background-image", V::Owned(rules.background_gradient.as_ref().map(gradient_css))),
+        ("color", V::Col(&rules.color)),
+        ("caret-color", V::Col(&rules.caret_color)),
+        ("font-size", V::Len(&rules.font_size)),
+        ("flex-direction", V::Kw(rules.flex_direction.map(flex_direction_css))),
+        ("flex-wrap", V::Kw(rules.flex_wrap.map(flex_wrap_css))),
+        ("justify-content", V::Kw(rules.justify_content.map(justify_content_css))),
+        ("align-items", V::Kw(rules.align_items.map(align_items_css))),
+        ("align-content", V::Kw(rules.align_content.map(align_content_css))),
+        ("gap", V::Len(&rules.gap)),
+        ("row-gap", V::Len(&rules.row_gap)),
+        ("column-gap", V::Len(&rules.column_gap)),
+        ("flex-grow", V::Num(&rules.flex_grow)),
+        ("flex-shrink", V::Num(&rules.flex_shrink)),
+        ("flex-basis", V::Len(&rules.flex_basis)),
+        ("align-self", V::Kw(rules.align_self.map(align_self_css))),
+        ("width", V::Len(&rules.width)),
+        ("height", V::Len(&rules.height)),
+        ("min-width", V::Len(&rules.min_width)),
+        ("min-height", V::Len(&rules.min_height)),
+        ("max-width", V::Len(&rules.max_width)),
+        ("max-height", V::Len(&rules.max_height)),
+        ("aspect-ratio", V::Owned(rules.aspect_ratio.map(|ar| css_num(ar).to_string()))),
+        ("padding-top", V::Len(&rules.padding_top)),
+        ("padding-right", V::Len(&rules.padding_right)),
+        ("padding-bottom", V::Len(&rules.padding_bottom)),
+        ("padding-left", V::Len(&rules.padding_left)),
+        ("margin-top", V::Len(&rules.margin_top)),
+        ("margin-right", V::Len(&rules.margin_right)),
+        ("margin-bottom", V::Len(&rules.margin_bottom)),
+        ("margin-left", V::Len(&rules.margin_left)),
+        ("border-top-left-radius", V::Len(&rules.border_top_left_radius)),
+        ("border-top-right-radius", V::Len(&rules.border_top_right_radius)),
+        ("border-bottom-left-radius", V::Len(&rules.border_bottom_left_radius)),
+        ("border-bottom-right-radius", V::Len(&rules.border_bottom_right_radius)),
+        ("border-top-width", V::PxSolid(&rules.border_top_width, "border-top-style")),
+        ("border-right-width", V::PxSolid(&rules.border_right_width, "border-right-style")),
+        ("border-bottom-width", V::PxSolid(&rules.border_bottom_width, "border-bottom-style")),
+        ("border-left-width", V::PxSolid(&rules.border_left_width, "border-left-style")),
+        ("border-top-color", V::Col(&rules.border_top_color)),
+        ("border-right-color", V::Col(&rules.border_right_color)),
+        ("border-bottom-color", V::Col(&rules.border_bottom_color)),
+        ("border-left-color", V::Col(&rules.border_left_color)),
+        ("position", V::Kw(rules.position.map(position_css))),
+        ("top", V::Len(&rules.top)),
+        ("right", V::Len(&rules.right)),
+        ("bottom", V::Len(&rules.bottom)),
+        ("left", V::Len(&rules.left)),
+        ("font-family", V::Owned(rules.font_family.as_ref().map(|ff| match ff {
+            runtime_core::FontFamily::System(name) => name.clone(),
+            runtime_core::FontFamily::Typeface(tf) => format!("\"{}\"", tf.family_name),
+        }))),
+        ("font-weight", V::Kw(rules.font_weight.map(font_weight_css))),
+        ("font-style", V::Kw(rules.font_style.map(font_style_css))),
+        ("line-height", V::Px(&rules.line_height)),
+        ("letter-spacing", V::Px(&rules.letter_spacing)),
+        ("text-align", V::Kw(rules.text_align.map(text_align_css))),
+        ("text-decoration-line", V::Owned(deco)),
+        ("text-transform", V::Kw(rules.text_transform.map(text_transform_css))),
+        ("opacity", V::Num(&rules.opacity)),
+        ("overflow", V::Kw(rules.overflow.map(overflow_css))),
+        ("object-fit", V::Kw(rules.object_fit.map(object_fit_css))),
+        (shadow_prop, V::Owned(rules.shadow.as_ref().map(|sh| {
+            format!("{}px {}px {}px {}", css_num(sh.x), css_num(sh.y), css_num(sh.blur), sh.color.0)
+        }))),
+        ("transform", V::Owned(rules.transform.as_deref().filter(|xs| !xs.is_empty()).map(|xs| {
+            xs.iter().map(transform_css).collect::<Vec<_>>().join(" ")
+        }))),
+        ("transform-origin", V::Owned(rules.transform_origin.map(|(ox, oy)| {
+            format!("{} {}", length_css(ox), length_css(oy))
+        }))),
+        ("cursor", V::Kw(rules.cursor.map(cursor_css))),
+        ("user-select", V::Sel(rules.user_select.map(user_select_css))),
+        ("pointer-events", V::Kw(rules.pointer_events.map(pointer_events_css))),
+    ];
+
+    for (name, value) in decls {
+        match value {
+            V::Len(t) => {
+                if let Some(t) = t { push_decl(&mut out, name, &tokenized_length_css(t)); }
+            }
+            V::Col(t) => {
+                if let Some(t) = t { push_decl(&mut out, name, &tokenized_color_css(t)); }
+            }
+            V::Num(t) => {
+                if let Some(t) = t { push_decl(&mut out, name, &tokenized_f32_css(t)); }
+            }
+            V::Px(t) => {
+                if let Some(t) = t { push_decl(&mut out, name, &tokenized_px_f32_css(t)); }
+            }
+            V::PxSolid(t, style_prop) => {
+                if let Some(t) = t {
+                    push_decl(&mut out, name, &tokenized_border_width_css(t));
+                    push_decl(&mut out, style_prop, "solid");
+                }
+            }
+            V::Kw(v) => {
+                if let Some(v) = v { push_decl(&mut out, name, v); }
+            }
+            V::Sel(v) => {
+                if let Some(v) = v {
+                    push_decl(&mut out, "-webkit-user-select", v);
+                    push_decl(&mut out, name, v);
+                }
+            }
+            V::Owned(v) => {
+                if let Some(v) = v { push_decl(&mut out, name, &v); }
+            }
         }
-    }
-    if let Some((ox, oy)) = rules.transform_origin {
-        parts.push(format!(
-            "transform-origin: {} {}",
-            length_css(ox),
-            length_css(oy)
-        ));
-    }
-
-    // Interaction. `user-select` is emitted with the `-webkit-` prefix so
-    // Safari (which still needs it) honors it; both share one keyword.
-    if let Some(c) = rules.cursor {
-        parts.push(format!("cursor: {}", cursor_css(c)));
-    }
-    if let Some(u) = rules.user_select {
-        let v = user_select_css(u);
-        parts.push(format!("-webkit-user-select: {v}"));
-        parts.push(format!("user-select: {v}"));
-    }
-    if let Some(p) = rules.pointer_events {
-        parts.push(format!("pointer-events: {}", pointer_events_css(p)));
     }
 
     // Transitions: a single CSS `transition` listing every active
     // per-property transition. The browser interpolates on value change.
     let transitions = collect_transitions(rules);
     if !transitions.is_empty() {
-        parts.push(format!("transition: {}", transitions.join(", ")));
+        push_decl(&mut out, "transition", &transitions.join(", "));
     }
 
-    parts.join("; ")
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1247,54 +1275,52 @@ fn resolve_f32(
 /// entries (`"<prop> <duration>ms <easing>"`). Property names use CSS
 /// hyphenation, not the Rust field names.
 fn collect_transitions(rules: &StyleRules) -> Vec<String> {
+    // (name, field) table + one loop, NOT a per-field macro: an inline
+    // `format!` per field would stamp out 35 copies of the `Arguments`
+    // marshalling (~4 KB of wasm) where this shape emits it once.
+    let fields: [(&str, &Option<runtime_core::Transition>); 35] = [
+        ("background", &rules.background_transition),
+        ("color", &rules.color_transition),
+        ("caret-color", &rules.caret_color_transition),
+        ("opacity", &rules.opacity_transition),
+        ("transform", &rules.transform_transition),
+        ("width", &rules.width_transition),
+        ("height", &rules.height_transition),
+        ("max-width", &rules.max_width_transition),
+        ("max-height", &rules.max_height_transition),
+        ("min-width", &rules.min_width_transition),
+        ("min-height", &rules.min_height_transition),
+        ("top", &rules.top_transition),
+        ("right", &rules.right_transition),
+        ("bottom", &rules.bottom_transition),
+        ("left", &rules.left_transition),
+        ("padding-top", &rules.padding_top_transition),
+        ("padding-right", &rules.padding_right_transition),
+        ("padding-bottom", &rules.padding_bottom_transition),
+        ("padding-left", &rules.padding_left_transition),
+        ("margin-top", &rules.margin_top_transition),
+        ("margin-right", &rules.margin_right_transition),
+        ("margin-bottom", &rules.margin_bottom_transition),
+        ("margin-left", &rules.margin_left_transition),
+        ("border-top-left-radius", &rules.border_top_left_radius_transition),
+        ("border-top-right-radius", &rules.border_top_right_radius_transition),
+        ("border-bottom-left-radius", &rules.border_bottom_left_radius_transition),
+        ("border-bottom-right-radius", &rules.border_bottom_right_radius_transition),
+        ("border-top-width", &rules.border_top_width_transition),
+        ("border-right-width", &rules.border_right_width_transition),
+        ("border-bottom-width", &rules.border_bottom_width_transition),
+        ("border-left-width", &rules.border_left_width_transition),
+        ("border-top-color", &rules.border_top_color_transition),
+        ("border-right-color", &rules.border_right_color_transition),
+        ("border-bottom-color", &rules.border_bottom_color_transition),
+        ("border-left-color", &rules.border_left_color_transition),
+    ];
     let mut out: Vec<String> = Vec::new();
-    macro_rules! tr {
-        ($field:ident, $css_name:literal) => {
-            if let Some(t) = rules.$field {
-                out.push(format!(
-                    "{} {}ms {}",
-                    $css_name,
-                    t.duration_ms,
-                    easing_css(t.easing)
-                ));
-            }
-        };
+    for (name, t) in fields {
+        if let Some(t) = t {
+            out.push(format!("{} {}ms {}", name, t.duration_ms, easing_css(t.easing)));
+        }
     }
-    tr!(background_transition, "background");
-    tr!(color_transition, "color");
-    tr!(caret_color_transition, "caret-color");
-    tr!(opacity_transition, "opacity");
-    tr!(transform_transition, "transform");
-    tr!(width_transition, "width");
-    tr!(height_transition, "height");
-    tr!(max_width_transition, "max-width");
-    tr!(max_height_transition, "max-height");
-    tr!(min_width_transition, "min-width");
-    tr!(min_height_transition, "min-height");
-    tr!(top_transition, "top");
-    tr!(right_transition, "right");
-    tr!(bottom_transition, "bottom");
-    tr!(left_transition, "left");
-    tr!(padding_top_transition, "padding-top");
-    tr!(padding_right_transition, "padding-right");
-    tr!(padding_bottom_transition, "padding-bottom");
-    tr!(padding_left_transition, "padding-left");
-    tr!(margin_top_transition, "margin-top");
-    tr!(margin_right_transition, "margin-right");
-    tr!(margin_bottom_transition, "margin-bottom");
-    tr!(margin_left_transition, "margin-left");
-    tr!(border_top_left_radius_transition, "border-top-left-radius");
-    tr!(border_top_right_radius_transition, "border-top-right-radius");
-    tr!(border_bottom_left_radius_transition, "border-bottom-left-radius");
-    tr!(border_bottom_right_radius_transition, "border-bottom-right-radius");
-    tr!(border_top_width_transition, "border-top-width");
-    tr!(border_right_width_transition, "border-right-width");
-    tr!(border_bottom_width_transition, "border-bottom-width");
-    tr!(border_left_width_transition, "border-left-width");
-    tr!(border_top_color_transition, "border-top-color");
-    tr!(border_right_color_transition, "border-right-color");
-    tr!(border_bottom_color_transition, "border-bottom-color");
-    tr!(border_left_color_transition, "border-left-color");
     out
 }
 

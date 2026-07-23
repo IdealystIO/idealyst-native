@@ -27,6 +27,7 @@ use crate::style::Easing;
 use crate::{Bound, Element, Ref, RefFill};
 use std::any::Any;
 use std::rc::Rc;
+use rustc_hash::FxHashMap;
 
 // ---------------------------------------------------------------------------
 // IconData — the static, const-constructible icon definition
@@ -327,8 +328,8 @@ thread_local! {
     /// `Rc<StyleSheet>` per size keeps stylesheet registration/class
     /// generation deduped across every icon at that size.
     static ICON_SIZE_SHEETS: std::cell::RefCell<
-        std::collections::HashMap<u32, Rc<crate::style::StyleSheet>>,
-    > = std::cell::RefCell::new(std::collections::HashMap::new());
+        FxHashMap<u32, Rc<crate::style::StyleSheet>>,
+    > = std::cell::RefCell::new(FxHashMap::default());
 }
 
 /// A cached static sheet pinning the icon to a `px × px` square. Icons

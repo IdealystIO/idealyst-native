@@ -24,7 +24,7 @@
 //! use this; nothing else should.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::time::Duration;
 
 use crate::scheduling::{raf_loop, RafLoop};
@@ -49,7 +49,7 @@ pub struct TickId(u64);
 const MAX_TICK_DT: Duration = Duration::from_millis(64);
 
 struct ClockState {
-    ticks: HashMap<TickId, TickFn>,
+    ticks: FxHashMap<TickId, TickFn>,
     next_id: u64,
     raf_handle: Option<RafLoop>,
     /// Wall-clock reading at the moment we last drove a tick.
@@ -62,7 +62,7 @@ struct ClockState {
 impl ClockState {
     fn new() -> Self {
         Self {
-            ticks: HashMap::new(),
+            ticks: FxHashMap::default(),
             next_id: 0,
             raf_handle: None,
             last_tick_micros: None,

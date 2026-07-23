@@ -33,7 +33,7 @@
 //! Entire module compiles only under the `robot` feature.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::fmt::Debug;
 use std::rc::Rc;
 
@@ -55,7 +55,7 @@ thread_local! {
     /// Raw `SignalId` (slot index, `u32`) → entry. At most one watch per
     /// slot; re-registration on the same slot overwrites (the macro path
     /// can re-mark a recycled slot with a fresh generation).
-    static WATCHED: RefCell<HashMap<u32, WatchEntry>> = RefCell::new(HashMap::new());
+    static WATCHED: RefCell<FxHashMap<u32, WatchEntry>> = RefCell::new(FxHashMap::default());
 }
 
 /// Register a signal for live watching over the robot bridge (explicit

@@ -17,7 +17,7 @@
 //! uses for navigator scope keepalives.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::rc::Rc;
 
 /// Opaque per-instance ID. Stable while the component is mounted; never
@@ -48,8 +48,8 @@ pub(crate) struct ComponentEntry {
 }
 
 thread_local! {
-    static COMPONENTS: RefCell<HashMap<ComponentInstanceId, ComponentEntry>> =
-        RefCell::new(HashMap::new());
+    static COMPONENTS: RefCell<FxHashMap<ComponentInstanceId, ComponentEntry>> =
+        RefCell::new(FxHashMap::default());
     static NEXT_ID: RefCell<u32> = const { RefCell::new(1) };
 
     /// `ComponentInstanceId → ElementId`: the robot element a component
@@ -60,8 +60,8 @@ thread_local! {
     /// root primitive) consumes it via [`take_pending_component_link`] +
     /// [`link_component_element`]. Lets the inspector map a selected element
     /// to the component whose methods it can invoke.
-    static ELEMENT_LINKS: RefCell<HashMap<ComponentInstanceId, super::ElementId>> =
-        RefCell::new(HashMap::new());
+    static ELEMENT_LINKS: RefCell<FxHashMap<ComponentInstanceId, super::ElementId>> =
+        RefCell::new(FxHashMap::default());
 
     /// Set by the walker when it unwraps an `Element::Component`; consumed by
     /// the very next robot registration (the component's root primitive).
