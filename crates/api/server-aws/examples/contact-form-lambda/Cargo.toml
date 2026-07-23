@@ -42,7 +42,7 @@ server = [
 server = { workspace = true }
 net = { workspace = true }
 runtime-core = { workspace = true, features = ["async-driver"] }
-serde = { version = "1", features = ["derive"] }
+serde = { workspace = true }
 idea-ui = { workspace = true }
 
 # Server-only deps — pulled in only by the `server` feature.

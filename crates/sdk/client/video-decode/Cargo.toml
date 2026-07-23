@@ -31,7 +31,7 @@ license.workspace = true
 # cfg-gated backend module supplies one decoder.
 
 [dependencies]
-thiserror = "1"
+thiserror = { workspace = true }
 # The platform-agnostic live-source abstractions this crate PRODUCES — shared
 # with `camera`/`screen-recorder` (other producers) and `video`/canvas (the
 # consumers). We push decoded frames through `FrameWriter` and decoded PCM

@@ -209,6 +209,7 @@ pub trait GraphicsOps {
 /// Construct a Graphics surface primitive. `on_ready` is required;
 /// `on_resize` and `on_lost` are optional and default to no-ops.
 /// Use the builder methods below to attach them.
+#[cfg(feature = "prim-graphics")]
 pub fn graphics<F>(on_ready: F) -> Bound<GraphicsHandle>
 where
     F: FnMut(OnReadyEvent) + 'static,

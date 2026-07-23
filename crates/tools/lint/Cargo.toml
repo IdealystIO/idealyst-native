@@ -23,8 +23,8 @@ syn = { version = "2", features = ["full", "visit", "extra-traits"] }
 # is exactly the case here, a normal binary parsing strings. Without it
 # every span collapses to line 0 and the diagnostics point nowhere.
 proc-macro2 = { version = "1", features = ["span-locations"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 toml = "0.8"
 anyhow = "1"
 

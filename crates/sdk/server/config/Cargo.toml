@@ -44,9 +44,9 @@ sqs = ["jobs?/sqs", "aws"]
 ses = ["email?/ses", "aws"]
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
+serde = { workspace = true }
 toml = "0.8"
-thiserror = "1"
+thiserror = { workspace = true }
 
 # Tool crates — optional, pulled in only when their feature is on.
 jobs = { workspace = true, optional = true }

@@ -32,7 +32,7 @@ default = ["drop"]
 drop = ["dep:runtime-core"]
 
 [dependencies]
-thiserror = "1"
+thiserror = { workspace = true }
 # Only for the `drop` feature (`FileDropZone`): the `on_file_drop` handler type
 # and a reactive `Signal<bool>` for the drag-active state. `pick`-only users
 # who disable `drop` don't pull in the UI core.

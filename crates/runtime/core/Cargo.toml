@@ -14,6 +14,56 @@ license.workspace = true
 # crates at all. So no separate dylib output is needed here.
 
 [features]
+# ---------------------------------------------------------------------------
+# Primitive gating (`prim-*`): each feature compiles the walker dispatch,
+# authoring builder fn, and backend hooks for one heavy primitive family.
+# All prim-* features are ON by default — existing apps change nothing.
+# Size-conscious web apps set `default-features = false` on runtime-core AND
+# their backend crate, then re-enable the primitives they use; an unused
+# primitive's dispatcher, backend implementation, and web JS shims then leave
+# the bundle entirely (the walker renders the platform "not supported"
+# placeholder if one arrives over the wire).
+#
+# NOT gated, by design: `Element` variants (wire-protocol stability — a
+# runtime-server may send any primitive) and the `Backend` trait methods
+# (they already carry default impls, so the trait surface is identical in
+# every configuration). Gating is code-only; rule 7 uniformity holds because
+# one runtime-core feature drives every backend identically.
+#
+# SDKs that render through a primitive must forward its feature on their
+# runtime-core dependency (e.g. `virtualized` forwards `prim-virtualizer`),
+# so depending on the SDK re-enables exactly what it needs.
+default = ["prim-virtualizer", "prim-icon", "prim-image", "prim-text-input", "prim-toggle", "prim-slider", "prim-activity", "prim-portal", "prim-presence", "prim-graphics", "prim-navigator", "prim-lazy"]
+# `Element::Navigator` + `Element::NavigatorOutlet` behavior: the walker's
+# navigator build (screen scopes, outlet capture), URL sync (pushState /
+# popstate / deep links) and scroll persistence. The navigator *types*
+# (`NavigatorHost`, `NavigatorHandle`, `NavState`, `Route`, …) stay ungated
+# — they appear in `Element` payloads, `RefFill`, and `Backend` trait
+# signatures. Navigator SDK crates (swap-navigator, stack-navigator,
+# idea-ui-nav) forward this feature, so using one re-enables it.
+prim-navigator = []
+# `Element::Lazy` (`#[lazy_component]` / wasm-split chunk mounting): the
+# walker's async chunk-load driver and the `lazy(..)` builder. The
+# `LazyLoader` / `LazyState` types stay ungated (Element payload).
+prim-lazy = []
+# `flat_list` / windowed-list virtualization (`Element::Virtualizer`).
+# Also covers the `ui!` structured `for i in count(sig) { .. }` form, which
+# lowers to a Virtualizer — disabling this feature makes that construct a
+# compile error too (plain `for` over data/`Each` is unaffected).
+prim-virtualizer = []
+# Per-family gates; same shape as prim-virtualizer (walker dispatch +
+# authoring fns + backend impls). prim-text-input covers TextInput AND
+# TextArea; prim-portal covers portal/overlay/anchored_overlay.
+prim-icon = []
+prim-image = []
+prim-text-input = []
+prim-toggle = []
+prim-slider = []
+prim-activity = []
+prim-portal = []
+prim-presence = []
+prim-graphics = []
+
 # When enabled, the framework records component/build/backend timing
 # events into an in-memory log. Author-facing API lives in
 # `runtime_core::debug`. Off by default — when off, the `debug`
@@ -159,8 +209,8 @@ dev-hot = { workspace = true, optional = true }
 # expansions can reach the catalog crate without declaring it as a
 # direct dep.
 mcp-catalog = { workspace = true, optional = true }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 # Only linked under the `robot` feature — encodes captured screenshot
 # PNGs as base64 for the bridge's `"screenshot"` JSON response.
 base64 = { version = "0.22", optional = true }

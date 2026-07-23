@@ -45,8 +45,8 @@ server = { workspace = true }
 dev-server = { workspace = true, optional = true }
 net = { workspace = true }
 runtime-core = { workspace = true, features = ["async-driver"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 # Client-side UI: idea-ui + the framework's reactive primitives.
 # `idea-ui` is platform-agnostic; backend selection happens per

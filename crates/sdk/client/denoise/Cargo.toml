@@ -33,7 +33,7 @@ license.workspace = true
 # `microphone` — already owns the capture permission).
 
 [dependencies]
-thiserror = "1"
+thiserror = { workspace = true }
 
 # The platform-agnostic live-source abstraction. `denoise` both consumes an
 # `AudioStream` (subscribe) and produces one (AudioWriter) — a transformer.

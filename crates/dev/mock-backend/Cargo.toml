@@ -57,7 +57,7 @@ headless-screenshot = { workspace = true, optional = true }
 # `screenshot`-feature integration tests.
 image = { version = "0.25", default-features = false, features = ["png"] }
 base64 = "0.22"
-serde_json = "1"
+serde_json = { workspace = true }
 # Local-mount test for the swap navigator's backend-neutral handler
 # (author layout + outlet capture + Select swap + Link→Select). Runs the
 # generic handler directly on MockBackend — no wire / recording handler.

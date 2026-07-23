@@ -33,7 +33,7 @@ runtime-server = ["dep:tungstenite", "dev-client/dev-hot-reload"]
 runtime-core = { workspace = true }
 dev-client = { workspace = true }
 wire = { workspace = true }
-serde_json = "1"
+serde_json = { workspace = true }
 
 # Sync blocking transport. Acceptable on native because each
 # backend dedicates a worker thread to the dev-client read loop.

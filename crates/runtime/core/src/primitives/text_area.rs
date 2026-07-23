@@ -83,6 +83,7 @@ pub trait TextAreaOps {
 /// [`wrap(false)`](Bound::wrap) / [`code_mode()`](Bound::code_mode)
 /// keeps lines unwrapped and scrolls horizontally — the code-editor
 /// shape (which is fixed-height, not content-grown).
+#[cfg(feature = "prim-text-input")]
 pub fn text_area<F: Fn(String) + 'static>(
     value: Signal<String>,
     on_change: F,

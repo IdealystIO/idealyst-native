@@ -745,7 +745,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "windows 0.58.0",
 ]
 
@@ -1578,6 +1578,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
+name = "baseline"
+version = "0.4.0"
+dependencies = [
+ "runtime-core",
+]
+
+[[package]]
 name = "benchmark"
 version = "0.4.0"
 dependencies = [
@@ -1761,13 +1768,34 @@ dependencies = [
 
 [[package]]
 name = "brotli"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc97b8f16f944bba54f0433f07e30be199b6dc2bd25937444bbad560bcea29bd"
+dependencies = [
+ "alloc-no-stdlib",
+ "alloc-stdlib",
+ "brotli-decompressor 4.0.3",
+]
+
+[[package]]
+name = "brotli"
 version = "8.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8119e4516436f5708bbc474a9d395bf12f1b5395e93a92a56e647ac3388c8610"
 dependencies = [
  "alloc-no-stdlib",
  "alloc-stdlib",
- "brotli-decompressor",
+ "brotli-decompressor 5.0.1",
+]
+
+[[package]]
+name = "brotli-decompressor"
+version = "4.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a334ef7c9e23abf0ce748e8cd309037da93e606ad52eb372e4ce327a0dcfbdfd"
+dependencies = [
+ "alloc-no-stdlib",
+ "alloc-stdlib",
 ]
 
 [[package]]
@@ -1882,6 +1910,7 @@ name = "build-web"
 version = "0.4.0"
 dependencies = [
  "anyhow",
+ "brotli 7.0.0",
  "build-ios",
  "flate2",
  "icon-gen",
@@ -2030,7 +2059,7 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "permissions",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -2112,7 +2141,7 @@ dependencies = [
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
  "runtime-core",
- "skrifa 0.40.0",
+ "skrifa 0.42.1",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -2136,7 +2165,7 @@ dependencies = [
  "raw-window-handle",
  "runtime-core",
  "serde_json",
- "skrifa 0.40.0",
+ "skrifa 0.42.1",
  "vello",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -3041,7 +3070,7 @@ dependencies = [
  "media-stream",
  "ndarray",
  "pollster 0.3.0",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tract-core",
  "tract-hir",
  "tract-onnx",
@@ -3468,6 +3497,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
+name = "eager-canvas"
+version = "0.4.0"
+dependencies = [
+ "canvas",
+ "canvas-vello",
+ "runtime-core",
+]
+
+[[package]]
 name = "ecdsa"
 version = "0.16.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3558,7 +3596,7 @@ dependencies = [
  "serde",
  "serde_json",
  "server",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
 ]
 
@@ -3818,7 +3856,7 @@ dependencies = [
  "ndk-context",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -3839,7 +3877,7 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "runtime-core",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -3867,7 +3905,7 @@ dependencies = [
  "ndk-context",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "wasm-bindgen",
  "web-sys",
@@ -4543,7 +4581,7 @@ dependencies = [
  "runtime-core",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
 ]
 
@@ -4919,7 +4957,7 @@ version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "24d285dc30731c8485de5fa732fbdf2b3affdf01e4da7c2135022ca6fa664bf6"
 dependencies = [
- "brotli",
+ "brotli 8.0.3",
  "hayro-postscript",
 ]
 
@@ -5769,7 +5807,7 @@ dependencies = [
  "jobs",
  "pubsub",
  "serde",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "toml 0.8.23",
 ]
@@ -6074,7 +6112,7 @@ dependencies = [
  "serde_json",
  "server",
  "sqlx",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
 ]
 
@@ -6294,6 +6332,16 @@ dependencies = [
  "tower-service",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "lazy-canvas"
+version = "0.4.0"
+dependencies = [
+ "backend-web",
+ "canvas",
+ "canvas-vello",
+ "runtime-core",
 ]
 
 [[package]]
@@ -6788,7 +6836,7 @@ dependencies = [
  "ndk-context",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -6886,7 +6934,7 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "permissions",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -7163,7 +7211,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite 0.21.0",
  "tungstenite 0.21.0",
@@ -7744,7 +7792,7 @@ dependencies = [
  "offload-macro",
  "pollster 0.3.0",
  "serde",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "wasmworker",
 ]
 
@@ -8427,6 +8475,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "probe-canvas"
+version = "0.4.0"
+dependencies = [
+ "backend-web",
+ "canvas",
+ "canvas-vello",
+ "runtime-core",
+]
+
+[[package]]
 name = "proc-macro-crate"
 version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8495,6 +8553,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "prune-repro"
+version = "0.4.0"
+dependencies = [
+ "backend-web",
+ "canvas",
+ "canvas-vello",
+ "runtime-core",
+]
+
+[[package]]
 name = "psm"
 version = "0.1.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8514,7 +8582,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
 ]
@@ -9550,7 +9618,7 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "runtime-core",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -9854,7 +9922,7 @@ dependencies = [
  "serde",
  "serde_json",
  "server-macros",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite 0.21.0",
  "tower 0.5.3",
@@ -12121,7 +12189,7 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "runtime-core",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",

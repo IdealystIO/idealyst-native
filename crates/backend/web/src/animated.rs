@@ -34,6 +34,9 @@
 
 use std::collections::HashMap;
 
+// `css_num`, not `f32: Display` — a bare `{}` on an f32 anywhere reinstates
+// core's ~12-15 KB flt2dec float formatter in every bundle (see css::css_num).
+use css::css_num;
 use runtime_core::animation::AnimProp;
 use wasm_bindgen::JsCast;
 
@@ -130,7 +133,7 @@ impl WebBackend {
         match prop {
             AnimProp::Opacity => {
                 state.opacity = Some(value);
-                let _ = element.style().set_property("opacity", &format!("{}", value));
+                let _ = element.style().set_property("opacity", &format!("{}", css_num(value)));
             }
             AnimProp::TranslateX => {
                 state.translate_x = Some(value);
@@ -155,7 +158,7 @@ impl WebBackend {
             }
             AnimProp::RotateZ => {
                 state.rotate_z = Some(value);
-                let _ = element.style().set_property("rotate", &format!("{}deg", value));
+                let _ = element.style().set_property("rotate", &format!("{}deg", css_num(value)));
             }
             AnimProp::ZIndex => {
                 // CSS `z-index` is an integer; round to nearest.
@@ -174,7 +177,7 @@ impl WebBackend {
                 // on our side.
                 let _ = element
                     .style()
-                    .set_property("max-height", &format!("{}px", value));
+                    .set_property("max-height", &format!("{}px", css_num(value)));
             }
             // Color variants are silently ignored on the scalar path
             // — they belong on `impl_set_animated_color`. We don't
@@ -263,7 +266,7 @@ fn write_translate(element: &web_sys::HtmlElement, state: &AnimatedNodeState) {
     let ty = state.translate_y.unwrap_or(0.0);
     let _ = element
         .style()
-        .set_property("translate", &format!("{}px {}px", tx, ty));
+        .set_property("translate", &format!("{}px {}px", css_num(tx), css_num(ty)));
 }
 
 /// Re-emit the `scale` CSS property from the node's current pair.
@@ -276,7 +279,7 @@ fn write_scale(element: &web_sys::HtmlElement, state: &AnimatedNodeState) {
     let sy = state.scale_y.unwrap_or(1.0);
     let _ = element
         .style()
-        .set_property("scale", &format!("{} {}", sx, sy));
+        .set_property("scale", &format!("{} {}", css_num(sx), css_num(sy)));
 }
 
 /// `[f32;4]` sRGB → CSS `rgba(r, g, b, a)`. Channels are clamped
@@ -284,11 +287,11 @@ fn write_scale(element: &web_sys::HtmlElement, state: &AnimatedNodeState) {
 /// resulting string is in the canonical sRGB byte form most
 /// developers expect. Alpha stays in `0..=1` floating-point.
 fn rgba_css(value: [f32; 4]) -> String {
-    let r = (value[0].clamp(0.0, 1.0) * 255.0).round() as u8;
-    let g = (value[1].clamp(0.0, 1.0) * 255.0).round() as u8;
-    let b = (value[2].clamp(0.0, 1.0) * 255.0).round() as u8;
-    let a = value[3].clamp(0.0, 1.0);
-    format!("rgba({}, {}, {}, {})", r, g, b, a)
+    let r = (runtime_core::num::clamp_f32(value[0], 0.0, 1.0) * 255.0).round() as u8;
+    let g = (runtime_core::num::clamp_f32(value[1], 0.0, 1.0) * 255.0).round() as u8;
+    let b = (runtime_core::num::clamp_f32(value[2], 0.0, 1.0) * 255.0).round() as u8;
+    let a = runtime_core::num::clamp_f32(value[3], 0.0, 1.0);
+    format!("rgba({}, {}, {}, {})", r, g, b, css_num(a))
 }
 
 /// Per-node animation state map. Stored on the backend so it can
@@ -307,12 +310,12 @@ pub(crate) fn gradient_inline_css(shape: &GradientShape, stops: &[[f32; 4]]) -> 
         .offsets
         .iter()
         .zip(stops.iter())
-        .map(|(offset, color)| format!("{} {:.2}%", rgba_css(*color), offset * 100.0))
+        .map(|(offset, color)| format!("{} {}%", rgba_css(*color), css_num(offset * 100.0)))
         .collect::<Vec<_>>()
         .join(", ");
     match shape.kind {
         GradientShapeKind::Linear { angle_deg } => {
-            format!("linear-gradient({}deg, {})", angle_deg, stops_joined)
+            format!("linear-gradient({}deg, {})", css_num(angle_deg), stops_joined)
         }
         GradientShapeKind::Radial { center, radius, extent } => {
             let base_pct = match extent {
@@ -322,9 +325,9 @@ pub(crate) fn gradient_inline_css(shape: &GradientShape, stops: &[[f32; 4]]) -> 
             let pct = (radius * base_pct).max(0.0);
             format!(
                 "radial-gradient(ellipse {pct}% {pct}% at {x}% {y}%, {stops})",
-                pct = pct,
-                x = center.0 * 100.0,
-                y = center.1 * 100.0,
+                pct = css_num(pct),
+                x = css_num(center.0 * 100.0),
+                y = css_num(center.1 * 100.0),
                 stops = stops_joined,
             )
         }

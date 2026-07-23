@@ -225,6 +225,7 @@ pub trait VirtualizerOps {
 /// callbacks. The framework's build path handles per-item scope
 /// management — `render_item(idx)` runs inside a fresh `Scope`,
 /// and that scope is dropped when the item is released.
+#[cfg(feature = "prim-virtualizer")]
 pub fn virtualizer(
     item_count: Box<dyn Fn() -> usize>,
     item_key: Box<dyn Fn(usize) -> ItemKey>,
@@ -305,7 +306,7 @@ impl Bound<VirtualizerHandle> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "prim-virtualizer"))]
 mod tests {
     use super::*;
 

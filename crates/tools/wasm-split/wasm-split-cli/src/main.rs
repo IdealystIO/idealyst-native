@@ -12,6 +12,7 @@ fn main() {
     match Commands::parse() {
         Commands::Split(split_args) => split(split_args),
         Commands::Validate(validate_args) => validate(validate_args),
+        Commands::Trace(trace_args) => trace(trace_args),
     }
 }
 
@@ -24,6 +25,33 @@ enum Commands {
     /// Validate the main module of a wasm module
     #[clap(name = "validate")]
     Validate(ValidateArgs),
+
+    /// Diagnose main-reachability: why do symbols matching a pattern stay
+    /// in main? Prints root→symbol chains + per-crate size attribution.
+    #[clap(name = "trace")]
+    Trace(TraceArgs),
+}
+
+#[derive(Parser)]
+struct TraceArgs {
+    /// The wasm module emitted by rustc (with relocations)
+    original: PathBuf,
+
+    /// The wasm module emitted by wasm-bindgen (pre-neutralize; the
+    /// command_export neutralize pass is applied here, same as the build)
+    bindgened: PathBuf,
+
+    /// Mangled-name substrings to trace (e.g. vello wgpu naga)
+    patterns: Vec<String>,
+}
+
+fn trace(args: TraceArgs) {
+    let original = std::fs::read(&args.original).expect("failed to read original");
+    let bindgened = std::fs::read(&args.bindgened).expect("failed to read bindgened");
+    let neutralized = wasm_split_cli::neutralize_command_export_wrappers(&bindgened)
+        .expect("neutralize failed");
+    let splitter = wasm_split_cli::Splitter::new(&original, &neutralized).unwrap();
+    splitter.debug_trace(&args.patterns, 10).unwrap();
 }
 
 #[derive(Parser)]

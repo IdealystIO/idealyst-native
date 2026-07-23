@@ -49,6 +49,7 @@ macro_rules! pkind {
     };
 }
 
+#[cfg(feature = "prim-activity")]
 mod activity_indicator;
 mod button;
 mod cleanup;
@@ -56,25 +57,36 @@ mod debug;
 mod dynamic;
 mod each;
 mod external;
+#[cfg(feature = "prim-graphics")]
 mod graphics;
+#[cfg(feature = "prim-icon")]
 mod icon;
+#[cfg(feature = "prim-image")]
 mod image;
+#[cfg(feature = "prim-lazy")]
 mod lazy;
 mod link;
+#[cfg(feature = "prim-navigator")]
 mod navigator;
+#[cfg(feature = "prim-portal")]
 mod portal;
+#[cfg(feature = "prim-presence")]
 mod presence;
 mod pressable;
 #[cfg(feature = "robot")]
 mod robot;
 mod scroll_view;
+#[cfg(feature = "prim-slider")]
 mod slider;
 mod style;
 mod text;
+#[cfg(feature = "prim-text-input")]
 mod text_input;
 mod theme_cohort;
+#[cfg(feature = "prim-toggle")]
 mod toggle;
 mod view;
+#[cfg(feature = "prim-virtualizer")]
 mod virtualizer;
 mod when_switch;
 
@@ -679,6 +691,7 @@ fn dispatch_view<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) 
     )
 }
 
+#[cfg(feature = "prim-navigator")]
 thread_local! {
     /// Stack of active outlet-capture cells. `build_layout_with_outlet`
     /// (walker::navigator) pushes a `Rc<RefCell<Option<B::Node>>>`
@@ -694,10 +707,12 @@ thread_local! {
 /// author-layout build. On drop it pops the cell and yields the captured
 /// node (if the layout contained a `NavigatorOutlet`). Used by
 /// `walker::navigator`'s `build_layout_with_outlet`.
+#[cfg(feature = "prim-navigator")]
 pub(crate) struct OutletCaptureGuard<N: Clone + 'static> {
     cell: Rc<RefCell<Option<N>>>,
 }
 
+#[cfg(feature = "prim-navigator")]
 impl<N: Clone + 'static> OutletCaptureGuard<N> {
     pub(crate) fn push() -> Self {
         let cell: Rc<RefCell<Option<N>>> = Rc::new(RefCell::new(None));
@@ -713,6 +728,7 @@ impl<N: Clone + 'static> OutletCaptureGuard<N> {
     }
 }
 
+#[cfg(feature = "prim-navigator")]
 impl<N: Clone + 'static> Drop for OutletCaptureGuard<N> {
     fn drop(&mut self) {
         OUTLET_CAPTURE.with(|s| {
@@ -722,6 +738,7 @@ impl<N: Clone + 'static> Drop for OutletCaptureGuard<N> {
 }
 
 #[inline(never)]
+#[cfg(feature = "prim-navigator")]
 fn dispatch_navigator_outlet<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     node: Element,
@@ -777,6 +794,7 @@ fn dispatch_button<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element
 }
 
 #[inline(never)]
+#[cfg(feature = "prim-image")]
 fn dispatch_image<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
     let Element::Image { src, alt, alt_fn, on_load, on_error, style, ref_fill, asset, accessibility, .. } = node
     else { unreachable!() };
@@ -784,6 +802,7 @@ fn dispatch_image<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element)
 }
 
 #[inline(never)]
+#[cfg(feature = "prim-icon")]
 fn dispatch_icon<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
     let Element::Icon { data, data_fn, color, stroke, draw_in, style, ref_fill, accessibility, .. } = node
     else { unreachable!() };
@@ -791,6 +810,7 @@ fn dispatch_icon<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) 
 }
 
 #[inline(never)]
+#[cfg(feature = "prim-text-input")]
 fn dispatch_text_input<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
     let Element::TextInput { value, on_change, on_key_down, on_blur, on_focus, placeholder, secure, style, ref_fill, accessibility, .. } = node
     else { unreachable!() };
@@ -798,6 +818,7 @@ fn dispatch_text_input<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Ele
 }
 
 #[inline(never)]
+#[cfg(feature = "prim-text-input")]
 fn dispatch_text_area<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
     let Element::TextArea { value, on_change, on_key_down, placeholder, wrap, min_rows, max_rows, style, ref_fill, accessibility, .. } = node
     else { unreachable!() };
@@ -805,6 +826,7 @@ fn dispatch_text_area<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Elem
 }
 
 #[inline(never)]
+#[cfg(feature = "prim-toggle")]
 fn dispatch_toggle<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
     let Element::Toggle { value, on_change, style, ref_fill, accessibility, .. } = node
     else { unreachable!() };
@@ -819,6 +841,7 @@ fn dispatch_scroll_view<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: El
 }
 
 #[inline(never)]
+#[cfg(feature = "prim-slider")]
 fn dispatch_slider<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
     let Element::Slider { value, on_change, min, max, step, style, ref_fill, accessibility, .. } = node
     else { unreachable!() };
@@ -826,6 +849,7 @@ fn dispatch_slider<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element
 }
 
 #[inline(never)]
+#[cfg(feature = "prim-activity")]
 fn dispatch_activity_indicator<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
     let Element::ActivityIndicator { size, size_fn, color, style, ref_fill, accessibility, .. } = node
     else { unreachable!() };
@@ -833,6 +857,7 @@ fn dispatch_activity_indicator<B: Backend + 'static>(backend: &Rc<RefCell<B>>, n
 }
 
 #[inline(never)]
+#[cfg(feature = "prim-virtualizer")]
 fn dispatch_virtualizer<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
     let Element::Virtualizer {
         item_count, item_key, item_size, render_item, row_template,
@@ -844,7 +869,29 @@ fn dispatch_virtualizer<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: El
     )
 }
 
+/// Fallback for a primitive whose dispatch was compiled out by a disabled
+/// `prim-*` feature. Reaching it means the element arrived at runtime
+/// despite the authoring fn being gated — a wire-received subtree from a
+/// runtime-server, or a hand-built `Element`. Renders the backend's native
+/// "unsupported external" placeholder (the same one an unregistered
+/// `Element::External` gets), with the feature name in the label so the
+/// remedy is visible on screen. Compile-time uses never get here: the
+/// `flat_list` / `virtualizer` builder fns are gated out with the feature.
+#[cfg(not(feature = "prim-virtualizer"))]
+fn dispatch_virtualizer<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::Virtualizer { accessibility, .. } = node else { unreachable!() };
+    struct GatedOffVirtualizer;
+    let payload: Rc<dyn std::any::Any> = Rc::new(());
+    backend.borrow_mut().create_external(
+        std::any::TypeId::of::<GatedOffVirtualizer>(),
+        "virtualizer (compiled out: enable runtime-core feature `prim-virtualizer`)",
+        &payload,
+        &accessibility,
+    )
+}
+
 #[inline(never)]
+#[cfg(feature = "prim-graphics")]
 fn dispatch_graphics<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
     let Element::Graphics { on_ready, on_resize, on_lost, style, ref_fill, accessibility, .. } = node
     else { unreachable!() };
@@ -904,6 +951,7 @@ fn dispatch_external<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Eleme
 }
 
 #[inline(never)]
+#[cfg(feature = "prim-navigator")]
 fn dispatch_navigator<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
     let Element::Navigator { type_id, type_name, presentation, config, style, slot_styles, ref_fill, accessibility } = node
     else { unreachable!() };
@@ -916,6 +964,7 @@ fn dispatch_navigator<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Elem
 }
 
 #[inline(never)]
+#[cfg(feature = "prim-portal")]
 fn dispatch_portal<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
     let Element::Portal { children, target, on_dismiss, trap_focus, style, ref_fill, accessibility, .. } = node
     else { unreachable!() };
@@ -923,6 +972,7 @@ fn dispatch_portal<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element
 }
 
 #[inline(never)]
+#[cfg(feature = "prim-presence")]
 fn dispatch_presence<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
     let Element::Presence { child, present, enter, exit, ref_fill, accessibility, .. } = node
     else { unreachable!() };
@@ -930,13 +980,14 @@ fn dispatch_presence<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Eleme
 }
 
 #[inline(never)]
+#[cfg(feature = "prim-lazy")]
 fn dispatch_lazy<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
     let Element::Lazy { loader, on_state, placeholder, error, style, ref_fill, accessibility } = node
     else { unreachable!() };
     lazy::build(backend, loader, on_state, placeholder, error, style, ref_fill, accessibility)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "prim-navigator"))]
 mod outlet_capture_tests {
     //! Unit coverage for the outlet-capture mechanism the new author-layout
     //! navigation model (`SwapContext`/`build_layout_with_outlet`) relies on:
@@ -1032,4 +1083,145 @@ mod outlet_capture_tests {
         let backend = CaptureStub::new();
         let (_root, _scope) = build_detached(&backend, navigator_outlet(), None);
     }
+}
+
+/// Shared fallback for primitives whose dispatch was compiled out by a
+/// disabled `prim-*` feature: render the backend's native "unsupported
+/// external" placeholder with the feature name in the label. See
+/// `dispatch_virtualizer`'s gated-off doc comment for the full rationale;
+/// every gated family funnels through this one code path (regression-tested
+/// once, via `tests/prim_gating.rs`).
+#[allow(dead_code)]
+fn gated_off_placeholder<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    label: &'static str,
+) -> B::Node {
+    struct GatedOffPrimitive;
+    let payload: Rc<dyn std::any::Any> = Rc::new(());
+    backend.borrow_mut().create_external(
+        std::any::TypeId::of::<GatedOffPrimitive>(),
+        label,
+        &payload,
+        &crate::accessibility::AccessibilityProps::default(),
+    )
+}
+
+#[cfg(not(feature = "prim-icon"))]
+fn dispatch_icon<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    drop(node);
+    gated_off_placeholder::<B>(
+        backend,
+        "icon (compiled out: enable runtime-core feature `prim-icon`)",
+    )
+}
+
+#[cfg(not(feature = "prim-image"))]
+fn dispatch_image<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    drop(node);
+    gated_off_placeholder::<B>(
+        backend,
+        "image (compiled out: enable runtime-core feature `prim-image`)",
+    )
+}
+
+#[cfg(not(feature = "prim-text-input"))]
+fn dispatch_text_input<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    drop(node);
+    gated_off_placeholder::<B>(
+        backend,
+        "text_input (compiled out: enable runtime-core feature `prim-text-input`)",
+    )
+}
+
+#[cfg(not(feature = "prim-text-input"))]
+fn dispatch_text_area<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    drop(node);
+    gated_off_placeholder::<B>(
+        backend,
+        "text_area (compiled out: enable runtime-core feature `prim-text-input`)",
+    )
+}
+
+#[cfg(not(feature = "prim-toggle"))]
+fn dispatch_toggle<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    drop(node);
+    gated_off_placeholder::<B>(
+        backend,
+        "toggle (compiled out: enable runtime-core feature `prim-toggle`)",
+    )
+}
+
+#[cfg(not(feature = "prim-slider"))]
+fn dispatch_slider<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    drop(node);
+    gated_off_placeholder::<B>(
+        backend,
+        "slider (compiled out: enable runtime-core feature `prim-slider`)",
+    )
+}
+
+#[cfg(not(feature = "prim-activity"))]
+fn dispatch_activity_indicator<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    drop(node);
+    gated_off_placeholder::<B>(
+        backend,
+        "activity_indicator (compiled out: enable runtime-core feature `prim-activity`)",
+    )
+}
+
+#[cfg(not(feature = "prim-portal"))]
+fn dispatch_portal<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    drop(node);
+    gated_off_placeholder::<B>(
+        backend,
+        "portal (compiled out: enable runtime-core feature `prim-portal`)",
+    )
+}
+
+#[cfg(not(feature = "prim-presence"))]
+fn dispatch_presence<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    drop(node);
+    gated_off_placeholder::<B>(
+        backend,
+        "presence (compiled out: enable runtime-core feature `prim-presence`)",
+    )
+}
+
+#[cfg(not(feature = "prim-graphics"))]
+fn dispatch_graphics<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    drop(node);
+    gated_off_placeholder::<B>(
+        backend,
+        "graphics (compiled out: enable runtime-core feature `prim-graphics`)",
+    )
+}
+
+#[cfg(not(feature = "prim-navigator"))]
+fn dispatch_navigator<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    drop(node);
+    gated_off_placeholder::<B>(
+        backend,
+        "navigator (compiled out: enable runtime-core feature `prim-navigator`)",
+    )
+}
+
+#[cfg(not(feature = "prim-navigator"))]
+fn dispatch_navigator_outlet<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    node: Element,
+) -> B::Node {
+    drop(node);
+    gated_off_placeholder::<B>(
+        backend,
+        "navigator outlet (compiled out: enable runtime-core feature `prim-navigator`)",
+    )
+}
+
+#[cfg(not(feature = "prim-lazy"))]
+fn dispatch_lazy<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    drop(node);
+    gated_off_placeholder::<B>(
+        backend,
+        "lazy (compiled out: enable runtime-core feature `prim-lazy`)",
+    )
 }

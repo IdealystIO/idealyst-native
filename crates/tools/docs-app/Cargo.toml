@@ -85,11 +85,11 @@ codeblock = { workspace = true }
 # lands in catalog.json. (Resolver v2 keeps this build-dep feature off the
 # wasm runtime dep above, which only needs `registry`.)
 icons-lucide = { workspace = true, features = ["catalog"] }
-serde_json = "1"
+serde_json = { workspace = true }
 
 [dev-dependencies]
 # The unit tests build the catalog and exercise the view-model mapping.
-serde_json = "1"
+serde_json = { workspace = true }
 
 # Web-only deps. The cross-platform `app()` tree never references these.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

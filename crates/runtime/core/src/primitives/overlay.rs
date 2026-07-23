@@ -52,6 +52,7 @@ pub enum BackdropMode {
 /// child list.
 ///
 /// Defaults: `Center` placement, `Dismiss` backdrop, focus-trap on.
+#[cfg(feature = "prim-portal")]
 pub fn overlay(children: Vec<Element>) -> OverlayBuilder {
     OverlayBuilder {
         children,
@@ -190,6 +191,7 @@ impl ChildList for Option<OverlayBuilder> {
 /// Defaults: side `Below`, align `Start`, offset `0`, backdrop
 /// `None` (page behind stays interactive — the typical popover UX),
 /// focus-trap off.
+#[cfg(feature = "prim-portal")]
 pub fn anchored_overlay(
     target: AnchorTarget,
     children: Vec<Element>,

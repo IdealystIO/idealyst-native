@@ -1,0 +1,18 @@
+[package]
+name = "baseline"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Trivial hello-world app — the framework floor for web bundle-size measurement (runtime-core + backend-web, one text node, no idea-ui, no SDKs)."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+runtime-core = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Baseline"
+bundle_id = "ai.truday.idealyst.baseline"
+version   = "0.0.1"
+targets   = ["web"]

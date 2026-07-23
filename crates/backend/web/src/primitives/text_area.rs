@@ -6,6 +6,9 @@
 //! property rather than `<input>.value`.
 
 use crate::WebBackend;
+// `css_num`, not `f64: Display` — a bare `{}` on a float reinstates core's
+// ~12-15 KB flt2dec float formatter in every bundle (see css::css_num).
+use css::css_num;
 use runtime_core::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
 use runtime_core::primitives::text_area::{TextAreaHandle, TextAreaOps};
 use std::any::Any;
@@ -262,7 +265,7 @@ fn autosize(textarea: &web_sys::HtmlTextAreaElement) {
     if let Some(c) = cap {
         desired = desired.min(c);
     }
-    let _ = style.set_property("height", &format!("{desired}px"));
+    let _ = style.set_property("height", &format!("{}px", css_num(desired as f32)));
     // Scroll only when the natural content genuinely outgrows the cap (the
     // pinned `height` is clamped to it), so the overflow scrolls, not clips.
     if should_scroll(natural, cap) {

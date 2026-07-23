@@ -31,7 +31,7 @@ license.workspace = true
 frameworks = ["AVFoundation", "CoreMedia", "CoreVideo", "AudioToolbox"]
 
 [dependencies]
-thiserror = "1"
+thiserror = { workspace = true }
 # The live-source abstractions this SDK consumes (video + audio) and the
 # shared capture clock it aligns them by.
 media-stream = { workspace = true }

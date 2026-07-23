@@ -167,6 +167,7 @@ pub trait TextInputOps {
 /// text; the typical pattern is to call `value.set(new_text)`
 /// inside the callback (the framework optimizes away the redundant
 /// write-back when the signal already matches).
+#[cfg(feature = "prim-text-input")]
 pub fn text_input<F: Fn(String) + 'static>(
     value: Signal<String>,
     on_change: F,

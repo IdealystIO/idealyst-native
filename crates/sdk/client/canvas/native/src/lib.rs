@@ -81,3 +81,41 @@ mod fallback {
     target_os = "macos"
 )))]
 pub use fallback::register;
+
+/// Regression tests for the `self-register` feature gate. The bug being
+/// prevented: the inventory ctor is a LINK-TIME anchor — with it always on,
+/// merely depending on this crate (as `canvas-vello` does for its Canvas2D
+/// fallback delegate) made the rasterizer + glyph stack (skrifa/read_fonts,
+/// ~670 KB) reachable from `main`'s ctors, pinning it in a lazy web bundle's
+/// `main.wasm` even though the canvas itself lived in a wasm-split chunk.
+///
+/// Link-graph anchoring isn't observable from a unit test, so this asserts
+/// the closest reachable state: what the crate submits into the inventory
+/// registry under each feature setting, on the host target (the submit sites
+/// are gated identically on web/iOS/Android). Run both:
+///   cargo test -p canvas-native
+///   cargo test -p canvas-native --no-default-features
+#[cfg(all(test, target_os = "macos", not(target_arch = "wasm32")))]
+mod self_register_gate_tests {
+    #[cfg(feature = "self-register")]
+    #[test]
+    fn regression_self_register_default_submits_the_registrar() {
+        let count = inventory::iter::<backend_macos::MacosExternalRegistrar>
+            .into_iter()
+            .count();
+        assert_eq!(count, 1, "default features must self-register the handler");
+    }
+
+    #[cfg(not(feature = "self-register"))]
+    #[test]
+    fn regression_delegate_only_build_links_no_registrar_ctor() {
+        let count = inventory::iter::<backend_macos::MacosExternalRegistrar>
+            .into_iter()
+            .count();
+        assert_eq!(
+            count, 0,
+            "without self-register the ctor must not exist — it would anchor \
+             the rasterizer + glyph stack in a lazy bundle's main.wasm"
+        );
+    }
+}

@@ -310,7 +310,7 @@ fn clamp_into_viewport(
     let (vw, vh) = viewport;
     let max_left = (vw - edge_gap - ow).max(edge_gap);
     let max_top = (vh - edge_gap - oh).max(edge_gap);
-    (top.clamp(edge_gap, max_top), left.clamp(edge_gap, max_left))
+    (crate::num::clamp_f32(top, edge_gap, max_top), crate::num::clamp_f32(left, edge_gap, max_left))
 }
 
 #[cfg(test)]
@@ -434,6 +434,7 @@ pub trait PortalOps {}
 /// No defaults for backdrop — that's a caller concern. For the
 /// common cases (modal, popover, tooltip) reach for the
 /// compositions in [`primitives::overlay`].
+#[cfg(feature = "prim-portal")]
 pub fn portal(target: PortalTarget, children: Vec<Element>) -> Bound<PortalHandle> {
     Bound::new(Element::Portal {
         children,

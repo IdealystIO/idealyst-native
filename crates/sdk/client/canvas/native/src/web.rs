@@ -39,7 +39,12 @@ pub fn register(backend: &mut WebBackend) {
 }
 
 // Self-register at backend construction (no app-side `register` call needed).
-// See [[project_inventory_self_registration]].
+// See [[project_inventory_self_registration]]. Behind the default-on
+// `self-register` feature: the ctor is a link-time anchor that pins this
+// crate's rasterizer + glyph stack in `main.wasm`, so delegate-only
+// consumers (canvas-vello's Canvas2D fallback) opt out to keep it
+// splittable into their lazy chunk.
+#[cfg(feature = "self-register")]
 inventory::submit! {
     backend_web::WebExternalRegistrar(register)
 }

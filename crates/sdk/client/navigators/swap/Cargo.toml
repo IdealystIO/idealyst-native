@@ -30,7 +30,9 @@ runtime-server = ["dep:dev-server", "dep:wire"]
 catalog = ["runtime-core/catalog"]
 
 [dependencies]
-runtime-core = { workspace = true }
+# Forward the navigator gate: depending on this SDK re-enables the
+# walker/backend navigator machinery even under default-features = false.
+runtime-core = { workspace = true, features = ["prim-navigator"] }
 # Self-registration of the per-backend navigator handler at construction.
 inventory = "0.3"
 
@@ -44,7 +46,7 @@ wire = { workspace = true, optional = true }
 backend-ssr = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-backend-web = { workspace = true }
+backend-web = { workspace = true, features = ["prim-navigator"] }
 
 [target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
 backend-macos = { workspace = true }

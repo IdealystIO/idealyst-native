@@ -301,10 +301,58 @@ pub fn container_query_rule(class_name: &str, threshold_px: f32, body: &str) -> 
 /// `px` length, trimming a redundant `.0` so `768.0` renders as `768px`
 /// — both for byte-stable SSR/web class dedup and for readable output.
 fn px_value(v: f32) -> String {
-    if v.fract() == 0.0 {
-        format!("{}px", v as i64)
-    } else {
-        format!("{v}px")
+    format!("{}px", css_num(v))
+}
+
+/// Fixed-precision CSS number formatter: at most 3 decimals, trailing
+/// zeros (and a bare `.0`) trimmed, so `768.0` → `768`, `1.5` → `1.5`,
+/// `0.6666667` → `0.667`.
+///
+/// Exists because `f32: Display` drags core's shortest-representation
+/// float machinery (`flt2dec` dragon + grisu, ~12–15 KB of wasm) into
+/// every web bundle. CSS never needs more than millipixel/millidegree
+/// precision, so this formats through pure integer math and the cheap
+/// integer `Display` path instead. Every CSS-value float in this crate
+/// must go through it — a single `{}` on an `f32` reinstates the whole
+/// flt2dec stack.
+///
+/// Deterministic, which keeps minted-class content keys byte-stable
+/// across web and SSR (both route through this crate). Non-finite
+/// values render as `0`.
+pub fn css_num(v: f32) -> CssNum {
+    CssNum(v)
+}
+
+/// See [`css_num`].
+pub struct CssNum(pub f32);
+
+impl core::fmt::Display for CssNum {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let v = self.0;
+        if !v.is_finite() {
+            return f.write_str("0");
+        }
+        // Scale to thousandths in f64 (every f32 is exact in f64) and
+        // round half-up. `as u64` saturates, so absurd magnitudes clamp
+        // instead of wrapping.
+        let scaled = (v.abs() as f64 * 1000.0 + 0.5) as u64;
+        let int = scaled / 1000;
+        let frac = (scaled % 1000) as u32;
+        if v.is_sign_negative() && (int != 0 || frac != 0) {
+            f.write_str("-")?;
+        }
+        core::fmt::Display::fmt(&int, f)?;
+        if frac != 0 {
+            let (width, frac) = if frac % 100 == 0 {
+                (1, frac / 100)
+            } else if frac % 10 == 0 {
+                (2, frac / 10)
+            } else {
+                (3, frac)
+            };
+            write!(f, ".{frac:0width$}")?;
+        }
+        Ok(())
     }
 }
 
@@ -317,7 +365,7 @@ pub fn token_value_css(v: &runtime_core::TokenValue) -> String {
     match v {
         TokenValue::Color(c) => c.0.clone(),
         TokenValue::Length(l) => length_css(*l),
-        TokenValue::Number(n) => n.to_string(),
+        TokenValue::Number(n) => css_num(*n).to_string(),
     }
 }
 
@@ -441,8 +489,8 @@ pub fn font_format_hint(source: &runtime_core::assets::AssetSource) -> Option<&'
 pub fn length_css(l: runtime_core::Length) -> String {
     use runtime_core::Length;
     match l {
-        Length::Px(v) => format!("{}px", v),
-        Length::Percent(v) => format!("{}%", v),
+        Length::Px(v) => format!("{}px", css_num(v)),
+        Length::Percent(v) => format!("{}%", css_num(v)),
         Length::Auto => "auto".to_string(),
     }
 }
@@ -498,14 +546,14 @@ pub fn gradient_css(g: &runtime_core::Gradient) -> String {
     let stops: Vec<String> = g
         .stops
         .iter()
-        .map(|s| format!("{} {:.2}%", s.color.0, s.offset * 100.0))
+        .map(|s| format!("{} {}%", s.color.0, css_num(s.offset * 100.0)))
         .collect();
     let stops_joined = stops.join(", ");
     match g.kind {
         runtime_core::GradientKind::Linear { angle_deg } => {
             // CSS `linear-gradient(angle, stops)`: `0deg` is
             // bottom→top, matching the framework's convention.
-            format!("linear-gradient({}deg, {})", angle_deg, stops_joined)
+            format!("linear-gradient({}deg, {})", css_num(angle_deg), stops_joined)
         }
         runtime_core::GradientKind::Radial { center, radius, extent } => {
             // CSS doesn't allow percentage sizing with the `circle`
@@ -520,9 +568,9 @@ pub fn gradient_css(g: &runtime_core::Gradient) -> String {
             let pct = (radius * base_pct).max(0.0);
             format!(
                 "radial-gradient(ellipse {pct}% {pct}% at {x}% {y}%, {stops})",
-                pct = pct,
-                x = center.0 * 100.0,
-                y = center.1 * 100.0,
+                pct = css_num(pct),
+                x = css_num(center.0 * 100.0),
+                y = css_num(center.1 * 100.0),
                 stops = stops_joined,
             )
         }
@@ -545,9 +593,9 @@ pub fn tokenized_length_css(t: &runtime_core::Tokenized<runtime_core::Length>) -
 pub fn tokenized_f32_css(t: &runtime_core::Tokenized<f32>) -> String {
     use runtime_core::Tokenized;
     match t {
-        Tokenized::Literal(v) => v.to_string(),
+        Tokenized::Literal(v) => css_num(*v).to_string(),
         Tokenized::Token { name, fallback } => {
-            format!("var(--{}, {})", name, fallback)
+            format!("var(--{}, {})", name, css_num(*fallback))
         }
     }
 }
@@ -558,9 +606,9 @@ pub fn tokenized_f32_css(t: &runtime_core::Tokenized<f32>) -> String {
 pub fn tokenized_border_width_css(t: &runtime_core::Tokenized<f32>) -> String {
     use runtime_core::Tokenized;
     match t {
-        Tokenized::Literal(v) => format!("{}px", v),
+        Tokenized::Literal(v) => format!("{}px", css_num(*v)),
         Tokenized::Token { name, fallback } => {
-            format!("calc(var(--{}, {}) * 1px)", name, fallback)
+            format!("calc(var(--{}, {}) * 1px)", name, css_num(*fallback))
         }
     }
 }
@@ -655,8 +703,8 @@ pub fn track_size_css(t: &runtime_core::TrackSize) -> String {
         TrackSize::Auto => "auto".to_string(),
         TrackSize::MinContent => "min-content".to_string(),
         TrackSize::MaxContent => "max-content".to_string(),
-        TrackSize::Fr(v) => format!("{}fr", v),
-        TrackSize::Px(v) => format!("{}px", v),
+        TrackSize::Fr(v) => format!("{}fr", css_num(*v)),
+        TrackSize::Px(v) => format!("{}px", css_num(*v)),
         TrackSize::Minmax(lo, hi) => {
             format!("minmax({}, {})", track_size_css(lo), track_size_css(hi))
         }
@@ -782,11 +830,11 @@ pub fn transform_css(t: &runtime_core::Transform) -> String {
     match t {
         Transform::TranslateX(l) => format!("translateX({})", length_css(*l)),
         Transform::TranslateY(l) => format!("translateY({})", length_css(*l)),
-        Transform::Scale(v) => format!("scale({})", v),
-        Transform::ScaleXY { x, y } => format!("scale({}, {})", x, y),
-        Transform::Rotate(v) => format!("rotate({}deg)", v),
-        Transform::SkewX(v) => format!("skewX({}deg)", v),
-        Transform::SkewY(v) => format!("skewY({}deg)", v),
+        Transform::Scale(v) => format!("scale({})", css_num(*v)),
+        Transform::ScaleXY { x, y } => format!("scale({}, {})", css_num(*x), css_num(*y)),
+        Transform::Rotate(v) => format!("rotate({}deg)", css_num(*v)),
+        Transform::SkewX(v) => format!("skewX({}deg)", css_num(*v)),
+        Transform::SkewY(v) => format!("skewY({}deg)", css_num(*v)),
     }
 }
 
@@ -799,7 +847,13 @@ pub fn easing_css(e: runtime_core::Easing) -> String {
         Easing::EaseOut => "ease-out".to_string(),
         Easing::EaseInOut => "ease-in-out".to_string(),
         Easing::CubicBezier(a, b, c, d) => {
-            format!("cubic-bezier({}, {}, {}, {})", a, b, c, d)
+            format!(
+                "cubic-bezier({}, {}, {}, {})",
+                css_num(a),
+                css_num(b),
+                css_num(c),
+                css_num(d)
+            )
         }
     }
 }
@@ -917,7 +971,7 @@ pub fn rules_to_css_with_shadow(rules: &StyleRules, shadow_kind: ShadowKind) -> 
     if let Some(t) = &rules.min_height { parts.push(format!("min-height: {}", tokenized_length_css(t))); }
     if let Some(t) = &rules.max_width { parts.push(format!("max-width: {}", tokenized_length_css(t))); }
     if let Some(t) = &rules.max_height { parts.push(format!("max-height: {}", tokenized_length_css(t))); }
-    if let Some(ar) = rules.aspect_ratio { parts.push(format!("aspect-ratio: {}", ar)); }
+    if let Some(ar) = rules.aspect_ratio { parts.push(format!("aspect-ratio: {}", css_num(ar))); }
 
     // Per-side padding.
     if let Some(t) = &rules.padding_top { parts.push(format!("padding-top: {}", tokenized_length_css(t))); }
@@ -1017,7 +1071,11 @@ pub fn rules_to_css_with_shadow(rules: &StyleRules, shadow_kind: ShadowKind) -> 
         };
         parts.push(format!(
             "{}: {}px {}px {}px {}",
-            prop, sh.x, sh.y, sh.blur, sh.color.0
+            prop,
+            css_num(sh.x),
+            css_num(sh.y),
+            css_num(sh.blur),
+            sh.color.0
         ));
     }
     if let Some(xs) = &rules.transform {
@@ -1244,6 +1302,49 @@ fn collect_transitions(rules: &StyleRules) -> Vec<String> {
 mod tests {
     use super::*;
     use runtime_core::{Color, Length, TokenEntry, TokenValue};
+
+    /// `css_num` must agree with what `f32: Display` produced for the values
+    /// CSS actually uses — it replaced Display everywhere in this crate to
+    /// keep core's flt2dec float formatter out of web bundles, so any
+    /// divergence here would change minted class content keys between
+    /// releases (and SSR/web must stay byte-identical, which they do since
+    /// both route through this crate).
+    #[test]
+    fn css_num_matches_display_for_common_values() {
+        for (v, expect) in [
+            (0.0_f32, "0"),
+            (-0.0, "0"),
+            (1.0, "1"),
+            (768.0, "768"),
+            (-16.0, "-16"),
+            (1.5, "1.5"),
+            (0.1, "0.1"),
+            (0.25, "0.25"),
+            (12.75, "12.75"),
+            (0.125, "0.125"),
+            (-0.5, "-0.5"),
+            (100.0, "100"),
+        ] {
+            assert_eq!(css_num(v).to_string(), expect, "css_num({v})");
+        }
+    }
+
+    /// Beyond 3 decimals `css_num` rounds (that's the point — CSS never
+    /// needs shortest-representation precision), trims trailing zeros, and
+    /// degrades non-finite input to `0` instead of emitting invalid CSS.
+    #[test]
+    fn css_num_rounds_trims_and_handles_edge_cases() {
+        assert_eq!(css_num(2.0 / 3.0).to_string(), "0.667");
+        assert_eq!(css_num(33.3333_f32).to_string(), "33.333");
+        // (0.9995 itself stores as 0.99949997f32 and correctly stays "0.999")
+        assert_eq!(css_num(0.99955).to_string(), "1");
+        assert_eq!(css_num(1.100_f32).to_string(), "1.1");
+        assert_eq!(css_num(1.120_f32).to_string(), "1.12");
+        assert_eq!(css_num(-0.0004).to_string(), "0"); // rounds to zero → no "-"
+        assert_eq!(css_num(f32::NAN).to_string(), "0");
+        assert_eq!(css_num(f32::INFINITY).to_string(), "0");
+        assert_eq!(css_num(f32::NEG_INFINITY).to_string(), "0");
+    }
 
     #[test]
     fn tokens_to_root_css_emits_root_block() {

@@ -72,7 +72,7 @@ mod compose_transform;
 #[cfg(target_arch = "wasm32")]
 mod render_web;
 #[cfg(target_arch = "wasm32")]
-pub use render_web::register;
+pub use render_web::{build_canvas, register};
 
 // WebGPU texture-layer compositor: composites a camera `MediaStream` into the
 // canvas on web (via `copy_external_image_to_texture`), so a layered canvas can

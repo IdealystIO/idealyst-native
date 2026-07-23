@@ -28,10 +28,14 @@
 //!
 //! [`wasm-split`]: https://crates.io/crates/wasm-splitter
 
+#[cfg(feature = "prim-lazy")]
 use crate::accessibility::AccessibilityProps;
+#[cfg(feature = "prim-lazy")]
 use crate::builder::IntoElement;
+#[cfg(feature = "prim-lazy")]
 use crate::handles::RefFill;
 use crate::element::Element;
+#[cfg(feature = "prim-lazy")]
 use crate::sources::{IntoStyleSource, StyleSource};
 use std::future::Future;
 use std::pin::Pin;
@@ -166,9 +170,11 @@ pub type LazyLoader = Box<dyn Fn() -> LazyFuture>;
 
 /// The loading-UI slot on a lazy component's props. Wraps a `Fn() -> impl
 /// IntoElement` closure. Default: empty (an empty view while loading).
+#[cfg(feature = "prim-lazy")]
 #[derive(Default, Clone)]
 pub struct LazyLoadingUi(Option<Rc<dyn Fn() -> Element>>);
 
+#[cfg(feature = "prim-lazy")]
 impl<F, R> From<F> for LazyLoadingUi
 where
     F: Fn() -> R + 'static,
@@ -179,6 +185,7 @@ where
     }
 }
 
+#[cfg(feature = "prim-lazy")]
 impl LazyLoadingUi {
     /// Framework-internal: unwrap the placeholder builder for the walker.
     #[doc(hidden)]
@@ -193,9 +200,11 @@ impl LazyLoadingUi {
 /// The error-UI slot on a lazy component's props. Wraps a `Fn(&LazyError) ->
 /// impl IntoElement` closure. Default: empty (the load failure is logged and
 /// the loading UI stays visible).
+#[cfg(feature = "prim-lazy")]
 #[derive(Default, Clone)]
 pub struct LazyErrorUi(Option<Rc<dyn Fn(&LazyError) -> Element>>);
 
+#[cfg(feature = "prim-lazy")]
 impl<F, R> From<F> for LazyErrorUi
 where
     F: Fn(&LazyError) -> R + 'static,
@@ -206,6 +215,7 @@ where
     }
 }
 
+#[cfg(feature = "prim-lazy")]
 impl LazyErrorUi {
     /// Framework-internal: unwrap the error builder for the walker.
     #[doc(hidden)]
@@ -225,6 +235,7 @@ impl LazyErrorUi {
 /// Authors don't typically touch this directly — the `lazy!` macro
 /// constructs it. Public so the macro's emitted code (which expands
 /// in user crates) can reach it.
+#[cfg(feature = "prim-lazy")]
 #[must_use]
 pub struct LazyBuilder {
     loader: LazyLoader,
@@ -236,6 +247,7 @@ pub struct LazyBuilder {
     accessibility: AccessibilityProps,
 }
 
+#[cfg(feature = "prim-lazy")]
 impl LazyBuilder {
     /// Subscribe to lifecycle transitions. Fires synchronously on
     /// each state change; the callback should be cheap (typically
@@ -351,6 +363,7 @@ impl LazyBuilder {
     }
 }
 
+#[cfg(feature = "prim-lazy")]
 impl IntoElement for LazyBuilder {
     fn into_element(self) -> Element {
         Element::Lazy {
@@ -369,6 +382,7 @@ impl IntoElement for LazyBuilder {
 /// `lazy!` macro — author code typically uses the macro, not this
 /// function directly. Public so the macro's expansion (in user
 /// crates) can reach it.
+#[cfg(feature = "prim-lazy")]
 pub fn lazy_split<F>(load: F) -> LazyBuilder
 where
     F: Fn() -> LazyFuture + 'static,
@@ -397,6 +411,7 @@ where
 // as `install_url_opener` — keeps the macro free of any backend dependency
 // and core free of any web specifics.
 
+#[cfg(feature = "prim-lazy")]
 thread_local! {
     static DYNLINK_LOADER: std::cell::RefCell<Option<Rc<dyn Fn(&'static str) -> LazyFuture>>> =
         const { std::cell::RefCell::new(None) };
@@ -406,6 +421,7 @@ thread_local! {
 /// module and resolves to its `Element`. Installed once by the web backend
 /// at boot. No-op seam on every other backend — native targets compile lazy
 /// bodies inline and never call [`__dynlink_load`].
+#[cfg(feature = "prim-lazy")]
 #[doc(hidden)]
 pub fn install_dynlink_loader(loader: Rc<dyn Fn(&'static str) -> LazyFuture>) {
     DYNLINK_LOADER.with(|c| *c.borrow_mut() = Some(loader));
@@ -416,6 +432,7 @@ pub fn install_dynlink_loader(loader: Rc<dyn Fn(&'static str) -> LazyFuture>) {
 /// only) — author code never calls this. Surfaces an `Err` if no loader is
 /// installed, so a misconfigured build lands in the `.error(..)` UI (a visible,
 /// retryable failure) rather than silently rendering nothing.
+#[cfg(feature = "prim-lazy")]
 #[doc(hidden)]
 pub fn __dynlink_load(hash: &'static str) -> LazyFuture {
     let loader = DYNLINK_LOADER.with(|c| c.borrow().clone());
@@ -431,7 +448,7 @@ pub fn __dynlink_load(hash: &'static str) -> LazyFuture {
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, feature = "prim-lazy"))]
 mod tests {
     use super::*;
     use crate::{view, Element};

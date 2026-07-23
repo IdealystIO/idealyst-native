@@ -153,7 +153,7 @@ fn web_dpr() -> f64 {
     }
 }
 
-fn build_canvas<B: Backend>(props: &Rc<CanvasProps>, backend: &mut B) -> B::Node {
+pub fn build_canvas<B: Backend>(props: &Rc<CanvasProps>, backend: &mut B) -> B::Node {
     // Latest painted scene + the installed renderer, shared between the reactive
     // effect and the surface lifecycle callbacks. `render_fn` is `None` until
     // the async `on_ready` probe installs a GPU or Canvas2D renderer.

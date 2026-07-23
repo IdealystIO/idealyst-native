@@ -59,8 +59,11 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: WheelHandler) {
             // not meaningful for zoom. Clamp the per-event magnitude so a large
             // mouse-wheel notch (vs. a fine trackpad pinch) steps smoothly
             // instead of jumping several multiples per notch.
-            let dy = (ev.delta_y() as f32)
-                .clamp(-MAX_ZOOM_WHEEL_DELTA, MAX_ZOOM_WHEEL_DELTA);
+            let dy = runtime_core::num::clamp_f32(
+                ev.delta_y() as f32,
+                -MAX_ZOOM_WHEEL_DELTA,
+                MAX_ZOOM_WHEEL_DELTA,
+            );
             let s = (-dy * ZOOM_PER_WHEEL_UNIT).exp();
             (WheelKind::Zoom, 0.0, 0.0, s)
         } else {

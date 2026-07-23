@@ -24,4 +24,4 @@ wire = { workspace = true }
 dev-client = { workspace = true }
 render-wgpu = { workspace = true, features = ["headless"] }
 base64 = "0.22"
-serde_json = "1"
+serde_json = { workspace = true }

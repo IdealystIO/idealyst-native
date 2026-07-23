@@ -307,6 +307,7 @@ fn reactive_for_multi_node_body_flattens_on_rebuild() {
 /// it mounts as a virtualizer node, and a data-signal change notifies
 /// the backend via `virtualizer_data_changed`. (Row content isn't
 /// observable in the mock — it doesn't drive `mount_item`.)
+#[cfg(feature = "prim-virtualizer")]
 #[test]
 fn reactive_flat_list_creates_virtualizer_and_reacts_to_data() {
     let rt = TestRuntime::new();
@@ -341,6 +342,7 @@ fn reactive_flat_list_creates_virtualizer_and_reacts_to_data() {
 /// `create_virtualizer` verbatim. This is the wiring that turns the
 /// one-lane list engine into a multi-lane grid — proven end-to-end
 /// from macro prop → `Element::Virtualizer.layout` → backend call.
+#[cfg(feature = "prim-virtualizer")]
 #[test]
 fn flat_list_grid_lanes_and_spacing_reach_backend() {
     use runtime_core::{Axis, Lanes};
@@ -380,6 +382,7 @@ fn flat_list_grid_lanes_and_spacing_reach_backend() {
 /// `render` closure in a per-item scope and produces the expected
 /// `Text`. This is the row-content coverage the create/data-changed
 /// test can't give (the mock doesn't auto-mount).
+#[cfg(feature = "prim-virtualizer")]
 #[test]
 fn flat_list_mounts_rows_with_real_content() {
     let rt = TestRuntime::new();
@@ -400,6 +403,7 @@ fn flat_list_mounts_rows_with_real_content() {
 /// Growing the data signal mounts ONLY the new row on the next sync —
 /// `render_item` reads the current signal value, so the new index
 /// renders the freshly-added item.
+#[cfg(feature = "prim-virtualizer")]
 #[test]
 fn flat_list_mounts_only_new_row_on_growth() {
     let rt = TestRuntime::new();
@@ -423,6 +427,7 @@ fn flat_list_mounts_only_new_row_on_growth() {
 /// next sync — `release_item` drops each row's `Scope`, firing its
 /// `on_cleanup`. Proves per-row teardown (no leak) through the real
 /// Virtualizer machinery.
+#[cfg(feature = "prim-virtualizer")]
 #[test]
 fn flat_list_releases_row_scopes_on_shrink() {
     let rt = TestRuntime::new();
@@ -458,6 +463,7 @@ fn flat_list_releases_row_scopes_on_shrink() {
 /// build the REAL row body — previously it was a hardcoded empty-View
 /// placeholder, so this construct rendered blank rows on every runtime
 /// backend (web/iOS/Android/wgpu).
+#[cfg(feature = "prim-virtualizer")]
 #[test]
 fn for_count_signal_renders_real_rows_not_placeholder() {
     let count_sig: Signal<usize> = signal(3);
@@ -486,6 +492,7 @@ fn for_count_signal_renders_real_rows_not_placeholder() {
 /// actual Virtualizer machinery (driven via `sync_virtualizers`), not
 /// just at the primitive level — the full mount path complements the
 /// primitive-level assertion above.
+#[cfg(feature = "prim-virtualizer")]
 #[test]
 fn for_count_signal_mounts_real_rows_end_to_end() {
     let rt = TestRuntime::new();

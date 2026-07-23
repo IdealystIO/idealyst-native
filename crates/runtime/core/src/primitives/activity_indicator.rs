@@ -46,6 +46,7 @@ pub trait ActivityIndicatorOps {
 
 /// Construct an indicator with default size (`Small`) and no color
 /// override (uses native default tint or theme on web).
+#[cfg(feature = "prim-activity")]
 pub fn activity_indicator() -> Bound<ActivityIndicatorHandle> {
     Bound::new(Element::ActivityIndicator {
         size: ActivityIndicatorSize::default(),

@@ -11,6 +11,9 @@
 //! length (nothing visible) to 0 (fully drawn). CSS transitions
 //! handle the interpolation — smooth, hardware-accelerated, zero JS.
 
+// `css_num`, not `f32: Display` — a bare `{}` on an f32 reinstates core's
+// ~12-15 KB flt2dec float formatter in every bundle (see css::css_num).
+use css::css_num;
 use runtime_core::primitives::icon::{FillRule, IconData};
 use runtime_core::{Color, Easing};
 use wasm_bindgen::JsCast;
@@ -157,8 +160,8 @@ pub(crate) fn update_color(node: &Node, color: &Color) {
 /// Set stroke progress immediately (no transition).
 /// progress: 0.0 = nothing drawn, 1.0 = fully drawn.
 pub(crate) fn update_stroke(node: &Node, progress: f32) {
-    let offset = 1.0 - progress.clamp(0.0, 1.0);
-    let offset_str = format!("{}", offset);
+    let offset = 1.0 - runtime_core::num::clamp_f32(progress, 0.0, 1.0);
+    let offset_str = format!("{}", css_num(offset));
 
     if let Ok(svg) = node.clone().dyn_into::<web_sys::Element>() {
         // Apply to all <path> children by iterating child nodes.
@@ -182,10 +185,10 @@ pub(crate) fn animate_stroke(
     easing: Easing,
     infinite: bool,
 ) {
-    let from_offset = 1.0 - from.clamp(0.0, 1.0);
-    let to_offset = 1.0 - to.clamp(0.0, 1.0);
-    let from_str = format!("{}", from_offset);
-    let to_str = format!("{}", to_offset);
+    let from_offset = 1.0 - runtime_core::num::clamp_f32(from, 0.0, 1.0);
+    let to_offset = 1.0 - runtime_core::num::clamp_f32(to, 0.0, 1.0);
+    let from_str = format!("{}", css_num(from_offset));
+    let to_str = format!("{}", css_num(to_offset));
 
     if let Ok(svg) = node.clone().dyn_into::<web_sys::Element>() {
         let child = svg.first_element_child();

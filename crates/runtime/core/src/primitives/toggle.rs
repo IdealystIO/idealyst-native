@@ -33,6 +33,7 @@ pub trait ToggleOps {
 
 /// Construct a controlled toggle. `value` is the source of truth;
 /// `on_change` is called with the new value on every native flip.
+#[cfg(feature = "prim-toggle")]
 pub fn toggle<F: Fn(bool) + 'static>(
     value: Signal<bool>,
     on_change: F,

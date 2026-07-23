@@ -62,7 +62,7 @@ impl<T: Animatable> KeyframesTo<T> {
     /// ascending order; out-of-order calls are corrected at
     /// `build` time.
     pub fn stop(mut self, offset: f32, value: T) -> Self {
-        self.stops.push((offset.clamp(0.0, 1.0), value));
+        self.stops.push((crate::num::clamp_f32(offset, 0.0, 1.0), value));
         self
     }
 
@@ -79,8 +79,10 @@ impl<T: Animatable> AnimatorFactory<T> for KeyframesTo<T> {
         // Defensive sort — out-of-order stops yield surprising
         // visual jumps if we trust the order blindly. Stable
         // sort so equal-offset stops keep their insertion order
-        // (last wins on a tie at sample time).
-        self.stops.sort_by(|a, b| {
+        // (last wins on a tie at sample time). Insertion sort: stop
+        // lists are tiny and std's stable sort costs ~3 KB of wasm
+        // per element type (see `num::insertion_sort_by`).
+        crate::num::insertion_sort_by(&mut self.stops, |a, b| {
             a.0.partial_cmp(&b.0)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
@@ -184,7 +186,7 @@ impl<T: Animatable> KeyframesAnimator<T> {
             let local_t = if first.0 == 0.0 {
                 0.0
             } else {
-                (t / first.0).clamp(0.0, 1.0)
+                crate::num::clamp_f32((t / first.0), 0.0, 1.0)
             };
             let eased = apply_easing(local_t, self.curve);
             return T::lerp(&self.seed, &first.1, eased);
@@ -196,7 +198,7 @@ impl<T: Animatable> KeyframesAnimator<T> {
             let (hi_off, hi_val) = &window[1];
             if t <= *hi_off {
                 let span = (hi_off - lo_off).max(f32::EPSILON);
-                let local_t = ((t - lo_off) / span).clamp(0.0, 1.0);
+                let local_t = crate::num::clamp_f32((t - lo_off) / span, 0.0, 1.0);
                 let eased = apply_easing(local_t, self.curve);
                 return T::lerp(lo_val, hi_val, eased);
             }
