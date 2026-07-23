@@ -10,8 +10,8 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = ["prim-virtualizer", "prim-icon", "prim-image", "prim-text-input", "prim-toggle", "prim-slider", "prim-activity", "prim-graphics", "prim-portal", "prim-presence", "prim-navigator", "prim-lazy"]
 # Compile in `Element::Virtualizer` support: the windowed-list recycler
-# (`primitives::virtualizer`), the Backend hook overrides, and the ~21 KB
-# embedded `virtualizer.js` shim. Mirrors runtime-core's `prim-virtualizer`
+# (`primitives::virtualizer`), the Backend hook overrides, and the
+# embedded `virtualizer.js` shim (~7.5 KB after build.rs minification). Mirrors runtime-core's `prim-virtualizer`
 # — one feature gates every backend identically (CLAUDE.md §7). ON by
 # default; a minimal app disables default features on BOTH runtime-core and
 # this crate to drop the machinery (the walker then renders the standard

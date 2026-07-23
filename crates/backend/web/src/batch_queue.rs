@@ -95,7 +95,13 @@ impl StringBatchQueue {
     pub fn queue_with<F: FnOnce(&mut String)>(&mut self, id: u32, write: F) {
         let start = self.buffer.len();
         write(&mut self.buffer);
-        let segment = &self.buffer[start..];
+        // `.get(..)` not `[..]`: `start` is the buffer's own previous
+        // length, so the range is always valid — but the indexing form
+        // links `core::str::slice_error_fail`, whose panic message
+        // Debug-formats the string and drags `<char as Debug>::fmt` +
+        // the escape tables (~4 KB) into every web bundle. The fallback
+        // arm is unreachable; it exists to make the panic path vanish.
+        let segment = self.buffer.get(start..).unwrap_or("");
         let utf16_len = utf16_len(segment);
         self.ids.push(id);
         self.lengths.push(utf16_len);
