@@ -27,6 +27,9 @@
 //! call.
 
 use crate::WebBackend;
+// `css_num`, not `f32: Display` — a bare `{}` on an f32 reinstates core's
+// ~12-15 KB flt2dec float formatter in every bundle (see css::css_num).
+use css::css_num;
 use runtime_core::primitives::portal::{
     AnchorTarget, ElementAlign, ElementSide, PortalHandle, PortalOps, PortalTarget,
     ViewportPlacement, ViewportRect,
@@ -392,7 +395,7 @@ fn anchor_styles(rect: ViewportRect, side: ElementSide, align: ElementAlign, off
             ElementAlign::End => "transform: translate(-100%, -100%);",
         },
     };
-    format!("top: {}px; left: {}px; {}", top, left, transform)
+    format!("top: {}px; left: {}px; {}", css_num(top), css_num(left), transform)
 }
 
 /// Compute the unmeasured `(top, left)` *anchor point* relative to
@@ -470,8 +473,8 @@ fn install_anchor_reposition(
         );
         let style = portal_html.style();
         let _ = style.remove_property("transform");
-        let _ = style.set_property("top", &format!("{}px", placement.y));
-        let _ = style.set_property("left", &format!("{}px", placement.x));
+        let _ = style.set_property("top", &format!("{}px", css_num(placement.y)));
+        let _ = style.set_property("left", &format!("{}px", css_num(placement.x)));
     });
 
     let reposition_scroll = reposition.clone();

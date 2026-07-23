@@ -63,11 +63,17 @@ pollster = "0.4"
 # adapter/device acquisition is awaited via `wasm-bindgen-futures::spawn_local`.
 # `canvas-native` is the Canvas2D fallback delegate (its `make_2d_rasterizer`),
 # reached on the same `<canvas>` when WebGPU is unavailable.
+# `default-features = false` drops its `self-register` inventory ctor: we only
+# want the rasterizer as a delegate, and the ctor is a link-time anchor that
+# would pin the whole rasterizer + glyph stack in `main.wasm` even when this
+# renderer registers lazily from a wasm-split chunk. Path dep (not workspace)
+# so `default-features = false` actually takes effect — Cargo ignores it on an
+# inherited workspace dep unless the workspace sets it too.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 vello = "0.9"
 wgpu = { version = "29", default-features = false, features = ["webgpu", "wgsl"] }
 raw-window-handle = "0.6"
-canvas-native = { workspace = true }
+canvas-native = { path = "../native", default-features = false }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"

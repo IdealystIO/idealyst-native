@@ -119,6 +119,15 @@ self-registration for native, where bundle size is a non-issue. Measured on a
 512 KiB test SDK: main bundle 1294 KiB → 781 KiB. See the `lazy!` macro and
 [[defer_external_registration]].
 
+The anchor rule is transitive: a *dependency's* `inventory::submit!` pins its
+code just as hard as your own. An SDK that both self-registers (zero-config
+eager use) and gets consumed as a delegate by another SDK should put the
+submit behind a default-on cargo feature so the delegate consumer can take it
+with `default-features = false`. `canvas-native` is the model: its
+`self-register` feature is on for apps that depend on it directly, and off in
+`canvas-vello`'s fallback-delegate dep — that alone moved the rasterizer +
+font stack (~670 KB) from a lazy canvas app's `main.wasm` into the chunk.
+
 ## Device & platform integration
 
 The OS-integration capabilities. `permissions` is the shared runtime-grant

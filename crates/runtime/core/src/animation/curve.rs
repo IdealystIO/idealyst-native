@@ -35,7 +35,7 @@ const BEZIER_DERIVATIVE_EPS: f32 = 1e-6;
 /// curves use the standard CSS control-point sets so this matches
 /// browser behaviour for the same name.
 pub fn apply_easing(t: f32, easing: Easing) -> f32 {
-    let t = t.clamp(0.0, 1.0);
+    let t = crate::num::clamp_f32(t, 0.0, 1.0);
     match easing {
         Easing::Linear => t,
         Easing::Ease => cubic_bezier_y(t, 0.25, 0.1, 0.25, 1.0),
@@ -72,7 +72,7 @@ pub fn cubic_bezier_y(x: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
             break;
         }
         u -= (cx_u - x) / dx_u;
-        u = u.clamp(0.0, 1.0);
+        u = crate::num::clamp_f32(u, 0.0, 1.0);
     }
     curve_y(u)
 }

@@ -3475,6 +3475,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
+name = "eager-canvas"
+version = "0.4.0"
+dependencies = [
+ "canvas",
+ "canvas-vello",
+ "runtime-core",
+]
+
+[[package]]
 name = "ecdsa"
 version = "0.16.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8433,6 +8442,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "probe-canvas"
+version = "0.4.0"
+dependencies = [
+ "backend-web",
+ "canvas",
+ "canvas-vello",
+ "runtime-core",
+]
+
+[[package]]
 name = "proc-macro-crate"
 version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8498,6 +8517,16 @@ name = "prune-regression"
 version = "0.4.0"
 dependencies = [
  "tiny_http",
+]
+
+[[package]]
+name = "prune-repro"
+version = "0.4.0"
+dependencies = [
+ "backend-web",
+ "canvas",
+ "canvas-vello",
+ "runtime-core",
 ]
 
 [[package]]

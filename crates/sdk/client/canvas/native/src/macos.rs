@@ -252,7 +252,10 @@ pub fn register(backend: &mut MacosBackend) {
 }
 
 // Self-register at backend construction (no app-side `register` call needed).
-// See [[project_inventory_self_registration]].
+// See [[project_inventory_self_registration]]. Behind the default-on
+// `self-register` feature so delegate-only consumers can opt out (matters
+// for web bundle size; gated on every target for feature consistency).
+#[cfg(feature = "self-register")]
 inventory::submit! {
     backend_macos::MacosExternalRegistrar(register)
 }

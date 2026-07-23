@@ -19,6 +19,7 @@ mod element;
 mod reactive;
 mod reactive_value;
 mod safe_area;
+pub mod num;
 pub mod page_meta;
 mod viewport;
 pub mod scheduling;

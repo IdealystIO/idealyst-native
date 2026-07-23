@@ -1,0 +1,25 @@
+[package]
+name = "prune-repro"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Repro for the --data-prune chunk-load failure: TWO lazy canvas components (guide-conformant #[lazy_component] + defer_external_registration), canvas-vello with DEFAULT features (glyph stack on). Two split points activate the shared chunk_0 path; compare prune vs --no-data-prune."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+runtime-core = { workspace = true, features = ["async-driver"] }
+canvas = { workspace = true }
+# Default features ON (unlike lazy-canvas): keeps vello's glyph pipeline +
+# skrifa, matching a real text-capable canvas component.
+canvas-vello = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "PruneRepro"
+bundle_id = "ai.truday.idealyst.prunerepro"
+version   = "0.0.1"
+targets   = ["web"]

@@ -264,6 +264,19 @@ std::thread_local! {
         std::cell::RefCell::new(std::collections::HashSet::new());
 }
 
+/// EXPERIMENT (External-anchoring probe): run `f` with the ambient WebBackend —
+/// the most-recently-installed one, reached weakly. This lets a lazy chunk build
+/// an external's node ITSELF (running the SDK handler inside the chunk) instead
+/// of routing through the main-resident `ExternalRegistry` + `call_indirect`,
+/// which anchors the handler's code (and its wgpu/vello deps) in `main.wasm`.
+/// Returns `None` if no backend is installed or it's currently borrowed.
+pub fn with_ambient_backend<R>(f: impl FnOnce(&mut WebBackend) -> R) -> Option<R> {
+    let weak = WEB_BACKEND_HANDLE.with(|h| h.borrow().clone())?;
+    let rc = weak.upgrade()?;
+    let mut b = rc.try_borrow_mut().ok()?;
+    Some(f(&mut b))
+}
+
 use runtime_core::{
     AssetId, AssetSource, AssetTag, Backend, ButtonHandle, StyleRules, SystemFallback,
     TypefaceFace, TypefaceId,

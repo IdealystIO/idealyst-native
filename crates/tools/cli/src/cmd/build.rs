@@ -131,15 +131,20 @@ pub struct Args {
     /// reachable only from `lazy!` chunks — recovering ~25-50% of the gzipped
     /// main bundle on apps with a heavy lazy chunk.
     ///
-    /// This is OFF by default because the classification **under-approximates
-    /// what `main` reaches**: it can't trace data reached via data→data
-    /// pointers, `call_indirect` / the function table, or the deferred
-    /// `Element::External` registration queue. Data that `main` actually reads
-    /// through those edges gets misclassified "chunk-only" and zeroed, silently
-    /// corrupting `main.wasm` (no wasm trap): fonts fail to register, a
-    /// `#[component(lazy)]` route renders nothing. Only enable it after
-    /// verifying your app renders correctly with it, and re-verify when your
-    /// static data changes.
+    /// Every pruned symbol is re-materialized by the chunk that owns it, from
+    /// any active const-offset data segment (`.rodata`, `.data`, `.bss`), and
+    /// symbols in segments a chunk can't restore are never pruned — so a
+    /// chunk-only symbol always has exactly one shipper.
+    ///
+    /// This is still OFF by default because the classification
+    /// **under-approximates what `main` reaches**: it can't trace data reached
+    /// via data→data pointers, `call_indirect` / the function table, or the
+    /// deferred `Element::External` registration queue. Data that `main`
+    /// actually reads BEFORE the owning chunk loads gets misclassified
+    /// "chunk-only" and zeroed, silently corrupting `main.wasm` (no wasm
+    /// trap): fonts fail to register, a `#[component(lazy)]` route renders
+    /// nothing. Only enable it after verifying your app renders correctly
+    /// with it, and re-verify when your static data changes.
     #[arg(long)]
     pub data_prune: bool,
 

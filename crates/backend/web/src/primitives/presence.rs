@@ -22,6 +22,9 @@
 //! stylesheet, the inline `style` value wins (matching CSS
 //! specificity), so presence overrides cleanly.
 
+// `css_num`, not `f32: Display` — a bare `{}` on an f32 reinstates core's
+// ~12-15 KB flt2dec float formatter in every bundle (see css::css_num).
+use css::css_num;
 use runtime_core::primitives::presence::PresenceState;
 use runtime_core::Easing;
 use wasm_bindgen::JsCast;
@@ -65,7 +68,7 @@ pub(crate) fn apply(
     // opacity.
     match state.opacity {
         Some(v) => {
-            let _ = style.set_property("opacity", &format!("{}", v));
+            let _ = style.set_property("opacity", &format!("{}", css_num(v)));
         }
         None => {
             let _ = style.remove_property("opacity");
@@ -79,20 +82,20 @@ pub(crate) fn apply(
     let mut parts: Vec<String> = Vec::new();
     if let (Some(x), Some(y)) = (state.translate_x, state.translate_y) {
         if x != 0.0 || y != 0.0 {
-            parts.push(format!("translate({}px, {}px)", x, y));
+            parts.push(format!("translate({}px, {}px)", css_num(x), css_num(y)));
         }
     } else if let Some(x) = state.translate_x {
         if x != 0.0 {
-            parts.push(format!("translateX({}px)", x));
+            parts.push(format!("translateX({}px)", css_num(x)));
         }
     } else if let Some(y) = state.translate_y {
         if y != 0.0 {
-            parts.push(format!("translateY({}px)", y));
+            parts.push(format!("translateY({}px)", css_num(y)));
         }
     }
     if let Some(s) = state.scale {
         if s != 1.0 {
-            parts.push(format!("scale({})", s));
+            parts.push(format!("scale({})", css_num(s)));
         }
     }
 

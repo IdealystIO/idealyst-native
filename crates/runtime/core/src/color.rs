@@ -56,7 +56,7 @@ impl Rgba {
     /// Build from sRGB `[r, g, b, a]` floats in `0..=1`. Out-of-range
     /// values are clamped before quantization.
     pub fn from_srgb_f32(c: [f32; 4]) -> Self {
-        let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let q = |v: f32| (crate::num::clamp_f32(v, 0.0, 1.0) * 255.0).round() as u8;
         Self {
             r: q(c[0]),
             g: q(c[1]),
@@ -239,7 +239,7 @@ fn parse_rgb_body(s: &str, has_alpha: bool) -> Result<Rgba, ColorParseError> {
     let a_byte = if a_raw > 1.0 {
         clamp_byte(a_raw)
     } else {
-        (a_raw.clamp(0.0, 1.0) * 255.0).round() as u8
+        (crate::num::clamp_f32(a_raw, 0.0, 1.0) * 255.0).round() as u8
     };
     Ok(Rgba {
         r: clamp_byte(r),
@@ -250,7 +250,7 @@ fn parse_rgb_body(s: &str, has_alpha: bool) -> Result<Rgba, ColorParseError> {
 }
 
 fn clamp_byte(v: f32) -> u8 {
-    v.clamp(0.0, 255.0).round() as u8
+    crate::num::clamp_f32(v, 0.0, 255.0).round() as u8
 }
 
 /// sRGB → linear conversion for a single 0..=1 channel. The wgpu

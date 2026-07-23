@@ -114,13 +114,17 @@ dropping it requires the **experimental, opt-in** `--data-prune`:
 idealyst build --web --release --data-prune   # verify your app still renders!
 ```
 
-`--data-prune` is off by default because its chunk-only classification
+Every pruned symbol is shipped by exactly one artifact: the owning chunk
+re-materializes it (from any active data segment — `.rodata`, `.data`, `.bss`)
+when it instantiates, and symbols no chunk could restore are never pruned.
+`--data-prune` is still off by default because its chunk-only classification
 under-approximates what `main` reaches (it can't trace data reached via
 data→data pointers, `call_indirect`, or the deferred `Element::External`
-registration queue), so it can silently zero main-reachable statics — corrupting
-`main.wasm` with no error (fonts stop registering, a lazy route renders
-nothing). Only enable it after confirming the built app renders correctly, and
-re-check when your static data changes.
+registration queue), so it can silently zero a main-reachable static that
+`main` reads *before* the owning chunk loads — corrupting `main.wasm` with no
+error (fonts stop registering, a lazy route renders nothing). Only enable it
+after confirming the built app renders correctly, and re-check when your
+static data changes.
 
 ## Lazy-loading a heavy SDK (External extensions)
 
@@ -166,7 +170,18 @@ Three parts, all required:
    ```
 
 Get any part wrong and the SDK silently stays in `main.wasm` (parts 1–2) or the
-external renders a "not supported" placeholder (part 3). This keeps the SDK's
+external renders a "not supported" placeholder (part 3).
+
+Part 2 applies **transitively**: a dependency's ctor anchors just as hard as
+your own. `canvas-vello` depends on `canvas-native` purely as its Canvas2D
+fallback delegate, and canvas-native's default-on `self-register` feature
+inventory-submits at ctor time — which pinned the whole rasterizer + font
+stack (~670 KB) in `main.wasm` even with a perfectly lazy vello canvas.
+canvas-vello therefore takes that dep with `default-features = false`. If your
+SDK both self-registers (for zero-config eager use) and gets consumed as a
+delegate, put the `inventory::submit!` behind a default-on cargo feature so
+delegate consumers can opt out; apps that depend on your crate directly keep
+zero-config registration. This keeps the SDK's
 **code** out of `main.wasm`; its **data** (an embedded payload, large static
 tables) only leaves `main.wasm` under the opt-in `--data-prune` (above) — verify
 the app still renders when you enable it.
