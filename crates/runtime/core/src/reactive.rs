@@ -1218,15 +1218,50 @@ pub fn __take_untracked_build_read_warnings() -> Vec<(&'static str, u64)> {
 /// `Signal::new` / `Effect::new` calls inside `f` will *not* be adopted
 /// by the surrounding render scope — they live until the thread exits.
 ///
-/// Used by registry-style stores (e.g. `TOKEN_REGISTRY`) whose entries
-/// are thread-lifetime by contract: a render scope that happens to be
+/// Used by registry-style stores (e.g. `TOKEN_REGISTRY`, the global
+/// `viewport` / `safe-area` / `breakpoint` / theme-cohort signals) whose
+/// entries are thread-lifetime by contract: a render scope that happens to be
 /// the first one to touch a registry-managed signal must not become its
 /// owner, or the entry will dangle when the scope drops.
+///
+/// Because these signals are intentionally unowned, `unscope` also marks the
+/// thread "inside unscope" for the duration of `f` so [`warn_unowned_signal`]
+/// stays quiet — the blessed global-signal API must not trip the leak
+/// diagnostic meant to catch *accidental* leaks (per-item state made in an
+/// event handler / `spawn_async`). The guard restores both the scope stack and
+/// the depth even if `f` unwinds.
 pub(crate) fn unscope<R, F: FnOnce() -> R>(f: F) -> R {
+    struct UnscopeGuard {
+        saved: Vec<*mut Scope>,
+    }
+    impl Drop for UnscopeGuard {
+        fn drop(&mut self) {
+            ACTIVE_SCOPE.with(|s| *s.borrow_mut() = std::mem::take(&mut self.saved));
+            #[cfg(debug_assertions)]
+            UNSCOPE_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+        }
+    }
     let saved = ACTIVE_SCOPE.with(|s| std::mem::take(&mut *s.borrow_mut()));
-    let result = f();
-    ACTIVE_SCOPE.with(|s| *s.borrow_mut() = saved);
-    result
+    #[cfg(debug_assertions)]
+    UNSCOPE_DEPTH.with(|d| d.set(d.get() + 1));
+    let _guard = UnscopeGuard { saved };
+    f()
+}
+
+/// Depth of nested [`unscope`] calls on this thread. Non-zero means the
+/// signals being created are deliberate thread-lifetime globals — see
+/// [`warn_unowned_signal`], which skips its leak warning while inside.
+/// Debug-only: the warning it guards is itself debug-only, so this carries
+/// zero cost in release.
+#[cfg(debug_assertions)]
+thread_local! {
+    static UNSCOPE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// True while executing inside an [`unscope`] call.
+#[cfg(debug_assertions)]
+fn in_unscope() -> bool {
+    UNSCOPE_DEPTH.with(|d| d.get() > 0)
 }
 
 /// Diagnostic snapshot of arena state. Counts in-use vs total slots
@@ -3136,9 +3171,32 @@ pub(crate) fn with_scope<R>(scope: &mut Scope, f: impl FnOnce() -> R) -> R {
 /// every add/delete cycle with nothing telling the author). Silenceable via
 /// IDEALYST_NO_UNOWNED_SIGNAL_WARN=1 for intentional-leak test harnesses.
 #[cfg(debug_assertions)]
+thread_local! {
+    /// Count of unowned-signal warnings actually emitted on this thread (after
+    /// every suppression check). Test hook only — see
+    /// [`__unowned_signal_warn_count`].
+    static UNOWNED_WARN_COUNT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Test hook: number of unowned-signal warnings actually emitted on this
+/// thread so far. Used to assert that `unscope`-created globals don't warn.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub fn __unowned_signal_warn_count() -> u32 {
+    UNOWNED_WARN_COUNT.with(|c| c.get())
+}
+
+#[cfg(debug_assertions)]
 fn warn_unowned_signal(loc: &'static std::panic::Location<'static>) {
     use std::cell::RefCell;
     use std::collections::HashSet;
+    // `unscope`-created signals are intentional thread-lifetime globals with no
+    // owner *by design* (viewport, safe-area, breakpoint, theme cohort, token
+    // registry). The blessed global API must not trip a diagnostic meant for
+    // *accidental* leaks, so stay quiet while inside `unscope`.
+    if in_unscope() {
+        return;
+    }
     thread_local! {
         static WARNED: RefCell<HashSet<(&'static str, u32)>> = RefCell::new(HashSet::new());
         static SILENCED: bool = std::env::var_os("IDEALYST_NO_UNOWNED_SIGNAL_WARN").is_some();
@@ -3148,6 +3206,7 @@ fn warn_unowned_signal(loc: &'static std::panic::Location<'static>) {
     }
     let fresh = WARNED.with(|w| w.borrow_mut().insert((loc.file(), loc.line())));
     if fresh {
+        UNOWNED_WARN_COUNT.with(|c| c.set(c.get() + 1));
         crate::logging::log(crate::logging::LogLevel::Warn, &format!(
             "[idealyst] signal created outside any reactive scope at {}:{} — it has no owner and \
              will leak until the thread exits. If this is per-item state for a dynamic \
