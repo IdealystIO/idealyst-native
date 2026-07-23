@@ -1,0 +1,17 @@
+[package]
+name = "run-windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Windows launcher for `idealyst run --windows` / `idealyst dev --windows`.
+#
+# Calls `build-windows` to produce the `.exe`, then spawns it — as a
+# foreground child (one-shot `idealyst run windows`, stdio inherited so
+# framework logs surface) or detached (dev mode). No bundle / signing
+# step; a Windows exe launches directly.
+
+[dependencies]
+anyhow = "1"
+build-windows = { workspace = true }
+build-ios = { workspace = true }

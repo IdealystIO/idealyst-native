@@ -148,9 +148,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
     // has no parent path components for `find_framework_workspace`
     // to inspect, so in-workspace projects silently fall through to
     // git mode. Mirrors what `cmd::dev::run` already does.
-    args.dir = std::fs::canonicalize(&args.dir).with_context(|| {
-        format!("cannot resolve project dir {}", args.dir.display())
-    })?;
+    args.dir = crate::framework_source::abs_project_dir(&args.dir)?;
     match args.platform {
         Platform::Ios if args.device => {
             // Physical-device path: build a signed .app via xcodebuild and
@@ -461,9 +459,35 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
             eprintln!("  binary: {}", artifact.binary.display());
             Ok(())
         }
+        Platform::Windows => {
+            if args.runtime_server {
+                anyhow::bail!(
+                    "`--runtime-server` isn't supported for windows yet (the Win32 host has no \
+                     dev-host streaming variant); run without it for a local-mount launch"
+                );
+            }
+            let source = crate::framework_source::resolve(&args.dir)?;
+            let artifact = run_windows::run(
+                &args.dir,
+                run_windows::RunOptions {
+                    release: args.release,
+                    source,
+                    // One-shot `idealyst run windows` is a foreground
+                    // session — block on the window so Ctrl-C / close
+                    // tears it down.
+                    background: false,
+                    user_features: Vec::new(),
+                    env_vars: Vec::new(),
+                },
+            )?;
+            eprintln!();
+            eprintln!("[idealyst run windows] exited");
+            eprintln!("  binary: {}", artifact.binary.display());
+            Ok(())
+        }
         Platform::Server => run_server(&args),
         _ => anyhow::bail!(
-            "run for {} is not implemented yet — only ios, android, roku, sim, macos, terminal, linux, and server are wired today",
+            "run for {} is not implemented yet — only ios, android, roku, sim, macos, terminal, linux, windows, and server are wired today",
             args.platform,
         ),
     }

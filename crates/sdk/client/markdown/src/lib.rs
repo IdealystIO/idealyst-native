@@ -63,7 +63,7 @@ mod parse;
 // lowering.
 #[cfg(all(
     not(target_arch = "wasm32"),
-    any(target_os = "ios", target_os = "android")
+    any(target_os = "ios", target_os = "android", target_os = "linux")
 ))]
 mod segments;
 
@@ -71,6 +71,8 @@ mod segments;
 mod android;
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 mod ios;
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+pub mod linux;
 #[cfg(target_arch = "wasm32")]
 mod web;
 
@@ -225,6 +227,19 @@ inventory::submit! {
     backend_ios::IosExternalRegistrar(register)
 }
 
+/// Linux (GTK4) — registers the [`linux::build`] handler (one
+/// `gtk::Label` + a `pango::AttrList` carrying per-run font/size/color/
+/// background/underline/strike attributes, the GTK analogue of the iOS
+/// `NSAttributedString` path).
+///
+/// `backend-linux` has no inventory registrar, so apps wire this
+/// explicitly in their `register_extensions` (`markdown::register(backend);`).
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+pub fn register(backend: &mut backend_linux::LinuxBackend) {
+    ensure_wire_serde();
+    linux::register(backend);
+}
+
 /// Fallback for other targets (macOS / terminal / gpu). No native
 /// handler yet — still registers the wire serde so the recorder (which
 /// compiles into this generic variant) serializes the payload.
@@ -232,6 +247,7 @@ inventory::submit! {
     not(target_arch = "wasm32"),
     not(target_os = "android"),
     not(target_os = "ios"),
+    not(target_os = "linux"),
 ))]
 pub fn register<B: runtime_core::Backend>(_backend: &mut B) {
     ensure_wire_serde();

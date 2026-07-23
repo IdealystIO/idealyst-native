@@ -56,6 +56,17 @@ backend-web = { workspace = true }
 backend-android-mobile = { workspace = true }
 jni = "0.21"
 
+# Linux (GTK4) handler builds one `gtk::Label` whose per-segment styling
+# is carried as `pango::Attr*` ranges on a single `pango::AttrList` (the
+# GTK analogue of the iOS `NSAttributedString` path). Depends on the Linux
+# backend's `register_external` / `register_external_view` inherent methods
+# plus `gtk4` for the Label + Pango attributes. Target-gated so non-Linux
+# targets don't link GTK.
+[target.'cfg(all(target_os = "linux", not(target_arch = "wasm32")))'.dependencies]
+backend-linux = { workspace = true }
+gtk4 = { version = "0.9", features = ["v4_12"] }
+runtime-core = { workspace = true }
+
 # iOS handler builds one UILabel whose attributedText is an
 # NSAttributedString with per-range font/size/color/background/underline
 # attributes, plus objc2 for the message sends.

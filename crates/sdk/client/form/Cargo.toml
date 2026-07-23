@@ -59,3 +59,7 @@ objc2-ui-kit = { version = "0.2", features = [
     "UIView",
     "UIResponder",
 ] }
+
+[target.'cfg(all(target_os = "linux", not(target_arch = "wasm32")))'.dependencies]
+backend-linux = { workspace = true }
+gtk4 = { version = "0.9", features = ["v4_12"] }

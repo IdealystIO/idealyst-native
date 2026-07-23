@@ -63,6 +63,8 @@ build-terminal = { workspace = true }
 run-terminal = { workspace = true }
 build-linux = { workspace = true }
 run-linux = { workspace = true }
+build-windows = { workspace = true }
+run-windows = { workspace = true }
 # Interactive panel for `idealyst dev --interactive`. Pulled in by the
 # CLI only; the dev-tui crate dogfoods the framework's terminal
 # backend to render a live build/run status + log stream.

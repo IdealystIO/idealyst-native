@@ -249,7 +249,19 @@ pub use ios::register;
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 static OPS: &dyn FormOps = ios::OPS;
 
-#[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+mod linux;
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+pub use linux::register;
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+static OPS: &dyn FormOps = linux::OPS;
+
+#[cfg(not(any(
+    target_arch = "wasm32",
+    target_os = "android",
+    target_os = "ios",
+    target_os = "linux"
+)))]
 mod fallback {
     use runtime_core::Backend;
 
@@ -259,10 +271,20 @@ mod fallback {
     pub fn register<B: Backend>(_backend: &mut B) {}
 }
 
-#[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
+#[cfg(not(any(
+    target_arch = "wasm32",
+    target_os = "android",
+    target_os = "ios",
+    target_os = "linux"
+)))]
 pub use fallback::register;
 
-#[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
+#[cfg(not(any(
+    target_arch = "wasm32",
+    target_os = "android",
+    target_os = "ios",
+    target_os = "linux"
+)))]
 static OPS: &dyn FormOps = &UnsupportedOps;
 
 #[cfg(test)]

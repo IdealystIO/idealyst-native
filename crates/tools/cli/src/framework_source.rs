@@ -11,10 +11,34 @@
 //! `IDEALYST_FRAMEWORK_GIT_TAG`, `IDEALYST_FRAMEWORK_GIT_REV`, or
 //! `IDEALYST_FRAMEWORK_GIT_URL`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use build_ios::{FrameworkSource, GitDefaults, GitRef};
+
+/// Absolutize a project dir for framework-source ancestor walking,
+/// tolerating VM-mapped shares.
+///
+/// The commands normally `fs::canonicalize` the project dir so
+/// `find_framework_workspace` has real ancestor components to inspect
+/// (a bare `.` has none). But `canonicalize` issues a volume /
+/// final-path query that fails with "the volume does not contain a
+/// recognized file system" (os error 1005) on some virtio-fs / 9p VM
+/// mounts — including the `Z:` share the framework's own Windows dev
+/// VM uses. When canonicalize fails, fall back to a purely lexical
+/// absolute path (`current_dir` + `join`): it still carries the
+/// ancestor components detection walks; it just doesn't resolve
+/// symlinks / `..`. On normal filesystems canonicalize succeeds and
+/// behavior is unchanged.
+pub fn abs_project_dir(dir: &Path) -> Result<PathBuf> {
+    match std::fs::canonicalize(dir) {
+        Ok(p) => Ok(p),
+        Err(_) if dir.is_absolute() => Ok(dir.to_path_buf()),
+        Err(_) => Ok(std::env::current_dir()
+            .with_context(|| format!("cannot resolve project dir {}", dir.display()))?
+            .join(dir)),
+    }
+}
 
 fn git_defaults() -> GitDefaults {
     let url = std::env::var("IDEALYST_FRAMEWORK_GIT_URL")

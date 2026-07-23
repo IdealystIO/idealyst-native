@@ -264,6 +264,21 @@ pub fn register_extensions(_backend: &mut backend_android::AndroidBackend) {}
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32"), not(feature = "terminal")))]
 pub fn register_extensions(_backend: &mut backend_macos::MacosBackend) {}
 
+// Native Linux (GTK4). Same `not(feature = "terminal")` guard as macOS:
+// the terminal target builds for the Linux host triple, so without it
+// this arm and the terminal arm would both compile on a Linux host and
+// collide. Registers the swap navigator's backend-neutral handler on
+// the GTK backend (the same generic `RegisterNavigator` path the wgpu
+// preview uses) so the site's navigator renders natively instead of a
+// placeholder — the GTK backend now implements `RegisterNavigator`.
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32"), not(feature = "terminal")))]
+pub fn register_extensions(backend: &mut backend_linux::LinuxBackend) {
+    swap_navigator::register_generic(backend);
+    // Docs pages render fenced code via the `codeblock` SDK's
+    // `Element::External`; its GTK leaf lowers to a Pango-styled label.
+    codeblock::register(backend);
+}
+
 // Terminal — selected by the `terminal` feature (the CLI's terminal
 // wrapper enables it), not a `target_os` cfg, because the terminal target
 // builds for the host triple and would otherwise be shadowed by the host's

@@ -477,11 +477,19 @@ pub use macos::register;
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
 static OPS: &dyn VideoOps = macos::OPS;
 
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+pub mod linux;
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+pub use linux::register;
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+static OPS: &dyn VideoOps = linux::OPS;
+
 #[cfg(not(any(
     target_arch = "wasm32",
     target_os = "android",
     target_os = "ios",
     target_os = "macos",
+    target_os = "linux",
 )))]
 mod fallback {
     use runtime_core::Backend;
@@ -497,6 +505,7 @@ mod fallback {
     target_os = "android",
     target_os = "ios",
     target_os = "macos",
+    target_os = "linux",
 )))]
 pub use fallback::register;
 
@@ -505,5 +514,6 @@ pub use fallback::register;
     target_os = "android",
     target_os = "ios",
     target_os = "macos",
+    target_os = "linux",
 )))]
 static OPS: &dyn VideoOps = &UnsupportedOps;

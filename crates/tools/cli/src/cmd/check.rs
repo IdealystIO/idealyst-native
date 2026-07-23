@@ -56,8 +56,7 @@ pub struct Args {
 }
 
 pub fn run(args: Args) -> Result<()> {
-    let dir = std::fs::canonicalize(&args.dir)
-        .with_context(|| format!("cannot resolve project dir {}", args.dir.display()))?;
+    let dir = crate::framework_source::abs_project_dir(&args.dir)?;
     let manifest = parse_manifest(&dir)?;
 
     // Resolve which targets to check. Explicit `--platform` wins;
@@ -145,7 +144,9 @@ fn triple_for(target: Target, ios_device: bool) -> CheckTriple {
         // purposes: their platform code compiles for the host triple, so
         // checking against `<host>` exercises it. (A real ship build still
         // goes through the per-target wrapper crates.)
-        Target::Macos | Target::Terminal | Target::Roku | Target::Linux => CheckTriple::Host,
+        Target::Macos | Target::Terminal | Target::Roku | Target::Linux | Target::Windows => {
+            CheckTriple::Host
+        }
     }
 }
 
@@ -188,6 +189,7 @@ fn platform_to_target(p: Platform) -> Option<Target> {
         Platform::Macos => Some(Target::Macos),
         Platform::Terminal => Some(Target::Terminal),
         Platform::Linux => Some(Target::Linux),
+        Platform::Windows => Some(Target::Windows),
         Platform::Roku => Some(Target::Roku),
         Platform::Sim | Platform::RuntimeServer | Platform::Server => None,
     }

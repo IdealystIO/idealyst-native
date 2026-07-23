@@ -1440,6 +1440,7 @@ name = "backend-linux"
 version = "0.4.0"
 dependencies = [
  "gtk4",
+ "libc",
  "pango",
  "runtime-core",
  "runtime-layout",
@@ -1931,6 +1932,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "build-windows"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "build-ios",
+ "tempfile",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2374,8 +2385,10 @@ dependencies = [
  "backend-android-mobile",
  "backend-ios-core",
  "backend-ios-mobile",
+ "backend-linux",
  "backend-macos",
  "backend-web",
+ "gtk4",
  "inventory",
  "jni 0.21.1",
  "log",
@@ -4051,7 +4064,9 @@ dependencies = [
  "backend-android-core",
  "backend-android-mobile",
  "backend-ios-mobile",
+ "backend-linux",
  "backend-web",
+ "gtk4",
  "inventory",
  "jni 0.21.1",
  "js-sys",
@@ -5797,6 +5812,7 @@ dependencies = [
  "build-ssr",
  "build-terminal",
  "build-web",
+ "build-windows",
  "clap",
  "configure",
  "ctrlc",
@@ -5821,6 +5837,7 @@ dependencies = [
  "run-macos",
  "run-roku",
  "run-terminal",
+ "run-windows",
  "serde",
  "serde_json",
  "syn 2.0.117",
@@ -6053,6 +6070,29 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "javascriptcore6"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03b28ed9c7c08f906b2a51bc2365eae2ba5e7db1249b89892f7ae4cbd602d1f4"
+dependencies = [
+ "glib",
+ "javascriptcore6-sys",
+ "libc",
+]
+
+[[package]]
+name = "javascriptcore6-sys"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4741e2a31c2145050dd4971f8dd51e92c840d5839a7124cc68a33c7325523a12"
+dependencies = [
+ "glib-sys",
+ "gobject-sys",
+ "libc",
+ "system-deps",
+]
 
 [[package]]
 name = "jni"
@@ -6711,7 +6751,9 @@ dependencies = [
  "backend-android-mobile",
  "backend-ios-core",
  "backend-ios-mobile",
+ "backend-linux",
  "backend-web",
+ "gtk4",
  "inventory",
  "jni 0.21.1",
  "objc2 0.5.2",
@@ -9313,6 +9355,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "run-windows"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "build-ios",
+ "build-windows",
+]
+
+[[package]]
 name = "runtime-core"
 version = "0.4.0"
 dependencies = [
@@ -10347,6 +10398,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "soup3"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b84ccd1f4aee0854a16b0b489ba843798e2eb4cdcddd4a61248f7db9ce8b6df1"
+dependencies = [
+ "futures-channel",
+ "gio",
+ "glib",
+ "libc",
+ "soup3-sys",
+]
+
+[[package]]
+name = "soup3-sys"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8869997193d52a61a1db48627bdaa57343f76e2c5132ee6d351245a6ab30631e"
+dependencies = [
+ "gio-sys",
+ "glib-sys",
+ "gobject-sys",
+ "libc",
+ "system-deps",
+]
+
+[[package]]
 name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10694,15 +10771,19 @@ dependencies = [
  "backend-android-core",
  "backend-android-mobile",
  "backend-ios-mobile",
+ "backend-linux",
  "backend-web",
  "fontdb 0.18.0",
+ "gtk4",
  "inventory",
  "jni 0.21.1",
  "js-sys",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
+ "resvg",
  "runtime-core",
+ "tiny-skia",
  "usvg 0.42.0",
  "wasm-bindgen",
  "web-sys",
@@ -12169,9 +12250,11 @@ dependencies = [
  "backend-android-core",
  "backend-android-mobile",
  "backend-ios-mobile",
+ "backend-linux",
  "backend-macos",
  "backend-web",
  "block2 0.5.1",
+ "gtk4",
  "inventory",
  "jni 0.21.1",
  "media-stream",
@@ -12728,6 +12811,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "webkit6"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c359ef247305dcade3363c281c505b943e0e6162a42eac76ff76ed8e7cebfbd"
+dependencies = [
+ "gdk4",
+ "gio",
+ "glib",
+ "gtk4",
+ "javascriptcore6",
+ "libc",
+ "soup3",
+ "webkit6-sys",
+]
+
+[[package]]
+name = "webkit6-sys"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96284c5280af5984dbdae8dae3cfeea11b44b214f9bd42b35c0ca75903bccce2"
+dependencies = [
+ "gdk4-sys",
+ "gio-sys",
+ "glib-sys",
+ "gobject-sys",
+ "gtk4-sys",
+ "javascriptcore6-sys",
+ "libc",
+ "soup3-sys",
+ "system-deps",
+]
+
+[[package]]
 name = "webpki-roots"
 version = "0.26.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12752,6 +12868,7 @@ dependencies = [
  "android-sim",
  "backend-android-mobile",
  "backend-ios-mobile",
+ "backend-linux",
  "backend-macos",
  "backend-ssr",
  "backend-terminal",
@@ -12779,8 +12896,11 @@ dependencies = [
  "backend-android-core",
  "backend-android-mobile",
  "backend-ios-mobile",
+ "backend-linux",
  "backend-web",
+ "gtk4",
  "inventory",
+ "javascriptcore6",
  "jni 0.21.1",
  "js-sys",
  "objc2 0.5.2",
@@ -12789,6 +12909,7 @@ dependencies = [
  "runtime-core",
  "wasm-bindgen",
  "web-sys",
+ "webkit6",
 ]
 
 [[package]]

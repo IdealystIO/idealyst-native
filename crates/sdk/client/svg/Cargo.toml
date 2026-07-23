@@ -84,6 +84,19 @@ backend-android-mobile = { workspace = true }
 backend-android-core = { workspace = true }
 jni = "0.21"
 
+# Linux (GTK4) leaf. Unlike iOS/Android (which walk `usvg` into native
+# vector primitives), GTK has no low-level per-node draw surface that
+# fits the walker, so this leaf rasterizes with `resvg` + `tiny-skia`
+# into an RGBA `gdk::MemoryTexture` displayed by a `gtk::Picture`. resvg
+# re-exports `usvg` + `tiny_skia`, and `gtk4` re-exports `gdk` + `glib`,
+# so no separate gdk4/glib deps are needed.
+[target.'cfg(all(target_os = "linux", not(target_arch = "wasm32")))'.dependencies]
+backend-linux = { workspace = true }
+runtime-core = { workspace = true }
+gtk4 = { version = "0.9", features = ["v4_12"] }
+resvg = "0.45"
+tiny-skia = "0.11"
+
 [target.'cfg(target_os = "ios")'.dependencies]
 backend-ios-mobile = { workspace = true }
 objc2 = "0.5"

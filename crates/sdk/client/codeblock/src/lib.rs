@@ -85,6 +85,8 @@ use std::rc::Rc;
 mod android;
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 mod ios;
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+pub mod linux;
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
 mod macos;
 
@@ -261,6 +263,20 @@ inventory::submit! {
     backend_macos::MacosExternalRegistrar(register)
 }
 
+/// Linux (GTK4) — registers the [`linux::register`] handler. Produces a
+/// single `gtk::Label` whose per-token foreground colors are carried as
+/// `pango::AttrColor` ranges on one `pango::AttrList` (the GTK analogue of
+/// the iOS/macOS `NSAttributedString` path). See `linux.rs`.
+///
+/// Unlike the mobile/web backends, `backend-linux` has no inventory
+/// registrar, so apps wire this explicitly in their `register_extensions`
+/// (`codeblock::register(backend);`).
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+pub fn register(backend: &mut backend_linux::LinuxBackend) {
+    ensure_wire_serde();
+    linux::register(backend);
+}
+
 /// Fallback for other targets (terminal / gpu). No-op generic
 /// over any `Backend`. Authors get the framework's standard
 /// external-not-registered placeholder until a per-backend handler
@@ -269,6 +285,7 @@ inventory::submit! {
     not(target_arch = "wasm32"),
     not(target_os = "android"),
     not(target_os = "ios"),
+    not(target_os = "linux"),
     not(target_os = "macos"),
 ))]
 pub fn register<B: runtime_core::Backend>(_backend: &mut B) {

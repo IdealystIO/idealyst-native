@@ -48,6 +48,17 @@ jni = "0.21"
 [package.metadata.idealyst.android]
 runtime_kotlin = ["runtime/kotlin/io/idealyst/video/RustVideoFrameSink.kt"]
 
+# Linux (GTK4): a real `gtk::Video` widget backed by GTK's built-in media
+# pipeline. `gtk::Video` + `gtk::MediaFile` decode through GTK's media
+# backend (GStreamer on Linux, which GTK links itself) — so NO direct
+# `gstreamer-rs` dep is needed; the `gtk4` bindings + `v4_12` feature are
+# the whole surface. `gio` / `glib` come via `gtk4`'s re-exports (no
+# separate dep). Runtime needs the system GStreamer plugins (see linux.rs).
+[target.'cfg(all(target_os = "linux", not(target_arch = "wasm32")))'.dependencies]
+backend-linux = { workspace = true }
+gtk4 = { version = "0.9", features = ["v4_12"] }
+runtime-core = { workspace = true }
+
 [target.'cfg(target_os = "ios")'.dependencies]
 backend-ios-mobile = { workspace = true }
 block2 = "0.5"

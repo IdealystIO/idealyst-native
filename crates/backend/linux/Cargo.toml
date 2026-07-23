@@ -24,9 +24,11 @@ license.workspace = true
 # fonts at runtime (Pango 1.56 shipped with GNOME 48 / early 2025;
 # GTK 4.14+ distros ship it).
 #
-# Scope: `view` / `text` / layout / styling / animation are complete;
-# image / icon / virtualizer / navigator / portal / external render a
-# labeled placeholder (never panic) pending a general-purpose pass.
+# Scope: `view` / `text` / `icon` / layout / styling / animation are
+# complete (icon strokes/fills Lucide glyph paths via GSK; stroke draw-on
+# animation is the one gap — icons render fully drawn); image /
+# virtualizer / navigator / portal / external render a labeled
+# placeholder (never panic) pending a general-purpose pass.
 
 [lib]
 crate-type = ["rlib"]
@@ -36,11 +38,21 @@ runtime-core = { workspace = true }
 runtime-layout = { workspace = true }
 
 # `gtk4-rs` provides the safe Rust bindings to GTK4. The `v4_X` feature
-# flags gate API coverage by GTK version; `v4_12` covers everything
-# this backend calls (GskFixed transforms, GSK snapshot nodes,
-# subclassing). `pango` is re-exported by `gtk4`, but its `add_font_file`
-# binding is gated behind `v1_56`, which `gtk4/v4_12` doesn't enable —
+# flags gate API coverage by GTK version. `v4_14` is the floor: the icon
+# primitive strokes/fills glyph paths through `gsk::PathBuilder` +
+# `gtk::Snapshot::append_stroke`/`append_fill`, all of which landed in
+# GTK 4.14 (the retained-mode `GskPath` API). Everything else this
+# backend calls (GskFixed transforms, GSK snapshot nodes, subclassing)
+# is ≤ 4.12. `pango` is re-exported by `gtk4`, but its `add_font_file`
+# binding is gated behind `v1_56`, which `gtk4/v4_14` doesn't enable —
 # so we depend on `pango` directly with `v1_56` to unify the feature on.
 [target.'cfg(target_os = "linux")'.dependencies]
-gtk4 = { version = "0.9", features = ["v4_12"] }
+gtk4 = { version = "0.9", features = ["v4_14"] }
 pango = { version = "0.20", features = ["v1_56"] }
+# The `graphics` primitive's `GtkGLArea` clears its FBO via `glClearColor`/
+# `glClear`. libepoxy (which GTK already links for its own GL renderer) exports
+# these as DATA symbols (`epoxy_glClearColor`, a lazily-resolved dispatch
+# pointer), so we `dlopen`/`dlsym` libepoxy and read the stored pointer. `libc`
+# is already in the workspace lock (a transitive dep), so this adds no new
+# external crate. See `src/graphics.rs`.
+libc = "0.2"

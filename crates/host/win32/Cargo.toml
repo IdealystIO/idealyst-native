@@ -40,6 +40,14 @@ path = "examples/smoke_min.rs"
 name = "smoke_interactive"
 path = "examples/smoke_interactive.rs"
 
+[[example]]
+name = "smoke_styled"
+path = "examples/smoke_styled.rs"
+
+[[example]]
+name = "smoke_icon_image"
+path = "examples/smoke_icon_image.rs"
+
 [target.'cfg(target_os = "windows")'.dependencies]
 backend-windows = { workspace = true }
 # Same `windows` crate + version as `backend-windows`. Features cover

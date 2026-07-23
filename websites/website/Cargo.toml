@@ -135,6 +135,13 @@ backend-android-mobile = { workspace = true }
 [target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
 backend-macos = { workspace = true }
 
+# Native Linux (GTK4) backend — same shape as the macOS dep. The Linux
+# target builds for the host triple; the `terminal` feature (which also
+# builds for the host triple) excludes this crate's Linux
+# `register_extensions` arm so the two don't collide on a Linux host.
+[target.'cfg(all(target_os = "linux", not(target_arch = "wasm32")))'.dependencies]
+backend-linux = { workspace = true }
+
 # Terminal backend — pulled in ONLY by the `terminal` feature (the CLI's
 # terminal wrapper enables it). It can't be a `target_os` dependency like
 # the others: the terminal target builds for the host triple, so on a

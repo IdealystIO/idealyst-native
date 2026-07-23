@@ -206,6 +206,7 @@ members = [
     "crates/tools/build/serverless-lambda",
     "crates/tools/build/terminal",
     "crates/tools/build/linux",
+    "crates/tools/build/windows",
     "crates/tools/dev-tui",
     "crates/tools/docs-app",
     "crates/tools/run/android",
@@ -214,6 +215,7 @@ members = [
     "crates/tools/run/macos",
     "crates/tools/run/terminal",
     "crates/tools/run/linux",
+    "crates/tools/run/windows",
     "crates/tools/port/core",
     "crates/tools/port/tsx",
     "crates/tools/port/react",
@@ -376,6 +378,8 @@ build-terminal = { path = "crates/tools/build/terminal" }
 run-terminal = { path = "crates/tools/run/terminal" }
 build-linux = { path = "crates/tools/build/linux" }
 run-linux = { path = "crates/tools/run/linux" }
+build-windows = { path = "crates/tools/build/windows" }
+run-windows = { path = "crates/tools/run/windows" }
 dev-tui = { path = "crates/tools/dev-tui" }
 lint = { path = "crates/tools/lint" }
 configure = { path = "crates/tools/configure" }

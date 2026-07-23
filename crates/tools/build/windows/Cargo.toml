@@ -1,0 +1,24 @@
+[package]
+name = "build-windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Build orchestration for `idealyst build --windows`.
+#
+# Same shape as `build-macos`: generate a tiny binary wrapper under
+# `<wrapper_root>/<project>/windows/`, depend on `host-win32` + the
+# user crate, `cargo build` it, return the produced `.exe`'s path.
+# No app-bundle / signing step — a Windows console/GUI exe launches
+# directly.
+
+[dependencies]
+anyhow = "1"
+# Reuses `build-ios`'s manifest parser + framework-source helper for
+# the same reason `build-macos` does — shared wrapper layout + the
+# workspace-vs-git source resolution.
+build-ios = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+toml = "0.8"

@@ -499,6 +499,7 @@ fn platform_category(p: Platform) -> Option<Category> {
         | Platform::Macos
         | Platform::Terminal
         | Platform::Linux
+        | Platform::Windows
         | Platform::RuntimeServer
         | Platform::Server => None,
     }

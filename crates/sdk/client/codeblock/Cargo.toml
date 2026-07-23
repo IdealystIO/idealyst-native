@@ -59,6 +59,17 @@ objc2-foundation = { version = "0.2", features = [
 ] }
 objc2-ui-kit = { version = "0.2", features = ["UIScrollView", "UILabel"] }
 
+# Linux (GTK4) handler: one `gtk::Label` whose per-token foreground colors
+# are carried as `pango::AttrColor` ranges on a single `pango::AttrList`
+# (the GTK analogue of iOS/macOS `NSAttributedString`). Depends on the Linux
+# backend's `register_external` / `register_external_view` inherent methods
+# plus `gtk4` for the Label + Pango attributes. Target-gated so non-Linux
+# targets don't link GTK.
+[target.'cfg(all(target_os = "linux", not(target_arch = "wasm32")))'.dependencies]
+backend-linux = { workspace = true }
+gtk4 = { version = "0.9", features = ["v4_12"] }
+runtime-core = { workspace = true }
+
 # macOS handler: one `NSScrollView` (horizontal) wrapping an `NSTextField`
 # label whose `attributedStringValue` carries per-run `NSColor` ranges. Mirrors
 # the iOS handler. objc2 versions match `backend-macos` so the `NSView` type in

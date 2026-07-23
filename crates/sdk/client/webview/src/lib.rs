@@ -319,15 +319,42 @@ pub use ios::register;
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 static OPS: &dyn WebViewOps = ios::OPS;
 
+// Linux/GTK4 is the one arm behind a feature (`linux-webkit`, off by
+// default). WebKitGTK is a system library, so compiling this leaf
+// unconditionally would break the build of this crate — and everything
+// depending on it — on any Linux host lacking the WebKitGTK dev package.
+// Feature off ⇒ the fallback arm below applies and a `WebView` renders the
+// framework's External placeholder. See the rationale in Cargo.toml.
+#[cfg(all(
+    target_os = "linux",
+    not(target_arch = "wasm32"),
+    feature = "linux-webkit"
+))]
+pub mod linux;
+#[cfg(all(
+    target_os = "linux",
+    not(target_arch = "wasm32"),
+    feature = "linux-webkit"
+))]
+pub use linux::register;
+#[cfg(all(
+    target_os = "linux",
+    not(target_arch = "wasm32"),
+    feature = "linux-webkit"
+))]
+static OPS: &dyn WebViewOps = linux::OPS;
+
 #[cfg(not(any(
     target_arch = "wasm32",
     target_os = "android",
     target_os = "ios",
+    all(target_os = "linux", feature = "linux-webkit"),
 )))]
 mod fallback {
     use runtime_core::Backend;
 
-    /// No-op register for unsupported targets. User code calls this
+    /// No-op register for unsupported targets — and for Linux built
+    /// without the `linux-webkit` feature. User code calls this
     /// unconditionally; the framework's External placeholder shows up
     /// at runtime to make the missing binding obvious.
     pub fn register<B: Backend>(_backend: &mut B) {}
@@ -337,6 +364,7 @@ mod fallback {
     target_arch = "wasm32",
     target_os = "android",
     target_os = "ios",
+    all(target_os = "linux", feature = "linux-webkit"),
 )))]
 pub use fallback::register;
 
@@ -344,5 +372,6 @@ pub use fallback::register;
     target_arch = "wasm32",
     target_os = "android",
     target_os = "ios",
+    all(target_os = "linux", feature = "linux-webkit"),
 )))]
 static OPS: &dyn WebViewOps = &UnsupportedOps;

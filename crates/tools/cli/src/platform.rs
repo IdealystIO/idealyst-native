@@ -35,6 +35,10 @@ pub enum Platform {
     /// GTK widgets in a `gtk::ApplicationWindow`. Local-mount only for
     /// now (no runtime-server hot-reload yet).
     Linux,
+    /// Native Windows via `backend-windows` (Win32) + `host-win32`.
+    /// Uses raw HWND child controls under a top-level window.
+    /// Local-mount only for now.
+    Windows,
     /// The project's own application server — the `#[server]` RPC /
     /// API backend declared as
     /// `[package.metadata.idealyst.app].server_bin`. Not a render
@@ -55,6 +59,7 @@ impl Platform {
             Platform::Macos => "macos",
             Platform::Terminal => "terminal",
             Platform::Linux => "linux",
+            Platform::Windows => "windows",
             Platform::Server => "server",
         }
     }

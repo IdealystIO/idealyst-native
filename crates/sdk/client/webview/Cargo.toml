@@ -50,6 +50,44 @@ backend-android-mobile = { workspace = true }
 backend-android-core = { workspace = true }
 jni = "0.21"
 
+# Linux (GTK4): a real embedded browser via WebKitGTK 6 (`webkit6::WebView`),
+# behind the OFF-by-default `linux-webkit` feature — see `[features]` below for
+# why it isn't unconditional.
+#
+# `webkit6` 0.4 pairs with `gtk4` 0.9 (its `gtk4` dep is `^0.9`) — matching the
+# repo-wide gtk4 version; 0.5+ require gtk4 0.11 and would conflict.
+# `javascriptcore6` 0.4 (webkit6's own JSC dep) gives the `Value` type +
+# `to_json` used to decode script-message payloads. `gio` comes via `gtk4`'s
+# re-export (no separate dep).
+[target.'cfg(all(target_os = "linux", not(target_arch = "wasm32")))'.dependencies]
+backend-linux = { workspace = true, optional = true }
+gtk4 = { version = "0.9", features = ["v4_14"], optional = true }
+webkit6 = { version = "0.4", optional = true }
+javascriptcore6 = { version = "0.4", optional = true }
+
+[features]
+# Native WebKitGTK leaf for Linux/GTK4. OFF by default, unlike every other
+# backend arm, because WebKitGTK is a SYSTEM library: `webkit6-sys` links
+# `webkitgtk-6.0` through pkg-config, so an unconditional dep would fail the
+# build of this crate — and every crate depending on it, e.g.
+# `examples/fiddle/webapp` — on any Linux host without the WebKitGTK dev
+# package installed. That's a heavyweight system requirement to impose on
+# everyone for one optional SDK leaf.
+#
+# With the feature off, `webview::register` resolves to the no-op fallback and a
+# `WebView` renders the framework's External placeholder — the same graceful
+# degradation as an unsupported target.
+#
+# To enable: install the dev package (Arch: `webkitgtk-6.0`; Debian/Ubuntu:
+# `libwebkitgtk-6.0-dev`; Fedora: `webkitgtk6.0-devel`), then build with
+# `--features webview/linux-webkit`.
+linux-webkit = [
+    "dep:backend-linux",
+    "dep:gtk4",
+    "dep:webkit6",
+    "dep:javascriptcore6",
+]
+
 [target.'cfg(target_os = "ios")'.dependencies]
 backend-ios-mobile = { workspace = true }
 objc2 = "0.5"

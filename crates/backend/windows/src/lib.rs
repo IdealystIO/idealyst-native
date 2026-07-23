@@ -36,21 +36,36 @@ use std::rc::Rc;
 
 use runtime_core::accessibility::AccessibilityProps;
 use runtime_core::color::Rgba;
+use runtime_core::assets::{
+    AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId,
+};
 use runtime_core::{
-    Action, Backend, Color, ColorScheme, Length, Platform, StyleRules,
+    Action, Backend, Color, ColorScheme, Gradient, GradientKind, Length, Platform, RadialExtent,
+    StyleRules,
 };
 use runtime_layout::LayoutTree;
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontIndirectW, CreatePen, CreateRoundRectRgn, CreateSolidBrush, DeleteObject,
-    EndPaint, FillRect, FillRgn, GetDC, GetStockObject, GetTextExtentPoint32W, InvalidateRect,
-    Rectangle, ReleaseDC, RoundRect, SelectObject, SetBkColor, SetTextColor, HBRUSH, HFONT,
-    HGDIOBJ, HPEN, HRGN, NULL_BRUSH, PAINTSTRUCT, PS_SOLID,
+    BeginPaint, CreateFontIndirectW, CreateSolidBrush, DeleteObject, EndPaint, FillRect, GetDC,
+    GetStockObject, GetTextExtentPoint32W, InvalidateRect, ReleaseDC, SelectObject, SetBkColor,
+    SetTextColor, HBRUSH, HFONT, HGDIOBJ, NULL_BRUSH, PAINTSTRUCT, WHITE_BRUSH,
+};
+use windows::Win32::Graphics::GdiPlus::{
+    GdipAddPathArc, GdipAddPathEllipse, GdipAddPathRectangle, GdipClosePathFigure,
+    GdipCreateFromHDC, GdipCreateLineBrush, GdipCreatePath, GdipCreatePathGradientFromPath,
+    GdipCreatePen1, GdipCreateSolidFill, GdipDeleteBrush, GdipDeleteGraphics, GdipDeletePath,
+    GdipDeletePen, GdipDrawPath, GdipFillPath, GdipSetLinePresetBlend,
+    GdipSetPathGradientCenterColor, GdipSetPathGradientCenterPoint, GdipSetPathGradientPresetBlend,
+    GdipSetPathGradientSurroundColorsWithCount, GdipSetPathGradientWrapMode, GdipSetSmoothingMode,
+    GdiplusStartup, GdiplusStartupInput, GdiplusStartupOutput, FillModeWinding, GpBrush, GpGraphics,
+    GpLineGradient, GpPath, GpPathGradient, GpPen, GpSolidFill, PointF, SmoothingModeAntiAlias,
+    UnitPixel, WrapModeClamp, WrapModeTile,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetAncestor, GetClientRect, GetWindowLongPtrW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetAncestor, GetClassNameW, GetClientRect,
+    GetParent, GetWindowLongPtrW,
     GetWindowTextLengthW, GetWindowTextW, RegisterClassExW, SendMessageW, SetWindowLongPtrW,
     SetWindowPos, SetWindowTextW, ShowWindow, SystemParametersInfoW, BS_DEFPUSHBUTTON, CS_HREDRAW,
     CS_VREDRAW, GA_ROOT, WM_COMMAND, WM_HSCROLL, WM_VSCROLL,
@@ -63,6 +78,13 @@ use windows::Win32::UI::Controls::{
     InitCommonControlsEx, ICC_BAR_CLASSES, ICC_PROGRESS_CLASS, INITCOMMONCONTROLSEX,
 };
 use windows::Win32::Foundation::RECT;
+
+// Vector-icon rendering (SVG path parser + GDI+ emitter) and bitmap image
+// rendering (GDI+ decode + object-fit) live in their own modules to keep
+// this file focused on the Backend trait surface.
+mod font;
+mod icon;
+mod image;
 
 // STATIC control style constant. The `windows` crate dropped the SS_*
 // family from its `WindowsAndMessaging` re-exports between 0.5x and
@@ -249,6 +271,11 @@ pub struct WindowsBackend {
     /// Keyed by HWND because `WM_HSCROLL` identifies the source control
     /// by handle (in `lParam`), not by a `WM_COMMAND`-style id.
     slider_handlers: HashMap<isize, Rc<dyn Fn()>>,
+    /// Registered image/font assets keyed by `AssetId`. Populated by
+    /// [`Backend::register_asset`] (the walker calls it before
+    /// `create_image` for an `image_asset`), consumed when resolving an
+    /// `asset://{id}` src to a loadable file path or embedded bytes.
+    assets: HashMap<u64, AssetEntry>,
     /// Third-party `Element::External` registry. Populated by
     /// `register_external::<T>(...)` calls from per-platform leaf
     /// crates (e.g. `toolbar::register_windows`). `create_external`
@@ -266,6 +293,19 @@ pub struct WindowsBackend {
     /// the intrinsic height for text so a text leaf lays out with a
     /// real height even before per-glyph measurement.
     line_height: i32,
+    /// Em size (px) of the shell message font — the fallback when a text
+    /// style sets a weight/family but no explicit `font_size`.
+    base_font_size: i32,
+    /// Family name of the shell message font (Segoe UI on modern
+    /// Windows), used when a style sets no `font_family`.
+    base_font_family: String,
+    /// `HFONT` cache keyed by resolved (family, size, weight, italic).
+    /// Text nodes re-apply their style on every reactive pass; creating a
+    /// font per apply would exhaust the process GDI handle quota.
+    font_cache: font::FontCache,
+    /// `TypefaceId`s already installed into the process font table, so a
+    /// repeated `register_typeface` doesn't re-add the same faces.
+    installed_typefaces: std::collections::HashSet<u64>,
 }
 
 /// A registered `WM_COMMAND` handler plus the notification code that
@@ -277,6 +317,53 @@ pub struct WindowsBackend {
 struct CommandEntry {
     code: u16,
     action: Rc<dyn Fn()>,
+}
+
+/// A registered asset resolved to the form the image loader needs.
+/// `Remote` records that the asset is a runtime URL the native backend
+/// can't fetch — resolution yields no bitmap (blank image), the same
+/// posture as a bare `http(s)://` src.
+enum AssetEntry {
+    /// Build-tool-resolved local file path (`AssetSource::Bundled`).
+    File(String),
+    /// Compile-time-embedded bytes + extension (`AssetSource::Embedded`
+    /// or the byte half of `BundledEmbedded`).
+    Bytes { bytes: &'static [u8], ext: String },
+    /// Runtime URL — unsupported by the native image loader.
+    Remote,
+}
+
+/// Read the background color of `hwnd`'s parent `IdealystView`, so an icon
+/// / image child can erase to it and read as transparent over a
+/// solid-colored card. Returns opaque white when the parent isn't an
+/// `IdealystView` (e.g. the top-level host during initial mount) or
+/// carries no paint state yet. The class-name check gates the
+/// `GWLP_USERDATA`-as-`ViewPaint` cast so we never misread another window
+/// kind's USERDATA.
+pub(crate) unsafe fn parent_view_bk_color(hwnd: HWND) -> COLORREF {
+    // windows 0.58: `GetParent` returns `Result<HWND>` (Err / null when
+    // the window has no parent).
+    let parent = match GetParent(hwnd) {
+        Ok(p) if !p.is_invalid() => p,
+        _ => return WHITE,
+    };
+    let mut buf = [0u16; 32];
+    let n = GetClassNameW(parent, &mut buf);
+    if n <= 0 {
+        return WHITE;
+    }
+    let cls = String::from_utf16_lossy(&buf[..n as usize]);
+    if cls != "IdealystView" {
+        return WHITE;
+    }
+    let ud = GetWindowLongPtrW(parent, GWLP_USERDATA);
+    if ud == 0 {
+        return WHITE;
+    }
+    // SAFETY: an `IdealystView` window always stores a `Box<ViewPaint>`
+    // raw pointer in its USERDATA (set in `create_view_window`), live
+    // until its `WM_NCDESTROY`.
+    (*(ud as *const ViewPaint)).bk_color
 }
 
 struct NodeMeta {
@@ -308,6 +395,24 @@ struct NodeMeta {
     /// the `GWLP_USERDATA` a scroll view (`ScrollState`) or view
     /// (`ViewPaint`) keeps there.
     is_text: bool,
+    /// `true` for an `IdealystIcon` window whose `GWLP_USERDATA` holds a
+    /// `Box<icon::IconPaint>`. `update_icon_color`/`update_icon_data`
+    /// reach it by HWND; the flag isn't strictly required for dispatch
+    /// but documents the node kind alongside the others.
+    #[allow(dead_code)]
+    is_icon: bool,
+    /// `true` for an `IdealystImage` window whose `GWLP_USERDATA` holds a
+    /// `Box<image::ImagePaint>`. `apply_style` reads this to push
+    /// `object_fit` into the paint state.
+    is_image: bool,
+    /// Current string of a Text / Button node. Kept so a later font
+    /// change (`apply_style`) can re-measure the intrinsic size without
+    /// reading it back out of the HWND.
+    text: String,
+    /// The `HFONT` currently set on this control (`WM_SETFONT`). Text is
+    /// measured with THIS font, not the shell default — otherwise a
+    /// 56 px headline lays out at ~12 px and clips.
+    font: HFONT,
 }
 
 impl WindowsBackend {
@@ -316,7 +421,7 @@ impl WindowsBackend {
     /// underneath. Drop `WindowsBackend` to release every child HWND
     /// the backend has created.
     pub fn new(host_hwnd: HWND) -> Self {
-        let (font, line_height) = create_ui_font();
+        let (font, line_height, base_font_size, base_font_family) = create_ui_font();
         Self {
             host_hwnd,
             next_id: 1,
@@ -328,9 +433,14 @@ impl WindowsBackend {
             command_handlers: HashMap::new(),
             children: HashMap::new(),
             slider_handlers: HashMap::new(),
+            assets: HashMap::new(),
             external_handlers: runtime_core::ExternalRegistry::new(),
             font,
             line_height,
+            base_font_size,
+            base_font_family,
+            font_cache: font::FontCache::new(),
+            installed_typefaces: std::collections::HashSet::new(),
         }
     }
 
@@ -403,6 +513,10 @@ impl WindowsBackend {
                 control_id: None,
                 is_view: false,
                 is_text: false,
+                is_icon: false,
+                is_image: false,
+                text: String::new(),
+                font: HFONT(std::ptr::null_mut()),
             },
         );
         WindowsNode { id, hwnd }
@@ -568,6 +682,10 @@ impl WindowsBackend {
                 control_id,
                 is_view: false,
                 is_text: false,
+                is_icon: false,
+                is_image: false,
+                text: text.to_string(),
+                font: self.font,
             },
         );
         WindowsNode { id, hwnd }
@@ -588,6 +706,13 @@ impl WindowsBackend {
     /// later refinement — this reports the single-line max-content
     /// width, which Taffy treats as the intrinsic width.
     fn measure_text(&self, text: &str) -> (i32, i32) {
+        self.measure_text_with(text, self.font)
+    }
+
+    /// Measure `text` in an explicit `font`. Text must be measured in the
+    /// font it will actually be DRAWN in — measuring a 56 px headline in
+    /// the 12 px shell font lays it out ~4× too narrow and clips it.
+    fn measure_text_with(&self, text: &str, font: HFONT) -> (i32, i32) {
         if text.is_empty() {
             return (0, self.line_height);
         }
@@ -599,7 +724,7 @@ impl WindowsBackend {
             if dc.is_invalid() {
                 return (0, self.line_height);
             }
-            let prev = SelectObject(dc, HGDIOBJ(self.font.0));
+            let prev = SelectObject(dc, HGDIOBJ(font.0));
             let mut size = SIZE::default();
             let ok = GetTextExtentPoint32W(dc, &wide, &mut size).as_bool();
             SelectObject(dc, prev);
@@ -609,6 +734,61 @@ impl WindowsBackend {
             } else {
                 (0, self.line_height)
             }
+        }
+    }
+
+    /// Resolve a text style's `font_size` / `font_weight` / `font_family`
+    /// to a cached `HFONT`, or `None` when the style sets no font
+    /// properties at all (leave the control on the shell font).
+    ///
+    /// A `FontFamily::Typeface` resolves to the typeface's `family_name`,
+    /// which `register_typeface` has already installed into the process
+    /// font table — so `CreateFontIndirectW` finds the bundled face.
+    fn font_for_style(&mut self, style: &StyleRules) -> Option<HFONT> {
+        if style.font_size.is_none() && style.font_weight.is_none() && style.font_family.is_none()
+        {
+            return None;
+        }
+        let size_px = match style.font_size.as_ref().map(|t| t.resolve()) {
+            Some(Length::Px(v)) if v >= 1.0 => v.round() as i32,
+            _ => self.base_font_size,
+        };
+        let weight = font::weight_to_gdi(style.font_weight.unwrap_or_default());
+        let family = match &style.font_family {
+            Some(runtime_core::FontFamily::System(name)) => name.clone(),
+            Some(runtime_core::FontFamily::Typeface(tf)) => tf.family_name.to_string(),
+            None => self.base_font_family.clone(),
+        };
+        let key = font::FontKey { family, size_px, weight, italic: false };
+        if let Some(f) = self.font_cache.get(&key) {
+            return Some(*f);
+        }
+        let f = font::create_hfont(&key);
+        if f.is_invalid() {
+            return None;
+        }
+        self.font_cache.insert(key, f);
+        Some(f)
+    }
+
+    /// Apply `hfont` to a text-bearing control and re-measure its
+    /// intrinsic size in that font.
+    fn set_node_font(&mut self, node: &WindowsNode, hfont: HFONT) {
+        unsafe {
+            SendMessageW(node.hwnd, WM_SETFONT, WPARAM(hfont.0 as usize), LPARAM(1));
+        }
+        let content = match self.nodes.get_mut(&node.id) {
+            Some(meta) => {
+                meta.font = hfont;
+                meta.text.clone()
+            }
+            None => return,
+        };
+        let (w, h) = self.measure_text_with(&content, hfont);
+        eprintln!("[dbg set_node_font] id={} text={:?} measured={}x{}", node.id, content, w, h);
+        self.set_intrinsic(node, w, h);
+        unsafe {
+            let _ = InvalidateRect(node.hwnd, None, true);
         }
     }
 
@@ -655,13 +835,16 @@ impl WindowsBackend {
     /// fills the paint state.
     fn create_view_window(&mut self, on_click: Option<Rc<dyn Fn()>>) -> WindowsNode {
         ensure_view_class_registered();
+        ensure_gdiplus();
         // WS_CLIPCHILDREN so our WM_PAINT of the background never paints
         // over child controls (text, buttons) mounted on top.
         let node = self.create_child(VIEW_CLASS_NAME, "", WS_CLIPCHILDREN.0, None);
-        let mut vp = ViewPaint {
-            on_click,
-            ..ViewPaint::default()
-        };
+        // Construct via `default()` + field assignment rather than
+        // functional-record-update: `ViewPaint` implements `Drop` (it
+        // owns an HBRUSH), so `..ViewPaint::default()` would try to move
+        // the non-`Copy` `gradient` field out of a `Drop` value (E0509).
+        let mut vp = ViewPaint::default();
+        vp.on_click = on_click;
         // Seed the child-text background brush (white until a
         // background color is applied).
         vp.set_bk(WHITE);
@@ -674,12 +857,46 @@ impl WindowsBackend {
         }
         node
     }
+
+    /// Resolve an image `src` to a decoded GDI+ bitmap. Handles
+    /// `asset://{id}` (via the registered [`AssetEntry`]), `data:` base64
+    /// URLs, `file://` + bare local paths, and returns `None` for remote
+    /// `http(s)://` URLs (no native fetch) or any decode failure — the
+    /// caller renders `None` as a blank box.
+    fn decode_src(&self, src: &str) -> Option<image::DecodedImage> {
+        if let Some(rest) = src.strip_prefix("asset://") {
+            let id: u64 = rest.parse().ok()?;
+            return match self.assets.get(&id) {
+                Some(AssetEntry::File(path)) => image::load_image_file(path),
+                Some(AssetEntry::Bytes { bytes, ext }) => image::load_image_bytes(bytes, ext),
+                _ => None,
+            };
+        }
+        if src.starts_with("data:") {
+            let (bytes, ext) = image::decode_data_url(src)?;
+            return image::load_image_bytes(&bytes, &ext);
+        }
+        if let Some(path) = src.strip_prefix("file://") {
+            // `file:///C:/x.png` → strip the leading slash(es) before the
+            // drive letter so GDI+ gets a plain Windows path.
+            return image::load_image_file(path.trim_start_matches('/'));
+        }
+        if src.starts_with("http://") || src.starts_with("https://") {
+            // No native HTTP client — blank, matching the framework's
+            // "Android ImageView has no URL loader" posture.
+            return None;
+        }
+        image::load_image_file(src)
+    }
 }
 
 /// Build the UI font (the shell's message font — Segoe UI on modern
 /// Windows) and its single-line height. Falls back to a null `HFONT`
 /// (controls keep their default font) if the metrics query fails.
-fn create_ui_font() -> (HFONT, i32) {
+fn create_ui_font() -> (HFONT, i32, i32, String) {
+    // Fallbacks if the metrics query fails: no font (controls keep their
+    // default) and a conservative 16 px line / 12 px em.
+    const FALLBACK: (i32, i32) = (16, 12);
     unsafe {
         let mut ncm = NONCLIENTMETRICSW {
             cbSize: std::mem::size_of::<NONCLIENTMETRICSW>() as u32,
@@ -693,11 +910,17 @@ fn create_ui_font() -> (HFONT, i32) {
         )
         .is_ok();
         if !ok {
-            return (HFONT(std::ptr::null_mut()), 16);
+            return (HFONT(std::ptr::null_mut()), FALLBACK.0, FALLBACK.1, String::new());
         }
+        // `lfHeight` is negative for an em height; take its magnitude as
+        // the base font size.
+        let base_size = ncm.lfMessageFont.lfHeight.abs().max(1);
+        let face = &ncm.lfMessageFont.lfFaceName;
+        let face_len = face.iter().position(|&c| c == 0).unwrap_or(face.len());
+        let base_family = String::from_utf16_lossy(&face[..face_len]);
         let font = CreateFontIndirectW(&ncm.lfMessageFont);
         if font.is_invalid() {
-            return (HFONT(std::ptr::null_mut()), 16);
+            return (HFONT(std::ptr::null_mut()), FALLBACK.0, FALLBACK.1, base_family);
         }
         // Derive the line height by measuring a representative glyph
         // run in this font. Height is font-dependent, not text-
@@ -714,7 +937,7 @@ fn create_ui_font() -> (HFONT, i32) {
             SelectObject(dc, prev);
             ReleaseDC(HWND(std::ptr::null_mut()), dc);
         }
-        (font, line_height)
+        (font, line_height, base_size, base_family)
     }
 }
 
@@ -915,15 +1138,19 @@ fn ensure_scroll_class_registered() {
 // the window's `GWLP_USERDATA`; `apply_style` updates it and
 // invalidates the window. This mirrors the Linux backend's
 // `IdealystView` GtkWidget subclass (background / border / radius),
-// diverging only in mechanism (GDI paint vs GSK nodes).
+// diverging only in mechanism (GDI+ paint vs GSK nodes).
 //
-// v1 scope: solid background fill, a uniform border (top width/color),
-// and a uniform corner radius (top-left), all via GDI. Known gaps
-// tracked for the Direct2D upgrade: no anti-aliasing on rounded
-// corners (GDI `RoundRect` is aliased), no per-corner radius /
-// per-side border, no gradient fill, and GDI ignores background alpha
-// (semi-transparent fills render opaque). Child controls are NOT
-// clipped to the corner radius (HWND clipping is rectangular).
+// Painting uses **GDI+** (not raw GDI): anti-aliased rounded corners,
+// per-corner radii, alpha-blended fills (GDI's `RoundRect` is aliased
+// and drops alpha), linear + radial gradient fills, and per-side
+// borders (uniform → one AA stroke that follows the radius; asymmetric
+// → straight per-side bars). GDI+ binds to the `WM_PAINT` HDC, so it
+// honors the WS_CLIPCHILDREN clip and never paints over child controls
+// — the reason we don't use a Direct2D HwndRenderTarget (which ignores
+// child windows). Remaining gaps: an asymmetric border on a *rounded*
+// box can't trace the corner (straight bars, notched corners — same
+// limitation as the Apple backends' per-side bars), and child controls
+// aren't clipped to the corner radius (HWND clipping is rectangular).
 
 const VIEW_CLASS_NAME: PCWSTR = PCWSTR(windows::core::w!("IdealystView").as_ptr());
 
@@ -931,19 +1158,57 @@ const VIEW_CLASS_NAME: PCWSTR = PCWSTR(windows::core::w!("IdealystView").as_ptr(
 /// no explicit background color.
 const WHITE: COLORREF = COLORREF(0x00FF_FFFF);
 
+/// One resolved CSS border side. `color: None` means the author set a
+/// width but no color for this side; the paint path falls back to the
+/// first side that *does* carry a color (matching the Apple backends'
+/// `uniform_border` fallback, so a `border_width` set without a color
+/// still renders).
+#[derive(Clone, Copy, Default, PartialEq)]
+struct BorderSide {
+    width: f32,
+    color: Option<Rgba>,
+}
+
+/// Shape of a resolved gradient, mirroring [`GradientKind`] with the
+/// `extent` enum flattened to a `farthest` bool (the only distinction
+/// the radius math needs).
+#[derive(Clone, Copy)]
+enum GradKind {
+    Linear { angle_deg: f32 },
+    Radial { center: (f32, f32), radius: f32, farthest: bool },
+}
+
+/// A gradient resolved for GDI+ painting: shape + `(offset, ARGB)`
+/// stops in ascending-offset order. Held on [`ViewPaint`] so the
+/// `WM_PAINT` handler can fill the view's rounded-rect path with a
+/// GDI+ gradient brush.
+struct GradientPaint {
+    kind: GradKind,
+    /// `(offset 0..=1, 0xAARRGGBB)` — ascending by offset, matching the
+    /// framework's [`Gradient::stops`] contract.
+    stops: Vec<(f32, u32)>,
+}
+
 /// Visual paint state for one `IdealystView` window, stored behind its
 /// `GWLP_USERDATA`.
 struct ViewPaint {
     /// Fill color; `None` = don't paint a background (transparent).
     background: Option<Rgba>,
-    /// Uniform border width in px (0 = no border). From
-    /// `border_top_width` (per-side widths collapse to this in v1).
-    border_width: f32,
-    /// Border color (used when `border_width > 0`).
-    border_color: Rgba,
-    /// Uniform corner radius in px (0 = square). From
-    /// `border_top_left_radius`.
-    radius: f32,
+    /// Gradient fill, painted OVER the solid `background` (framework
+    /// contract: when both are set the gradient z-replaces the solid
+    /// fill). `None` = no gradient. Clipped to the corner radius.
+    gradient: Option<GradientPaint>,
+    /// Per-side borders in `[top, right, bottom, left]` order. A uniform
+    /// set (all widths + effective colors equal) is stroked as one
+    /// anti-aliased path that follows the corner radius; an asymmetric
+    /// set (e.g. a bottom-only underline) is drawn as straight per-side
+    /// bars — which, like the Apple backends, can't trace a rounded
+    /// corner (documented limitation).
+    borders: [BorderSide; 4],
+    /// Per-corner radius in px: `[top_left, top_right, bottom_right,
+    /// bottom_left]` (0 = square corner). GDI+ arcs give each corner
+    /// its own radius with anti-aliasing.
+    radii: [f32; 4],
     /// Pressable click handler. `None` for a plain `View`; `Some` for
     /// `Pressable`. Fired on `WM_LBUTTONUP`.
     on_click: Option<Rc<dyn Fn()>>,
@@ -962,9 +1227,9 @@ impl Default for ViewPaint {
     fn default() -> Self {
         ViewPaint {
             background: None,
-            border_width: 0.0,
-            border_color: Rgba::default(),
-            radius: 0.0,
+            gradient: None,
+            borders: [BorderSide::default(); 4],
+            radii: [0.0; 4],
             on_click: None,
             bk_color: WHITE,
             bk_brush: None,
@@ -1021,46 +1286,375 @@ fn resolve_radius(t: &Option<runtime_core::Tokenized<Length>>) -> f32 {
     }
 }
 
-/// Paint the styled box for `hwnd` from `p`. Called from `WM_PAINT`.
+/// Resolve a `Tokenized<f32>` border-width slot to px, or 0.
+fn resolve_width(t: &Option<runtime_core::Tokenized<f32>>) -> f32 {
+    t.as_ref().map(|x| x.resolve()).unwrap_or(0.0)
+}
+
+/// Resolve the framework's [`Gradient`] into a paint-ready
+/// [`GradientPaint`] (shape + ARGB stops). Stop colors parse through the
+/// same `runtime_core::color` path as every other color; unparseable
+/// stops fall back to transparent so a typo degrades to a hole rather
+/// than a panic.
+fn resolve_gradient(g: &Gradient) -> GradientPaint {
+    let kind = match g.kind {
+        GradientKind::Linear { angle_deg } => GradKind::Linear { angle_deg },
+        GradientKind::Radial { center, radius, extent } => GradKind::Radial {
+            center,
+            radius,
+            farthest: matches!(extent, RadialExtent::FarthestCorner),
+        },
+    };
+    let stops = g
+        .stops
+        .iter()
+        .map(|s| {
+            let rgba = runtime_core::color::parse_or(&s.color.0, Rgba::TRANSPARENT);
+            (s.offset, rgba.to_argb_u32())
+        })
+        .collect();
+    GradientPaint { kind, stops }
+}
+
+/// Decide whether the four border sides collapse to a single uniform
+/// stroke. Mirrors `backend_apple_core::border::uniform_border` (same
+/// routing so Windows converges with the Apple backends per Rule #7),
+/// operating on already-resolved [`Rgba`] rather than color tokens. A
+/// `None` side color falls back to the first side that carries one, so a
+/// `border_width` set without an explicit color still counts as uniform.
+///
+/// `Some((width, color))` → stroke one anti-aliased rounded path;
+/// `None` → the asymmetric case, drawn as straight per-side bars.
+fn uniform_border(sides: &[BorderSide; 4]) -> Option<(f32, Rgba)> {
+    if !sides.iter().all(|s| (s.width - sides[0].width).abs() < f32::EPSILON) {
+        return None;
+    }
+    if sides[0].width <= 0.0 {
+        return None;
+    }
+    let fallback = sides.iter().find_map(|s| s.color);
+    let eff: [Option<Rgba>; 4] = [
+        sides[0].color.or(fallback),
+        sides[1].color.or(fallback),
+        sides[2].color.or(fallback),
+        sides[3].color.or(fallback),
+    ];
+    let first = eff[0]?;
+    if eff.iter().all(|c| *c == Some(first)) {
+        Some((sides[0].width, first))
+    } else {
+        None
+    }
+}
+
+/// Start/end points (in device pixels) of a linear gradient's axis for a
+/// `w × h` box. CSS angle convention (matching [`GradientKind::Linear`]):
+/// `0°` = bottom→top, `90°` = left→right, `180°` = top→bottom. Solved in
+/// Win32's y-down client space, where the unit direction from the
+/// `offset 0` end toward the `offset 1` end is `(sin θ, −cos θ)`. The
+/// axis is centered on the box; its half-length is the axis-projected box
+/// extent, so an axis-aligned band fills its short dimension exactly and
+/// no pixel projects outside `[0, 1]` (hence the line brush's wrap mode
+/// is never exercised). Identical formula to the Linux backend's
+/// `gradient::linear_points`, so the two backends place stops identically.
+fn linear_points(angle_deg: f32, w: f32, h: f32) -> ((f32, f32), (f32, f32)) {
+    let rad = angle_deg.to_radians();
+    let dx = rad.sin();
+    let dy = -rad.cos();
+    let half = (dx.abs() * w + dy.abs() * h) / 2.0;
+    let (cx, cy) = (w / 2.0, h / 2.0);
+    let start = (cx - dx * half, cy - dy * half);
+    let end = (cx + dx * half, cy + dy * half);
+    (start, end)
+}
+
+/// Pixel radius of a radial gradient's `offset 1.0` stop. `ClosestSide`
+/// (`farthest == false`) references half the shorter box side; `farthest`
+/// references the distance from the center to the farthest corner. Same
+/// formula as the Linux backend's `gradient::radial_radius`.
+fn radial_radius(center: (f32, f32), radius: f32, farthest: bool, w: f32, h: f32) -> f32 {
+    let reference = if farthest {
+        let cx = center.0 * w;
+        let cy = center.1 * h;
+        [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)]
+            .iter()
+            .map(|(x, y)| ((x - cx).powi(2) + (y - cy).powi(2)).sqrt())
+            .fold(0.0_f32, f32::max)
+    } else {
+        w.min(h) / 2.0
+    };
+    (reference * radius).max(0.0)
+}
+
+/// Initialize GDI+ once per process — required before any `Gdip*`
+/// call. The startup token is intentionally leaked: GDI+ stays live
+/// for the process lifetime (no `GdiplusShutdown`; the app exits via
+/// `TerminateProcess` anyway).
+fn ensure_gdiplus() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| unsafe {
+        let input = GdiplusStartupInput {
+            GdiplusVersion: 1,
+            DebugEventCallback: 0,
+            SuppressBackgroundThread: Default::default(),
+            SuppressExternalCodecs: Default::default(),
+        };
+        let mut token: usize = 0;
+        let mut output: GdiplusStartupOutput = std::mem::zeroed();
+        let _ = GdiplusStartup(&mut token, &input, &mut output);
+    });
+}
+
+/// Append a rounded-rect figure (per-corner radii `[tl, tr, br, bl]`)
+/// to `path`, inset by `inset` on every side — half the border width,
+/// so a centered stroke stays inside the client rect. Square corners
+/// (all radii ~0) use a plain rectangle; otherwise each corner is a
+/// 90° arc and GDI+ connects consecutive arcs with the straight edges.
+unsafe fn build_round_rect_path(path: *mut GpPath, w: f32, h: f32, radii: [f32; 4], inset: f32) {
+    let left = inset;
+    let top = inset;
+    let right = (w - inset).max(left);
+    let bottom = (h - inset).max(top);
+    let bw = right - left;
+    let bh = bottom - top;
+
+    if radii.iter().all(|r| *r < 0.5) {
+        let _ = GdipAddPathRectangle(path, left, top, bw, bh);
+        return;
+    }
+
+    // Clamp radii to half the box so arcs never overlap.
+    let rmax = bw.min(bh) / 2.0;
+    let c = |i: usize| radii[i].clamp(0.0, rmax);
+    let (tl, tr, br, bl) = (c(0), c(1), c(2), c(3));
+    // Arc bounding boxes are 2r × 2r at each corner; sweeps run
+    // clockwise starting from the corner's outer quadrant.
+    let _ = GdipAddPathArc(path, left, top, 2.0 * tl, 2.0 * tl, 180.0, 90.0);
+    let _ = GdipAddPathArc(path, right - 2.0 * tr, top, 2.0 * tr, 2.0 * tr, 270.0, 90.0);
+    let _ = GdipAddPathArc(path, right - 2.0 * br, bottom - 2.0 * br, 2.0 * br, 2.0 * br, 0.0, 90.0);
+    let _ = GdipAddPathArc(path, left, bottom - 2.0 * bl, 2.0 * bl, 2.0 * bl, 90.0, 90.0);
+    let _ = GdipClosePathFigure(path);
+}
+
+/// Build `(colors, positions)` arrays for a GDI+ preset blend from
+/// ascending-offset `(offset, ARGB)` stops. GDI+ requires
+/// `positions[0] == 0.0` and `positions[last] == 1.0`, so the extremes
+/// are padded with the end-stop colors when the author's stops don't
+/// reach them. With `reverse` (radial/path gradients, whose blend runs
+/// boundary→center rather than the framework's center→edge), each
+/// position becomes `1 - offset` and the arrays are reversed to stay
+/// ascending.
+fn blend_arrays(stops: &[(f32, u32)], reverse: bool) -> (Vec<u32>, Vec<f32>) {
+    let mut pts: Vec<(f32, u32)> =
+        stops.iter().map(|(o, c)| (o.clamp(0.0, 1.0), *c)).collect();
+    pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    if let Some(&(first_o, first_c)) = pts.first() {
+        if first_o > 0.0 {
+            pts.insert(0, (0.0, first_c));
+        }
+    }
+    if let Some(&(last_o, last_c)) = pts.last() {
+        if last_o < 1.0 {
+            pts.push((1.0, last_c));
+        }
+    }
+    if reverse {
+        let mut rev: Vec<(f32, u32)> = pts.iter().map(|(o, c)| (1.0 - o, *c)).collect();
+        rev.reverse();
+        (rev.iter().map(|(_, c)| *c).collect(), rev.iter().map(|(o, _)| *o).collect())
+    } else {
+        (pts.iter().map(|(_, c)| *c).collect(), pts.iter().map(|(o, _)| *o).collect())
+    }
+}
+
+/// Fill `fill_path` (the view's rounded-rect region) with the resolved
+/// gradient. Linear uses a line-gradient brush along the CSS axis; radial
+/// uses a path-gradient brush over an ellipse of the computed radius,
+/// clamped outside so box corners beyond the radius keep the edge color.
+/// Multi-stop ramps go through the preset-blend APIs.
+unsafe fn paint_gradient(
+    g: *mut GpGraphics,
+    gp: &GradientPaint,
+    fill_path: *mut GpPath,
+    w: f32,
+    h: f32,
+) {
+    match gp.kind {
+        GradKind::Linear { angle_deg } => {
+            let (s, e) = linear_points(angle_deg, w, h);
+            let p1 = PointF { X: s.0, Y: s.1 };
+            let p2 = PointF { X: e.0, Y: e.1 };
+            let first = gp.stops.first().map(|s| s.1).unwrap_or(0);
+            let last = gp.stops.last().map(|s| s.1).unwrap_or(first);
+            let mut brush: *mut GpLineGradient = std::ptr::null_mut();
+            // The axis already spans the box's full projected extent (see
+            // `linear_points`), so no pixel projects outside [0, 1] and
+            // the wrap mode is never exercised — `WrapModeTile` is just
+            // the required non-null argument.
+            if GdipCreateLineBrush(&p1, &p2, first, last, WrapModeTile, &mut brush).0 == 0
+                && !brush.is_null()
+            {
+                let (colors, positions) = blend_arrays(&gp.stops, false);
+                if colors.len() >= 2 {
+                    let _ = GdipSetLinePresetBlend(
+                        brush,
+                        colors.as_ptr(),
+                        positions.as_ptr(),
+                        colors.len() as i32,
+                    );
+                }
+                let _ = GdipFillPath(g, brush as *mut GpBrush, fill_path);
+                let _ = GdipDeleteBrush(brush as *mut GpBrush);
+            }
+        }
+        GradKind::Radial { center, radius, farthest } => {
+            let cx = center.0 * w;
+            let cy = center.1 * h;
+            let r = radial_radius(center, radius, farthest, w, h).max(1.0);
+            let mut ellipse: *mut GpPath = std::ptr::null_mut();
+            if GdipCreatePath(FillModeWinding, &mut ellipse).0 != 0 || ellipse.is_null() {
+                return;
+            }
+            let _ = GdipAddPathEllipse(ellipse, cx - r, cy - r, 2.0 * r, 2.0 * r);
+            let mut brush: *mut GpPathGradient = std::ptr::null_mut();
+            if GdipCreatePathGradientFromPath(ellipse, &mut brush).0 == 0 && !brush.is_null() {
+                let inner = gp.stops.first().map(|s| s.1).unwrap_or(0);
+                let outer = gp.stops.last().map(|s| s.1).unwrap_or(inner);
+                let cp = PointF { X: cx, Y: cy };
+                let _ = GdipSetPathGradientCenterPoint(brush, &cp);
+                let _ = GdipSetPathGradientCenterColor(brush, inner);
+                let mut cnt = 1i32;
+                let _ = GdipSetPathGradientSurroundColorsWithCount(brush, &outer, &mut cnt);
+                let (colors, positions) = blend_arrays(&gp.stops, true);
+                if colors.len() >= 2 {
+                    let _ = GdipSetPathGradientPresetBlend(
+                        brush,
+                        colors.as_ptr(),
+                        positions.as_ptr(),
+                        colors.len() as i32,
+                    );
+                }
+                // Clamp so pixels outside the ellipse (box corners past
+                // the radius) keep the outermost stop color rather than
+                // tiling the ramp.
+                let _ = GdipSetPathGradientWrapMode(brush, WrapModeClamp);
+                let _ = GdipFillPath(g, brush as *mut GpBrush, fill_path);
+                let _ = GdipDeleteBrush(brush as *mut GpBrush);
+            }
+            let _ = GdipDeletePath(ellipse);
+        }
+    }
+}
+
+/// Draw asymmetric borders as straight per-side bars (`[top, right,
+/// bottom, left]`), each a filled rectangle of its own width + color. A
+/// side with no explicit color falls back to the first side that has
+/// one. Corners aren't mitered and a rounded corner isn't traced — the
+/// documented limitation shared with the Apple backends' per-side bars
+/// (a straight bar can't follow a curve).
+unsafe fn paint_side_borders(g: *mut GpGraphics, sides: &[BorderSide; 4], w: f32, h: f32) {
+    let fallback = sides.iter().find_map(|s| s.color);
+    for (idx, side) in sides.iter().enumerate() {
+        if side.width <= 0.5 {
+            continue;
+        }
+        let Some(color) = side.color.or(fallback) else {
+            continue;
+        };
+        if color.a == 0 {
+            continue;
+        }
+        let bw = side.width;
+        let (x, y, rw, rh) = match idx {
+            0 => (0.0, 0.0, w, bw),      // top
+            1 => (w - bw, 0.0, bw, h),   // right
+            2 => (0.0, h - bw, w, bw),   // bottom
+            _ => (0.0, 0.0, bw, h),      // left
+        };
+        let mut brush: *mut GpSolidFill = std::ptr::null_mut();
+        if GdipCreateSolidFill(color.to_argb_u32(), &mut brush).0 == 0 {
+            let mut path: *mut GpPath = std::ptr::null_mut();
+            if GdipCreatePath(FillModeWinding, &mut path).0 == 0 && !path.is_null() {
+                let _ = GdipAddPathRectangle(path, x, y, rw, rh);
+                let _ = GdipFillPath(g, brush as *mut GpBrush, path);
+                let _ = GdipDeletePath(path);
+            }
+            let _ = GdipDeleteBrush(brush as *mut GpBrush);
+        }
+    }
+}
+
+/// Paint the styled box for `hwnd` from `p` via GDI+ — anti-aliased,
+/// alpha-blended, per-corner radius, gradient + per-side borders. Called
+/// from `WM_PAINT`. GDI+ binds to the paint DC, so it honors the
+/// WS_CLIPCHILDREN clip and never paints over child controls. Paint
+/// order: solid background, then gradient over it (framework contract),
+/// then the border on top.
 unsafe fn paint_view(hwnd: HWND, p: &ViewPaint) {
     let mut ps = PAINTSTRUCT::default();
     let hdc = BeginPaint(hwnd, &mut ps);
     let mut rc = RECT::default();
     let _ = GetClientRect(hwnd, &mut rc);
-    let w = rc.right - rc.left;
-    let h = rc.bottom - rc.top;
-    let dia = (p.radius * 2.0).round() as i32;
+    let w = (rc.right - rc.left) as f32;
+    let h = (rc.bottom - rc.top) as f32;
 
-    if let Some(bg) = p.background {
-        if bg.a > 0 {
-            let brush = CreateSolidBrush(colorref(bg));
-            if p.radius > 0.5 {
-                // `+1` because a region's right/bottom edges are
-                // exclusive; without it the last row/column stays
-                // unpainted.
-                let rgn: HRGN = CreateRoundRectRgn(0, 0, w + 1, h + 1, dia, dia);
-                let _ = FillRgn(hdc, rgn, brush);
-                let _ = DeleteObject(HGDIOBJ(rgn.0));
-            } else {
-                FillRect(hdc, &rc, brush);
+    let has_bg = p.background.map(|c| c.a > 0).unwrap_or(false);
+    let has_gradient = p.gradient.as_ref().map(|g| !g.stops.is_empty()).unwrap_or(false);
+    let uniform = uniform_border(&p.borders);
+    let has_any_border = p.borders.iter().any(|s| s.width > 0.5);
+
+    if (has_bg || has_gradient || has_any_border) && w > 0.0 && h > 0.0 {
+        let mut g: *mut GpGraphics = std::ptr::null_mut();
+        if GdipCreateFromHDC(hdc, &mut g).0 == 0 && !g.is_null() {
+            let _ = GdipSetSmoothingMode(g, SmoothingModeAntiAlias);
+
+            // Background + gradient share the rounded-rect fill path, so
+            // the gradient is clipped to the corner radius for free.
+            if has_bg || has_gradient {
+                let mut fill_path: *mut GpPath = std::ptr::null_mut();
+                if GdipCreatePath(FillModeWinding, &mut fill_path).0 == 0 && !fill_path.is_null() {
+                    build_round_rect_path(fill_path, w, h, p.radii, 0.0);
+                    if let Some(bg) = p.background.filter(|c| c.a > 0) {
+                        let mut brush: *mut GpSolidFill = std::ptr::null_mut();
+                        // GDI+ colors are 0xAARRGGBB — alpha honored.
+                        if GdipCreateSolidFill(bg.to_argb_u32(), &mut brush).0 == 0 {
+                            let _ = GdipFillPath(g, brush as *mut GpBrush, fill_path);
+                            let _ = GdipDeleteBrush(brush as *mut GpBrush);
+                        }
+                    }
+                    if let Some(gp) = p.gradient.as_ref().filter(|g| !g.stops.is_empty()) {
+                        paint_gradient(g, gp, fill_path, w, h);
+                    }
+                    let _ = GdipDeletePath(fill_path);
+                }
             }
-            let _ = DeleteObject(HGDIOBJ(brush.0));
-        }
-    }
 
-    if p.border_width > 0.5 && p.border_color.a > 0 {
-        let pen: HPEN = CreatePen(PS_SOLID, p.border_width.round() as i32, colorref(p.border_color));
-        let old_pen = SelectObject(hdc, HGDIOBJ(pen.0));
-        // Hollow brush so the border-drawing primitives stroke only.
-        let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-        if p.radius > 0.5 {
-            let _ = RoundRect(hdc, 0, 0, w, h, dia, dia);
-        } else {
-            let _ = Rectangle(hdc, 0, 0, w, h);
+            match uniform {
+                // Uniform border → one AA stroke that follows the radius.
+                // Inset by half the stroke width so the centered pen stays
+                // inside the client rect.
+                Some((width, color)) => {
+                    let mut stroke_path: *mut GpPath = std::ptr::null_mut();
+                    if GdipCreatePath(FillModeWinding, &mut stroke_path).0 == 0
+                        && !stroke_path.is_null()
+                    {
+                        build_round_rect_path(stroke_path, w, h, p.radii, width / 2.0);
+                        let mut pen: *mut GpPen = std::ptr::null_mut();
+                        if GdipCreatePen1(color.to_argb_u32(), width, UnitPixel, &mut pen).0 == 0 {
+                            let _ = GdipDrawPath(g, pen, stroke_path);
+                            let _ = GdipDeletePen(pen);
+                        }
+                        let _ = GdipDeletePath(stroke_path);
+                    }
+                }
+                // Asymmetric → straight per-side bars.
+                None if has_any_border => paint_side_borders(g, &p.borders, w, h),
+                None => {}
+            }
+
+            let _ = GdipDeleteGraphics(g);
         }
-        SelectObject(hdc, old_pen);
-        SelectObject(hdc, old_brush);
-        let _ = DeleteObject(HGDIOBJ(pen.0));
     }
 
     let _ = EndPaint(hwnd, &ps);
@@ -1100,9 +1694,25 @@ unsafe extern "system" fn view_wnd_proc(
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
-        // We paint the whole client area in WM_PAINT; suppressing the
-        // default erase avoids a flash of the erase brush on resize.
-        WM_ERASEBKGND => LRESULT(1),
+        // Clear the client to a clean WHITE backdrop before WM_PAINT
+        // draws the styled box on top. Without this, an unstyled /
+        // transparent view (or the anti-aliased corner gaps outside a
+        // rounded fill) shows uninitialized window pixels (desktop
+        // bleed-through). White is the neutral app backdrop; a fully
+        // opaque square view (radius 0) overpaints it entirely in
+        // WM_PAINT, so white is only ever visible where the view is
+        // genuinely transparent or rounded. (True transparency over a
+        // *colored* parent isn't possible without compositing — a
+        // documented Win32-layering limitation; nested rounded cards
+        // get white corners rather than the parent's color.)
+        WM_ERASEBKGND => {
+            let hdc = windows::Win32::Graphics::Gdi::HDC(wparam.0 as *mut std::ffi::c_void);
+            let mut rc = RECT::default();
+            let _ = GetClientRect(hwnd, &mut rc);
+            let white = HBRUSH(GetStockObject(WHITE_BRUSH).0);
+            FillRect(hdc, &rc, white);
+            LRESULT(1)
+        }
         // Child STATIC (Text/Image) controls ask their parent for a
         // background brush. Draw their text transparently over our
         // painted box and hand back a hollow brush so the static
@@ -1325,6 +1935,18 @@ impl Backend for WindowsBackend {
             // one draws — otherwise reactive updates ghost old glyphs.
             let _ = InvalidateRect(node.hwnd, None, true);
         }
+        // Re-measure in the node's CURRENT font (which `apply_style` may
+        // have changed from the shell default) so the new string's
+        // intrinsic size is right.
+        let hfont = match self.nodes.get_mut(&node.id) {
+            Some(meta) => {
+                meta.text = content.to_string();
+                meta.font
+            }
+            None => self.font,
+        };
+        let (w, h) = self.measure_text_with(content, hfont);
+        self.set_intrinsic(node, w, h);
     }
 
     fn update_button_label(&mut self, node: &Self::Node, label: &str) {
@@ -1383,9 +2005,14 @@ impl Backend for WindowsBackend {
                 frame.height.round() as i32,
             ));
         }
-        for (hwnd, x, y, w, h) in updates {
+        for (id, hwnd, x, y, w, h) in updates {
             if hwnd.is_invalid() {
                 continue;
+            }
+            if let Some(meta) = self.nodes.get(&id) {
+                if meta.is_text {
+                    eprintln!("[dbg finish] id={} text={:?} frame={},{} {}x{}", id, meta.text, x, y, w, h);
+                }
             }
             // `HWND_TOP` here would force every child to the top of
             // the z-order on every layout pass — wasteful and
@@ -1415,20 +2042,140 @@ impl Backend for WindowsBackend {
 
     fn create_image(
         &mut self,
-        _src: &str,
+        src: &str,
         _alt: Option<&str>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        self.placeholder("Image not yet implemented on Windows backend")
+        ensure_gdiplus();
+        image::ensure_image_class_registered();
+        let node = self.create_child(image::IMAGE_CLASS_NAME, "", 0, None);
+        let decoded = self.decode_src(src);
+        // Natural pixel size as the intrinsic size, so an image without an
+        // explicit width/height still lays out at its own size (like web's
+        // `naturalWidth`); an explicit style overrides it via `set_style`.
+        if let Some(d) = &decoded {
+            let (w, h) = d.natural();
+            self.set_intrinsic(&node, w as i32, h as i32);
+        }
+        let paint = image::ImagePaint { image: decoded, ..Default::default() };
+        unsafe {
+            SetWindowLongPtrW(node.hwnd, GWLP_USERDATA, Box::into_raw(Box::new(paint)) as isize);
+        }
+        if let Some(meta) = self.nodes.get_mut(&node.id) {
+            meta.is_image = true;
+        }
+        node
     }
 
     fn create_icon(
         &mut self,
-        _data: &runtime_core::primitives::icon::IconData,
-        _color: Option<&Color>,
+        data: &runtime_core::primitives::icon::IconData,
+        color: Option<&Color>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        self.placeholder("Icon not yet implemented on Windows backend")
+        ensure_gdiplus();
+        icon::ensure_icon_class_registered();
+        let node = self.create_child(icon::ICON_CLASS_NAME, "", 0, None);
+        // No color → opaque black (the native analogue of web's
+        // `currentColor` / nearest text color, matching the Linux
+        // `DEFAULT_ICON_COLOR`).
+        let rgba = color
+            .map(|c| runtime_core::color::parse_or(&c.0, Rgba::BLACK))
+            .unwrap_or(Rgba::BLACK);
+        let paint = icon::IconPaint::from_data(data, rgba);
+        // Icons have no intrinsic content size; default the intrinsic to
+        // the view-box so a bare `icon(X)` is visible under flex.
+        // `.size(n)` / an explicit width/height style overrides it.
+        let (vw, vh) = paint.view_box;
+        self.set_intrinsic(&node, vw as i32, vh as i32);
+        unsafe {
+            SetWindowLongPtrW(node.hwnd, GWLP_USERDATA, Box::into_raw(Box::new(paint)) as isize);
+        }
+        if let Some(meta) = self.nodes.get_mut(&node.id) {
+            meta.is_icon = true;
+        }
+        node
+    }
+
+    fn update_image_src(&mut self, node: &Self::Node, src: &str) {
+        let decoded = self.decode_src(src);
+        let ud = unsafe { GetWindowLongPtrW(node.hwnd, GWLP_USERDATA) };
+        if ud != 0 {
+            // Update the intrinsic to the new bitmap's natural size before
+            // swapping (the reactive `src` change may resize the leaf).
+            if let Some(d) = &decoded {
+                let (w, h) = d.natural();
+                self.set_intrinsic(node, w as i32, h as i32);
+            }
+            // SAFETY: an image node's USERDATA holds the `Box<ImagePaint>`
+            // from `create_image`. Assigning `image` drops the previous
+            // `DecodedImage`, disposing the old `GpImage`.
+            let paint = unsafe { &mut *(ud as *mut image::ImagePaint) };
+            paint.image = decoded;
+            unsafe {
+                let _ = InvalidateRect(node.hwnd, None, true);
+            }
+        }
+    }
+
+    fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
+        let ud = unsafe { GetWindowLongPtrW(node.hwnd, GWLP_USERDATA) };
+        if ud != 0 {
+            let paint = unsafe { &mut *(ud as *mut icon::IconPaint) };
+            paint.color = runtime_core::color::parse_or(&color.0, Rgba::BLACK);
+            unsafe {
+                let _ = InvalidateRect(node.hwnd, None, true);
+            }
+        }
+    }
+
+    fn update_icon_data(&mut self, node: &Self::Node, data: &runtime_core::primitives::icon::IconData) {
+        let ud = unsafe { GetWindowLongPtrW(node.hwnd, GWLP_USERDATA) };
+        if ud != 0 {
+            let (vw, vh) = {
+                let paint = unsafe { &mut *(ud as *mut icon::IconPaint) };
+                paint.set_data(data);
+                paint.view_box
+            };
+            // A new glyph may carry a different view-box → refresh intrinsic.
+            self.set_intrinsic(node, vw as i32, vh as i32);
+            unsafe {
+                let _ = InvalidateRect(node.hwnd, None, true);
+            }
+        }
+    }
+
+    fn register_typeface(
+        &mut self,
+        id: TypefaceId,
+        _family_name: &str,
+        faces: &[TypefaceFace],
+        _fallback: SystemFallback,
+    ) {
+        // Install each face into the process font table so a later
+        // `CreateFontIndirectW` with the typeface's family name resolves
+        // to the bundled TTF. Idempotent — the framework may re-register
+        // on a theme/token pass.
+        if !self.installed_typefaces.insert(id.0) {
+            return;
+        }
+        for face in faces {
+            font::install_face(&face.source);
+        }
+    }
+
+    fn register_asset(&mut self, id: AssetId, _kind: AssetTag, source: &AssetSource) {
+        let entry = match source {
+            AssetSource::Bundled { path } => AssetEntry::File(path.to_string()),
+            AssetSource::Embedded { bytes, extension } => {
+                AssetEntry::Bytes { bytes, ext: extension.to_string() }
+            }
+            AssetSource::BundledEmbedded { bytes, extension, .. } => {
+                AssetEntry::Bytes { bytes, ext: extension.to_string() }
+            }
+            AssetSource::Remote { .. } => AssetEntry::Remote,
+        };
+        self.assets.insert(id.0, entry);
     }
 
     fn create_text_input(
@@ -1701,11 +2448,34 @@ impl Backend for WindowsBackend {
                 // `WM_NCDESTROY`. We hold no other alias here.
                 let paint = unsafe { &mut *(ud as *mut ViewPaint) };
                 paint.background = resolve_color(&style.background);
-                paint.border_width =
-                    style.border_top_width.as_ref().map(|t| t.resolve()).unwrap_or(0.0);
-                paint.border_color =
-                    resolve_color(&style.border_top_color).unwrap_or(Rgba::BLACK);
-                paint.radius = resolve_radius(&style.border_top_left_radius);
+                paint.gradient = style.background_gradient.as_ref().map(resolve_gradient);
+                // Per-side borders in [top, right, bottom, left] order.
+                // `paint_view` collapses a uniform set to one AA stroke and
+                // renders an asymmetric set as per-side bars.
+                paint.borders = [
+                    BorderSide {
+                        width: resolve_width(&style.border_top_width),
+                        color: resolve_color(&style.border_top_color),
+                    },
+                    BorderSide {
+                        width: resolve_width(&style.border_right_width),
+                        color: resolve_color(&style.border_right_color),
+                    },
+                    BorderSide {
+                        width: resolve_width(&style.border_bottom_width),
+                        color: resolve_color(&style.border_bottom_color),
+                    },
+                    BorderSide {
+                        width: resolve_width(&style.border_left_width),
+                        color: resolve_color(&style.border_left_color),
+                    },
+                ];
+                paint.radii = [
+                    resolve_radius(&style.border_top_left_radius),
+                    resolve_radius(&style.border_top_right_radius),
+                    resolve_radius(&style.border_bottom_right_radius),
+                    resolve_radius(&style.border_bottom_left_radius),
+                ];
                 // Child text erases to the view's background (or white
                 // if none/transparent) so reactive text updates don't
                 // leave ghosts.
@@ -1735,6 +2505,28 @@ impl Backend for WindowsBackend {
                     let _ = InvalidateRect(node.hwnd, None, true);
                 }
             }
+            // Typography: size / weight / family. Re-measures the leaf in
+            // the resolved font so layout matches what's drawn.
+            if let Some(hfont) = self.font_for_style(style) {
+                self.set_node_font(node, hfont);
+            }
+        }
+
+        // Image object-fit: push the resolved `object_fit` into the
+        // ImagePaint so `WM_PAINT` scales the bitmap correctly. Gated on
+        // `is_image` so we only ever cast an `IdealystImage`'s USERDATA.
+        let is_image = self.nodes.get(&node.id).map(|m| m.is_image).unwrap_or(false);
+        if is_image {
+            if let Some(fit) = style.object_fit {
+                let ud = unsafe { GetWindowLongPtrW(node.hwnd, GWLP_USERDATA) };
+                if ud != 0 {
+                    let paint = unsafe { &mut *(ud as *mut image::ImagePaint) };
+                    paint.object_fit = fit;
+                    unsafe {
+                        let _ = InvalidateRect(node.hwnd, None, true);
+                    }
+                }
+            }
         }
     }
 }
@@ -1742,3 +2534,132 @@ impl Backend for WindowsBackend {
 // `RefCell` import kept for the eventual wm_command_dispatch state.
 #[allow(dead_code)]
 type _KeepRefCell = RefCell<()>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rgba(s: &str) -> Rgba {
+        runtime_core::color::parse_or(s, Rgba::TRANSPARENT)
+    }
+
+    fn side(width: f32, color: Option<&str>) -> BorderSide {
+        BorderSide { width, color: color.map(rgba) }
+    }
+
+    // --- uniform_border routing (mirrors backend_apple_core::border) ---
+
+    #[test]
+    fn uniform_all_sides_equal_collapses() {
+        let c = Some("#e5e5e5");
+        let sides = [side(1.0, c), side(1.0, c), side(1.0, c), side(1.0, c)];
+        assert_eq!(uniform_border(&sides), Some((1.0, rgba("#e5e5e5"))));
+    }
+
+    #[test]
+    fn uniform_width_without_per_side_color_falls_back() {
+        // Width on every side, color only on top → fallback fills the
+        // rest, so it's still one uniform stroke. This is the case the
+        // `smoke_styled` cards rely on for a full border.
+        let sides = [
+            side(2.0, Some("#000000")),
+            side(2.0, None),
+            side(2.0, None),
+            side(2.0, None),
+        ];
+        assert_eq!(uniform_border(&sides), Some((2.0, rgba("#000000"))));
+    }
+
+    #[test]
+    fn asymmetric_bottom_only_stays_per_side() {
+        // A bottom-only underline must NOT collapse.
+        let sides = [
+            side(0.0, None),
+            side(0.0, None),
+            side(1.0, Some("#000000")),
+            side(0.0, None),
+        ];
+        assert_eq!(uniform_border(&sides), None);
+    }
+
+    #[test]
+    fn asymmetric_differing_colors_stays_per_side() {
+        let sides = [
+            side(1.0, Some("#ff0000")),
+            side(1.0, Some("#00ff00")),
+            side(1.0, Some("#ff0000")),
+            side(1.0, Some("#00ff00")),
+        ];
+        assert_eq!(uniform_border(&sides), None);
+    }
+
+    #[test]
+    fn no_border_when_all_widths_zero() {
+        let sides = [side(0.0, Some("#000")), side(0.0, None), side(0.0, None), side(0.0, None)];
+        assert_eq!(uniform_border(&sides), None);
+    }
+
+    // --- linear gradient axis geometry (CSS angle convention) ---
+
+    fn approx(a: (f32, f32), b: (f32, f32)) {
+        assert!((a.0 - b.0).abs() < 1e-3 && (a.1 - b.1).abs() < 1e-3, "{a:?} != {b:?}");
+    }
+
+    #[test]
+    fn linear_0deg_runs_bottom_to_top() {
+        let (s, e) = linear_points(0.0, 100.0, 100.0);
+        approx(s, (50.0, 100.0)); // offset 0 at the bottom
+        approx(e, (50.0, 0.0)); //   offset 1 at the top
+    }
+
+    #[test]
+    fn linear_90deg_runs_left_to_right() {
+        let (s, e) = linear_points(90.0, 100.0, 100.0);
+        approx(s, (0.0, 50.0));
+        approx(e, (100.0, 50.0));
+    }
+
+    #[test]
+    fn linear_180deg_runs_top_to_bottom() {
+        let (s, e) = linear_points(180.0, 100.0, 100.0);
+        approx(s, (50.0, 0.0));
+        approx(e, (50.0, 100.0));
+    }
+
+    // --- radial radius reference ---
+
+    #[test]
+    fn radial_closest_side_is_half_shorter_side() {
+        let r = radial_radius((0.5, 0.5), 1.0, false, 100.0, 200.0);
+        assert!((r - 50.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn radial_farthest_corner_reaches_the_corner() {
+        // Center (50,100); farthest corner is any at distance
+        // sqrt(50^2 + 100^2) ≈ 111.8.
+        let r = radial_radius((0.5, 0.5), 1.0, true, 100.0, 200.0);
+        assert!((r - 111.803).abs() < 1e-2, "got {r}");
+    }
+
+    // --- preset-blend array construction ---
+
+    #[test]
+    fn blend_pads_missing_endpoints() {
+        let stops = [(0.3, 0xAA), (0.7, 0xBB)];
+        let (colors, positions) = blend_arrays(&stops, false);
+        assert_eq!(positions.first().copied(), Some(0.0));
+        assert_eq!(positions.last().copied(), Some(1.0));
+        assert_eq!(colors, vec![0xAA, 0xAA, 0xBB, 0xBB]);
+    }
+
+    #[test]
+    fn blend_reverse_flips_positions_for_path_gradient() {
+        // center→edge stops [(0,inner),(1,outer)] become boundary→center
+        // [(0,outer),(1,inner)] for the path gradient.
+        let stops = [(0.0, 0x11), (1.0, 0x22)];
+        let (colors, positions) = blend_arrays(&stops, true);
+        assert_eq!(positions, vec![0.0, 1.0]);
+        assert_eq!(colors, vec![0x22, 0x11]);
+    }
+}

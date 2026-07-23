@@ -296,10 +296,18 @@ pub use ios::register;
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 static OPS: &dyn SvgOps = ios::OPS;
 
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+pub mod linux;
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+pub use linux::register;
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+static OPS: &dyn SvgOps = linux::OPS;
+
 #[cfg(not(any(
     target_arch = "wasm32",
     target_os = "android",
     target_os = "ios",
+    target_os = "linux",
 )))]
 mod fallback {
     use runtime_core::Backend;
@@ -313,6 +321,7 @@ mod fallback {
     target_arch = "wasm32",
     target_os = "android",
     target_os = "ios",
+    target_os = "linux",
 )))]
 pub use fallback::register;
 
@@ -320,5 +329,6 @@ pub use fallback::register;
     target_arch = "wasm32",
     target_os = "android",
     target_os = "ios",
+    target_os = "linux",
 )))]
 static OPS: &dyn SvgOps = &UnsupportedOps;

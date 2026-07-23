@@ -360,6 +360,9 @@ pub enum Target {
     /// Native Linux app via `backend-linux` (GTK4) + `host-gtk`. Uses
     /// real GTK widgets in a `gtk::ApplicationWindow`.
     Linux,
+    /// Native Windows app via `backend-windows` (Win32) + `host-win32`.
+    /// Uses raw HWND child controls under a top-level window.
+    Windows,
 }
 
 impl Target {
@@ -376,8 +379,9 @@ impl Target {
             "macos" => Ok(Target::Macos),
             "terminal" => Ok(Target::Terminal),
             "linux" => Ok(Target::Linux),
+            "windows" => Ok(Target::Windows),
             other => anyhow::bail!(
-                "unknown target {:?}; expected one of: web, ios, android, roku, macos, terminal, linux",
+                "unknown target {:?}; expected one of: web, ios, android, roku, macos, terminal, linux, windows",
                 other
             ),
         }
@@ -394,6 +398,7 @@ impl Target {
             Target::Macos => "macos",
             Target::Terminal => "terminal",
             Target::Linux => "linux",
+            Target::Windows => "windows",
         }
     }
 }

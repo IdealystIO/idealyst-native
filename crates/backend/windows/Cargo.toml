@@ -39,6 +39,10 @@ runtime-layout = { workspace = true }
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    # GDI+ for anti-aliased rounded-rect fills/borders with alpha +
+    # gradients in the owner-drawn `IdealystView` (GDI's RoundRect is
+    # aliased). Binds to the WM_PAINT HDC so it respects WS_CLIPCHILDREN.
+    "Win32_Graphics_GdiPlus",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Controls",
 ] }

@@ -50,6 +50,16 @@ pub struct Args {
     #[arg(long)]
     pub terminal: bool,
 
+    /// Build for native Linux (GTK4 binary via `host-gtk` +
+    /// `backend-linux`).
+    #[arg(long)]
+    pub linux: bool,
+
+    /// Build for native Windows (Win32 `.exe` via `host-win32` +
+    /// `backend-windows`).
+    #[arg(long)]
+    pub windows: bool,
+
     /// Build the runtime-server dev-host binary on its own. Not a
     /// deploy target — useful for running the host outside of
     /// `idealyst dev --runtime-server`. `--aas` accepted as a
@@ -203,8 +213,7 @@ pub struct Args {
 }
 
 pub fn run(args: Args) -> Result<()> {
-    let dir = std::fs::canonicalize(&args.dir)
-        .with_context(|| format!("cannot resolve project dir {}", args.dir.display()))?;
+    let dir = crate::framework_source::abs_project_dir(&args.dir)?;
     let manifest = parse_manifest(&dir)?;
 
     // Resolve which targets to build. Explicit flags win; otherwise
@@ -221,7 +230,9 @@ pub fn run(args: Args) -> Result<()> {
         || args.android
         || args.roku
         || args.macos
-        || args.terminal;
+        || args.terminal
+        || args.linux
+        || args.windows;
     let mut targets = if args.serverless_lambda && !explicit_client {
         Vec::new()
     } else {
@@ -327,6 +338,12 @@ fn collect_targets(args: &Args, manifest_targets: &[Target]) -> Vec<Target> {
     if args.terminal {
         out.push(Target::Terminal);
     }
+    if args.linux {
+        out.push(Target::Linux);
+    }
+    if args.windows {
+        out.push(Target::Windows);
+    }
     if out.is_empty() {
         out.extend(manifest_targets.iter().copied());
     }
@@ -345,8 +362,23 @@ fn build_target(target: Target, dir: &std::path::Path, args: &Args) -> Result<Op
         Target::Macos => build_macos_target(dir, args)?,
         Target::Terminal => build_terminal_target(dir, args)?,
         Target::Linux => build_linux_target(dir, args)?,
+        Target::Windows => build_windows_target(dir, args)?,
     }
     Ok(None)
+}
+
+fn build_windows_target(dir: &std::path::Path, args: &Args) -> Result<()> {
+    let source = crate::framework_source::resolve(dir)?;
+    let artifact = build_windows::build(
+        dir,
+        build_windows::BuildOptions {
+            release: args.release,
+            source,
+            user_features: Vec::new(),
+        },
+    )?;
+    eprintln!("[build windows] success → {}", artifact.binary.display());
+    Ok(())
 }
 
 fn build_linux_target(dir: &std::path::Path, args: &Args) -> Result<()> {

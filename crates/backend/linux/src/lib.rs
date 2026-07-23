@@ -32,13 +32,22 @@
 //!
 //! ## Scope
 //!
-//! `view`, `text`, layout, styling, and the animation fast-path are
-//! fully implemented — enough to run the animated welcome app. Image /
-//! icon / virtualizer / navigator / portal / external remain
-//! placeholders (they render a labeled placeholder rather than
-//! panicking); fleshing those out into fully-styled native widgets is
-//! follow-on work for a general-purpose GTK backend, not needed by the
-//! welcome scene.
+//! `view`, `text`, `icon`, layout, styling, and the animation fast-path
+//! are fully implemented — enough to run the animated welcome app. `icon`
+//! strokes/fills real Lucide glyph paths via GSK (see [`icon`]); its
+//! stroke draw-on animation is the one gap (renders fully drawn).
+//! `image` ([`image`]) renders a `gtk::Picture` with `object_fit` →
+//! `content-fit` (local path / `data:` URI / `http(s)` via GIO).
+//! `portal` ([`portal`]) mounts a full-viewport flex container into a
+//! window-level `gtk::Overlay`; viewport placements are fully placed,
+//! anchored placement is a documented gap (no per-frame scheduler on the
+//! GTK host). `virtualizer` ([`virtualizer`]) is a windowed
+//! `gtk::ScrolledWindow` list — only viewport+overscan cells are realized
+//! and recycled; `ItemSize::Measured` degrades to the author estimate
+//! (the framework can't measure a detached cell subtree). `navigator` /
+//! `external` remain placeholders (they render a labeled placeholder
+//! rather than panicking); fleshing those out is follow-on work for a
+//! general-purpose GTK backend, not needed by the welcome scene.
 //!
 //! ## Threading
 //!
@@ -55,6 +64,7 @@
 
 #![cfg(target_os = "linux")]
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -67,14 +77,26 @@ use runtime_core::animation::AnimProp;
 use runtime_core::assets::{
     AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId,
 };
+use runtime_core::primitives::navigator::{NavigatorHandler, NavigatorHost, RegisterNavigator};
 use runtime_core::{Length, Overflow, Tokenized};
-use runtime_core::{Action, Backend, Color, ColorScheme, Platform, StyleRules};
-use runtime_layout::{LayoutNode, LayoutTree};
+use runtime_core::{
+    Action, Backend, Color, ColorScheme, NavigatorRegistry, Platform, RegisterExternal, StyleRules,
+};
+use runtime_layout::{AvailableSpace, LayoutNode, LayoutTree, Size};
+
+/// An active navigator instance's handler, keyed by the navigator
+/// node's id in [`LinuxBackend::nav_handlers`].
+type NavHandler = Rc<RefCell<Box<dyn NavigatorHandler<LinuxBackend>>>>;
 
 mod color;
 mod fonts;
+mod graphics;
 mod gradient;
 mod handles;
+mod image;
+mod portal;
+mod virtualizer;
+mod icon;
 mod text;
 mod transform;
 mod view;
@@ -102,6 +124,21 @@ impl std::fmt::Debug for LinuxNode {
             .field("id", &self.id)
             .field("widget_type", &self.widget.type_().name())
             .finish()
+    }
+}
+
+impl LinuxNode {
+    /// Stable per-node id. SDK `Element::External` leaves that keep an
+    /// imperative-ops table (video play/pause/seek, etc.) key it on this.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// The wrapped GTK widget. SDK leaves reach their native widget
+    /// (the `gtk::Video`, `gtk::Picture`, …) back through this to run
+    /// imperative ops or read intrinsic size.
+    pub fn widget(&self) -> &gtk4::Widget {
+        &self.widget
     }
 }
 
@@ -177,6 +214,28 @@ fn build_border(s: &StyleRules) -> Option<BorderPaint> {
     })
 }
 
+/// Taffy measure function for an arbitrary wrapped GTK widget — the
+/// intrinsic size an `Element::External` leaf reports to layout. Same
+/// shape as [`text::measure`] but for any `gtk::Widget` (Picture, Video,
+/// Label, …): natural width unconstrained, then height for that width.
+fn widget_measure(
+    widget: &gtk4::Widget,
+    known: Size<Option<f32>>,
+    available: Size<AvailableSpace>,
+) -> Size<f32> {
+    let (_wmin, wnat, _, _) = widget.measure(gtk4::Orientation::Horizontal, -1);
+    let width = known.width.unwrap_or_else(|| match available.width {
+        AvailableSpace::Definite(aw) => (wnat as f32).min(aw),
+        _ => wnat as f32,
+    });
+    let (_hmin, hnat, _, _) =
+        widget.measure(gtk4::Orientation::Vertical, width.round().max(-1.0) as i32);
+    Size {
+        width,
+        height: known.height.unwrap_or(hnat as f32),
+    }
+}
+
 fn build_paint_model(s: &StyleRules) -> PaintModel {
     PaintModel {
         background: s.background.as_ref().map(|c| color::to_srgb(&c.resolve())),
@@ -208,6 +267,13 @@ pub struct LinuxBackend {
     /// child id → parent id (for locating siblings on z change).
     parent_of: HashMap<u64, u64>,
     pub(crate) external_handlers: runtime_core::ExternalRegistry<LinuxBackend>,
+    /// Navigator handler factories keyed by presentation `TypeId`,
+    /// populated via [`RegisterNavigator`] (e.g. `swap_navigator::
+    /// register_generic`). `create_navigator` instantiates one per
+    /// navigator element.
+    navigator_handlers: NavigatorRegistry<LinuxBackend>,
+    /// Live navigator handler instances, keyed by the navigator node id.
+    nav_handlers: HashMap<u64, NavHandler>,
     /// Temp font files kept alive for the process (Pango reads lazily).
     _font_files: Vec<PathBuf>,
     /// The framework root node id, captured on first `finish`. Lets the
@@ -237,6 +303,8 @@ impl LinuxBackend {
             children: HashMap::new(),
             parent_of: HashMap::new(),
             external_handlers: runtime_core::ExternalRegistry::new(),
+            navigator_handlers: NavigatorRegistry::new(),
+            nav_handlers: HashMap::new(),
             _font_files: Vec::new(),
             root_id: None,
             self_ref: std::rc::Weak::new(),
@@ -329,6 +397,59 @@ impl LinuxBackend {
         }
     }
 
+    /// Lay out a DETACHED subtree rooted at `id` against `width` ×
+    /// `height`. Portal containers and virtualizer cells are Taffy
+    /// orphans — the main [`run_layout`](Self::run_layout) pass is scoped
+    /// to nodes reachable from the framework root, so it never frames
+    /// them, and without this every widget inside a portal/cell stays
+    /// 0×0. Mirrors `run_layout` but (a) computes from `id`'s layout node
+    /// as a sub-root and (b) walks only `id` + its tracked descendants.
+    /// Uses "quiet" transforms (no `queue_allocate`): callers invoke this
+    /// from inside the subtree root's own `size_allocate` (portal) or
+    /// immediately after placing a cell (virtualizer), where the result
+    /// is consumed by the same/next allocation.
+    pub fn layout_detached_root(&mut self, id: u64, width: f32, height: f32) {
+        if width <= 0.0 || height <= 0.0 {
+            return;
+        }
+        let Some(root_layout) = self.nodes.get(&id).map(|s| s.layout) else {
+            return;
+        };
+        self.layout.compute(root_layout, width, height);
+
+        // Collect `id` + every tracked descendant (self.children is the
+        // parent→children linkage the walker's `insert` populates).
+        let mut ids = Vec::new();
+        let mut stack = vec![id];
+        while let Some(n) = stack.pop() {
+            ids.push(n);
+            if let Some(ch) = self.children.get(&n) {
+                stack.extend(ch.iter().copied());
+            }
+        }
+
+        for nid in &ids {
+            let (frame, widget) = {
+                let Some(st) = self.nodes.get(nid) else {
+                    continue;
+                };
+                (self.layout.frame_of(st.layout), st.widget.clone())
+            };
+            if let Some(st) = self.nodes.get_mut(nid) {
+                st.frame = (frame.x, frame.y, frame.width, frame.height);
+            }
+            let (w, h) = (frame.width.round() as i32, frame.height.round() as i32);
+            if let Some(v) = widget.downcast_ref::<IdealystView>() {
+                v.set_layout_size(w, h);
+            } else {
+                widget.set_size_request(w, h);
+            }
+        }
+        for nid in &ids {
+            self.rebuild_transform(*nid, true);
+        }
+    }
+
     pub fn register_external<T, F>(&mut self, handler: F)
     where
         T: 'static,
@@ -342,7 +463,22 @@ impl LinuxBackend {
     }
 
     pub fn register_external_view(&mut self, widget: gtk4::Widget) -> LinuxNode {
-        self.wrap(widget, NodeKind::Other)
+        let node = self.wrap(widget.clone(), NodeKind::Other);
+        // Give Taffy the widget's intrinsic size so `Element::External`
+        // content (svg `Picture`, `Video`, codeblock/markdown `Label`)
+        // sizes to its content when the author doesn't pin explicit
+        // width/height — the same measure-fn treatment `create_text`
+        // gives a plain label. Author `width`/`height` still win (they
+        // land in Taffy's `size` via `apply_style`, which overrides the
+        // measured intrinsic).
+        if let Some(layout) = self.nodes.get(&node.id).map(|s| s.layout) {
+            let w = widget.clone();
+            self.layout
+                .set_measure_fn(layout, Rc::new(move |known, available| {
+                    widget_measure(&w, known, available)
+                }));
+        }
+        node
     }
 
     fn alloc_id(&mut self) -> u64 {
@@ -436,6 +572,32 @@ impl LinuxBackend {
     /// embedded `face!` fonts). Read from the host window's context.
     fn font_map(&self) -> Option<gtk4::pango::FontMap> {
         self.host_window.pango_context().font_map()
+    }
+}
+
+// =========================================================================
+// SDK registration traits — the backend-neutral `register_generic` paths
+// (`swap_navigator::register_generic`, `<sdk>::register`) resolve on
+// LinuxBackend through these.
+// =========================================================================
+
+impl RegisterNavigator for LinuxBackend {
+    fn register_navigator<P, F>(&mut self, factory: F)
+    where
+        P: 'static,
+        F: Fn() -> Box<dyn NavigatorHandler<LinuxBackend>> + 'static,
+    {
+        self.navigator_handlers.register::<P, _>(factory);
+    }
+}
+
+impl RegisterExternal for LinuxBackend {
+    fn register_external<T, F>(&mut self, handler: F)
+    where
+        T: 'static,
+        F: Fn(&Rc<T>, &mut Self) -> Self::Node + 'static,
+    {
+        self.external_handlers.register::<T, _>(handler);
     }
 }
 
@@ -617,7 +779,19 @@ impl Backend for LinuxBackend {
                     }
                 }
             }
-            NodeKind::Other => {}
+            NodeKind::Other => {
+                // Image nodes are `gtk::Picture` (NodeKind::Other). Honor
+                // `object_fit` → `content-fit` here — the framework calls
+                // `apply_style` separately from `create_image`, so this is
+                // where a reactive or static `object_fit` lands (default
+                // `Contain`, matching the framework-wide default).
+                if let Some(st) = self.nodes.get(&id) {
+                    if let Some(pic) = st.widget.downcast_ref::<gtk4::Picture>() {
+                        let fit = style.object_fit.unwrap_or_default();
+                        pic.set_content_fit(image::map_fit(fit));
+                    }
+                }
+            }
         }
     }
 
@@ -760,21 +934,73 @@ impl Backend for LinuxBackend {
 
     fn create_image(
         &mut self,
-        _src: &str,
-        _alt: Option<&str>,
+        src: &str,
+        alt: Option<&str>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        self.placeholder("Image not yet implemented on Linux backend")
+        // `gtk::Picture` with a `content-fit` for `object_fit` (see
+        // `image.rs`). `register_external_view` installs the intrinsic-
+        // size measure fn so an unpinned image sizes to its bitmap;
+        // author `width`/`height` still win via Taffy.
+        let pic = image::build_picture(src, alt);
+        self.register_external_view(pic.upcast::<gtk4::Widget>())
+    }
+
+    fn update_image_src(&mut self, node: &Self::Node, src: &str) {
+        if let Some(pic) = node.widget.downcast_ref::<gtk4::Picture>() {
+            image::set_source(pic, src);
+        }
+    }
+
+    fn update_image_alt(&mut self, node: &Self::Node, alt: Option<&str>) {
+        if let Some(pic) = node.widget.downcast_ref::<gtk4::Picture>() {
+            pic.set_alternative_text(alt);
+        }
     }
 
     fn create_icon(
         &mut self,
-        _data: &runtime_core::primitives::icon::IconData,
-        _color: Option<&Color>,
+        data: &runtime_core::primitives::icon::IconData,
+        color: Option<&Color>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        self.placeholder("Icon not yet implemented on Linux backend")
+        // Default color = opaque black (the text-node default / Linux
+        // analogue of web `currentColor`); a set color parses through the
+        // shared sRGB parser. The custom widget scales + strokes/fills the
+        // glyph in its own `snapshot` — see `icon.rs`.
+        let rgba = color
+            .map(color::to_srgb)
+            .unwrap_or(icon::DEFAULT_ICON_COLOR);
+        let widget = icon::IdealystIcon::new_from_data(data, rgba);
+        self.wrap(widget.upcast::<gtk4::Widget>(), NodeKind::Other)
     }
+
+    fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
+        if let Some(w) = node.widget.downcast_ref::<icon::IdealystIcon>() {
+            w.set_color(color::to_srgb(color));
+        }
+    }
+
+    fn update_icon_data(
+        &mut self,
+        node: &Self::Node,
+        data: &runtime_core::primitives::icon::IconData,
+    ) {
+        if let Some(w) = node.widget.downcast_ref::<icon::IdealystIcon>() {
+            w.set_data(data);
+        }
+    }
+
+    // Stroke draw-on animation (dash-offset trim) is not yet wired on the
+    // GTK backend. GSK can express it — `gsk::Stroke::set_dash` +
+    // `set_dash_offset` with the total path length from `gsk::PathMeasure`,
+    // ticked by a `gtk::TickCallback` — but the length/dash bookkeeping and
+    // an easing clock are non-trivial and out of scope for the initial
+    // primitive. The icon renders fully drawn (the documented fallback for
+    // backends without stroke animation), so `draw_in` / reactive `stroke`
+    // degrade gracefully rather than break.
+    // TODO(icon-stroke-anim): implement update_icon_stroke / animate_icon_stroke
+    // via PathMeasure-driven dash trimming + a tick-callback easing clock.
 
     fn create_text_input(
         &mut self,
@@ -895,22 +1121,56 @@ impl Backend for LinuxBackend {
 
     fn create_virtualizer(
         &mut self,
-        _callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
-        _overscan: f32,
-        _layout: runtime_core::VirtualLayout,
+        callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
+        overscan: f32,
+        layout: runtime_core::VirtualLayout,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        self.placeholder("Virtualizer not yet implemented on Linux backend")
+        // ScrolledWindow over a Fixed "document"; `virtualizer.rs` drives
+        // windowed realization + recycling from the scroll adjustments.
+        let horizontal = layout.axis.is_horizontal();
+        let scrolled = gtk4::ScrolledWindow::new();
+        if horizontal {
+            scrolled.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Never);
+        } else {
+            scrolled.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+        }
+        let fixed = gtk4::Fixed::new();
+        scrolled.set_child(Some(&fixed));
+        let node = self.wrap(scrolled.clone().upcast::<gtk4::Widget>(), NodeKind::Other);
+        virtualizer::create(
+            node.id,
+            scrolled,
+            fixed,
+            callbacks,
+            overscan,
+            layout,
+            self.self_ref(),
+        );
+        node
+    }
+
+    fn virtualizer_data_changed(&mut self, node: &Self::Node) {
+        virtualizer::data_changed(node.id);
+    }
+
+    fn release_virtualizer(&mut self, node: &Self::Node) {
+        virtualizer::release(node.id);
     }
 
     fn create_graphics(
         &mut self,
-        _on_ready: runtime_core::primitives::graphics::OnReady,
-        _on_resize: runtime_core::primitives::graphics::OnResize,
-        _on_lost: runtime_core::primitives::graphics::OnLost,
+        on_ready: runtime_core::primitives::graphics::OnReady,
+        on_resize: runtime_core::primitives::graphics::OnResize,
+        on_lost: runtime_core::primitives::graphics::OnLost,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        self.placeholder("Graphics not yet implemented on Linux backend")
+        // A `GtkGLArea` render surface. See [`graphics`] for why this can't
+        // yet satisfy the raw-window-handle `on_ready` contract on GTK4 — the
+        // widget acquires a live GL context + FBO (proven by clearing to a
+        // color) but exposes no `HasWindowHandle` for wgpu's `create_surface`.
+        let widget = graphics::build_gl_area(on_ready, on_resize, on_lost);
+        self.wrap(widget, NodeKind::Other)
     }
 
     fn create_external(
@@ -920,6 +1180,10 @@ impl Backend for LinuxBackend {
         payload: &Rc<dyn std::any::Any>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
+        // Apply any registrations queued from inside a `lazy!` chunk
+        // (deferred because the chunk body has no `&mut Backend`), then
+        // look up the handler. Matches the wgpu / web backends.
+        runtime_core::drain_external_registrations(self);
         if let Some(handler) = self.external_handlers.get(type_id) {
             return handler(payload, self);
         }
@@ -930,24 +1194,101 @@ impl Backend for LinuxBackend {
 
     fn create_portal(
         &mut self,
-        _target: runtime_core::primitives::portal::PortalTarget,
-        _on_dismiss: Option<Rc<dyn Fn()>>,
-        _trap_focus: bool,
+        target: runtime_core::primitives::portal::PortalTarget,
+        on_dismiss: Option<Rc<dyn Fn()>>,
+        trap_focus: bool,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        self.placeholder("Portal not yet implemented on Linux backend")
+        // A full-viewport flex container (see `portal.rs`) mounted into a
+        // window-level `gtk::Overlay`. NodeKind::View so its background /
+        // flex style apply through the normal `apply_style` path.
+        let view = IdealystView::new();
+        let node = self.wrap(view.clone().upcast::<gtk4::Widget>(), NodeKind::View);
+        // Base placement flex from the target (author/composition style
+        // overrides via a later `apply_style`).
+        if let Some(layout) = self.nodes.get(&node.id).map(|s| s.layout) {
+            let style = Rc::new(portal::placement_style(&target));
+            self.layout.set_style(layout, &style);
+        }
+        portal::configure(
+            &view,
+            node.id,
+            self.self_ref(),
+            self.host_window.clone(),
+            on_dismiss,
+            trap_focus,
+        );
+        node
+    }
+
+    fn release_portal(&mut self, node: &Self::Node) {
+        if let Some(v) = node.widget.downcast_ref::<IdealystView>() {
+            portal::release(v);
+        }
+    }
+
+    fn set_portal_hidden(&mut self, node: &Self::Node, hidden: bool) {
+        // Hide without teardown (navigation off the portal's screen).
+        node.widget.set_visible(!hidden);
     }
 
     fn create_navigator(
         &mut self,
-        _type_id: std::any::TypeId,
-        type_name: &'static str,
-        _presentation: Rc<dyn std::any::Any>,
-        _host: runtime_core::primitives::navigator::NavigatorHost<Self::Node>,
-        _a11y: &AccessibilityProps,
+        type_id: std::any::TypeId,
+        _type_name: &'static str,
+        presentation: Rc<dyn std::any::Any>,
+        host: NavigatorHost<Self::Node>,
+        a11y: &AccessibilityProps,
     ) -> Self::Node {
-        self.placeholder(&format!(
-            "Navigator \"{type_name}\" not yet implemented on Linux backend"
-        ))
+        // Dispatch to a registered handler (the backend-neutral swap /
+        // drawer navigators build their chrome from primitives, which
+        // GTK draws natively). With no handler, fall back to a bare
+        // container — the walker still mounts the path-matched initial
+        // screen into it via `navigator_attach_initial`, so the current
+        // page renders even without navigation chrome.
+        if let Some(factory) = self.navigator_handlers.get(type_id) {
+            let mut handler = factory();
+            let node = handler.init(self, host, presentation);
+            self.nav_handlers
+                .insert(node.id, Rc::new(RefCell::new(handler)));
+            node
+        } else {
+            self.create_view(a11y)
+        }
+    }
+
+    fn navigator_attach_initial(
+        &mut self,
+        navigator: &Self::Node,
+        screen: Self::Node,
+        scope_id: u64,
+        options: Box<dyn std::any::Any>,
+    ) {
+        if let Some(handler) = self.nav_handlers.get(&navigator.id).cloned() {
+            handler
+                .borrow_mut()
+                .attach_initial(self, screen, scope_id, options);
+        } else {
+            // Bare-container fallback: mount the initial screen directly.
+            let mut nav = navigator.clone();
+            self.insert(&mut nav, screen);
+        }
+    }
+
+    fn release_navigator(&mut self, node: &Self::Node) {
+        if let Some(handler) = self.nav_handlers.remove(&node.id) {
+            handler.borrow_mut().release(self);
+        }
+    }
+
+    fn apply_navigator_slot_style(
+        &mut self,
+        node: &Self::Node,
+        slot: &'static str,
+        style: &Rc<StyleRules>,
+    ) {
+        if let Some(handler) = self.nav_handlers.get(&node.id).cloned() {
+            handler.borrow_mut().apply_slot_style(self, slot, style);
+        }
     }
 }
