@@ -6,10 +6,10 @@ tags = ["migration", "0.4.0", "breaking", "reactivity", "macros", "lazy", "code-
 
 # Migrating 0.3 → 0.4
 
-> **Status: 0.4.0 is in development.** This is the living record of its breaking
-> changes — each section carries a `Status:` line and fills in with concrete
-> before/after as the change lands. See [[migrations]] for the versioning
-> policy: 0.4.0 is a **clean, in-place break with no legacy shims**.
+> **Status: 0.4.0 is final.** Development has moved to 0.5.0 — see
+> [[migration-0-4-0-to-0-5-0]] for the current living record. Each section
+> below carries a `Status:` line. Per [[migrations]], 0.4.0 was a **clean,
+> in-place break with no legacy shims**.
 
 0.4.0 makes `ui!` / `jsx!` control-flow reactivity **correct by default**. The
 pre-0.4.0 gate *guessed* whether an `if` / `match` condition was reactive by

@@ -11,6 +11,11 @@
 //! not the enum data.
 
 pub mod activity_indicator;
+// Authoring-only wrapper around `Element::Virtualizer` — gated with the
+// primitive so a disabled `prim-virtualizer` turns any use of `flat_list`
+// into a compile error naming the missing fn (the model types in
+// `virtualizer` stay ungated: `Element` and the wire need them).
+#[cfg(feature = "prim-virtualizer")]
 pub mod flat_list;
 pub mod graphics;
 pub mod icon;

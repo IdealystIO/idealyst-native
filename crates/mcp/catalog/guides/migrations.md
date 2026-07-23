@@ -38,6 +38,7 @@ the migration guide *is* the compatibility layer.
 | --- | --- |
 | 0.0.1 → 0.1.0 | [[migration-0-0-1-to-0-1-0]] |
 | 0.3 → 0.4 | [[migration-0-3-0-to-0-4-0]] |
+| 0.4 → 0.5 | [[migration-0-4-0-to-0-5-0]] |
 
 ## Updating the dependency
 

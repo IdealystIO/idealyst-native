@@ -270,26 +270,40 @@ pub use primitives::navigator::{
     NavigatorControl, NavigatorHandle, NavigatorHandler, NavigatorHost, NavigatorOps,
     NavigatorRegistry, Route, RouteParams, Screen, ScreenStateGuard,
 };
-pub use primitives::icon::{icon, FillRule, IconData, IconHandle, IconOps, StrokeAnimation};
+#[cfg(feature = "prim-icon")]
+pub use primitives::icon::icon;
+pub use primitives::icon::{FillRule, IconData, IconHandle, IconOps, StrokeAnimation};
+#[cfg(feature = "prim-image")]
+pub use primitives::image::{image, image_asset, image_from};
 pub use primitives::image::{
-    image, image_asset, image_from, ImageErrorHandler, ImageHandle, ImageLoadEvent,
-    ImageLoadHandler, ImageOps, ImageSource,
+    ImageErrorHandler, ImageHandle, ImageLoadEvent, ImageLoadHandler, ImageOps, ImageSource,
 };
 pub use primitives::key::{KeyEvent, KeyOutcome};
-pub use primitives::text_input::{text_input, TextInputHandle, TextInputOps};
-pub use primitives::text_area::{text_area, TextAreaHandle, TextAreaOps};
-pub use primitives::toggle::{toggle, ToggleHandle, ToggleOps};
-pub use primitives::overlay::{
-    anchored_overlay, overlay, AnchoredOverlayBuilder, BackdropMode, OverlayBuilder,
-};
+#[cfg(feature = "prim-text-input")]
+pub use primitives::text_input::text_input;
+pub use primitives::text_input::{TextInputHandle, TextInputOps};
+#[cfg(feature = "prim-text-input")]
+pub use primitives::text_area::text_area;
+pub use primitives::text_area::{TextAreaHandle, TextAreaOps};
+#[cfg(feature = "prim-toggle")]
+pub use primitives::toggle::toggle;
+pub use primitives::toggle::{ToggleHandle, ToggleOps};
+#[cfg(feature = "prim-portal")]
+pub use primitives::overlay::{anchored_overlay, overlay};
+pub use primitives::overlay::{AnchoredOverlayBuilder, BackdropMode, OverlayBuilder};
+#[cfg(feature = "prim-virtualizer")]
 pub use primitives::flat_list::{flat_list, fixed_size, FlatListItemSize};
 pub use primitives::scroll_view::{scroll_view, ScrollViewHandle, ScrollViewOps};
+#[cfg(feature = "prim-virtualizer")]
+pub use primitives::virtualizer::virtualizer;
 pub use primitives::virtualizer::{
-    virtualizer, Axis, ItemKey, ItemSize, Lanes, VirtualLayout, VirtualizerHandle,
+    Axis, ItemKey, ItemSize, Lanes, VirtualLayout, VirtualizerHandle,
 };
 pub use primitives::link::{external_link, NavKind};
+#[cfg(feature = "prim-portal")]
+pub use primitives::portal::portal;
 pub use primitives::portal::{
-    portal, AnchorTarget, AnchorableHandle, ElementAlign, ElementSide, PortalHandle,
+    AnchorTarget, AnchorableHandle, ElementAlign, ElementSide, PortalHandle,
     PortalOps, PortalTarget, ViewportPlacement, ViewportRect,
 };
 pub use external::{
@@ -297,9 +311,9 @@ pub use external::{
     external, has_pending_external_registrations, register_external_serde,
     serialize_external_payload, ErasedHandler, ExternalHandle, ExternalRegistry, RegisterExternal,
 };
-pub use primitives::presence::{
-    presence, PresenceAnim, PresenceHandle, PresenceOps, PresenceState,
-};
+#[cfg(feature = "prim-presence")]
+pub use primitives::presence::presence;
+pub use primitives::presence::{PresenceAnim, PresenceHandle, PresenceOps, PresenceState};
 pub use reactive::{
     arena_stats, batch, cycle, inject, inject_or, install_drop_deferral, install_reactive_idle_hook,
     is_reactive_busy, memo, memo_with, on, on_cleanup, on_defer, provide, reducer,

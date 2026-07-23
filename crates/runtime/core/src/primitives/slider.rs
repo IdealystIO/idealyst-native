@@ -33,6 +33,7 @@ pub trait SliderOps {
 /// Construct a controlled slider with default range 0.0..=1.0 and
 /// no step (continuous). Use `.range(min, max)` and `.step(step)` to
 /// customize.
+#[cfg(feature = "prim-slider")]
 pub fn slider<F: Fn(f32) + 'static>(
     value: Signal<f32>,
     on_change: F,

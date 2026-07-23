@@ -119,6 +119,40 @@ self-registration for native, where bundle size is a non-issue. Measured on a
 512 KiB test SDK: main bundle 1294 KiB → 781 KiB. See the `lazy!` macro and
 [[defer_external_registration]].
 
+Beyond lazy chunks, the framework itself is trimmable: runtime-core exposes
+`prim-*` cargo features (all ON by default) that gate whole primitive
+families out of the build — walker dispatch, backend implementation, and any
+embedded JS shims. All twelve families are gated: `prim-virtualizer`
+(flat_list / grids / the structured `for i in count(sig)` form), `prim-icon`,
+`prim-image`, `prim-text-input` (TextInput + TextArea), `prim-toggle`,
+`prim-slider`, `prim-activity`, `prim-portal` (overlay / anchored_overlay),
+`prim-presence`, `prim-graphics`, `prim-navigator` (navigator + outlet +
+URL sync + Link's nav dispatch), and `prim-lazy` (`#[lazy_component]` chunk
+mounting). The supported opt-out is two-sided (cargo unifies features
+across the build graph, so both edits must land together): the app crate
+sets `default-features = false` on its `runtime-core` dependency, and the
+build names the families the app's own code uses —
+`idealyst build --web --release --primitives icon,text-input` (or
+`--primitives none` for a text/view-only bundle). The build warns when the
+app-side edit is missing, and an unknown family name is a hard error. A
+view+text-only baseline drops from ~548 KB to ~392 KB raw (~133 KB brotli
+over the wire). An SDK that renders through a gated primitive forwards the
+feature on its runtime-core dep (see `virtualized`, `swap-navigator`,
+`stack-navigator`) so depending on the SDK re-enables exactly what it
+needs. Authoring a gated-out primitive is a compile error naming the
+feature; one arriving at runtime — over the wire, or through a feature
+mismatch between crates — renders the standard "not supported" placeholder
+on every backend (never a panic). Full contracts and the SDK-author
+checklist live in [[migration-0-4-0-to-0-5-0]].
+
+Note for backend/intermediate crates: cargo ignores `default-features =
+false` on `workspace = true` deps, and any dep line with default features
+re-enables the whole `prim-*` set for everyone (feature unification).
+Backend and utility crates that sit between the app and runtime-core
+(`backend-web`, `css`) therefore declare runtime-core as a *path* dep with
+`default-features = false` and forward per-family features explicitly —
+without that, an app's opt-out silently does nothing.
+
 The anchor rule is transitive: a *dependency's* `inventory::submit!` pins its
 code just as hard as your own. An SDK that both self-registers (zero-config
 eager use) and gets consumed as a delegate by another SDK should put the

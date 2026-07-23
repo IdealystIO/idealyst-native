@@ -64,6 +64,32 @@ pub struct BuildOptions {
     /// host must send `Content-Encoding: gzip` on these responses for
     /// the browser to inflate them transparently.
     pub gzip: bool,
+    /// Emit precompressed `.br` SIBLINGS (`foo.wasm` → `foo.wasm.br`,
+    /// original kept) for every compressible file in the staged
+    /// bundle, using brotli q11. Only meaningful when
+    /// `bundle_out_dir` is `Some`. Unlike `gzip` (which rewrites
+    /// bytes in place for fixed-header hosts), siblings are the
+    /// standard static-host shape: nginx `brotli_static on`, Caddy
+    /// `file_server precompressed`, and CDN edges serve the `.br`
+    /// when the client sends `Accept-Encoding: br` and fall back to
+    /// the original otherwise. Runs BEFORE the in-place gzip pass so
+    /// the `.br` is always encoded from the original bytes. The CLI
+    /// defaults this ON for release bundles (brotli q11 beats
+    /// gzip -9 by ~20% on wasm); `--no-brotli` opts out.
+    pub brotli: bool,
+    /// Restrict the wrapper's `prim-*` primitive-family features to
+    /// exactly this set (`None` = all families, the no-surprise
+    /// default). Families are named without the `prim-` prefix
+    /// (`"icon"`, `"text-input"`, …; see [`PRIM_FAMILIES`]) and an
+    /// unknown name is a hard error listing the valid set. This is
+    /// one half of the minimal-bundle workflow: the wrapper stops
+    /// re-enabling unused families, but cargo feature unification
+    /// means the APP crate's own `runtime-core` dependency must also
+    /// set `default-features = false` (and any SDK it uses forwards
+    /// what it needs) — `build()` inspects the app manifest and
+    /// warns loudly when that edit is missing, because the flag is
+    /// silently ineffective without it.
+    pub primitives: Option<Vec<String>>,
     /// Strip panic machinery (`-Z build-std-features=panic_immediate_abort`).
     /// Every panic becomes a bare `unreachable` trap with no message.
     /// Requires a nightly toolchain + the `rust-src` component and
@@ -132,7 +158,11 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         &manifest,
         &opts.user_features,
         opts.hydrate,
+        opts.primitives.as_deref(),
     )?;
+    if opts.primitives.is_some() {
+        warn_if_app_reenables_prims(&project_dir);
+    }
 
     // Direct pipeline (no wasm-pack), so we can hit the flag matrix
     // wasm-split-cli needs to actually extract chunks:
@@ -221,6 +251,10 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         // (independent concerns, but both must finish before gzip)
         // and BEFORE gzip for the same reason.
         sync_and_inject_web_icons(&project_dir, &staged)?;
+        if opts.brotli {
+            brotli_precompress_bundle(&staged)
+                .with_context(|| format!("brotli-precompress bundle at {}", staged.display()))?;
+        }
         if opts.gzip {
             gzip_bundle(&staged).with_context(|| format!("gzip bundle at {}", staged.display()))?;
         }
@@ -819,6 +853,67 @@ fn gzip_bundle(bundle_dir: &Path) -> Result<()> {
     })
 }
 
+/// Emit a brotli-compressed `.br` sibling for every compressible file in
+/// the staged bundle (originals untouched). q11/window-22 — the encode is
+/// a one-time build cost, so max quality is free at serve time. A sibling
+/// is only kept when it's actually smaller than the original; hosts fall
+/// back to the uncompressed file otherwise (tiny files where the brotli
+/// framing would win nothing get no sibling).
+fn brotli_precompress_bundle(bundle_dir: &Path) -> Result<()> {
+    fn walk(dir: &Path, on_file: &mut dyn FnMut(&Path) -> Result<()>) -> Result<()> {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let ft = entry.file_type()?;
+            if ft.is_dir() {
+                walk(&path, on_file)?;
+            } else if ft.is_file() {
+                on_file(&path)?;
+            }
+        }
+        Ok(())
+    }
+    let mut emitted = 0usize;
+    let mut saved: u64 = 0;
+    walk(bundle_dir, &mut |path| {
+        // Skip already-compressed formats AND any `.br` from a previous
+        // run (re-staging syncs over the old bundle dir).
+        if is_already_compressed(path)
+            || path.extension().and_then(|s| s.to_str()) == Some("br")
+        {
+            return Ok(());
+        }
+        let bytes =
+            fs::read(path).with_context(|| format!("read {} for brotli", path.display()))?;
+        let mut out = Vec::with_capacity(bytes.len() / 2);
+        {
+            // buffer_size 4096, quality 11, lg_window_size 22 — the encoder
+            // defaults brotli's own CLI uses at `-q 11`.
+            let mut enc = brotli::CompressorWriter::new(&mut out, 4096, 11, 22);
+            enc.write_all(&bytes)
+                .with_context(|| format!("brotli {}", path.display()))?;
+        }
+        if out.len() >= bytes.len() {
+            return Ok(());
+        }
+        let mut sibling = path.as_os_str().to_owned();
+        sibling.push(".br");
+        let sibling = PathBuf::from(sibling);
+        fs::write(&sibling, &out)
+            .with_context(|| format!("write {}", sibling.display()))?;
+        emitted += 1;
+        saved += (bytes.len() - out.len()) as u64;
+        Ok(())
+    })?;
+    if emitted > 0 {
+        println!(
+            "[build-web] brotli: {emitted} precompressed .br sibling(s) emitted ({} KB smaller than the originals); hosts with `brotli_static` / `precompressed` serve them automatically",
+            saved / 1024
+        );
+    }
+    Ok(())
+}
+
 fn is_already_compressed(path: &Path) -> bool {
     let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
         return false;
@@ -858,6 +953,103 @@ fn is_already_compressed(path: &Path) -> bool {
 /// the path runtime-server-mode hot reload uses to enable `dev-hot-reload` on
 /// the user crate without forcing every user crate to carry that
 /// feature in its default set.
+/// `--primitives` is defeated by cargo feature unification if the APP
+/// crate's own `runtime-core` dependency still carries default features
+/// (the default set is exactly the `prim-*` families): the wrapper builds
+/// app + framework in one graph, so the app's dep line unions everything
+/// back on and the flag silently does nothing. Detect that and warn —
+/// we can't edit the user's manifest for them.
+fn warn_if_app_reenables_prims(project_dir: &Path) {
+    let manifest_path = project_dir.join("Cargo.toml");
+    let Ok(text) = fs::read_to_string(&manifest_path) else { return };
+    let Ok(doc) = text.parse::<toml::Value>() else { return };
+    let dep_tables = ["dependencies", "dev-dependencies", "build-dependencies"];
+    let mut offending = false;
+    let mut check_table = |table: &toml::Value| {
+        if let Some(dep) = table.get("runtime-core") {
+            let opted_out = dep
+                .get("default-features")
+                .and_then(|v| v.as_bool())
+                .map(|b| !b)
+                .unwrap_or(false);
+            // `{ workspace = true }` inherits the workspace spec, whose
+            // defaults are ON — same problem as a bare version string.
+            if !opted_out {
+                offending = true;
+            }
+        }
+    };
+    for key in dep_tables {
+        if let Some(t) = doc.get(key) {
+            check_table(t);
+        }
+    }
+    if let Some(targets) = doc.get("target").and_then(|t| t.as_table()) {
+        for (_, cfg) in targets {
+            for key in dep_tables {
+                if let Some(t) = cfg.get(key) {
+                    check_table(t);
+                }
+            }
+        }
+    }
+    if offending {
+        eprintln!(
+            "[build-web] ⚠ --primitives is set, but {}'s `runtime-core` dependency keeps \
+default features — cargo feature unification re-enables EVERY prim-* family, so the flag \
+currently changes nothing. Set `runtime-core = {{ ..., default-features = false }}` in the \
+app crate (SDKs you use forward the families they need).",
+            manifest_path.display(),
+        );
+    }
+}
+
+/// The gateable primitive families, exactly as `runtime-core` /
+/// `backend-web` spell their `prim-*` cargo features (sans prefix).
+/// `--primitives` names are validated against this list.
+pub const PRIM_FAMILIES: &[&str] = &[
+    "virtualizer",
+    "icon",
+    "image",
+    "text-input",
+    "toggle",
+    "slider",
+    "activity",
+    "portal",
+    "presence",
+    "graphics",
+    "navigator",
+    "lazy",
+];
+
+/// Resolve a user-supplied `--primitives` list to `prim-*` feature
+/// names. Accepts bare family names (`icon`), the full feature name
+/// (`prim-icon`), and `_` for `-`; `none` (alone) selects the empty
+/// set. Unknown names are a hard error naming the valid families —
+/// a typo must not silently ship a placeholder-rendering bundle.
+pub fn resolve_prim_features(requested: &[String]) -> Result<Vec<String>> {
+    if requested.len() == 1 && requested[0].eq_ignore_ascii_case("none") {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for raw in requested {
+        let norm = raw.trim().to_ascii_lowercase().replace('_', "-");
+        let family = norm.strip_prefix("prim-").unwrap_or(&norm);
+        if !PRIM_FAMILIES.contains(&family) {
+            anyhow::bail!(
+                "--primitives: unknown primitive family '{raw}'. Valid families: {} \
+                 (or 'none' for a text/view-only bundle)",
+                PRIM_FAMILIES.join(", "),
+            );
+        }
+        let feat = format!("prim-{family}");
+        if !out.contains(&feat) {
+            out.push(feat);
+        }
+    }
+    Ok(out)
+}
+
 pub fn generate_wrapper(
     wrapper_dir: &Path,
     project_dir: &Path,
@@ -865,6 +1057,7 @@ pub fn generate_wrapper(
     manifest: &Manifest,
     user_features: &[String],
     hydrate: bool,
+    primitives: Option<&[String]>,
 ) -> Result<()> {
     fs::create_dir_all(wrapper_dir.join("src"))
         .with_context(|| format!("create {}", wrapper_dir.display()))?;
@@ -879,7 +1072,16 @@ pub fn generate_wrapper(
     // output to use the original lib name by setting `[lib].name`
     // on the wrapper to `manifest.lib_name`, which wasm-pack
     // prefers over the package name when present.
-    let fcore_dep = source.dep("crates/runtime/core", &[]);
+    // Like backend-web below, runtime-core is spelled with
+    // `default-features = false` + an explicit `prim-*` list: its default
+    // feature set IS the primitive families, so a plain dep line here
+    // would re-enable every family through unification and silently
+    // defeat `--primitives`. The same list feeds both dep lines — the
+    // walker gate (runtime-core) and the backend impls (backend-web)
+    // stay in lockstep by construction.
+    let fcore_base = source.dep("crates/runtime/core", &[]);
+    let fcore_inner =
+        fcore_base.trim().trim_start_matches('{').trim_end_matches('}').trim().to_string();
     // The wrapper always installs `backend_web::install_async_executor()`
     // so `runtime_core::driver::spawn_async` works inside any
     // wasm app — required by `resource()`, `mutation()`, and the
@@ -899,11 +1101,28 @@ pub fn generate_wrapper(
     // in the explicit feature set so the wrapper opts out of `hydrate`
     // when SSG/SSR isn't paired with this build.
     let bweb_inner = bweb_base.trim().trim_start_matches('{').trim_end_matches('}').trim();
-    let bweb_features: Vec<&str> = if hydrate {
-        vec!["async-driver", "hydrate"]
-    } else {
-        vec!["async-driver"]
+    // `prim-virtualizer` must be spelled explicitly because this dep line
+    // opts out of backend-web's defaults: the walker side comes in through
+    // runtime-core's default features, and a walker that dispatches to a
+    // backend without the matching impl would hit the trait's
+    // `unimplemented!` default at runtime. This is also the seam where a
+    // future `--primitives <list|auto>` flag will pick a per-app set.
+    let prim_feats: Vec<String> = match primitives {
+        // `--primitives` names the exact families this app uses.
+        Some(req) => resolve_prim_features(req)?,
+        // Default: every family, matching the crates' own defaults.
+        None => PRIM_FAMILIES.iter().map(|f| format!("prim-{f}")).collect(),
     };
+    let mut bweb_features: Vec<String> = vec!["async-driver".to_string()];
+    if hydrate {
+        bweb_features.push("hydrate".to_string());
+    }
+    bweb_features.extend(prim_feats.iter().cloned());
+    let fcore_dep = format!(
+        "{{ {}, default-features = false, features = [{}] }}",
+        fcore_inner,
+        prim_feats.iter().map(|f| format!("\"{f}\"")).collect::<Vec<_>>().join(", "),
+    );
     let bweb_features_clause = format!(
         "features = [{}]",
         bweb_features.iter().map(|f| format!("\"{}\"", f)).collect::<Vec<_>>().join(", "),
@@ -1851,9 +2070,73 @@ mod regression_tests {
         let source = FrameworkSource::Workspace {
             root: workspace_root,
         };
-        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, &[], false)
+        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, &[], false, None)
             .expect("generate wrapper");
         (wrapper_dir, tmp)
+    }
+
+    #[test]
+    fn resolve_prim_features_accepts_aliases_and_rejects_unknown() {
+        // Bare, prefixed, and underscore spellings all normalize.
+        let got = resolve_prim_features(&[
+            "icon".into(),
+            "prim-text-input".into(),
+            "text_input".into(), // duplicate of the previous, via alias
+            "NAVIGATOR".into(),
+        ])
+        .expect("valid families");
+        assert_eq!(got, vec!["prim-icon", "prim-text-input", "prim-navigator"]);
+
+        // `none` alone = empty set (text/view-only bundle).
+        assert!(resolve_prim_features(&["none".into()]).unwrap().is_empty());
+
+        // A typo must be a hard error naming the valid set, never a
+        // silently-placeholder-rendering bundle.
+        let err = resolve_prim_features(&["ikon".into()]).unwrap_err().to_string();
+        assert!(err.contains("ikon") && err.contains("virtualizer"), "got: {err}");
+    }
+
+    /// `--primitives icon,text-input` must restrict the wrapper's
+    /// backend-web feature list to exactly those families (plus the
+    /// unconditional `async-driver`) — and keep `default-features = false`
+    /// so nothing sneaks back in through the dep line itself.
+    #[test]
+    fn wrapper_primitives_flag_restricts_prim_features() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("project");
+        let wrapper_dir = tmp.path().join("wrapper");
+        let workspace_root = tmp.path().join("workspace");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        let manifest = fake_manifest();
+        let source = FrameworkSource::Workspace { root: workspace_root };
+        let prims = vec!["icon".to_string(), "text-input".to_string()];
+        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, &[], false, Some(&prims))
+            .expect("generate wrapper");
+
+        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
+        let parsed: toml::Value = toml::from_str(&cargo).expect("valid TOML");
+        let bweb = parsed
+            .get("dependencies")
+            .and_then(|d| d.get("backend-web"))
+            .expect("backend-web dep");
+        assert_eq!(
+            bweb.get("default-features").and_then(|v| v.as_bool()),
+            Some(false),
+            "wrapper must opt out of backend-web defaults",
+        );
+        let feats: Vec<&str> = bweb
+            .get("features")
+            .and_then(|f| f.as_array())
+            .expect("features array")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(
+            feats,
+            vec!["async-driver", "prim-icon", "prim-text-input"],
+            "wrapper features must be exactly the requested families, got:\n{cargo}",
+        );
     }
 
     #[test]
@@ -1967,7 +2250,7 @@ mod regression_tests {
             "runtime-server".to_string(),
             "runtime-core/hot-reload".to_string(),
         ];
-        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, &user_features, false)
+        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, &user_features, false, None)
             .expect("generate wrapper");
         let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
 
@@ -2267,6 +2550,63 @@ mod bundle_tests {
         assert!(
             !pkg.join("README.md").exists(),
             "README.md must be stripped"
+        );
+    }
+
+    #[test]
+    fn brotli_precompress_emits_siblings_and_skips_binaries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = fake_project(tmp.path());
+        let out = tmp.path().join("dist");
+        stage_bundle(&project, &out, None, &[]).expect("stage");
+
+        let pkg = out.join("pkg");
+        fs::create_dir_all(&pkg).unwrap();
+        // Long-and-repetitive so compression clearly wins and the
+        // smaller-than-original keep-rule can't flake.
+        let wasm_raw = "abcdefgh".repeat(2000).into_bytes();
+        fs::write(pkg.join("demo_bg.wasm"), &wasm_raw).unwrap();
+        let png_raw = fs::read(out.join("assets/images/logo.png")).unwrap();
+
+        brotli_precompress_bundle(&out).expect("brotli");
+
+        // SIBLING model: the original must be untouched (hosts without
+        // brotli support serve it as-is)...
+        assert_eq!(
+            fs::read(pkg.join("demo_bg.wasm")).unwrap(),
+            wasm_raw,
+            "original wasm must be left byte-identical — .br is a sibling, not a rewrite",
+        );
+        // ...and the .br must exist, be smaller, and round-trip.
+        let br = fs::read(pkg.join("demo_bg.wasm.br")).expect(".br sibling must be emitted");
+        assert!(
+            br.len() < wasm_raw.len(),
+            "brotli must shrink the wasm (was {}, .br is {})",
+            wasm_raw.len(),
+            br.len(),
+        );
+        let mut decoded = Vec::new();
+        brotli::Decompressor::new(&br[..], 4096)
+            .read_to_end(&mut decoded)
+            .expect("decode .br");
+        assert_eq!(decoded, wasm_raw, ".br must round-trip to the original bytes");
+
+        // Already-compressed formats get no sibling.
+        assert!(
+            !out.join("assets/images/logo.png.br").exists(),
+            ".png must not get a .br sibling",
+        );
+        assert_eq!(
+            fs::read(out.join("assets/images/logo.png")).unwrap(),
+            png_raw,
+            ".png bytes untouched",
+        );
+
+        // Idempotence: a second pass must not produce `.br.br`.
+        brotli_precompress_bundle(&out).expect("brotli again");
+        assert!(
+            !pkg.join("demo_bg.wasm.br.br").exists(),
+            "re-running must skip existing .br siblings",
         );
     }
 

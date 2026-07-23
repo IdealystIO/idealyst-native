@@ -79,8 +79,10 @@ impl<T: Animatable> AnimatorFactory<T> for KeyframesTo<T> {
         // Defensive sort — out-of-order stops yield surprising
         // visual jumps if we trust the order blindly. Stable
         // sort so equal-offset stops keep their insertion order
-        // (last wins on a tie at sample time).
-        self.stops.sort_by(|a, b| {
+        // (last wins on a tie at sample time). Insertion sort: stop
+        // lists are tiny and std's stable sort costs ~3 KB of wasm
+        // per element type (see `num::insertion_sort_by`).
+        crate::num::insertion_sort_by(&mut self.stops, |a, b| {
             a.0.partial_cmp(&b.0)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });

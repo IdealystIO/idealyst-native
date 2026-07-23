@@ -1225,7 +1225,9 @@ pub(super) fn resolve_breakpoint_overlays(
         let resolved = resolve_style(&bp_app);
         out.push((*bp, resolved));
     }
-    out.sort_by_key(|(bp, _)| bp.rank());
+    // Insertion sort: a handful of breakpoints, and std's stable sort
+    // monomorphizes ~3 KB of wasm per element type (`num::insertion_sort_by`).
+    crate::num::insertion_sort_by(&mut out, |(a, _), (b, _)| a.rank().cmp(&b.rank()));
     out
 }
 
@@ -1300,7 +1302,9 @@ pub(super) fn resolve_container_overlays(app: &StyleApplication) -> Vec<(f32, Rc
     // Ascending by threshold so the mobile-first cascade (lower
     // threshold first, higher wins) is just an in-order fold. Thresholds
     // come from compile-time literals, so NaN can't occur.
-    out.sort_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    crate::num::insertion_sort_by(&mut out, |(a, _), (b, _)| {
+        a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+    });
     out
 }
 

@@ -120,6 +120,31 @@ pub struct Args {
     #[arg(long)]
     pub gzip: bool,
 
+    /// Web only: skip emitting precompressed `.br` siblings in the
+    /// staged bundle. By default a release build writes `<file>.br`
+    /// next to every compressible bundle file (brotli q11, ~20%
+    /// smaller than gzip -9 on wasm) so hosts with nginx
+    /// `brotli_static` / Caddy `precompressed` / a CDN edge serve
+    /// max-quality brotli at zero per-request cost. Originals are
+    /// kept — hosts without brotli support are unaffected.
+    #[arg(long)]
+    pub no_brotli: bool,
+
+    /// Web only: compile in ONLY the named primitive families
+    /// (comma-separated: virtualizer, icon, image, text-input, toggle,
+    /// slider, activity, portal, presence, graphics, navigator, lazy;
+    /// or `none` for a text/view-only bundle). Unused families leave
+    /// the wasm entirely — a text/view-only app drops ~30% of the
+    /// bundle. Two-sided by design: this flag restricts the generated
+    /// wrapper, and the APP crate must set `default-features = false`
+    /// on its own `runtime-core` dependency or cargo feature
+    /// unification re-enables everything (the build warns when it
+    /// detects that). SDKs forward the families they render with, so
+    /// depending on one re-enables exactly what it needs. Omit the
+    /// flag for the default all-families build.
+    #[arg(long, value_delimiter = ',')]
+    pub primitives: Option<Vec<String>>,
+
     /// Web only: override where the bundle is written. Default is
     /// `<project>/dist/web`. Has no effect on non-web targets.
     #[arg(long, value_name = "PATH")]
@@ -386,6 +411,11 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
             },
             bundle_out_dir: bundle_out_dir.clone(),
             gzip: args.gzip,
+            // `.br` siblings ride release builds only — the deploy
+            // artifact. Debug bundles skip the q11 encode (seconds of
+            // build tail for a bundle nobody ships).
+            brotli: !args.no_brotli && (args.release || args.strip_panics),
+            primitives: args.primitives.clone(),
             strip_panics: args.strip_panics,
             // Compile in hydration when SSG/SSR is also being built —
             // the emitted HTML expects the wasm to adopt it on boot.

@@ -315,7 +315,10 @@ impl WebBackend {
         let mut slots: Vec<u32> = self
             .free_rule_indices
             .split_off(self.free_rule_indices.len() - take);
-        slots.sort_unstable();
+        // `slots.len() == take <= rules.len()` — one rule group's worth of
+        // indices, small and bounded. Insertion sort keeps ~4.5 KB of std
+        // u32-sort machinery out of the wasm (`num::insertion_sort_by`).
+        runtime_core::num::insertion_sort_by(&mut slots, |a, b| a.cmp(b));
         let sheet = self.sheet();
         rules
             .iter()
@@ -599,7 +602,10 @@ impl WebBackend {
             return;
         };
         let mut stops = g.stops.clone();
-        stops.sort_by(|a, b| {
+        // Stable insertion sort: equal-offset stops are CSS hard stops whose
+        // relative order is meaningful, and std's stable sort costs ~3 KB of
+        // wasm for this one element type (`num::insertion_sort_by`).
+        runtime_core::num::insertion_sort_by(&mut stops, |a, b| {
             a.offset.partial_cmp(&b.offset).unwrap_or(std::cmp::Ordering::Equal)
         });
         let offsets: Vec<f32> = stops.iter().map(|s| s.offset).collect();

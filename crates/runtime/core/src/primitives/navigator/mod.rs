@@ -18,6 +18,16 @@
 //!   and the `NavigatorHandler<B>` trait SDKs implement per backend.
 //! - `registry` — `NavigatorRegistry<B>` keyed by presentation TypeId.
 
+// NOTE on `prim-navigator` gating: these submodules stay compiled in every
+// configuration. The types (`NavigatorHost`, `NavigatorControl`, `Route`,
+// …) appear in `Element` payloads, `RefFill`, and `Backend` trait
+// signatures, and `NavigatorControl` is structurally coupled to `url_sync`
+// (opt-in context fields, dispatch hooks, Drop deregistration). The
+// feature instead gates the two REACHABILITY ANCHORS — the walker's
+// navigator dispatchers and each backend's URL-provider install — so with
+// `prim-navigator` off every behavior path here is unreachable and the
+// linker discards it. Source-gating the anchors, not the bodies, keeps
+// this file free of cfg noise while shipping zero navigator code.
 pub mod host;
 pub mod registry;
 pub mod scroll;

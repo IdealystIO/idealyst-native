@@ -24,7 +24,14 @@ docs = ["dep:idea-ui-docs-derive"]
 robot = ["runtime-core/robot"]
 
 [dependencies]
-runtime-core = { workspace = true }
+# Forward the prim-* gates for every primitive idea-ui components render
+# through (icon slots, TextInput/TextArea fields, spinners, overlay/anchored
+# popovers, presence animations, images) so an app that depends on idea-ui
+# gets exactly those primitives re-enabled even under default-features = false.
+runtime-core = { workspace = true, features = [
+    "prim-icon", "prim-image", "prim-text-input", "prim-activity",
+    "prim-portal", "prim-presence",
+] }
 idea-theme = { workspace = true }
 idea-ui-docs-derive = { workspace = true, optional = true }
 # Themed `Table` component layers on the cross-platform `table` SDK

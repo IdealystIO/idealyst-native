@@ -434,6 +434,7 @@ pub trait PortalOps {}
 /// No defaults for backdrop — that's a caller concern. For the
 /// common cases (modal, popover, tooltip) reach for the
 /// compositions in [`primitives::overlay`].
+#[cfg(feature = "prim-portal")]
 pub fn portal(target: PortalTarget, children: Vec<Element>) -> Bound<PortalHandle> {
     Bound::new(Element::Portal {
         children,

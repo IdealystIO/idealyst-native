@@ -186,6 +186,16 @@ zero-config registration. This keeps the SDK's
 tables) only leaves `main.wasm` under the opt-in `--data-prune` (above) — verify
 the app still renders when you enable it.
 
+### Lazy needs `prim-lazy` under minimal feature sets
+
+The `Element::Lazy` walker driver and the `lazy_split` builder ride
+runtime-core's `prim-lazy` cargo feature (ON by default). This only matters
+if you minimize the bundle with `--primitives`: include `lazy` in the list
+(`idealyst build --web --release --primitives graphics,lazy`) or
+`#[lazy_component]` becomes a compile error and a wire-received lazy element
+renders the "not supported" placeholder. See [[migration-0-4-0-to-0-5-0]]
+for the full gating contract.
+
 ### Eager state in a lazy chunk is safe
 
 An SDK or component that allocates reactive state in its **constructor** — a

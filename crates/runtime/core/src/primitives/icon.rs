@@ -213,6 +213,7 @@ pub trait IconOps {
 /// // With reactive stroke progress (e.g. tied to scroll)
 /// icon(SEARCH).stroke(|| scroll_progress.get())
 /// ```
+#[cfg(feature = "prim-icon")]
 pub fn icon(data: IconData) -> Bound<IconHandle> {
     Bound::new(Element::Icon {
         data,
