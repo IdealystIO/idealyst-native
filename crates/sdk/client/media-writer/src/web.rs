@@ -128,7 +128,7 @@ impl RecordingHandle {
 pub(crate) async fn start(
     inputs: MediaInputs<'_>,
     config: &RecordConfig,
-) -> Result<RecordingHandle, MediaWriterError> {
+) -> Result<(RecordingHandle, String), MediaWriterError> {
     let combined = MediaStream::new().map_err(|e| js_err("new MediaStream", e))?;
     let mut video_pump = None;
     let mut canvas_keep = None;
@@ -203,16 +203,23 @@ pub(crate) async fn start(
         .start_with_time_slice(1_000)
         .map_err(|e| js_err("MediaRecorder.start", e))?;
 
-    Ok(RecordingHandle {
-        recorder,
-        chunks,
-        mime: mime.unwrap_or_else(|| "video/webm".into()),
-        store: config.store.clone(),
-        path: config.path.clone(),
-        _on_data: on_data,
-        _video_pump: video_pump,
-        _canvas: canvas_keep,
-    })
+    // The web backend writes the recorded blob to the requested path verbatim
+    // (only the encoded container inside may differ per the browser's choice —
+    // see the module's "Container caveat"), so the effective relative path is
+    // the one asked for.
+    Ok((
+        RecordingHandle {
+            recorder,
+            chunks,
+            mime: mime.unwrap_or_else(|| "video/webm".into()),
+            store: config.store.clone(),
+            path: config.path.clone(),
+            _on_data: on_data,
+            _video_pump: video_pump,
+            _canvas: canvas_keep,
+        },
+        config.path.clone(),
+    ))
 }
 
 /// First `MediaRecorder.isTypeSupported` MIME from [`MIME_CANDIDATES`], or

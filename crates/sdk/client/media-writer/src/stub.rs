@@ -15,6 +15,6 @@ impl RecordingHandle {
 pub(crate) async fn start(
     _inputs: MediaInputs<'_>,
     _config: &RecordConfig,
-) -> Result<RecordingHandle, MediaWriterError> {
+) -> Result<(RecordingHandle, String), MediaWriterError> {
     Err(MediaWriterError::Unsupported)
 }

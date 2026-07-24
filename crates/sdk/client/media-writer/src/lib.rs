@@ -174,8 +174,14 @@ impl MediaWriter {
         if inputs.video.is_none() && inputs.audio.is_none() {
             return Err(MediaWriterError::NoInput);
         }
-        let path = config.path.clone();
-        let handle = imp::start(inputs, &config).await?;
+        // The backend returns the EFFECTIVE relative path it actually wrote to.
+        // It usually equals `config.path`, but a backend that couldn't honor the
+        // requested container (e.g. Linux falling back from H.264/MP4 to VP8/WebM
+        // when no H.264 encoder is installed) rewrites the extension so the
+        // filename matches its real content, and reports that back here so
+        // `stop()` resolves to the true file. Mirrors the web backend's
+        // browser-chosen "container may differ" model.
+        let (handle, path) = imp::start(inputs, &config).await?;
         Ok(Recording { handle, path })
     }
 }

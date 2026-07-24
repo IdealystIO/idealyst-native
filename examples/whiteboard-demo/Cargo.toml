@@ -48,6 +48,12 @@ backend-macos = { workspace = true }
 # GPU canvas on macOS (vello/Metal) — overrides canvas-native (last-wins).
 canvas-vello = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# GPU canvas on Linux/GTK4 (vello over wgpu's GL backend, adopting the GtkGLArea's
+# lent GL context) — overrides canvas-native (last-wins). If GL adoption fails at
+# runtime the renderer returns None and the canvas stays on canvas-native.
+canvas-vello = { workspace = true }
+
 [package.metadata.idealyst.app]
 name      = "Whiteboard"
 bundle_id = "com.critiq.testideaapp"

@@ -61,6 +61,14 @@ pub fn register(backend: &mut LinuxBackend) {
     backend.register_external::<VideoProps, _>(|props, b| build_video(props, b));
 }
 
+// Self-register at backend construction (no app-side `register` call needed) —
+// the mirror of the macOS submit. Without this, `Video` elements fell through
+// to the External placeholder on GTK and never played. See
+// [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_linux::LinuxExternalRegistrar(register)
+}
+
 // =========================================================================
 // Build + reactive source
 // =========================================================================
@@ -260,5 +268,19 @@ mod tests {
         assert!(!is_uri("/home/u/clip.mp4"));
         assert!(!is_uri("clip.mp4"));
         assert!(!is_uri("./relative/clip.mkv"));
+    }
+}
+
+#[cfg(all(test, target_os = "linux", not(target_arch = "wasm32")))]
+mod linux_registration_tests {
+    /// Regression: the whiteboard's recording preview / any `Video` didn't
+    /// play on Linux because `video/linux.rs` had a real `gtk::Video`
+    /// backend but no `inventory::submit!`, so it never self-registered and
+    /// `Video` fell to the framework's External placeholder. This asserts the
+    /// submit exists (drained by `LinuxBackend::new`).
+    #[test]
+    fn video_handler_auto_registers_on_linux() {
+        let count = inventory::iter::<backend_linux::LinuxExternalRegistrar>().count();
+        assert!(count >= 1, "video must submit a LinuxExternalRegistrar so Video lowers to gtk::Video");
     }
 }

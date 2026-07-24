@@ -42,7 +42,7 @@ The mechanism diverges per platform; the *output* converges on a playable file
 addressed through a [`files`](../files) store + relative path, so the same call
 works everywhere.
 
-### Linux codec caveat (VP8/WebM default, no bundled H.264)
+### Linux codec caveat (VP8/WebM default, WebM fallback for H.264)
 
 The Linux backend uses **GStreamer**, and defaults to **VP8 video + Opus audio
 in WebM** — request it with `RecordConfig::new(store, "clip.webm").container(
@@ -52,10 +52,15 @@ Container::WebM)`. That codec set ships in a *base* GStreamer install
 `Container::Mp4` (H.264) is honored **only when an H.264 encoder plugin is
 installed** — `x264enc` from `gstreamer1.0-plugins-ugly`, or `openh264enc` from
 `-plugins-bad`, neither of which is part of a minimal GStreamer. Where no H.264
-encoder is present, requesting `Container::Mp4` returns an honest
-`MediaWriterError::Backend` naming the missing plugin rather than writing a
-truncated/undecodable file. (Apple / Android / web have a system H.264 encoder
-and keep `.mp4` as their default.)
+encoder is present, requesting `Container::Mp4` **falls back to VP8/WebM**
+rather than failing — the same "the container may differ" model the web backend
+uses for its browser-chosen output. Because this SDK writes the caller's
+relative path verbatim (it never appends an extension), a silent fallback would
+put WebM bytes in a `.mp4` file; to keep the filename honest the backend rewrites
+a trailing `.mp4` to `.webm`, and `Recording::stop()` returns the adjusted path
+so you always learn the real file. A custom or extension-less path is left
+untouched. Install `gstreamer1.0-plugins-ugly` to get true H.264/MP4. (Apple /
+Android / web have a system H.264 encoder and write `.mp4` as-is.)
 
 ### How A/V sync works
 

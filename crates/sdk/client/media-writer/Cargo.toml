@@ -95,6 +95,19 @@ web-sys = { version = "0.3", features = [
 gstreamer = "0.23"
 gstreamer-app = "0.23"
 glib = "0.20"
+# Zero-copy GPU capture (the dma-buf analog of the macOS IOSurface path): when a
+# canvas `MediaStream` exposes a `DmaBufSource` native source (the GPU exported its
+# render target as a dma-buf — see `media-stream::dmabuf` / `canvas-vello`), the
+# recorder imports the fd instead of pushing CPU RGBA. `gstreamer-allocators`'
+# `DmaBufAllocator` wraps the fd into a `GstMemory`; the pipeline gains
+# `glupload ! glcolorconvert ! gldownload` so the GPU buffer is downloaded to
+# sysmem at the (software) encoder boundary — NOT by a CPU readback in the canvas.
+gstreamer-allocators = "0.23"
+# `v1_24` for the DMA_DRM caps helpers (`dma_drm_fourcc_to_string`) the dma-buf
+# import path needs. This is a GStreamer 1.24 API; the system runtime is 1.28
+# (see the note above), so enabling it is safe. Only THIS crate needs the newer
+# API — base `gstreamer`/`gstreamer-app` stay ungated for the CPU path.
+gstreamer-video = { version = "0.23", features = ["v1_24"] }
 
 # Android target: MediaCodec + MediaMuxer, driven by a Kotlin shim that
 # trampolines lifecycle back through JNI. `ndk-context` exposes the host

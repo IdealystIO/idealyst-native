@@ -360,6 +360,8 @@ impl StackNavigator {
         let _ = core::hint::black_box(ios::register as *const ());
         #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
         let _ = core::hint::black_box(android::register as *const ());
+        #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+        let _ = core::hint::black_box(linux::register as *const ());
 
         let StackNavigator { config, presentation, style, ref_fill } = self;
         Element::Navigator {
@@ -1098,11 +1100,34 @@ pub mod android;
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 pub use android::register;
 
+/// Linux (GTK4): the same handler the other native backends register.
+/// The stack presentation is backend-agnostic (built from primitives via
+/// `StackHandler<B>`), so this is just `register_generic` bound to
+/// `LinuxBackend`, plus the inventory submit so it auto-registers at
+/// backend construction — the mirror of the macОS module. Without it a
+/// pushed screen (Settings/Preview) has no handler and never appears.
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+mod linux {
+    use super::{StackHandler, StackPresentation};
+    use backend_linux::LinuxBackend;
+    use runtime_core::primitives::navigator::RegisterNavigator;
+    /// Register the stack handler on the GTK4/Linux backend.
+    pub fn register(backend: &mut LinuxBackend) {
+        backend.register_navigator::<StackPresentation, _>(|| {
+            Box::new(StackHandler::<LinuxBackend>::new())
+        });
+    }
+    inventory::submit! { backend_linux::LinuxNavigatorRegistrar(register) }
+}
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+pub use linux::register;
+
 #[cfg(not(any(
     target_arch = "wasm32",
     target_os = "macos",
     target_os = "ios",
-    target_os = "android"
+    target_os = "android",
+    target_os = "linux"
 )))]
 mod fallback {
     use runtime_core::Backend;
@@ -1113,7 +1138,8 @@ mod fallback {
     target_arch = "wasm32",
     target_os = "macos",
     target_os = "ios",
-    target_os = "android"
+    target_os = "android",
+    target_os = "linux"
 )))]
 pub use fallback::register;
 
@@ -1159,4 +1185,27 @@ pub mod prelude {
         StackPresentation, StackRetention, StackScreenExt, StackScreenOptions,
     };
     pub use runtime_core::primitives::navigator::{HeaderButton, StackHeaderState};
+}
+
+#[cfg(all(test, target_os = "linux", not(target_arch = "wasm32")))]
+mod linux_registration_tests {
+    /// Regression: the whiteboard's Settings/Preview screens didn't show on
+    /// Linux because `stack_navigator::register` resolved to the no-op
+    /// `fallback` and backend-linux had no navigator inventory hook — so
+    /// `register_navigator` was never called and a pushed screen had no
+    /// handler to present it (only the stack root rendered).
+    ///
+    /// The fix: a Linux `register` that installs `StackHandler<LinuxBackend>`,
+    /// submitted via `LinuxNavigatorRegistrar` so `LinuxBackend::new` drains
+    /// it. This asserts that submit exists — if the linux module or its
+    /// inventory submit is dropped, a pushed screen silently vanishes again.
+    #[test]
+    fn stack_handler_auto_registers_on_linux() {
+        let count = inventory::iter::<backend_linux::LinuxNavigatorRegistrar>().count();
+        assert!(
+            count >= 1,
+            "stack navigator must submit a LinuxNavigatorRegistrar so pushed \
+             screens get a handler on GTK",
+        );
+    }
 }

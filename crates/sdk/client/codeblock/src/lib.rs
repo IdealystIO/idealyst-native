@@ -270,13 +270,20 @@ inventory::submit! {
 /// `pango::AttrColor` ranges on one `pango::AttrList` (the GTK analogue of
 /// the iOS/macOS `NSAttributedString` path). See `linux.rs`.
 ///
-/// Unlike the mobile/web backends, `backend-linux` has no inventory
-/// registrar, so apps wire this explicitly in their `register_extensions`
-/// (`codeblock::register(backend);`).
 #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
 pub fn register(backend: &mut backend_linux::LinuxBackend) {
     ensure_wire_serde();
     linux::register(backend);
+}
+
+// Self-register at backend construction, mirroring macOS/mobile — so an app
+// that relies on inventory self-registration (rather than an explicit
+// `codeblock::register`) gets the real GTK handler instead of the External
+// placeholder. `backend-linux` gained `LinuxExternalRegistrar` after this
+// crate was first written; before it, Linux needed the explicit call.
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+inventory::submit! {
+    backend_linux::LinuxExternalRegistrar(register)
 }
 
 /// Windows — registers the [`windows::register`] handler. Produces an

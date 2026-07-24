@@ -20,11 +20,11 @@ use crate::native_capture::{LayerCompositor, NativeCapture};
 use crate::plan::{plan_scene, CachedRef, ScenePlan};
 use crate::shape_pass::ShapePass;
 use canvas_core::{
-    paint_scene, CanvasProps, DrawOp, Scene as CanvasScene, ShapeInstance, TextureLayer,
+    paint_scene, CanvasProps, DrawOp, Scene as CanvasScene, TextureLayer,
 };
 use media_stream::FrameWriter;
 use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives::graphics::{OnReadyEvent, OnResizeEvent};
+use runtime_core::primitives::graphics::{GraphicsTarget, OnReadyEvent, OnResizeEvent};
 use runtime_core::{effect, Backend, RegisterExternal};
 
 use std::cell::RefCell;
@@ -145,28 +145,67 @@ fn build_canvas<B: Backend>(props: &Rc<CanvasProps>, backend: &mut B) -> B::Node
         let layers = props.layers.clone();
         move |ev: OnReadyEvent| {
             let (size, scale) = (ev.size, ev.scale);
-            // This renderer drives a swapchain, so it needs a real
-            // window handle. A backend that lends a GL context instead
-            // (GTK4 — see `GraphicsTarget`) can't be served by this
-            // path; bail rather than pretend, and the canvas stays on
-            // the `canvas-native` CPU rasterizer.
-            let Some(surface) = ev.into_surface() else {
-                log::warn!(
-                    "canvas-vello: backend supplied a GL context rather than a window \
-                     handle — this renderer needs a swapchain; using canvas-native",
-                );
-                return;
+            // Two kinds of target: a raw window handle (swapchain — iOS/Android/
+            // macOS/web) or a lent GL context (GTK4, which can't hand out a
+            // per-widget window handle — see `GraphicsTarget`). `RenderState::new`
+            // branches on both: the swapchain path is universal; the GL path
+            // adopts the lent context through wgpu's GL backend (Linux only) and
+            // presents by flip-blitting into the GLArea framebuffer. If the target
+            // can't be driven here (a GL context off-Linux, or a failed adopt),
+            // `new` returns `None` and the canvas stays on canvas-native.
+            let is_gl = matches!(ev.target, GraphicsTarget::Gl(_));
+            // Clone the lent GL target BEFORE `RenderState::new` consumes
+            // `ev.target`, so the in-signal blit can be registered on it once the
+            // state exists. `GlTarget` is `Clone` (an Rc bump) and clones address
+            // the same context. Nothing to capture on the swapchain path.
+            #[cfg(target_os = "linux")]
+            let gl_target = match &ev.target {
+                GraphicsTarget::Gl(g) => Some(g.clone()),
+                GraphicsTarget::RawWindow(_) => None,
             };
-            if let Some(mut state) =
-                RenderState::new(surface, size, scale, capture.clone(), layers.clone())
-            {
-                let presented = state.render(&scene_cell.borrow());
-                *state_cell.borrow_mut() = Some(state);
-                // First drawable often isn't acquirable on the deferred on_ready
-                // tick (macOS CAMetalLayer) — retry until the initial scene lands
-                // so the canvas doesn't show dark until the first repaint.
-                if !presented {
-                    retry_first_frame(scene_cell.clone(), state_cell.clone(), 120);
+            match RenderState::new(ev.target, size, scale, capture.clone(), layers.clone()) {
+                Some(mut state) => {
+                    if is_gl {
+                        log::info!("canvas-vello: adopted GL context — GPU canvas active");
+                    }
+                    let presented = state.render(&scene_cell.borrow());
+                    *state_cell.borrow_mut() = Some(state);
+                    // GL (GTK4): register the in-signal FBO blit. `render()` above
+                    // rendered vello into `self.target` and scheduled a pass via
+                    // `present()`; GTK's render signal then runs this callback,
+                    // which flip-blits `target` into the GLArea framebuffer — the
+                    // ONLY place GtkGLArea composites what's drawn (see
+                    // `RenderState::blit_to_fbo`). `try_borrow_mut` guards against
+                    // re-entrancy (a present() emitted from within a render pass).
+                    #[cfg(target_os = "linux")]
+                    if let Some(gl_target) = gl_target {
+                        gl_target.on_render(Box::new({
+                            let state_cell = state_cell.clone();
+                            move || {
+                                if let Ok(mut s) = state_cell.try_borrow_mut() {
+                                    if let Some(s) = s.as_mut() {
+                                        s.blit_to_fbo();
+                                    }
+                                }
+                            }
+                        }));
+                    }
+                    // First drawable often isn't acquirable on the deferred on_ready
+                    // tick (macOS CAMetalLayer) — retry until the initial scene lands
+                    // so the canvas doesn't show dark until the first repaint. On GL
+                    // the blit is driven by the render signal, so `render()` returns
+                    // true and this doesn't fire; the scheduled pass does the work.
+                    if !presented {
+                        retry_first_frame(scene_cell.clone(), state_cell.clone(), 120);
+                    }
+                }
+                None => {
+                    if is_gl {
+                        log::warn!(
+                            "canvas-vello: could not adopt the lent GL context \
+                             (GL unsupported on this target/platform) — using canvas-native",
+                        );
+                    }
                 }
             }
         }
@@ -208,7 +247,23 @@ fn build_canvas<B: Backend>(props: &Rc<CanvasProps>, backend: &mut B) -> B::Node
 struct RenderState {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    surface: wgpu::Surface<'static>,
+    /// The swapchain surface (RawWindow targets). `None` on the GL path
+    /// (GTK4), where there is no surface — presentation goes through `gl`
+    /// instead. Branching on `Some`/`None` here selects the present path in
+    /// `render()`/`resize()`.
+    surface: Option<wgpu::Surface<'static>>,
+    /// GL present path (Linux/GTK4 only): the lent GL context + a flip-blit.
+    /// `Some` exactly when `surface` is `None`. Vello still renders into
+    /// `self.target` as usual; this only replaces the final present — a
+    /// vertical-flip straight-copy of `self.target` into the GLArea's
+    /// framebuffer (see `GlPresent`).
+    #[cfg(target_os = "linux")]
+    gl: Option<GlPresent>,
+    /// Size + format record. On the swapchain path this configures the
+    /// surface; on the GL path it's kept purely as the size/format book so
+    /// the ~20 `self.config.width/height` reads elsewhere are path-agnostic
+    /// (format = `Rgba8Unorm`, width/height = drawable size). It is NEVER used
+    /// to configure a surface on the GL path (GTK owns the buffers).
     config: wgpu::SurfaceConfiguration,
     renderer: Renderer,
     /// A SECOND vello renderer used ONLY to bake cached layers that contain
@@ -326,13 +381,31 @@ pub(crate) fn overscan_dims(w: u32, h: u32, frac: f32) -> (u32, u32) {
 /// Build a vello `Renderer` with the canvas's standard options (area AA, GPU).
 /// Shared by the main renderer, the eager `image_renderer`, and the lazy
 /// fallbacks so all three stay configured identically.
-pub(crate) fn new_vello_renderer(device: &wgpu::Device) -> Option<Renderer> {
+///
+/// `single_threaded_init` MUST be `true` on the GL (GTK4) path. vello's default
+/// shader init (`num_init_threads: None`) compiles pipelines on spawned WORKER
+/// threads for parallelism — but an adopted GL context is thread-bound (current
+/// only on the thread that called `make_current`), so those workers create GL
+/// programs with NO current context and panic (`wgpu-hal gles/device.rs`).
+/// `num_init_threads: Some(1)` makes vello take its synchronous path and compile
+/// every shader on THIS (current-context) thread — see vello's `Renderer::new`,
+/// which only calls `use_parallel_initialisation()` when the count isn't 1.
+/// Swapchain (Metal/Vulkan/WebGPU) contexts aren't thread-bound this way, so
+/// they keep the faster parallel init (`false`).
+pub(crate) fn new_vello_renderer(
+    device: &wgpu::Device,
+    single_threaded_init: bool,
+) -> Option<Renderer> {
     Renderer::new(
         device,
         RendererOptions {
             use_cpu: false,
             antialiasing_support: AaSupport::area_only(),
-            num_init_threads: None,
+            num_init_threads: if single_threaded_init {
+                std::num::NonZeroUsize::new(1)
+            } else {
+                None
+            },
             pipeline_cache: None,
         },
     )
@@ -418,7 +491,8 @@ pub fn render_to_rgba(scene: &CanvasScene, width: u32, height: u32) -> Option<Re
     let (w, h) = (width.max(1), height.max(1));
 
     let (device, queue) = headless_device()?;
-    let mut renderer = new_vello_renderer(&device)?;
+    // Headless: a fresh native (non-GL) device, so parallel shader init is fine.
+    let mut renderer = new_vello_renderer(&device, false)?;
 
     let mut vs = VelloScene::new();
     encode_scene(scene.ops(), &mut vs, Affine::scale(1.0));
@@ -493,7 +567,7 @@ pub(crate) fn read_target_rgba(
 
 impl RenderState {
     fn new(
-        surface_target: runtime_core::primitives::graphics::GraphicsSurface,
+        target: GraphicsTarget,
         size: (u32, u32),
         scale: f32,
         capture: Option<FrameWriter>,
@@ -501,99 +575,187 @@ impl RenderState {
     ) -> Option<Self> {
         let (w, h) = (size.0.max(1), size.1.max(1));
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::PRIMARY,
-            flags: wgpu::InstanceFlags::default(),
-            memory_budget_thresholds: Default::default(),
-            backend_options: wgpu::BackendOptions::default(),
-            // `None` lets wgpu fall back to the per-surface handle (only
-            // GLES/Wayland need an explicit display handle).
-            display: None,
-        });
+        // Per-target GPU bringup. Both arms yield a `device`/`queue` and a
+        // `config` (size + `Rgba8Unorm` target format) read uniformly by the
+        // rest of the renderer. The RawWindow arm also configures a swapchain
+        // `surface`; the GL arm (GTK4) adopts the lent context and builds a
+        // flip-blit `gl` present path instead.
+        let device: wgpu::Device;
+        let queue: wgpu::Queue;
+        let config: wgpu::SurfaceConfiguration;
+        let surface: Option<wgpu::Surface<'static>>;
+        #[cfg(target_os = "linux")]
+        let gl: Option<GlPresent>;
 
-        // The GraphicsSurface is 'static + Send + Sync and impls the
-        // raw-window-handle traits, so it converts into a wgpu surface
-        // target directly, yielding a Surface<'static>.
-        let surface = instance.create_surface(surface_target).ok()?;
+        match target {
+            GraphicsTarget::RawWindow(surface_target) => {
+                let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                    backends: wgpu::Backends::PRIMARY,
+                    flags: wgpu::InstanceFlags::default(),
+                    memory_budget_thresholds: Default::default(),
+                    backend_options: wgpu::BackendOptions::default(),
+                    // `None` lets wgpu fall back to the per-surface handle (only
+                    // GLES/Wayland need an explicit display handle).
+                    display: None,
+                });
 
-        // Deferred to a runloop turn by the backend, so block_on is safe.
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            force_fallback_adapter: false,
-            compatible_surface: Some(&surface),
-        }))
-        .ok()?;
+                // The GraphicsSurface is 'static + Send + Sync and impls the
+                // raw-window-handle traits, so it converts into a wgpu surface
+                // target directly, yielding a Surface<'static>.
+                let surf = instance.create_surface(surface_target).ok()?;
 
-        // vello's `flatten` shader needs the f16 capability on Vulkan (naga
-        // rejects it otherwise: "requires capability SHADER_FLOAT16_IN_FLOAT32").
-        // Metal doesn't require the explicit feature, but Vulkan does — so
-        // request `SHADER_F16` when the adapter offers it. A GPU without f16
-        // (e.g. the Android emulator's Vulkan) can't run vello at all; it stays
-        // on canvas-native there.
-        let f16 = wgpu::Features::SHADER_F16 & adapter.features();
-        // Request the adapter's OWN limits, not `Limits::default()`. The default
-        // baseline asks for `max_inter_stage_shader_variables: 16`, but iOS Metal
-        // (simulator AND device) caps that at 15 — so `request_device` with the
-        // default fails outright (`LimitsExceeded`). macOS Metal allows 16, which
-        // is why the default worked there and masked this. Taking `adapter.limits()`
-        // requests exactly what the GPU provides — always grantable, never over-asks
-        // — and it's uniform across backends (a no-op widening on macOS/desktop,
-        // the needed downgrade on iOS). vello's own minimums are validated by
-        // `Renderer::new` below; a GPU too weak for vello fails there → canvas-native.
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("canvas-vello-device"),
-            required_features: f16,
-            required_limits: adapter.limits(),
-            memory_hints: wgpu::MemoryHints::default(),
-            experimental_features: wgpu::ExperimentalFeatures::default(),
-            trace: wgpu::Trace::Off,
-        }))
-        .ok()?;
+                // Deferred to a runloop turn by the backend, so block_on is safe.
+                let adapter =
+                    pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                        power_preference: wgpu::PowerPreference::HighPerformance,
+                        force_fallback_adapter: false,
+                        compatible_surface: Some(&surf),
+                    }))
+                    .ok()?;
 
-        let caps = surface.get_capabilities(&adapter);
-        // Prefer a NON-sRGB surface format. vello writes already-sRGB-encoded
-        // bytes into the linear `Rgba8Unorm` target; the blit is a straight
-        // copy, so the surface must store those bytes verbatim. An sRGB surface
-        // (`*UnormSrgb`, often `caps.formats[0]` on macOS) would gamma-encode
-        // them AGAIN on store — washing the on-screen colors out so they no
-        // longer match the palette (or the recording, whose IOSurface is
-        // non-sRGB). Fall back to the default if no linear format is offered.
-        let format = caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| !f.is_srgb())
-            .unwrap_or(caps.formats[0]);
-        // The canvas surface is NOT opaque — it composites over the app UI behind
-        // it, and a scene is transparent wherever the author didn't paint (a PDF
-        // page paints its content but leaves un-drawn regions clear). An `Opaque`
-        // alpha mode makes the window IGNORE that alpha and show the raw RGB —
-        // i.e. clear regions (RGB 0) render as solid BLACK instead of letting the
-        // background show through (the "PDF watermark is a black blob" bug). Pick
-        // an alpha-respecting mode; vello writes PREMULTIPLIED alpha, so prefer
-        // `PreMultiplied`, then `PostMultiplied`, falling back only if neither is
-        // offered.
-        use wgpu::CompositeAlphaMode::{PostMultiplied, PreMultiplied};
-        let alpha_mode = if caps.alpha_modes.contains(&PreMultiplied) {
-            PreMultiplied
-        } else if caps.alpha_modes.contains(&PostMultiplied) {
-            PostMultiplied
-        } else {
-            caps.alpha_modes[0]
-        };
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            width: w,
-            height: h,
-            present_mode: wgpu::PresentMode::AutoVsync,
-            desired_maximum_frame_latency: 2,
-            alpha_mode,
-            view_formats: vec![],
-        };
-        surface.configure(&device, &config);
+                // vello's `flatten` shader needs the f16 capability on Vulkan (naga
+                // rejects it otherwise: "requires capability SHADER_FLOAT16_IN_FLOAT32").
+                // Metal doesn't require the explicit feature, but Vulkan does — so
+                // request `SHADER_F16` when the adapter offers it. A GPU without f16
+                // (e.g. the Android emulator's Vulkan) can't run vello at all; it stays
+                // on canvas-native there.
+                let f16 = wgpu::Features::SHADER_F16 & adapter.features();
+                // Request the adapter's OWN limits, not `Limits::default()`. The default
+                // baseline asks for `max_inter_stage_shader_variables: 16`, but iOS Metal
+                // (simulator AND device) caps that at 15 — so `request_device` with the
+                // default fails outright (`LimitsExceeded`). macOS Metal allows 16, which
+                // is why the default worked there and masked this. Taking `adapter.limits()`
+                // requests exactly what the GPU provides — always grantable, never over-asks
+                // — and it's uniform across backends (a no-op widening on macOS/desktop,
+                // the needed downgrade on iOS). vello's own minimums are validated by
+                // `Renderer::new` below; a GPU too weak for vello fails there → canvas-native.
+                let (dev, q) =
+                    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                        label: Some("canvas-vello-device"),
+                        required_features: f16,
+                        required_limits: adapter.limits(),
+                        memory_hints: wgpu::MemoryHints::default(),
+                        experimental_features: wgpu::ExperimentalFeatures::default(),
+                        trace: wgpu::Trace::Off,
+                    }))
+                    .ok()?;
 
-        let renderer = new_vello_renderer(&device)?;
+                let caps = surf.get_capabilities(&adapter);
+                // Prefer a NON-sRGB surface format. vello writes already-sRGB-encoded
+                // bytes into the linear `Rgba8Unorm` target; the blit is a straight
+                // copy, so the surface must store those bytes verbatim. An sRGB surface
+                // (`*UnormSrgb`, often `caps.formats[0]` on macOS) would gamma-encode
+                // them AGAIN on store — washing the on-screen colors out so they no
+                // longer match the palette (or the recording, whose IOSurface is
+                // non-sRGB). Fall back to the default if no linear format is offered.
+                let format = caps
+                    .formats
+                    .iter()
+                    .copied()
+                    .find(|f| !f.is_srgb())
+                    .unwrap_or(caps.formats[0]);
+                // The canvas surface is NOT opaque — it composites over the app UI behind
+                // it, and a scene is transparent wherever the author didn't paint (a PDF
+                // page paints its content but leaves un-drawn regions clear). An `Opaque`
+                // alpha mode makes the window IGNORE that alpha and show the raw RGB —
+                // i.e. clear regions (RGB 0) render as solid BLACK instead of letting the
+                // background show through (the "PDF watermark is a black blob" bug). Pick
+                // an alpha-respecting mode; vello writes PREMULTIPLIED alpha, so prefer
+                // `PreMultiplied`, then `PostMultiplied`, falling back only if neither is
+                // offered.
+                use wgpu::CompositeAlphaMode::{PostMultiplied, PreMultiplied};
+                let alpha_mode = if caps.alpha_modes.contains(&PreMultiplied) {
+                    PreMultiplied
+                } else if caps.alpha_modes.contains(&PostMultiplied) {
+                    PostMultiplied
+                } else {
+                    caps.alpha_modes[0]
+                };
+                let cfg = wgpu::SurfaceConfiguration {
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    format,
+                    width: w,
+                    height: h,
+                    present_mode: wgpu::PresentMode::AutoVsync,
+                    desired_maximum_frame_latency: 2,
+                    alpha_mode,
+                    view_formats: vec![],
+                };
+                surf.configure(&dev, &cfg);
+
+                device = dev;
+                queue = q;
+                config = cfg;
+                surface = Some(surf);
+                #[cfg(target_os = "linux")]
+                {
+                    gl = None;
+                }
+            }
+            GraphicsTarget::Gl(gl_target) => {
+                // GTK4 (Linux): the backend lends a live GL context instead of a
+                // window handle. Adopt it through wgpu's GL backend and present by
+                // flip-blitting `self.target` into the GLArea framebuffer. Only
+                // compiled on Linux (wgpu-hal/gles + the GTK backend live there);
+                // any other platform that somehow produced a GL target bails to
+                // canvas-native.
+                #[cfg(target_os = "linux")]
+                {
+                    // Contract: the context must be current for the adopt call and
+                    // for every use/drop of what it returns (see `GlTarget` /
+                    // `adopt`). render()/resize()/Drop each re-establish it.
+                    gl_target.make_current();
+                    let (dev, q) = adopt(&gl_target)?;
+                    // Scriptable evidence the GPU path engaged, INDEPENDENT of
+                    // whether the embedding app installed a `log` backend
+                    // (`host-gtk` installs none, so the `log::info!` in `on_ready`
+                    // is silent there) — same rationale as host-linux-desktop's
+                    // `eprintln!` first-frame diagnostic.
+                    eprintln!(
+                        "[canvas-vello] adopted GtkGLArea GL context — GPU canvas active ({w}x{h})"
+                    );
+                    let blit = FlipBlit::new(&dev);
+                    // A size/format record ONLY — no create_surface, no configure.
+                    // Format is `Rgba8Unorm` (the GLArea FBO's format, and the same
+                    // format as `self.target`), so the flip-blit is a straight copy.
+                    // The non-`format`/`width`/`height` fields are inert here (never
+                    // used to configure a surface) but kept valid for shape parity.
+                    config = wgpu::SurfaceConfiguration {
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                        format: TARGET_FORMAT,
+                        width: w,
+                        height: h,
+                        present_mode: wgpu::PresentMode::AutoVsync,
+                        desired_maximum_frame_latency: 2,
+                        alpha_mode: wgpu::CompositeAlphaMode::PreMultiplied,
+                        view_formats: vec![],
+                    };
+                    device = dev;
+                    queue = q;
+                    surface = None;
+                    gl = Some(GlPresent { target: gl_target, blit });
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    // Only GTK4 lends a GL context, and that backend only builds on
+                    // Linux; elsewhere this renderer needs a swapchain.
+                    let _ = gl_target;
+                    return None;
+                }
+            }
+        }
+
+        // `format` for the swapchain blitter: on the GL path this is
+        // `Rgba8Unorm` (unused there — the flip-blit does the copy instead).
+        let format = config.format;
+
+        // GL path (no swapchain surface) ⇒ vello must compile shaders on THIS
+        // (current-context) thread; a thread-bound GL context makes vello's
+        // parallel worker-thread init panic (see `new_vello_renderer`). Native
+        // swapchain contexts keep the faster parallel init.
+        let single_threaded_init = surface.is_none();
+
+        let renderer = new_vello_renderer(&device, single_threaded_init)?;
         // Build the dedicated image renderer up front, not lazily on the first
         // image bake. Its first `render_to_texture` would otherwise run on a
         // just-created renderer (shaders/pipelines compiling) on the same frame
@@ -602,7 +764,7 @@ impl RenderState {
         // interaction. Created eagerly here it's always warm by first use. A
         // `None` (transient build failure) is non-fatal: the lazy sites below
         // retry, and an image-less canvas simply never touches it.
-        let image_renderer = new_vello_renderer(&device);
+        let image_renderer = new_vello_renderer(&device, single_threaded_init);
 
         let (target, target_view) = make_target(&device, w, h);
         let blitter = wgpu::util::TextureBlitter::new(&device, format);
@@ -615,6 +777,8 @@ impl RenderState {
             device,
             queue,
             surface,
+            #[cfg(target_os = "linux")]
+            gl,
             config,
             renderer,
             image_renderer,
@@ -644,7 +808,17 @@ impl RenderState {
     fn resize(&mut self, size: (u32, u32)) {
         self.config.width = size.0.max(1);
         self.config.height = size.1.max(1);
-        self.surface.configure(&self.device, &self.config);
+        // GL (GTK4): re-establish the lent context before recreating GPU objects
+        // (new_external's contract). GTK owns the framebuffer — it's re-wrapped
+        // every frame in render() — so there's nothing to configure here.
+        #[cfg(target_os = "linux")]
+        if let Some(gl) = &self.gl {
+            gl.target.make_current();
+        }
+        // Swapchain path only: GTK reallocates its own framebuffer.
+        if let Some(surface) = &self.surface {
+            surface.configure(&self.device, &self.config);
+        }
         // Read-back buffer + hybrid overlay are sized to the target; invalidate
         // so render() recreates them for the new dimensions. Cached layer
         // textures are viewport-sized too — drop them so a stale-size raster is
@@ -721,7 +895,8 @@ impl RenderState {
             // Normally built eagerly in the constructor; retry here only if that
             // transiently failed.
             if has_image && self.image_renderer.is_none() {
-                self.image_renderer = new_vello_renderer(&self.device);
+                // GL path (surface None) needs single-threaded shader init.
+                self.image_renderer = new_vello_renderer(&self.device, self.surface.is_none());
             }
             let view = &self.cached_layers.get(&layer.id).unwrap().1;
             let renderer = match (has_image, self.image_renderer.as_mut()) {
@@ -741,6 +916,17 @@ impl RenderState {
     /// uses the return to retry the FIRST frame until it lands, so the initial
     /// scene (e.g. the canvas's white background) isn't lost to a dark surface.
     fn render(&mut self, canvas_scene: &CanvasScene) -> bool {
+        // GL (GTK4): the lent context must be current before ANY GPU work this
+        // frame — vello's compute render into `self.target`, the shape/overlay
+        // composites, the capture read-back, and the final flip-blit all require
+        // it, and GTK may have unbound it since the last frame (a resize, or
+        // another GLArea drawing in between). `make_current` also re-binds the
+        // GLArea's own FBO (attach_buffers), which `wrap_framebuffer` reads in the
+        // present tail. No-op on the swapchain path (the surface owns presentation).
+        #[cfg(target_os = "linux")]
+        if let Some(gl) = &self.gl {
+            gl.target.make_current();
+        }
         // Decide how to draw this scene from its leading ops (see `ScenePlan`).
         // A scene that's entirely Normal-blend shape batches is drawn by the
         // instanced pass alone; a scene whose LEADING ops are shapes (a backdrop)
@@ -826,7 +1012,8 @@ impl RenderState {
             // Normally built eagerly in the constructor; retry here only if that
             // transiently failed.
             if has_image && self.image_renderer.is_none() {
-                self.image_renderer = new_vello_renderer(&self.device);
+                // GL path (surface None) needs single-threaded shader init.
+                self.image_renderer = new_vello_renderer(&self.device, self.surface.is_none());
             }
             // Image content MUST render on a renderer whose vello image atlas was
             // never shrunk by an image-less frame, or the image renders blank/
@@ -854,13 +1041,10 @@ impl RenderState {
             }
         }
 
-        let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            // Skip the frame on timeout/occluded/outdated/lost/validation.
-            _ => return false,
-        };
-        let surface_view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // Encoder for the target-space passes (shape backdrop / composites /
+        // layers) and the final present blit. Built before acquiring the present
+        // destination so the target passes are identical on both present paths —
+        // they only ever touch `self.target_view`, never the surface/FBO.
         let mut encoder =
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("canvas-vello-blit"),
@@ -966,7 +1150,65 @@ impl RenderState {
             }
         }
 
-        self.blitter.copy(&self.device, &mut encoder, &self.target_view, &surface_view);
+        // Acquire the present destination and encode the final blit of
+        // `self.target` into it. Held here (as `swap_frame`) so `.present()` runs
+        // after `submit`. Two paths, same source texture, converging on-screen:
+        //   * Swapchain (RawWindow): a STRAIGHT copy into the acquired surface
+        //     texture. `self.target` holds already-sRGB-encoded bytes and the
+        //     surface format is non-sRGB, so no re-encode (see `RenderState::new`).
+        //   * GL (GTK4): a vertical-FLIP straight copy into the GLArea's
+        //     framebuffer. Still NO colour transform — the FBO is `Rgba8Unorm`
+        //     like `self.target`, so the bytes pass through verbatim; only the V
+        //     axis inverts because `GlTarget::origin() == BottomLeft` (GTK
+        //     composites the framebuffer bottom-up). This is why the GL blit is
+        //     `FlipBlit`, NOT the wgpu-host's sRGB-re-encoding blit.
+        //
+        // Two `#[cfg]` bindings rather than one match with a cfg'd arm: off Linux
+        // there is no GL path (`surface` is always `Some`), so a `None` arm there
+        // would be dead code with an unreachable trailing expression. Splitting by
+        // cfg keeps each platform's binding total and warning-free.
+        #[cfg(target_os = "linux")]
+        let swap_frame = match &self.surface {
+            Some(surface) => {
+                let frame = match surface.get_current_texture() {
+                    wgpu::CurrentSurfaceTexture::Success(t)
+                    | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+                    // Skip the frame on timeout/occluded/outdated/lost/validation.
+                    _ => return false,
+                };
+                let surface_view =
+                    frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                self.blitter.copy(&self.device, &mut encoder, &self.target_view, &surface_view);
+                Some(frame)
+            }
+            None => {
+                // GL (GTK4): NO present-time blit here. This `render()` runs
+                // OUT-OF-BAND — it's driven by a reactive effect, not GTK's
+                // render signal — and GtkGLArea only composites what is drawn
+                // INSIDE that signal. An out-of-band blit is therefore never
+                // shown (the "canvas stuck on the clear colour" bug). So the
+                // FBO flip-blit is deferred to `blit_to_fbo`, which the backend
+                // runs in the render signal (registered via `GlTarget::on_render`
+                // in `on_ready`). Here we only render vello into `self.target`
+                // (submitted with `encoder` below) and, via `present()` at the
+                // tail, schedule the render pass that runs `blit_to_fbo`.
+                None
+            }
+        };
+        #[cfg(not(target_os = "linux"))]
+        let swap_frame = {
+            // Off Linux the target is always a swapchain surface.
+            let surface = self.surface.as_ref().expect("non-Linux graphics target is a swapchain");
+            let frame = match surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(t)
+                | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+                // Skip the frame on timeout/occluded/outdated/lost/validation.
+                _ => return false,
+            };
+            let surface_view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.blitter.copy(&self.device, &mut encoder, &self.target_view, &surface_view);
+            Some(frame)
+        };
 
         // Throttle recording capture to a fixed ~60fps, DECOUPLED from the
         // on-screen render rate (which is input-driven and can run faster). The
@@ -1012,7 +1254,18 @@ impl RenderState {
         };
 
         self.queue.submit([encoder.finish()]);
-        frame.present();
+        match swap_frame {
+            // Swapchain: hand the acquired texture to the compositor.
+            Some(frame) => frame.present(),
+            // GL (GTK4): tell the backend the framebuffer is ready so GTK
+            // re-composites the GLArea into the widget tree (queue_render).
+            None => {
+                #[cfg(target_os = "linux")]
+                if let Some(gl) = &self.gl {
+                    gl.target.present();
+                }
+            }
+        }
 
         // Publish the just-blitted IOSurface AFTER submit (the ring guarantees
         // it isn't reused until POOL frames later, so the in-flight GPU blit
@@ -1044,6 +1297,57 @@ impl RenderState {
             self.capture_frame();
         }
         true
+    }
+
+    /// Present the last-rendered `self.target` into the GLArea's framebuffer,
+    /// **from inside GTK's `render` signal**. Registered via
+    /// [`GlTarget::on_render`] in `on_ready`; the backend invokes it with the
+    /// GL context current and the area's FBO bound.
+    ///
+    /// # The invariant this method exists to honour (CLAUDE.md §5)
+    ///
+    /// GtkGLArea only composites what is drawn *during its own render pass*.
+    /// `render()` runs out-of-band (a reactive effect), renders vello into
+    /// `self.target`, and calls `gl.target.present()` (queue_render) to
+    /// SCHEDULE a pass. GTK then emits `render` and the backend runs THIS
+    /// callback — the one and only place the flip-blit's result is guaranteed
+    /// to reach the screen. Blitting in `render()` instead left the widget
+    /// showing the pre-adoption clear colour forever (the bug this fixes).
+    ///
+    /// A separate one-shot encoder (not `render()`'s): this runs on a different
+    /// tick, and its only job is the `self.target` → FBO copy.
+    #[cfg(target_os = "linux")]
+    fn blit_to_fbo(&mut self) {
+        let Some(gl) = &self.gl else { return };
+        // Defensive: GTK has already made the context current + bound the FBO
+        // before emitting `render`, but `make_current` (→ `attach_buffers`) is
+        // cheap and re-binds the FBO that `wrap_framebuffer` reads below,
+        // keeping this correct regardless of what ran between passes.
+        gl.target.make_current();
+        // Re-wrap the GLArea's colour attachment every frame — GTK reallocates
+        // it across resizes/re-realizes, so a cached wrap would target freed
+        // GPU memory (`wrap_framebuffer` doc).
+        let Some(fbo_tex) = wrap_framebuffer(
+            &self.device,
+            &gl.target,
+            self.config.width,
+            self.config.height,
+        ) else {
+            // Framebuffer not wrappable yet (mid-realize) — nothing to
+            // composite this pass; a later `present()` re-runs this.
+            return;
+        };
+        let fbo_view = fbo_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        debug_assert_eq!(
+            gl.target.origin(),
+            runtime_core::primitives::graphics::FramebufferOrigin::BottomLeft,
+            "flip blit assumes a bottom-left GL framebuffer origin",
+        );
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("canvas-vello-gl-present"),
+        });
+        gl.blit.draw(&self.device, &mut encoder, &self.target_view, &fbo_view);
+        self.queue.submit([encoder.finish()]);
     }
 
     /// Read the just-rendered `target` texture back GPU→CPU and write it to the
@@ -1122,6 +1426,363 @@ impl RenderState {
         // vello target is Rgba8Unorm, top-down, straight alpha — exactly the
         // FrameWriter contract.
         writer.write_rgba8(w, h, &frame);
+    }
+}
+
+/// GL (GTK4): the adopted context must be current to DROP anything derived from
+/// it — `new_external`'s adapter holds no EGL handle and never makes the context
+/// current for you, so dropping the device/queue/textures off a non-current
+/// context is UB. Every render/resize already re-establishes it; this covers the
+/// teardown path (surface lost, canvas unmounted), where nothing else does. The
+/// `make_current` runs in the Drop body, BEFORE the struct's fields (device,
+/// queue, target, …) drop — Rust drops fields after `Drop::drop` returns.
+/// No-op on the swapchain path (no `gl`) and off Linux.
+#[cfg(target_os = "linux")]
+impl Drop for RenderState {
+    fn drop(&mut self) {
+        if let Some(gl) = &self.gl {
+            gl.target.make_current();
+        }
+    }
+}
+
+// ============================================================================
+// GL present path (Linux/GTK4)
+// ============================================================================
+//
+// GTK4 can't hand out a per-widget window handle, so the `graphics` primitive
+// lends a live GL context (`GtkGLArea`). This block adopts that context through
+// wgpu's GL backend and presents by flip-blitting `self.target` into the lent
+// framebuffer. Every piece here is copied from the proven
+// `host-linux-desktop::linux` / `backend-linux` adoption, with ONE deliberate
+// difference: the flip-blit is a STRAIGHT copy (no sRGB re-encode), because
+// canvas-vello's `self.target` already holds sRGB-encoded bytes and the FBO is
+// `Rgba8Unorm` — the host rendered into an `Rgba8UnormSrgb` target and had to
+// re-encode; we must NOT.
+
+#[cfg(target_os = "linux")]
+use runtime_core::primitives::graphics::GlTarget;
+
+/// The lent GL context + the flip-blit that presents into its framebuffer.
+/// `self.gl` is `Some(GlPresent)` exactly when `self.surface` is `None`.
+#[cfg(target_os = "linux")]
+struct GlPresent {
+    target: GlTarget,
+    blit: FlipBlit,
+}
+
+// --- GL constants for the framebuffer-attachment query (copied from
+//     host-linux-desktop / backend-linux) -----------------------------------
+#[cfg(target_os = "linux")]
+const GL_FRAMEBUFFER: u32 = 0x8D40;
+#[cfg(target_os = "linux")]
+const GL_COLOR_ATTACHMENT0: u32 = 0x8CE0;
+#[cfg(target_os = "linux")]
+const GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE: u32 = 0x8CD0;
+#[cfg(target_os = "linux")]
+const GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME: u32 = 0x8CD1;
+#[cfg(target_os = "linux")]
+const GL_TEXTURE: i32 = 0x1702;
+#[cfg(target_os = "linux")]
+const GL_RENDERBUFFER: i32 = 0x8D41;
+
+/// Format of GTK's own framebuffer attachment, and so of the flip-blit's
+/// output: plain `Rgba8Unorm`, storing whatever bytes the shader writes. Same
+/// format as `self.target` (`TARGET_FORMAT`), so the blit is a straight copy.
+#[cfg(target_os = "linux")]
+const FRAMEBUFFER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+/// Adopt the lent GL context as a wgpu `(device, queue)` on wgpu's GL backend.
+/// Copied from `host-linux-desktop::adopt` (made synchronous via `pollster`,
+/// which this crate already uses). `None` if the driver can't satisfy
+/// `new_external` (GL below the GLES 3.0 floor) or `request_device` is rejected.
+///
+/// SAFETY: `new_external`'s contract is that the GL context is current for this
+/// call and for every use/drop of what it returns. The caller ran
+/// `make_current()` immediately before; `render`/`resize`/`Drop` each
+/// re-establish it before touching anything derived from this adapter.
+#[cfg(target_os = "linux")]
+fn adopt(gl: &GlTarget) -> Option<(wgpu::Device, wgpu::Queue)> {
+    let exposed = unsafe {
+        wgpu_hal::gles::Adapter::new_external(
+            |sym| gl.get_proc_address(sym),
+            wgpu_types::GlBackendOptions::default(),
+        )
+    }?;
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::GL,
+        flags: wgpu::InstanceFlags::empty(),
+        memory_budget_thresholds: Default::default(),
+        backend_options: wgpu::BackendOptions::default(),
+        display: None,
+    });
+    // SAFETY: as above — the adapter is built from the current context.
+    let adapter = unsafe { instance.create_adapter_from_hal(exposed) };
+    // Request the adapter's OWN limits, not `downlevel_defaults()`. host-linux-
+    // desktop's `render-wgpu` renderer is modest enough for the downlevel floor,
+    // but vello is NOT: its compute pipeline binds 5 storage buffers in one
+    // stage, over `downlevel_defaults()`'s `max_storage_buffers_per_shader_stage`
+    // of 4 (`create_bind_group_layout` → "Too many bindings of type
+    // StorageBuffers … limit is 4, count was 5"). `using_resolution()` only lifts
+    // the texture-DIMENSION limits, not the storage-buffer counts, so it wouldn't
+    // help. `adapter.limits()` is exactly what this GL adapter advertises (desktop
+    // Mesa GL 4.6 grants far more than the floor) — always grantable, never
+    // over-asks, the same invariant the swapchain path relies on. Request NO
+    // features: vello needs `SHADER_F16` only on Vulkan (naga enforces it for the
+    // `flatten` shader there); GL/naga doesn't require the explicit feature, and
+    // asking for it on GL would fail device creation. vello's own minimums are
+    // validated by `Renderer::new` (called after bringup); too weak → None.
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("canvas-vello-gl-device"),
+        required_features: wgpu::Features::empty(),
+        required_limits: adapter.limits(),
+        memory_hints: wgpu::MemoryHints::default(),
+        experimental_features: wgpu::ExperimentalFeatures::default(),
+        trace: wgpu::Trace::Off,
+    }))
+    .ok()
+}
+
+/// Wrap the lent framebuffer's colour attachment as a wgpu texture. Copied from
+/// `host-linux-desktop::wrap_framebuffer`, taking the pieces it needs directly
+/// rather than a `HostInner`.
+///
+/// Re-queried every frame rather than cached: GTK reallocates the `GtkGLArea`'s
+/// buffers across resizes and re-realizes, and rendering into a stale attachment
+/// draws into freed GPU memory.
+#[cfg(target_os = "linux")]
+fn wrap_framebuffer(
+    device: &wgpu::Device,
+    gl: &GlTarget,
+    w: u32,
+    h: u32,
+) -> Option<wgpu::Texture> {
+    let get: unsafe extern "C" fn(u32, u32, u32, *mut i32) =
+        gl_fn(gl, "glGetFramebufferAttachmentParameteriv")?;
+    let (mut kind, mut name) = (0i32, 0i32);
+    // SAFETY: called with the context current and GTK's framebuffer bound
+    // (`make_current` runs `gtk_gl_area_attach_buffers`).
+    unsafe {
+        get(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &mut kind);
+        get(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &mut name);
+    }
+    let name = std::num::NonZeroU32::new(u32::try_from(name).ok()?)?;
+
+    let desc = wgpu::TextureDescriptor {
+        label: Some("gtk-glarea-framebuffer"),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: FRAMEBUFFER_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    };
+    let hal_desc = wgpu_hal::TextureDescriptor {
+        label: desc.label,
+        size: desc.size,
+        mip_level_count: desc.mip_level_count,
+        sample_count: desc.sample_count,
+        dimension: desc.dimension,
+        format: desc.format,
+        usage: wgpu_types::TextureUses::COLOR_TARGET,
+        memory_flags: wgpu_hal::MemoryFlags::empty(),
+        view_formats: vec![],
+    };
+    // SAFETY: `name` is GTK's live colour attachment, described faithfully above.
+    // The no-op `drop_callback` is load-bearing: it tells wgpu-hal the object is
+    // BORROWED, so dropping this texture does not delete GTK's attachment.
+    let hal_texture = unsafe {
+        let dev = device.as_hal::<wgpu_hal::api::Gles>()?;
+        match kind {
+            GL_TEXTURE => dev.texture_from_raw(name, &hal_desc, Some(Box::new(|| {}))),
+            GL_RENDERBUFFER => {
+                dev.texture_from_raw_renderbuffer(name, &hal_desc, Some(Box::new(|| {})))
+            }
+            _ => return None,
+        }
+    };
+    // SAFETY: `hal_texture` was just built from this device.
+    Some(unsafe { device.create_texture_from_hal::<wgpu_hal::api::Gles>(hal_texture, &desc) })
+}
+
+#[cfg(target_os = "linux")]
+fn gl_fn<T: Copy>(gl: &GlTarget, symbol: &str) -> Option<T> {
+    let p = gl.get_proc_address(symbol);
+    if p.is_null() {
+        return None;
+    }
+    debug_assert_eq!(
+        std::mem::size_of::<T>(),
+        std::mem::size_of::<*const std::ffi::c_void>()
+    );
+    Some(unsafe { *(&p as *const *const std::ffi::c_void as *const T) })
+}
+
+/// Fullscreen blit that inverts V on the way out and copies colour STRAIGHT.
+///
+/// Same structure as `host-linux-desktop::FlipBlit` (a fullscreen triangle whose
+/// UVs invert V), but the fragment shader is a plain `textureSample` with NO
+/// sRGB re-encode. The host rendered into an `Rgba8UnormSrgb` target and had to
+/// put the transfer function back when writing GTK's plain `Rgba8Unorm` buffer.
+/// canvas-vello's `self.target` is `Rgba8Unorm` ALREADY holding sRGB-encoded
+/// premultiplied bytes (vello writes encoded bytes; the swapchain blit is also a
+/// straight copy), so re-encoding here would double-gamma and wash every colour
+/// out. The vertical flip is still required: `GlTarget::origin() == BottomLeft`,
+/// so a top-left-origin image lands upside down without it (proven in
+/// `backend-linux/tests/gl_target_adoption.rs`).
+#[cfg(target_os = "linux")]
+struct FlipBlit {
+    pipeline: wgpu::RenderPipeline,
+    sampler: wgpu::Sampler,
+    layout: wgpu::BindGroupLayout,
+}
+
+/// Fullscreen triangle; UVs derived from clip space with the V axis inverted
+/// (`(y + 1) / 2` instead of the usual `(1 - y) / 2`). Fragment = STRAIGHT copy.
+#[cfg(target_os = "linux")]
+const FLIP_BLIT_WGSL: &str = r#"
+@group(0) @binding(0) var src: texture_2d<f32>;
+@group(0) @binding(1) var samp: sampler;
+
+struct VsOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs(@builtin(vertex_index) idx: u32) -> VsOut {
+    var corners = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -3.0),
+        vec2<f32>(-1.0,  1.0),
+        vec2<f32>( 3.0,  1.0),
+    );
+    let xy = corners[idx];
+    var out: VsOut;
+    out.pos = vec4<f32>(xy, 0.0, 1.0);
+    // V inverted: `(xy.y + 1) * 0.5` (vs the usual `(1 - xy.y) * 0.5`) is the
+    // entire vertical flip — GTK composites the GLArea framebuffer bottom-up.
+    out.uv = vec2<f32>((xy.x + 1.0) * 0.5, (xy.y + 1.0) * 0.5);
+    return out;
+}
+
+@fragment
+fn fs(in: VsOut) -> @location(0) vec4<f32> {
+    // STRAIGHT COPY — no linear→sRGB re-encode. `src` is Rgba8Unorm already
+    // holding sRGB-encoded premultiplied bytes and the destination FBO is
+    // Rgba8Unorm too, so the bytes must pass through verbatim.
+    return textureSample(src, samp, in.uv);
+}
+"#;
+
+#[cfg(target_os = "linux")]
+impl FlipBlit {
+    fn new(device: &wgpu::Device) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("canvas-vello-gl-flip-blit"),
+            source: wgpu::ShaderSource::Wgsl(FLIP_BLIT_WGSL.into()),
+        });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("canvas-vello-gl-flip-blit-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("canvas-vello-gl-flip-blit-pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs"),
+                // GTK's framebuffer is plain Rgba8Unorm; writing the
+                // already-sRGB-encoded bytes through a linear target stores them
+                // verbatim, keeping colours matching the other backends.
+                targets: &[Some(FRAMEBUFFER_FORMAT.into())],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        // Nearest: `self.target` and the FBO are the same (drawable) size, so the
+        // blit is an exact 1:1 texel copy — no filtering needed or wanted.
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("canvas-vello-gl-flip-blit-sampler"),
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        Self { pipeline, sampler, layout }
+    }
+
+    fn draw(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        src: &wgpu::TextureView,
+        dst: &wgpu::TextureView,
+    ) {
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(src),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("canvas-vello-gl-flip-blit-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: dst,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &bind, &[]);
+        pass.draw(0..3, 0..1);
     }
 }
 
@@ -2355,6 +3016,101 @@ mod tests {
         assert!(
             near(c[0], 20) && near(c[1], 130) && near(c[2], 240) && c[3] > 200,
             "center px should be ~(20,130,240,255), got {c:?}"
+        );
+    }
+
+    /// Headless proof of the Linux/GTK4 GL present blit WITHOUT a live GtkGLArea:
+    /// a top-half-red source flip-blitted through [`FlipBlit`] into an
+    /// `Rgba8Unorm` target must land the red in the target's BOTTOM half (V
+    /// inverted, matching GTK's bottom-up GLArea compositing) and pass the RGB
+    /// through UNCHANGED (straight copy — no sRGB re-encode). Guards two of the
+    /// three GL-path invariants documented on `FlipBlit`:
+    ///
+    /// - **Vertical flip** (`GlTarget::origin() == BottomLeft`): if the vertex
+    ///   shader ever stopped inverting V, the red would stay in the top half.
+    /// - **Straight colour copy**: byte 200 sampled from an `Rgba8Unorm` source
+    ///   and written to an `Rgba8Unorm` target must come back ~200. If someone
+    ///   pasted host-linux-desktop's `linear_to_srgb` fragment shader, 200 would
+    ///   re-encode to ~229 and the `±6` check below would fail — the exact
+    ///   double-gamma wash the invariant forbids.
+    ///
+    /// The live-context half (adopting a real `GtkGLArea`, the framebuffer wrap,
+    /// on-screen orientation) is proven end-to-end in
+    /// `backend-linux/tests/gl_target_adoption.rs`; that needs a GTK main thread,
+    /// so it can't live here. Skips when there's no GPU/software adapter.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn gl_flip_blit_inverts_v_and_copies_colour_straight() {
+        const S: u32 = 64;
+        let Some((device, queue)) = super::headless_device() else {
+            eprintln!("skip: no GPU/software adapter");
+            return;
+        };
+        let blit = super::FlipBlit::new(&device);
+
+        // Source: top half (rows 0..S/2) opaque red 200, bottom half transparent.
+        // Rows are top-down (wgpu's texture origin is top-left).
+        let src = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("flip-blit-src"),
+            size: wgpu::Extent3d { width: S, height: S, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let mut pixels = vec![0u8; (S * S * 4) as usize];
+        for y in 0..S {
+            for x in 0..S {
+                let i = ((y * S + x) * 4) as usize;
+                if y < S / 2 {
+                    pixels[i] = 200; // R
+                    pixels[i + 3] = 255; // A
+                }
+            }
+        }
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &src,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(S * 4),
+                rows_per_image: Some(S),
+            },
+            wgpu::Extent3d { width: S, height: S, depth_or_array_layers: 1 },
+        );
+        let src_view = src.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Destination: same Rgba8Unorm format + size as the GLArea framebuffer.
+        let (dst, dst_view) = make_target(&device, S, S);
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        blit.draw(&device, &mut enc, &src_view, &dst_view);
+        queue.submit([enc.finish()]);
+
+        let img = read_target_rgba(&device, &queue, &dst, S, S);
+        let at = |x: u32, y: u32| {
+            let i = ((y * S + x) * 4) as usize;
+            [img.data[i], img.data[i + 1], img.data[i + 2], img.data[i + 3]]
+        };
+        // Source's top-red must have flipped to the target's BOTTOM.
+        let bottom = at(S / 2, S - 5);
+        assert!(
+            bottom[0] > 180 && bottom[3] > 180,
+            "V-flip: source top-red must land in the target BOTTOM, got {bottom:?}"
+        );
+        // Target's top is the source's (transparent) bottom half.
+        let top = at(S / 2, 4);
+        assert!(top[3] < 40, "target top should be the transparent source bottom, got {top:?}");
+        // Straight copy: 200 in → ~200 out. A linear→sRGB re-encode would give ~229.
+        assert!(
+            (bottom[0] as i32 - 200).abs() <= 6,
+            "straight copy must preserve RGB (no sRGB re-encode), got {bottom:?}"
         );
     }
 }

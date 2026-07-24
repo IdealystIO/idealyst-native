@@ -85,6 +85,13 @@ mod web_layer;
 // the stub for now (Stage 1 — vello renders); Stage 2 widens the real ring to iOS.
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
 mod native_capture;
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "macos")))]
+// Linux (GTK4/wgpu-GL): the real zero-copy path is a dma-buf export ring — the
+// analog of the macOS IOSurface ring — so Linux gets its own module, not the stub.
+#[cfg(target_os = "linux")]
+#[path = "native_capture_linux.rs"]
+mod native_capture;
+// Other non-macOS, non-Linux native targets (Windows) have no zero-copy self-capture
+// path yet — the no-op stub keeps `render.rs` cfg-free and records via CPU read-back.
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "macos"), not(target_os = "linux")))]
 #[path = "native_capture_stub.rs"]
 mod native_capture;

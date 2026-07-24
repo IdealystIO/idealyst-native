@@ -1,45 +1,38 @@
-//! `Element::Graphics` — a plain child HWND handed to wgpu.
+//! `Element::Graphics` — a DirectComposition visual handed to wgpu.
 //!
-//! Mirrors the macOS backend's `MetalView` shape at
-//! `crates/backend/macos/src/imp/graphics.rs`, translated to Win32:
+//! Formerly a child HWND; now a visual in the backend's
+//! [`crate::dcomp::CompositionTree`] (see that module's header for the
+//! why — scroll-atomic movement, antialiased rounded clips, no
+//! `SetWindowPos`/`SetWindowRgn`). What survives from the HWND era:
 //!
-//! - The surface is a dedicated `IdealystSurface` child window with a
-//!   `DefWindowProc` wndproc. wgpu's DX12 swapchain owns every pixel;
-//!   the wndproc answers `WM_ERASEBKGND` with "handled" so GDI never
-//!   flashes the class background between presents. `WS_CLIPSIBLINGS`
-//!   plus the host's `WS_CLIPCHILDREN` keep the scene painter's blit
-//!   off the surface.
-//! - wgpu reaches the window via `raw_window_handle::Win32WindowHandle`
-//!   ([`Win32SurfaceProvider`]) — the platform handle type changes but
-//!   the call surface is identical to iOS/macOS.
 //! - `on_ready` fires DEFERRED, from the layout pass, once the node
 //!   has a real laid-out size (the `OnReadyEvent` contract: "the
-//!   surface is in the layout tree and has a real size"). AppKit gets
-//!   this via a 0-delay runloop callback after its own layout;
-//!   Win32 layout is the framework's `layout_pass`, so that's where
-//!   the readiness decision lives — see [`layout_event`] and the
-//!   dispatch plumbing in `lib.rs`.
+//!   surface is in the layout tree and has a real size"). The
+//!   readiness decision is [`layout_event`]; dispatch plumbing lives
+//!   in `lib.rs`.
+//! - `scale` is reported as `1.0` — the Win32 host is DPI-unaware
+//!   today, and `1.0` is the documented "not yet reported" value.
 //!
-//! `scale` is reported as `1.0` — the Win32 host is DPI-unaware today
-//! (no per-monitor DPI handling anywhere in the backend), and `1.0`
-//! is the documented "not yet reported" value.
+//! The surface handed to the author is a
+//! [`GraphicsSurface::new_composed`] wrapper: `window_handle()`
+//! answers `Unavailable` (there is deliberately no HWND — a consumer
+//! that ignored the composed target would otherwise build a swapchain
+//! over the whole host window), and the [`ComposedTarget`] capability
+//! carries the visual pointer, the device commit hook, and the live
+//! visibility flag the wgpu host polls each frame.
 
-use std::num::NonZeroIsize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use raw_window_handle::{
-    DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawWindowHandle,
-    Win32WindowHandle, WindowHandle, WindowsDisplayHandle,
+    DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
+    WindowsDisplayHandle,
 };
-use runtime_core::primitives::graphics::{GraphicsSurface, OnLost, OnReady, OnResize};
-
-use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, RegisterClassW, WINDOW_EX_STYLE, WM_ERASEBKGND, WNDCLASSW,
-    WS_CHILD, WS_CLIPSIBLINGS, WS_VISIBLE,
+use runtime_core::primitives::graphics::{
+    ComposedTarget, GraphicsSurface, OnLost, OnReady, OnResize,
 };
+use windows::core::Interface;
+use windows::Win32::Graphics::DirectComposition::{IDCompositionDevice, IDCompositionVisual};
 
 // =========================================================================
 // Per-node state
@@ -48,8 +41,18 @@ use windows::Win32::UI::WindowsAndMessaging::{
 /// Everything the backend keeps for one live graphics node, keyed by
 /// node id in `WindowsBackend::graphics`.
 pub(crate) struct GraphicsState {
-    /// The provider-wrapped child HWND, cloned into each `OnReadyEvent`.
+    /// The composed-provider wrapper, cloned into each `OnReadyEvent`.
     pub surface: GraphicsSurface,
+    /// The node's visual chain (square-clip container + content the
+    /// swapchain binds to) — positioned/clipped by
+    /// `position_native_children`, detached by `remove_subtree`.
+    pub visuals: crate::dcomp::VisualPair,
+    /// Shared with the provider's [`ComposedTarget::is_visible`];
+    /// written by the positioning walk (portal-hidden ⇒ false).
+    pub visible: Arc<AtomicBool>,
+    /// Last placement written to the visual — the diff baseline so an
+    /// unchanged layout pass writes (and commits) nothing.
+    pub last_placement: Option<crate::dcomp::Placement>,
     /// Consumed by the first successful layout — `None` afterward
     /// doubles as the "ready" flag [`layout_event`] keys on.
     pub on_ready: Option<OnReady>,
@@ -94,109 +97,68 @@ pub(crate) fn layout_event(
 }
 
 // =========================================================================
-// The surface child window
+// The composed surface provider
 // =========================================================================
 
-fn class_name() -> PCWSTR {
-    PCWSTR(windows::core::w!("IdealystSurface").as_ptr())
+/// Provider behind the `GraphicsSurface`: owns a reference to the
+/// node's visual + the composition device, and the shared visibility
+/// flag.
+///
+/// # Send + Sync
+///
+/// wgpu requires the provider bounds. The COM pointers are only ever
+/// dereferenced on the UI thread — the backend, the host's render
+/// loop, and every author callback run there (same single-thread
+/// argument the old HWND provider documented; the values are freely
+/// copyable, the safety contract is lifetime + thread-of-use).
+struct WinCompProvider {
+    visual: IDCompositionVisual,
+    device: IDCompositionDevice,
+    visible: Arc<AtomicBool>,
 }
 
-/// Wndproc for the surface class. Everything defaults except erase:
-/// the wgpu swapchain owns every pixel, and letting GDI erase between
-/// presents flashes the class background through.
-unsafe extern "system" fn surface_wnd_proc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    if msg == WM_ERASEBKGND {
-        return LRESULT(1);
-    }
-    DefWindowProcW(hwnd, msg, wparam, lparam)
-}
+unsafe impl Send for WinCompProvider {}
+unsafe impl Sync for WinCompProvider {}
 
-fn ensure_class() {
-    use std::sync::Once;
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| unsafe {
-        let wc = WNDCLASSW {
-            lpfnWndProc: Some(surface_wnd_proc),
-            hInstance: GetModuleHandleW(None).map(|m| m.into()).unwrap_or_default(),
-            lpszClassName: class_name(),
-            ..Default::default()
-        };
-        RegisterClassW(&wc);
-    });
-}
-
-/// Create the child HWND a wgpu swapchain will attach to. Positioned
-/// by `layout_pass` like every native control; hidden/destroyed by
-/// the same portal / remove machinery.
-pub(crate) fn create_surface_hwnd(parent: HWND) -> HWND {
-    ensure_class();
-    unsafe {
-        CreateWindowExW(
-            WINDOW_EX_STYLE(0),
-            class_name(),
-            PCWSTR::null(),
-            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
-            0,
-            0,
-            0,
-            0,
-            parent,
-            None,
-            None,
-            None,
-        )
-    }
-    .unwrap_or(HWND(std::ptr::null_mut()))
-}
-
-// =========================================================================
-// raw_window_handle provider — bridges the HWND to wgpu.
-// =========================================================================
-
-struct Win32SurfaceProvider {
-    /// Raw HWND as an integer. Not the `HWND` newtype: wgpu requires
-    /// the provider `Send + Sync`, and an integer makes the manual
-    /// impls below honest — the value itself is freely copyable; the
-    /// safety contract is lifetime, not access: the framework's
-    /// `remove_subtree` destroys the HWND only after the author's
-    /// `on_lost` has dropped the wgpu surface built on it (same
-    /// ordering the macOS provider documents for its NSView).
-    hwnd: isize,
-    hinstance: isize,
-}
-
-unsafe impl Send for Win32SurfaceProvider {}
-unsafe impl Sync for Win32SurfaceProvider {}
-
-impl HasWindowHandle for Win32SurfaceProvider {
+impl HasWindowHandle for WinCompProvider {
     fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
-        let hwnd = NonZeroIsize::new(self.hwnd).ok_or(HandleError::Unavailable)?;
-        let mut handle = Win32WindowHandle::new(hwnd);
-        handle.hinstance = NonZeroIsize::new(self.hinstance);
-        Ok(unsafe { WindowHandle::borrow_raw(RawWindowHandle::Win32(handle)) })
+        // Deliberate: there is no per-surface window. Consumers must
+        // use the ComposedTarget capability; handing out the host HWND
+        // here would let a naive consumer swapchain over the whole app.
+        Err(HandleError::Unavailable)
     }
 }
 
-impl HasDisplayHandle for Win32SurfaceProvider {
+impl HasDisplayHandle for WinCompProvider {
     fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
         Ok(unsafe { DisplayHandle::borrow_raw(WindowsDisplayHandle::new().into()) })
     }
 }
 
-/// Wrap `hwnd` for the `OnReadyEvent`.
-pub(crate) fn make_surface(hwnd: HWND) -> GraphicsSurface {
-    let hinstance = unsafe { GetModuleHandleW(None) }
-        .map(|m| m.0 as isize)
-        .unwrap_or(0);
-    GraphicsSurface::new(Arc::new(Win32SurfaceProvider {
-        hwnd: hwnd.0 as isize,
-        hinstance,
-    }))
+impl ComposedTarget for WinCompProvider {
+    fn visual(&self) -> std::ptr::NonNull<std::ffi::c_void> {
+        std::ptr::NonNull::new(self.visual.as_raw()).expect("live COM pointer is non-null")
+    }
+
+    fn commit(&self) {
+        unsafe {
+            let _ = self.device.Commit();
+        }
+    }
+
+    fn is_visible(&self) -> bool {
+        self.visible.load(Ordering::Relaxed)
+    }
+}
+
+/// Wrap a node's visual for the `OnReadyEvent`.
+pub(crate) fn make_surface(
+    visual: IDCompositionVisual,
+    device: IDCompositionDevice,
+    visible: Arc<AtomicBool>,
+) -> GraphicsSurface {
+    let provider = Arc::new(WinCompProvider { visual, device, visible });
+    GraphicsSurface::new_composed(provider.clone(), provider)
 }
 
 #[cfg(test)]

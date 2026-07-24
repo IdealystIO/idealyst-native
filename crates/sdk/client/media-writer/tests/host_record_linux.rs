@@ -106,37 +106,54 @@ async fn records_synthetic_video_only_to_valid_webm() {
     let _ = std::fs::remove_file(&path);
 }
 
-/// Codec-selection / unsupported path: requesting `Container::Mp4` on a host
-/// without an H.264 encoder plugin must fail HONESTLY at `record()` (a `Backend`
-/// error naming the missing plugin) rather than write a broken file. On a host
-/// that has an H.264 encoder it's allowed to succeed. Never `Unsupported`, never
-/// a panic.
+/// Codec-selection / fallback path: requesting `Container::Mp4` on a host
+/// without an H.264 encoder plugin must NOT error — it falls back to VP8/WebM
+/// (mirroring the web backend's "container may differ"), rewrites the `.mp4`
+/// path to `.webm` so the filename matches its real content, and `stop()`
+/// returns that adjusted path. On a host WITH an H.264 encoder the request is
+/// honored and the path stays `.mp4`. Never `Unsupported`, never a panic.
 #[tokio::test]
-async fn mp4_without_h264_encoder_is_rejected_honestly() {
+async fn mp4_without_h264_falls_back_to_webm() {
     let store = files::app_files("media-writer-linux-host-test").expect("store");
-    let (video, _vw) = MediaStream::new();
+    let (video, vw) = MediaStream::new();
     let writer = MediaWriter::new();
-    let result = writer
+    let recording = writer
         .record(
             MediaInputs::video(&video),
-            RecordConfig::new(store, "should_fail_or_h264.mp4").container(Container::Mp4),
+            RecordConfig::new(store.clone(), "fallback_probe.mp4").container(Container::Mp4),
         )
-        .await;
+        .await
+        .expect("Mp4 request must resolve (honor or fall back), never error");
 
-    match result {
-        Ok(recording) => {
-            // This host has an H.264 encoder; the request was honored. Tear it
-            // down without asserting file contents (H.264/MP4 specifics).
-            let _ = recording.stop().await;
-        }
-        Err(MediaWriterError::Backend(msg)) => {
-            assert!(
-                msg.contains("H.264"),
-                "error must name the missing H.264 encoder, got: {msg}"
-            );
-        }
-        Err(other) => panic!("expected an honest Backend error for H.264/MP4, got: {other:?}"),
+    let img = frame();
+    for i in 0..20u64 {
+        vw.write_rgba8_at(W, H, &img, i * FRAME_US);
+        std::thread::sleep(std::time::Duration::from_millis(4));
     }
+
+    let out = recording.stop().await.expect("finalize");
+    let path = store.local_path(&out).expect("local path");
+    let bytes = std::fs::read(&path).expect("read recorded file");
+    assert!(bytes.len() > 512, "recording too small: {} bytes", bytes.len());
+
+    if out.ends_with(".webm") {
+        // Fell back (no H.264 encoder on this host): the extension was rewritten
+        // and the bytes are a real WebM (EBML magic) — content matches filename.
+        assert_eq!(
+            &bytes[0..4],
+            &[0x1A, 0x45, 0xDF, 0xA3],
+            "fallback file must be a real WebM (EBML) container"
+        );
+    } else {
+        // Honored H.264/MP4 (encoder installed): path stays `.mp4`.
+        assert!(
+            out.ends_with(".mp4"),
+            "honored path must remain .mp4, got: {out}"
+        );
+        assert_eq!(&bytes[4..8], b"ftyp", "honored file must be an MP4 container");
+    }
+
+    let _ = std::fs::remove_file(&path);
 }
 
 /// Empty inputs are still rejected with `NoInput` (the top-level contract,

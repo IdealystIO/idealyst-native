@@ -2210,9 +2210,12 @@ dependencies = [
 name = "canvas-vello"
 version = "0.4.0"
 dependencies = [
+ "backend-linux",
  "canvas-core",
  "canvas-native",
+ "glow",
  "js-sys",
+ "libc",
  "log",
  "media-stream",
  "objc2 0.6.4",
@@ -2232,6 +2235,8 @@ dependencies = [
  "wasm-bindgen-test",
  "web-sys",
  "wgpu",
+ "wgpu-hal",
+ "wgpu-types",
 ]
 
 [[package]]
@@ -4825,6 +4830,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "gstreamer-allocators"
+version = "0.23.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45f3c36aa5bc98e5dbfd19a27536373167ab1ad734ffafb84d5d65203fe75208"
+dependencies = [
+ "glib",
+ "gstreamer",
+ "gstreamer-allocators-sys",
+ "libc",
+ "once_cell",
+]
+
+[[package]]
+name = "gstreamer-allocators-sys"
+version = "0.23.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c005b6cfae0c7e97b0ea95921f561fc8a8786b734cec25c29363a52305074a10"
+dependencies = [
+ "glib-sys",
+ "gobject-sys",
+ "gstreamer-sys",
+ "libc",
+ "system-deps",
+]
+
+[[package]]
 name = "gstreamer-app"
 version = "0.23.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4887,6 +4918,37 @@ checksum = "feea73b4d92dbf9c24a203c9cd0bcc740d584f6b5960d5faf359febf288919b2"
 dependencies = [
  "glib-sys",
  "gobject-sys",
+ "libc",
+ "system-deps",
+]
+
+[[package]]
+name = "gstreamer-video"
+version = "0.23.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1318b599d77ca4f7702ecbdeac1672d6304cb16b7e5752fabb3ee8260449a666"
+dependencies = [
+ "cfg-if",
+ "futures-channel",
+ "glib",
+ "gstreamer",
+ "gstreamer-base",
+ "gstreamer-video-sys",
+ "libc",
+ "once_cell",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "gstreamer-video-sys"
+version = "0.23.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a70f0947f12d253b9de9bc3fd92f981e4d025336c18389c7f08cdf388a99f5c"
+dependencies = [
+ "glib-sys",
+ "gobject-sys",
+ "gstreamer-base-sys",
+ "gstreamer-sys",
  "libc",
  "system-deps",
 ]
@@ -7104,7 +7166,9 @@ dependencies = [
  "files",
  "glib",
  "gstreamer",
+ "gstreamer-allocators",
  "gstreamer-app",
+ "gstreamer-video",
  "jni 0.21.1",
  "js-sys",
  "media-stream",
@@ -9925,12 +9989,16 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "screen-recorder"
 version = "0.4.0"
 dependencies = [
+ "ashpd",
  "backend-android-mobile",
  "backend-ios-mobile",
  "backend-macos",
  "backend-web",
  "block2 0.5.1",
  "futures-channel",
+ "glib",
+ "gstreamer",
+ "gstreamer-app",
  "inventory",
  "jni 0.21.1",
  "js-sys",
@@ -10828,6 +10896,7 @@ dependencies = [
  "android-navigator-helpers",
  "backend-android-mobile",
  "backend-ios-mobile",
+ "backend-linux",
  "backend-macos",
  "backend-ssr",
  "backend-web",

@@ -65,14 +65,16 @@ use windows::Win32::UI::Controls::{
     InitCommonControlsEx, ICC_BAR_CLASSES, ICC_PROGRESS_CLASS, INITCOMMONCONTROLSEX,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, GetClientRect, GetWindowTextLengthW, GetWindowTextW,
-    SendMessageW, SetWindowPos, SetWindowTextW, ShowWindow, SystemParametersInfoW,
+    BeginDeferWindowPos, CreateWindowExW, DeferWindowPos, DestroyWindow, EndDeferWindowPos,
+    GetClientRect, GetWindowTextLengthW, GetWindowTextW,
+    SendMessageW, SetWindowTextW, ShowWindow, SystemParametersInfoW,
     BS_DEFPUSHBUTTON, HMENU, NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS, SWP_NOACTIVATE,
     SWP_NOZORDER, SW_SHOW, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WINDOW_EX_STYLE, WM_SETFONT,
     WS_BORDER, WS_CHILD, WS_VISIBLE,
 };
 
 mod code;
+mod dcomp;
 mod font;
 mod graphics;
 mod handles;
@@ -489,6 +491,11 @@ pub struct WindowsBackend {
     /// Live `Element::Graphics` nodes: surface + author callbacks +
     /// last reported size. See `graphics.rs` for the dispatch rules.
     graphics: HashMap<u64, graphics::GraphicsState>,
+    /// DirectComposition device/target/root over the host window —
+    /// graphics surfaces are visuals in this tree (see `dcomp.rs`).
+    /// Lazily created by the first `create_graphics`; `None` before
+    /// that or if DComp init failed.
+    comp: Option<dcomp::CompositionTree>,
     /// Last window region applied per child HWND (key: hwnd as isize)
     /// so `layout_pass` only calls `SetWindowRgn` on actual changes —
     /// every set forces a repaint of the child.
@@ -559,6 +566,7 @@ impl WindowsBackend {
             command_handlers: HashMap::new(),
             children: HashMap::new(),
             graphics: HashMap::new(),
+            comp: None,
             hwnd_regions: HashMap::new(),
             slider_handlers: HashMap::new(),
             assets: HashMap::new(),
@@ -650,12 +658,18 @@ impl WindowsBackend {
     pub fn wheel_scroll(&mut self, x: f32, y: f32, delta_px: f32) -> bool {
         let handled = scene::scroll_at(self, x, y, delta_px);
         if handled {
-            // HWND children (wgpu canvas, native controls) don't ride
-            // the painter's scroll translate — reposition them to the
-            // new offsets or they stay pinned while everything painted
-            // scrolls past.
+            // Native children (composition visuals, control HWNDs)
+            // don't ride the painter's scroll translate — reposition
+            // them to the new offsets or they stay pinned while
+            // everything painted scrolls past.
             self.position_native_children();
             self.invalidate();
+            // NOTE: the synchronous catch-up paint (UpdateWindow) lives
+            // in the HOST's wheel handler, after this borrow is
+            // released — UpdateWindow dispatches WM_PAINT inline, and
+            // paint re-borrows the backend; calling it from here (still
+            // inside the host's `borrow_mut`) is a guaranteed RefCell
+            // double-borrow panic on every wheel tick.
         }
         handled
     }
@@ -966,11 +980,18 @@ impl WindowsBackend {
         self.nav_handlers.remove(&id);
         // A graphics node fires `on_lost` (deferred — remove can run
         // inside author effects that already borrow the backend) so
-        // the author drops every wgpu object built on the HWND before
-        // it's reused. The HWND itself is destroyed below with the
-        // node; wgpu tolerates presenting to a dead window (the
-        // swapchain reports Lost and the host's draw skips).
+        // the author drops every wgpu object built on the visual. The
+        // visual detaches from the composition tree here; the COM
+        // object itself stays alive until wgpu's own reference drops
+        // (a detached visual composes nothing, so presenting to it in
+        // the interim is harmless).
         if let Some(mut st) = self.graphics.remove(&id) {
+            st.visible
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+            if let Some(comp) = &self.comp {
+                comp.remove_visual(&st.visuals);
+                comp.commit();
+            }
             if let Some(mut lost) = st.on_lost.take() {
                 runtime_core::scheduling::after_ms_detached(0, move || lost());
             }
@@ -1083,35 +1104,51 @@ impl WindowsBackend {
     }
 
     /// Recompute window-relative origins and reposition + re-clip every
-    /// native child HWND. Called from `layout_pass`, and on EVERY
-    /// scroll-offset change: painted children shift via the painter's
-    /// scroll translate, but HWND children (the wgpu canvas, buttons,
-    /// edits) only move when someone calls `SetWindowPos` — without
-    /// this, scrolling left them pinned in place. Each stack entry
-    /// carries the accumulated clip from clipping ancestors
-    /// (`(abs rect, corner radius)`), realized as window regions.
+    /// native child: control HWNDs (buttons, edits) AND graphics
+    /// composition visuals (the wgpu canvas). Called from
+    /// `layout_pass`, and on EVERY scroll-offset change: painted
+    /// children shift via the painter's scroll translate, but native
+    /// children only move when repositioned here — without this,
+    /// scrolling left them pinned in place. Each stack entry carries
+    /// the accumulated clip from clipping ancestors
+    /// (`(abs rect, corner radius)`) — realized as window regions for
+    /// HWNDs and as composition clips for visuals — plus the inherited
+    /// portal-hidden flag.
     pub(crate) fn position_native_children(&mut self) {
         let Some(root_id) = self.root_id else {
             return;
         };
-        type Clip = Option<((f32, f32, f32, f32), f32)>;
-        let mut stack: Vec<(u64, f32, f32, Clip)> = vec![(root_id, 0.0, 0.0, None)];
+        let mut stack: Vec<(u64, f32, f32, dcomp::ClipChain, bool)> =
+            vec![(root_id, 0.0, 0.0, dcomp::ClipChain::default(), false)];
         let mut control_moves: Vec<(HWND, i32, i32, i32, i32, Option<RegionSpec>)> = Vec::new();
-        while let Some((id, ox, oy, clip)) = stack.pop() {
+        // Graphics visuals collected during the walk, applied after it
+        // (placement diff + one batched commit).
+        let mut gfx_moves: Vec<(u64, (f32, f32, f32, f32), dcomp::ClipChain, bool)> = Vec::new();
+        while let Some((id, ox, oy, clip, hidden_above)) = stack.pop() {
+            let is_gfx = self.graphics.contains_key(&id);
             let Some(meta) = self.nodes.get_mut(&id) else {
                 continue;
             };
+            // Portal-hidden state inherits down the walk: HWND children
+            // are ShowWindow-hidden individually, but a graphics VISUAL
+            // needs the aggregate flag to blank its clip + visibility
+            // vote (see `dcomp::visual_placement`).
+            let hidden = hidden_above || meta.hidden;
             let (fx, fy, w, h) = meta.frame;
             let (ax, ay) = (ox + fx, oy + fy);
             meta.abs = (ax, ay);
-            if let Some(hwnd) = meta.hwnd() {
+            if is_gfx {
+                gfx_moves.push((id, (ax, ay, w, h), clip, hidden));
+            } else if let Some(hwnd) = meta.hwnd() {
                 // Painted-scene clips (`overflow: hidden`, scroll
                 // boxes, rounded wrappers) can't touch a native child
                 // HWND — express the nearest clipping ancestor as a
-                // WINDOW REGION instead, so a wgpu canvas follows its
-                // rounded wrapper and a control inside a scroll view
-                // stops at the viewport edge.
-                let region = hwnd_clip_region((ax, ay, w, h), clip);
+                // WINDOW REGION instead, so a control inside a scroll
+                // view stops at the viewport edge. Regions can only
+                // hold ONE shape, so controls get the chain's
+                // single-clip approximation; graphics visuals get the
+                // full two-channel chain.
+                let region = hwnd_clip_region((ax, ay, w, h), clip.legacy());
                 control_moves.push((
                     hwnd,
                     ax.round() as i32,
@@ -1128,37 +1165,85 @@ impl WindowsBackend {
                     coy -= s.offset_y;
                 }
             }
-            // A clipping node bounds its subtree: rects intersect with
-            // any outer clip; the NEAREST clipper's (max) radius wins —
-            // the uniform-radius case is exact, mixed nested radii are
-            // approximated by the innermost.
+            // A clipping node bounds its subtree — folded into the
+            // chain's square or rounded channel by its (max) radius;
+            // see `dcomp::ClipChain::push` for the semantics.
             let child_clip = if meta.clips_children() {
                 let radius = match &meta.kind {
                     NodeKind::View(v) => v.radii.iter().cloned().fold(0.0_f32, f32::max),
                     _ => 0.0,
                 };
-                let own = (ax, ay, w, h);
-                let rect = match clip {
-                    Some((c, _)) => intersect_rects(own, c),
-                    None => own,
-                };
-                Some((rect, radius))
+                clip.push((ax, ay, ax + w, ay + h), radius)
             } else {
                 clip
             };
             if let Some(kids) = self.children.get(&id) {
                 for k in kids {
-                    stack.push((*k, cox, coy, child_clip));
+                    stack.push((*k, cox, coy, child_clip, hidden));
                 }
             }
         }
-        for (hwnd, x, y, w, h, region) in control_moves {
+        // Apply graphics-visual placements: offset + clip per changed
+        // node, then ONE device commit — the DWM picks the whole batch
+        // up atomically with its next composition frame, which is what
+        // keeps the canvas glued to the painted scene during scrolling.
+        let mut comp_dirty = false;
+        for (id, abs, clip, hidden) in gfx_moves {
+            let Some(st) = self.graphics.get_mut(&id) else {
+                continue;
+            };
+            st.visible
+                .store(!hidden, std::sync::atomic::Ordering::Relaxed);
+            let placement = dcomp::visual_placement(abs, clip, hidden);
+            if st.last_placement == Some(placement) {
+                continue;
+            }
+            st.last_placement = Some(placement);
+            if let Some(comp) = &self.comp {
+                comp.apply_placement(&st.visuals, &placement);
+                comp_dirty = true;
+            }
+        }
+        if comp_dirty {
+            if let Some(comp) = &self.comp {
+                comp.commit();
+            }
+        }
+        // Batch every move into one `DeferWindowPos` transaction: the
+        // system repositions all children in one pass instead of N
+        // separate reposition/compose cycles — visibly smoother when a
+        // scroll tick moves a wgpu canvas plus a column of controls.
+        let moves: Vec<_> = control_moves
+            .iter()
+            .filter(|(hwnd, ..)| !hwnd.is_invalid())
+            .collect();
+        if !moves.is_empty() {
+            unsafe {
+                let mut hdwp = BeginDeferWindowPos(moves.len() as i32).unwrap_or_default();
+                if !hdwp.is_invalid() {
+                    for (hwnd, x, y, w, h, _) in &moves {
+                        match DeferWindowPos(
+                            hdwp,
+                            *hwnd,
+                            None,
+                            *x,
+                            *y,
+                            *w,
+                            *h,
+                            SWP_NOZORDER | SWP_NOACTIVATE,
+                        ) {
+                            Ok(next) => hdwp = next,
+                            Err(_) => break,
+                        }
+                    }
+                    let _ = EndDeferWindowPos(hdwp);
+                }
+            }
+        }
+        for (hwnd, _, _, _, _, region) in control_moves {
             if hwnd.is_invalid() {
                 continue;
             }
-            let _ = unsafe {
-                SetWindowPos(hwnd, None, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE)
-            };
             self.apply_hwnd_region(hwnd, region);
         }
     }
@@ -1238,8 +1323,8 @@ fn intersect_rects(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> (f32, f3
 /// `None` = no region needed (no clipping ancestor, or the child sits
 /// fully inside a square-cornered clip). The rounded case always gets
 /// a region even at full coverage: the corners themselves are what
-/// need cutting (the Simulator's wgpu canvas poking past its rounded
-/// wrapper was the reported bug).
+/// need cutting. (Graphics surfaces use `dcomp::visual_placement`
+/// instead — composition clips, antialiased and repaint-free.)
 fn hwnd_clip_region(
     child: (f32, f32, f32, f32),
     clip: Option<((f32, f32, f32, f32), f32)>,
@@ -1281,8 +1366,8 @@ enum TakenGfx {
 /// Simulator's `on_ready` blocks on the entire wgpu mount and its
 /// embedded app's effects may re-enter backend methods. `on_resize`'s
 /// `FnMut` box is restored afterward; `on_ready` is once-only (the
-/// HWND is stable for the node's lifetime — no Android-style surface
-/// recreation on this backend).
+/// composition visual is stable for the node's lifetime — no
+/// Android-style surface recreation on this backend).
 ///
 /// `scale` is 1.0 — the Win32 host is DPI-unaware today; `1.0` is the
 /// documented "not yet reported" value.
@@ -1935,6 +2020,8 @@ impl Backend for WindowsBackend {
             }
         }
         // Same as `wheel_scroll`: HWND children must follow the offset.
+        // No synchronous paint here — author code calls this under the
+        // backend borrow (same double-borrow hazard as wheel_scroll).
         self.position_native_children();
         self.invalidate();
     }
@@ -1974,16 +2061,33 @@ impl Backend for WindowsBackend {
         on_lost: runtime_core::primitives::graphics::OnLost,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        let hwnd = graphics::create_surface_hwnd(self.host_hwnd);
-        if hwnd.is_invalid() {
-            return self.placeholder("Graphics surface creation failed");
+        // The surface is a DirectComposition visual, not a child HWND
+        // — see `dcomp.rs` for the architecture. Tree init is lazy so
+        // apps without graphics never touch dcomp.dll.
+        if self.comp.is_none() {
+            self.comp = dcomp::CompositionTree::new(self.host_hwnd);
         }
-        let node = self.add_node(NodeKind::External { hwnd });
-        let surface = graphics::make_surface(hwnd);
+        let Some(comp) = &self.comp else {
+            return self.placeholder("Graphics surface creation failed (DirectComposition)");
+        };
+        let Some(visuals) = comp.add_visual() else {
+            return self.placeholder("Graphics surface creation failed (visual)");
+        };
+        let device = comp.device.clone();
+        // Graphics nodes carry no HWND; a null handle keeps them out of
+        // the native-control move/hide paths (all guarded by
+        // `is_invalid`) while the External kind still gives them a
+        // frame in the layout tree.
+        let node = self.add_node(NodeKind::External { hwnd: HWND(std::ptr::null_mut()) });
+        let visible = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let surface = graphics::make_surface(visuals.content.clone(), device, visible.clone());
         self.graphics.insert(
             node.id,
             graphics::GraphicsState {
                 surface,
+                visuals,
+                visible,
+                last_placement: None,
                 on_ready: Some(on_ready),
                 on_resize: Some(on_resize),
                 on_lost: Some(on_lost),
@@ -2046,6 +2150,10 @@ impl Backend for WindowsBackend {
                 stack.extend(kids.iter().copied());
             }
         }
+        // Graphics visuals don't respond to ShowWindow — re-run the
+        // positioning walk, which threads the hidden flag down to each
+        // visual's clip + visibility vote (empty clip when hidden).
+        self.position_native_children();
         self.invalidate();
     }
 
@@ -2402,12 +2510,12 @@ mod tests {
 
     // --- animated-value plumbing (pure node-state checks) ---
 
-    /// The welcome scene's whole choreography is driven through the
-    /// animated slots; pin that each write lands on the right field.
-    /// The Simulator's wgpu canvas HWND poked square corners past its
-    /// rounded wrapper: painted-scene clips can't touch a native child
-    /// window, so the nearest clipping ancestor must become a window
-    /// REGION on the child.
+    /// Painted-scene clips can't touch a native child window, so the
+    /// nearest clipping ancestor must become a window REGION on the
+    /// child. (Originally hit by the Simulator's wgpu canvas when it
+    /// was a child HWND; graphics surfaces are composition visuals now
+    /// — see `dcomp::visual_placement`'s tests — but the region path
+    /// still guards native controls inside rounded/scrolling wrappers.)
     #[test]
     fn regression_native_child_clips_to_rounded_ancestor() {
         // Canvas exactly filling a 300×649 wrapper with 32px radii →

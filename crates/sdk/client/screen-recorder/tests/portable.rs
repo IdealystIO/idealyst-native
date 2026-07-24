@@ -1,12 +1,28 @@
-//! Platform-agnostic tests for the screen-recorder skeleton. These run
-//! on the host (no real capture backend) and exercise the API surface +
-//! the skeleton's `Unsupported` contract.
+//! Platform-agnostic tests for the screen-recorder. These run on the host and
+//! exercise the API surface, the private-layer lowering, and — on targets that
+//! still have no capture backend — the `Unsupported` fallback contract.
+//!
+//! The `*_on_unsupported_target` tests drive `start` / `request_permission`
+//! end-to-end, so they are gated to the genuinely-unsupported fallback target:
+//! every implemented backend (macOS TCC, the Linux xdg-desktop-portal share
+//! dialog, ReplayKit/MediaProjection consent, web `getDisplayMedia`) drives a
+//! real, interactive OS consent flow that cannot run unattended in `cargo test`
+//! — the Linux portal `start`, in particular, blocks on a user-approved dialog.
+//! Those live paths are covered by each backend's own `#[ignore]`d test.
 
-use screen_recorder::{
-    PrivateLayer, PrivateLayerProps, RecorderError, RecordingConfig, ScreenRecorder, Source,
-    DEFAULT_FPS,
-};
+use screen_recorder::{PrivateLayer, PrivateLayerProps, RecordingConfig, Source, DEFAULT_FPS};
 use runtime_core::{view, Element, IntoElement};
+
+// Only referenced by the unsupported-target fallback tests below.
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(target_os = "ios"),
+    not(target_os = "macos"),
+    not(target_os = "android"),
+    not(target_os = "windows"),
+    not(target_os = "linux")
+))]
+use screen_recorder::{RecorderError, ScreenRecorder};
 
 #[test]
 fn config_defaults_are_sane() {
@@ -78,8 +94,20 @@ fn private_layer_lowers_to_external_carrying_children() {
     }
 }
 
+// The `Unsupported` fallback contract — only on targets with no capture
+// backend. Every implemented backend drives a real, interactive OS consent
+// flow here (see the module docs), so these end-to-end calls can't run
+// unattended on those platforms.
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(target_os = "ios"),
+    not(target_os = "macos"),
+    not(target_os = "android"),
+    not(target_os = "windows"),
+    not(target_os = "linux")
+))]
 #[tokio::test]
-async fn start_reports_unsupported_on_skeleton() {
+async fn start_reports_unsupported_on_unsupported_target() {
     let recorder = ScreenRecorder::new();
     // `MediaStream` (the Ok variant) isn't `Debug`, so match rather than
     // `expect_err`.
@@ -87,8 +115,16 @@ async fn start_reports_unsupported_on_skeleton() {
     assert!(matches!(result, Err(RecorderError::Unsupported)));
 }
 
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(target_os = "ios"),
+    not(target_os = "macos"),
+    not(target_os = "android"),
+    not(target_os = "windows"),
+    not(target_os = "linux")
+))]
 #[tokio::test]
-async fn request_permission_reports_unsupported_on_skeleton() {
+async fn request_permission_reports_unsupported_on_unsupported_target() {
     let recorder = ScreenRecorder::new();
     let result = recorder.request_permission(&Source::ThisApp).await;
     assert!(matches!(result, Err(RecorderError::Unsupported)));

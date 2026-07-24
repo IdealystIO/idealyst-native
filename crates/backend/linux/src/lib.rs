@@ -102,6 +102,12 @@ use runtime_layout::{AvailableSpace, LayoutNode, LayoutTree, Size};
 /// node's id in [`LinuxBackend::nav_handlers`].
 type NavHandler = Rc<RefCell<Box<dyn NavigatorHandler<LinuxBackend>>>>;
 
+/// Inert ops for the no-handler `make_navigator_handle` fallback (an
+/// unregistered navigator kind). `NavigatorOps` is an empty marker trait.
+struct NoopNavOps;
+impl runtime_core::primitives::navigator::NavigatorOps for NoopNavOps {}
+static NOOP_NAV_OPS: NoopNavOps = NoopNavOps;
+
 mod color;
 mod fonts;
 mod gl_loader;
@@ -469,12 +475,29 @@ pub struct LinuxBackend {
 pub struct LinuxExternalRegistrar(pub fn(&mut LinuxBackend));
 inventory::collect!(LinuxExternalRegistrar);
 
+/// Navigator analogue of [`LinuxExternalRegistrar`]; a navigator SDK's
+/// Linux module submits one so the app needn't call `<nav>::register`
+/// per platform — the Linux mirror of `MacosNavigatorRegistrar`. See
+/// [[project_inventory_self_registration]].
+///
+/// Without this, a navigator SDK that auto-registers on macOS/iOS/Android
+/// (the `stack`/`swap` navigators do, via their `*NavigatorRegistrar`
+/// inventory submits) falls to its no-op `fallback::register` on GTK, so
+/// `register_navigator` is never called and a PUSHED screen (the
+/// whiteboard's Settings/Preview) has no handler to present it — only the
+/// stack root renders. That was exactly this bug.
+pub struct LinuxNavigatorRegistrar(pub fn(&mut LinuxBackend));
+inventory::collect!(LinuxNavigatorRegistrar);
+
 impl LinuxBackend {
-    /// Install every SDK-submitted external handler. Native-only, so
-    /// inventory's link-time ctors have populated the slice before
-    /// construction.
+    /// Install every SDK-submitted external + navigator handler.
+    /// Native-only, so inventory's link-time ctors have populated the
+    /// slices before construction.
     fn drain_self_registrars(&mut self) {
         for r in inventory::iter::<LinuxExternalRegistrar> {
+            (r.0)(self);
+        }
+        for r in inventory::iter::<LinuxNavigatorRegistrar> {
             (r.0)(self);
         }
     }
@@ -1879,6 +1902,29 @@ impl Backend for LinuxBackend {
         } else {
             self.create_view(a11y)
         }
+    }
+
+    fn make_navigator_handle(
+        &self,
+        node: &Self::Node,
+    ) -> runtime_core::primitives::navigator::NavigatorHandle {
+        // Hand back the LIVE handle from this navigator's registered
+        // handler — it carries the `NavigatorControl` the SDK's dispatcher
+        // is installed on, so `Ref<StackHandle>::push` actually reaches the
+        // handler. Without this override the trait default returns an INERT
+        // handle (no control), so every `nav.push(...)` was a silent no-op
+        // on GTK — pushed screens (the whiteboard's Settings/Preview) never
+        // presented even though registration + `create_navigator` were
+        // correct. Mirrors `MacosBackend::make_navigator_handle`.
+        if let Some(handler) = self.nav_handlers.get(&node.id) {
+            return handler.borrow().make_handle();
+        }
+        // Unregistered navigator kind → inert no-op handle (the trait
+        // default), so a bound `Ref` silently does nothing rather than panic.
+        runtime_core::primitives::navigator::NavigatorHandle::new(
+            std::rc::Rc::new(()),
+            &NOOP_NAV_OPS,
+        )
     }
 
     fn navigator_attach_initial(

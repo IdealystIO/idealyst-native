@@ -222,6 +222,21 @@ pub async fn mount(
         "[host-linux-desktop] mounted ({}x{} px, logical {}x{})",
         size.0, size.1, logical.0, logical.1,
     );
+    // Register the in-signal flip-blit. `draw_frame` renders the scene into the
+    // offscreen target out-of-band and schedules a pass via `present()`; GTK's
+    // render signal then runs THIS callback (context current + FBO bound) to
+    // blit into the framebuffer — the only place GtkGLArea composites what's
+    // drawn (see `present_blit`). `try_borrow_mut` guards the (non-overlapping)
+    // re-entrancy against the render loop's own `draw_frame` borrow.
+    {
+        let inner_for_blit = inner.clone();
+        inner.borrow().gl.on_render(Box::new(move || {
+            if let Ok(mut inner) = inner_for_blit.try_borrow_mut() {
+                present_blit(&mut inner);
+            }
+        }));
+    }
+
     let inner_for_frame = inner.clone();
     let render_loop_handle = render_loop(move |_elapsed| {
         let mut inner = inner_for_frame.borrow_mut();
@@ -562,17 +577,63 @@ fn gl_fn<T: Copy>(gl: &GlTarget, symbol: &str) -> Option<T> {
 }
 
 fn draw_frame(inner: &mut HostInner) {
-    // Every GL/wgpu call below is only legal with the context current
-    // and GTK's framebuffer bound; this establishes both, and must be
-    // re-run each frame because GTK may have changed either since the
-    // last one (resize, or another GLArea rendering in between).
+    // The scene render below is only legal with the context current and GTK's
+    // framebuffer bound; this establishes both, and must be re-run each frame
+    // because GTK may have changed either since the last one (resize, or
+    // another GLArea rendering in between).
     inner.gl.make_current();
     runtime_core::set_frame_active(true);
 
+    // Scene → offscreen (sRGB view). The flip-blit into GTK's framebuffer does
+    // NOT happen here — it's deferred to `present_blit`, run INSIDE GTK's
+    // `render` signal (registered via `GlTarget::on_render` at mount), because
+    // GtkGLArea only composites what is drawn during that signal. Blitting here
+    // (out-of-band) left the widget showing the pre-adoption clear colour — the
+    // "GPU canvas stuck on the dark clear colour" bug.
+    inner.renderer.render(
+        &inner.host,
+        &inner.device,
+        &inner.queue,
+        &inner.target.view,
+        inner.logical,
+        (0.0, 0.0, inner.size.0 as f32, inner.size.1 as f32),
+    );
+
+    // Schedule the render pass that runs `present_blit` (the FBO flip-blit).
+    // GTK re-composites the GLArea on its next frame; the pass fires with the
+    // context current + FBO bound, the only place the blit is composited.
+    inner.gl.present();
+
+    // Advance per-frame state (animations, spinners, momentum).
+    let _ = inner.host.tick();
+}
+
+/// Flip-blit the offscreen `target` into GTK's framebuffer, **from inside GTK's
+/// `render` signal**. Registered via [`GlTarget::on_render`] at mount; GTK runs
+/// it with the context current and the area's FBO bound.
+///
+/// # The invariant this exists to honour (CLAUDE.md §5)
+///
+/// GtkGLArea composites ONLY what is drawn during its own render pass.
+/// `draw_frame` renders the scene into the offscreen `target` out-of-band (the
+/// driver's render loop) and calls `present()` (queue_render) to schedule a
+/// pass; GTK then emits `render` and runs this — the one place the blit's
+/// result is guaranteed on-screen. Blitting in `draw_frame` left the widget
+/// stuck on the pre-adoption clear colour (the bug this fixes).
+///
+/// The sRGB re-encode stays in the blit shader (`self.target` is
+/// `Rgba8UnormSrgb`, GTK's FBO plain `Rgba8Unorm`) — only WHERE the blit runs
+/// changed, not what it does.
+fn present_blit(inner: &mut HostInner) {
+    // Defensive: GTK has already made the context current + bound the FBO
+    // before emitting `render`, but re-establishing both is cheap and re-binds
+    // exactly what `wrap_framebuffer` reads below.
+    inner.gl.make_current();
+
     let Some(fbo_tex) = wrap_framebuffer(inner) else {
-        // Once only: this fires every frame if it fires at all, and a
-        // silent early return here is exactly the "mounts cleanly,
-        // renders nothing" failure that is hardest to diagnose.
+        // Once only: this fires every frame if it fires at all, and a silent
+        // early return here is exactly the "mounts cleanly, renders nothing"
+        // failure that is hardest to diagnose.
         if !inner.warned_no_framebuffer {
             inner.warned_no_framebuffer = true;
             eprintln!(
@@ -585,20 +646,9 @@ fn draw_frame(inner: &mut HostInner) {
     };
     let fbo_view = fbo_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
-    // Scene → offscreen (sRGB view).
-    inner.renderer.render(
-        &inner.host,
-        &inner.device,
-        &inner.queue,
-        &inner.target.view,
-        inner.logical,
-        (0.0, 0.0, inner.size.0 as f32, inner.size.1 as f32),
-    );
-
-    // Offscreen → GTK's framebuffer, flipping V. Asserted rather than
-    // assumed: if a backend ever reports a top-left GL framebuffer this
-    // blit would be wrong, so it is only correct to flip while the
-    // target says `BottomLeft`.
+    // Offscreen → GTK's framebuffer, flipping V. Asserted rather than assumed:
+    // if a backend ever reports a top-left GL framebuffer this blit would be
+    // wrong, so it is only correct to flip while the target says `BottomLeft`.
     debug_assert_eq!(
         inner.gl.origin(),
         FramebufferOrigin::BottomLeft,
@@ -614,9 +664,6 @@ fn draw_frame(inner: &mut HostInner) {
         .draw(&inner.device, &mut encoder, &inner.target.view, &fbo_view);
     inner.queue.submit([encoder.finish()]);
 
-    // Hand the framebuffer back to GTK so it composites this frame.
-    inner.gl.present();
-
     if !inner.presented_once {
         inner.presented_once = true;
         eprintln!(
@@ -624,7 +671,4 @@ fn draw_frame(inner: &mut HostInner) {
             inner.size.0, inner.size.1, inner.logical.0, inner.logical.1,
         );
     }
-
-    // Advance per-frame state (animations, spinners, momentum).
-    let _ = inner.host.tick();
 }

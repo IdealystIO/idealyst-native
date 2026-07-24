@@ -48,6 +48,13 @@ windows = { version = "0.58", features = [
     # GetModuleHandleW for the graphics-surface window class + the
     # Win32WindowHandle hinstance wgpu reads.
     "Win32_System_LibraryLoader",
+    # `Element::Graphics` surfaces are DirectComposition visuals in a
+    # composition tree over the host window (not child HWNDs) — moving
+    # them is a property write + Commit, atomic with the compositor's
+    # frame, so they stay glued to the painted scene during scrolling.
+    "Win32_Graphics_DirectComposition",
+    # D2D_RECT_F for IDCompositionVisual::SetClip2.
+    "Win32_Graphics_Direct2D_Common",
 ] }
 # `Element::Graphics` hands wgpu a `Win32WindowHandle` through this.
 raw-window-handle = "0.6"

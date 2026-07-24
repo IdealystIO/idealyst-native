@@ -66,6 +66,20 @@ pub mod apple_surface;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub use apple_surface::{surface_channel, NativeTap, SurfaceSource, SurfaceWriter};
 
+/// Zero-copy Linux frame source: a **dma-buf** handle (a GPU buffer exported from
+/// the canvas render target via `EGL_MESA_image_dma_buf_export`) shared between a
+/// GPU producer (`canvas-vello`) and a same-platform consumer (a recorder). The
+/// Linux analog of [`apple_surface`] — `MediaStream::native_source` carries a
+/// [`dmabuf::DmaBufSource`] the recorder downcasts, so a GPU-rendered frame stays
+/// a GPU handle through the stream and only touches the CPU if a software encoder
+/// demands it.
+#[cfg(target_os = "linux")]
+pub mod dmabuf;
+#[cfg(target_os = "linux")]
+pub use dmabuf::{
+    dmabuf_channel, DmaBufFrame, DmaBufSource, DmaBufWriter, NativeTap, DRM_FORMAT_MOD_INVALID,
+};
+
 mod audio;
 pub use audio::{
     AudioFormat, AudioFrame, AudioFrameCallback, AudioStream, AudioSubscription, AudioWriter,
@@ -261,6 +275,12 @@ pub struct FrameWriter {
     /// [`SurfaceSource`].
     #[cfg(target_os = "macos")]
     surface: Option<apple_surface::SurfaceWriter>,
+    /// Linux zero-copy capture sink: present only when the pair was built via
+    /// [`MediaStream::with_surface_capture`]. The GPU producer publishes each
+    /// rendered frame's exported dma-buf descriptor here; the stream's
+    /// `native_source` is the paired [`dmabuf::DmaBufSource`].
+    #[cfg(target_os = "linux")]
+    dmabuf: Option<dmabuf::DmaBufWriter>,
     /// Web self-capture: the shared `native` slot of the paired stream, so the
     /// canvas renderer can publish its `captureStream()` as the native source.
     /// Present only when built via [`MediaStream::with_surface_capture`].
@@ -274,6 +294,8 @@ impl FrameWriter {
             channel,
             #[cfg(target_os = "macos")]
             surface: None,
+            #[cfg(target_os = "linux")]
+            dmabuf: None,
             #[cfg(target_arch = "wasm32")]
             native_slot: None,
         }
@@ -300,9 +322,26 @@ impl FrameWriter {
         {
             self.surface.as_ref().is_some_and(|s| s.wants_surface())
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
+        {
+            self.dmabuf.as_ref().is_some_and(|d| d.wants())
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         {
             false
+        }
+    }
+
+    /// Publish a rendered frame's exported dma-buf descriptor to the native source
+    /// — the Linux GPU self-capture seam (the analogue of macOS's
+    /// [`publish_surface`](Self::publish_surface)). No-op if this writer wasn't
+    /// built with a dma-buf sink. The producer owns the fd (its render ring); this
+    /// only records the borrowed descriptor. A consumer reads it via the stream's
+    /// [`DmaBufSource`](dmabuf::DmaBufSource) and `dup(2)`s the fd on import.
+    #[cfg(target_os = "linux")]
+    pub fn publish_dmabuf(&self, frame: dmabuf::DmaBufFrame) {
+        if let Some(d) = &self.dmabuf {
+            d.publish(frame);
         }
     }
 
@@ -481,10 +520,46 @@ impl MediaStream {
         (stream, writer)
     }
 
-    /// Other native targets (Linux/Windows desktop): no zero-copy self-capture
-    /// path, so identical to [`new`](Self::new). Keeps cross-platform callers
-    /// (the canvas capture) compiling everywhere.
-    #[cfg(all(not(target_os = "macos"), not(target_arch = "wasm32")))]
+    /// Linux (desktop): wires a zero-copy dma-buf sink. The returned `FrameWriter`
+    /// publishes each rendered frame's exported dma-buf descriptor
+    /// ([`FrameWriter::publish_dmabuf`]) and the stream's
+    /// [`native_source`](Self::native_source) is the matching
+    /// [`DmaBufSource`](dmabuf::DmaBufSource). This is the GPU self-capture path (a
+    /// canvas renders into a GL texture, exports it as a dma-buf, and publishes it;
+    /// a recorder imports it into GStreamer with no CPU readback in the canvas).
+    #[cfg(target_os = "linux")]
+    pub fn with_surface_capture() -> (MediaStream, FrameWriter) {
+        // dma-buf zero-copy is opt-in (`IDEALYST_CANVAS_DMABUF=1`) and OFF by
+        // default: a Mesa `RENDER_ATTACHMENT` texture is GPU-tiled and exported
+        // with an implicit modifier that `glupload` misreads as linear → corrupt
+        // recordings. When disabled, return a PLAIN stream (no native source), so
+        // `native_source()` is `None` and BOTH the recorder and the canvas take
+        // the GPU→CPU read-back path. Gating only the canvas producer while the
+        // stream still advertised a `DmaBufSource` made the recorder pick the
+        // dma-buf pipeline and wait forever for frames the canvas never sent —
+        // which HUNG `stop()`. The gate must live at the source of the native
+        // source, i.e. here.
+        if !dmabuf_capture_enabled() {
+            return Self::new();
+        }
+        let channel = Arc::new(FrameChannel::default());
+        let (dmabuf_source, dmabuf_writer) = dmabuf::dmabuf_channel();
+        let stream = MediaStream {
+            inner: Rc::new(StreamInner {
+                channel: channel.clone(),
+                native: Rc::new(RefCell::new(Some(Rc::new(dmabuf_source) as Rc<dyn Any>))),
+                stopper: RefCell::new(None),
+            }),
+        };
+        let mut writer = FrameWriter::from_channel(channel);
+        writer.dmabuf = Some(dmabuf_writer);
+        (stream, writer)
+    }
+
+    /// Other native targets (Windows desktop): no zero-copy self-capture path yet,
+    /// so identical to [`new`](Self::new). Keeps cross-platform callers (the canvas
+    /// capture) compiling everywhere.
+    #[cfg(all(not(target_os = "macos"), not(target_os = "linux"), not(target_arch = "wasm32")))]
     pub fn with_surface_capture() -> (MediaStream, FrameWriter) {
         Self::new()
     }
@@ -719,3 +794,17 @@ mod tests {
         assert_eq!(stream.generation(), 0);
     }
 }
+
+/// Whether dma-buf zero-copy self-capture is enabled (`IDEALYST_CANVAS_DMABUF=1`),
+/// OFF by default. When off, `with_surface_capture` returns a plain stream so
+/// capture uses the correct GPU→CPU read-back. Read once, cached. Same flag the
+/// `canvas-vello` producer reads, so both sides agree.
+#[cfg(target_os = "linux")]
+fn dmabuf_capture_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("IDEALYST_CANVAS_DMABUF").map(|v| v == "1" || v == "true").unwrap_or(false)
+    })
+}
+

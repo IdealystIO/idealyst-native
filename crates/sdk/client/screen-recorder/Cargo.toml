@@ -141,6 +141,25 @@ block2 = "0.5"
 futures-channel = "0.3"
 backend-macos = { workspace = true }
 
+# Desktop Linux: xdg-desktop-portal ScreenCast + PipeWire, driven with the same
+# GStreamer "media cluster" pattern the `audio`/`camera` backends use (idempotent
+# `gst::init` guard, a dedicated bus-message thread with no GLib main loop
+# assumed). `ashpd` runs the portal round-trip (create_session → select_sources
+# → start → open_pipe_wire_remote); the returned PipeWire fd + node id feed
+# `pipewiresrc fd=<fd> path=<node> ! videoconvert ! videoscale ! videorate !
+# appsink(RGBA)`, and each appsink sample is mapped and pushed into the
+# `FrameWriter` as tightly-packed RGBA8 — identical delivery to `camera`, only
+# the source element differs. `gstreamer-app` supplies the `AppSink`. Versions
+# match the `audio`/`camera` backends (gstreamer-rs 0.23 targets the GStreamer
+# 1.x C API — no `v1_XX` feature gates); `ashpd` matches `file-picker` (0.9.x,
+# default `async-std`/async-io features, so it drives under any executor). We do
+# NOT need the `pipewire`-rs crate: `pipewiresrc` consumes the raw fd directly.
+[target.'cfg(all(target_os = "linux", not(target_arch = "wasm32")))'.dependencies]
+gstreamer = "0.23"
+gstreamer-app = "0.23"
+glib = "0.20"
+ashpd = "0.9"
+
 # The Kotlin shim + foreground service that drive MediaProjection capture and
 # trampoline frames back to the native exports in android.rs. `idealyst run
 # android` discovers and compiles these from here, like the `camera` SDK's
@@ -152,17 +171,12 @@ runtime_kotlin = [
 ]
 
 # ---------------------------------------------------------------------------
-# Per-platform capture deps are added as each backend is implemented. The
-# planned dep set per remaining target, for reference when filling them in:
+# Per-platform capture deps are added as each backend is implemented. iOS,
+# Android, macOS, web, and Linux are wired above; Windows is the remaining
+# planned target:
 #
 # [target.'cfg(target_os = "windows")'.dependencies]
 # windows = { features = ["Graphics_Capture", "Graphics_DirectX_Direct3D11", ...] }
-#
-# [target.'cfg(target_os = "linux")'.dependencies]
-# ashpd, pipewire                                               # xdg portal
-#
-# [target.'cfg(target_arch = "wasm32")'.dependencies]
-# js-sys, wasm-bindgen, wasm-bindgen-futures, web-sys           # getDisplayMedia
 # ---------------------------------------------------------------------------
 
 [dev-dependencies]

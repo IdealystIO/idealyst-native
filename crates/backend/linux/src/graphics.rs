@@ -108,6 +108,15 @@ fn clear_to(rgba: [f32; 4]) {
 /// destroyed context after the first resize.
 struct GtkGlProvider {
     area: gtk4::GLArea,
+    /// The author's per-frame draw, invoked from the `render` signal (see
+    /// `on_render`). Shared with the signal handler so a `present()`
+    /// (queue_render) causes GTK to emit `render`, which runs this WITH the
+    /// area's FBO bound and its context current — the only place GtkGLArea
+    /// reliably composites what's drawn. Drawing out-of-band via
+    /// `make_current` and hoping GTK re-composites the FBO does NOT work
+    /// (the widget shows the last frame GTK actually captured — the
+    /// "canvas stuck on the clear colour" bug).
+    render_cb: Rc<RefCell<Option<Box<dyn FnMut()>>>>,
 }
 
 impl GlContextProvider for GtkGlProvider {
@@ -151,10 +160,14 @@ impl GlContextProvider for GtkGlProvider {
         FramebufferOrigin::BottomLeft
     }
 
+    fn set_render_callback(&self, cb: Box<dyn FnMut()>) {
+        *self.render_cb.borrow_mut() = Some(cb);
+    }
+
     fn present(&self) {
-        // GTK composites the area's framebuffer into the widget tree on its
-        // next frame. Without this a frame drawn outside the `render` signal
-        // sits in the FBO unseen until something else dirties the widget.
+        // Schedule a `render` emission. The actual draw happens in that
+        // signal (via `render_cb`), because GTK only composites what is
+        // drawn during its own render pass — see `render_cb`'s doc.
         self.area.queue_render();
     }
 }
@@ -197,50 +210,75 @@ pub(crate) fn build_gl_area(
     // Prefer desktop GL; fall back to GLES if that's all the driver offers.
     area.set_required_version(3, 0);
 
-    // --- render: fire on_ready once, then get out of the author's way ------
+    // --- render: fire on_ready once, then run the author's draw IN-signal ---
     let on_ready_cell: Rc<RefCell<Option<OnReady>>> = Rc::new(RefCell::new(Some(on_ready)));
     let adopted = Rc::new(Cell::new(false));
+    // The author's per-frame draw, shared between the provider (which stores
+    // it via `on_render`) and this signal handler (which runs it). This is
+    // the fix for the "canvas stuck on the clear colour" bug: the draw MUST
+    // happen inside the `render` signal — GTK only composites what is drawn
+    // during its own render pass, so an out-of-band blit is never shown.
+    let render_cb: Rc<RefCell<Option<Box<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
     {
         let on_ready_cell = on_ready_cell.clone();
         let adopted = adopted.clone();
+        let render_cb = render_cb.clone();
         area.connect_render(move |area, _ctx| {
             // GTK has made the context current and bound the area's FBO
             // before emitting `render`.
-            if adopted.get() {
-                // The author owns the framebuffer now. Clearing here would
-                // erase the frame they drew from their own scheduler between
-                // our `render` ticks — the whole point of `present()` is that
-                // GTK re-composites what's already in the FBO.
-                return glib::Propagation::Stop;
+            if !adopted.get() {
+                // Pre-adoption: clear to a placeholder so an un-adopted area
+                // isn't garbage, and fire `on_ready` on the first real size.
+                // `on_ready` is where the author registers `render_cb` (via
+                // `on_render`), so it must run BEFORE the draw below.
+                clear_to(CLEAR_RGBA);
+                let size = (
+                    area.width().max(0) as u32 * area.scale_factor().max(1) as u32,
+                    area.height().max(0) as u32 * area.scale_factor().max(1) as u32,
+                );
+                let fired = on_ready_cell.borrow().is_none();
+                if let Some(size) = ready_decision(fired, size) {
+                    // Take the callback out before invoking: author code can
+                    // re-enter GTK (queue_render → render), and a live
+                    // `borrow_mut` across that would panic.
+                    let cb = on_ready_cell.borrow_mut().take();
+                    if let Some(mut cb) = cb {
+                        adopted.set(true);
+                        let target = GlTarget::new(Rc::new(GtkGlProvider {
+                            area: area.clone(),
+                            render_cb: render_cb.clone(),
+                        }));
+                        cb(OnReadyEvent {
+                            target: GraphicsTarget::Gl(target),
+                            size,
+                            // `size` is already physical (logical × scale
+                            // factor), matching the web backend's "size is
+                            // physical, no separate scale" contract.
+                            scale: 1.0,
+                        });
+                        // Keep the callback: `on_lost` (unrealize) can be
+                        // followed by a fresh realize, and the contract
+                        // promises a new `on_ready` when the context returns.
+                        *on_ready_cell.borrow_mut() = Some(cb);
+                    }
+                }
             }
 
-            let size = (
-                area.width().max(0) as u32 * area.scale_factor().max(1) as u32,
-                area.height().max(0) as u32 * area.scale_factor().max(1) as u32,
-            );
-            clear_to(CLEAR_RGBA);
-
-            let fired = on_ready_cell.borrow().is_none();
-            if let Some(size) = ready_decision(fired, size) {
-                // Take the callback out before invoking: author code can
-                // re-enter GTK (queue_render → render), and a live
-                // `borrow_mut` across that would panic.
-                let cb = on_ready_cell.borrow_mut().take();
+            // Run the author's draw IN this render pass — the ONLY place
+            // GtkGLArea composites what's drawn. This runs on the adoption
+            // pass too (right after `on_ready` registered it), so the first
+            // frame shows author content instead of the placeholder clear;
+            // and on every subsequent `present()`-triggered pass. Take it
+            // out across the call: author code may re-enter GTK (a nested
+            // queue_render) and a live borrow would panic.
+            if adopted.get() {
+                let cb = render_cb.borrow_mut().take();
                 if let Some(mut cb) = cb {
-                    adopted.set(true);
-                    let target = GlTarget::new(Rc::new(GtkGlProvider { area: area.clone() }));
-                    cb(OnReadyEvent {
-                        target: GraphicsTarget::Gl(target),
-                        size,
-                        // `size` is already physical (logical × scale factor),
-                        // matching the web backend's "size is physical, no
-                        // separate scale" contract.
-                        scale: 1.0,
-                    });
-                    // Keep the callback: `on_lost` (unrealize) can be followed
-                    // by a fresh realize, and the contract promises a new
-                    // `on_ready` when the context comes back.
-                    *on_ready_cell.borrow_mut() = Some(cb);
+                    cb();
+                    let mut slot = render_cb.borrow_mut();
+                    if slot.is_none() {
+                        *slot = Some(cb);
+                    }
                 }
             }
             glib::Propagation::Stop

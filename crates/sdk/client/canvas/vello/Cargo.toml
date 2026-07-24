@@ -54,6 +54,38 @@ wgpu = "29"
 raw-window-handle = "0.6"
 pollster = "0.4"
 
+# Linux (GTK4): the backend can't hand out a per-widget window handle, so the
+# `graphics` primitive lends a live GL context (`GtkGLArea`) instead of a
+# swapchain surface. To render vello there, canvas-vello adopts that context
+# through wgpu's GLES HAL (`gles::Adapter::new_external` +
+# `create_adapter_from_hal`) and flip-blits its target into the lent
+# framebuffer — exactly the dance `host-linux-desktop`/`backend-linux` already
+# prove. wgpu 29's `default` features already include `gles` (and `vulkan`, so
+# the headless export path + the `gpu_can_run_vello` probe keep working); the
+# explicit `gles` here is belt-and-suspenders if defaults are ever trimmed.
+# `wgpu-hal` + `wgpu-types` are DIRECT deps because `wgpu::hal` re-exports only
+# the generic surface, not the backend-specific `gles::Adapter::new_external` /
+# `GlBackendOptions` this adoption needs. Matches backend-linux's versions.
+[target.'cfg(target_os = "linux")'.dependencies]
+wgpu = { version = "29", features = ["gles"] }
+wgpu-hal = { version = "29", features = ["gles"] }
+wgpu-types = "29"
+# Zero-copy GPU capture on Linux (the dma-buf analog of macOS's IOSurface path):
+# export the vello GL render target as a dma-buf via `EGL_MESA_image_dma_buf_export`
+# and publish it as the stream's native source (no per-frame CPU readback). wgpu's
+# public API doesn't expose the raw GL texture name, so `native_capture_linux`
+# reaches through `wgpu-hal`'s GLES `TextureInner::Texture { raw: glow::Texture }`.
+# `glow` names that type (it's `wgpu-hal 29`'s own glow major, 0.17 — must match so
+# the `TextureInner` variant's `raw` field is the same `NativeTexture`). EGL entry
+# points are resolved through the GL proc-address loader (epoxy), not a separate
+# EGL link — see `native_capture_linux.rs`.
+glow = "0.17"
+# `dlopen`/`dlsym` libepoxy to read its `epoxy_eglGetProcAddress` dispatch pointer
+# (the SAME loader `backend-linux`'s `gl_loader` uses), so the EGL export entry
+# points come from epoxy, not a separate `libEGL` link. libepoxy is already mapped
+# in the process (GTK links it); this just bumps its refcount.
+libc = "0.2"
+
 # Web (wasm32): vello over wgpu's **WebGPU** backend. `default-features = false,
 # features = ["webgpu", "wgsl"]` selects the browser WebGPU path (NOT webgl —
 # vello needs compute shaders, which WebGL can't do; where WebGPU is absent the
@@ -114,6 +146,14 @@ serde_json = { workspace = true }
 # loads a real PDF page into a canvas Scene. `pdf` depends only on `canvas-core`
 # (no cycle back to `canvas-vello`).
 pdf = { workspace = true }
+
+# Linux dma-buf export spike (`dmabuf_export_spike`, #[ignore], interactive): a
+# live `GtkGLArea` is the only way to get the EGL display+context the GL path uses,
+# so the spike borrows `backend-linux`'s `build_gl_area_for_test` (the same helper
+# `gl_target_adoption.rs` uses). `backend-linux` does NOT depend on `canvas-vello`,
+# so this dev-only edge is acyclic. `gtk4` comes via `backend_linux::gtk4`.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+backend-linux = { path = "../../../../backend/linux" }
 
 # Zero-copy GPU capture on macOS: render vello into an IOSurface-backed Metal
 # texture (imported into the canvas wgpu device via `wgpu::Device::as_hal` +

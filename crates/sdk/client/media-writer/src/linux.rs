@@ -35,8 +35,12 @@
 //!   the recommended Linux container.
 //! - [`Container::Mp4`] → an H.264 encoder (`x264enc`/`openh264enc`), `mp4mux`
 //!   and AAC, honored **only when an H.264 encoder plugin is installed**. When
-//!   none is present we return an honest [`MediaWriterError::Backend`] naming
-//!   the missing plugin — never a silently-broken file. (See [`select_codec`].)
+//!   none is present we **fall back to VP8/WebM** (like the web backend's
+//!   browser-chosen container) rather than error, and rewrite the output file's
+//!   extension so a `clip.mp4` becomes `clip.webm` — the caller learns the real
+//!   path from [`Recording::stop`](crate::Recording::stop). Installing
+//!   `gstreamer1.0-plugins-ugly` (`x264enc`) enables true H.264/MP4. (See
+//!   [`select_codec`] + [`adjust_extension`].)
 //!
 //! # Threading
 //!
@@ -80,6 +84,10 @@ use gstreamer_app::AppSrc;
 
 use crate::{Container, MediaInputs, MediaWriterError, RecordConfig};
 use media_stream::{AudioFrame, AudioSubscription, Subscription, VideoFrame};
+// Zero-copy dma-buf capture (see the `dmabuf` module below): the `DmaBufSource`
+// native fast-path a canvas `MediaStream` exposes on Linux, plus the GStreamer
+// dma-buf import + DMA_DRM caps helpers the consumer pipeline uses.
+use media_stream::{DmaBufFrame, DmaBufSource};
 
 /// Max video frames queued but not yet encoded before the producer drops new
 /// ones. A live render thread outruns the software VP8 encoder; an unbounded
@@ -160,54 +168,90 @@ fn first_available(names: &[&'static str]) -> Option<&'static str> {
     names.iter().copied().find(|n| plugin_present(n))
 }
 
-/// Map the config's [`Container`] to concrete GStreamer factories, honoring an
-/// explicit request when its encoder plugin exists and returning an honest
-/// error (rather than a broken file) when it doesn't.
-fn select_codec(container: Container) -> Result<Codec, MediaWriterError> {
+/// The royalty-free VP8 + Opus + WebM stack — the always-available base a
+/// stock GStreamer ships. Both the explicit [`Container::WebM`] request and the
+/// H.264-less [`Container::Mp4`] fallback resolve to it.
+fn webm_codec() -> Codec {
+    Codec {
+        video_enc: "vp8enc",
+        audio_enc: "opusenc",
+        muxer: "webmmux",
+        is_webm: true,
+    }
+}
+
+/// Map the config's requested [`Container`] to concrete GStreamer factories AND
+/// the *effective* container actually used.
+///
+/// `Container::Mp4` (H.264) is honored only when an H.264 encoder plugin
+/// (`x264enc`/`openh264enc`) AND `mp4mux` are installed. When they aren't, we
+/// **fall back to VP8/WebM** rather than error — mirroring the web backend's
+/// browser-chosen "container may differ" model — so the caller still gets a
+/// valid, playable file (`start` then rewrites the output extension to match).
+/// The only hard error is if even the base WebM plugins are missing, which no
+/// working GStreamer install lacks.
+fn select_codec(container: Container) -> Result<(Codec, Container), MediaWriterError> {
+    let webm_available = plugin_present("vp8enc") && plugin_present("webmmux");
     match container {
-        // Royalty-free VP8 + Opus in WebM — always present in a base GStreamer.
         Container::WebM => {
-            if !plugin_present("vp8enc") || !plugin_present("webmmux") {
+            if !webm_available {
                 return Err(MediaWriterError::Backend(
                     "VP8/WebM encoder plugins missing (need `vp8enc` + `webmmux` from \
                      gstreamer1.0-plugins-good)"
                         .into(),
                 ));
             }
-            Ok(Codec {
-                video_enc: "vp8enc",
-                audio_enc: "opusenc",
-                muxer: "webmmux",
-                is_webm: true,
-            })
+            Ok((webm_codec(), Container::WebM))
         }
-        // H.264 + AAC in MP4. H.264 *encoding* needs an optional plugin; if none
-        // is installed we refuse honestly and point at `Container::WebM`.
         Container::Mp4 => {
-            let video_enc = first_available(&["x264enc", "openh264enc"]).ok_or_else(|| {
-                MediaWriterError::Backend(
-                    "no H.264 video encoder plugin installed (need `x264enc` from \
-                     gstreamer1.0-plugins-ugly or `openh264enc` from -plugins-bad). \
-                     Record with `Container::WebM` for VP8/WebM, which a base GStreamer \
-                     always provides."
-                        .into(),
-                )
-            })?;
-            if !plugin_present("mp4mux") {
+            // Honor true H.264/MP4 when the (optional) encoder + muxer exist.
+            if let Some(video_enc) = first_available(&["x264enc", "openh264enc"]) {
+                if plugin_present("mp4mux") {
+                    // AAC encoder name varies by distro packaging; pick any.
+                    let audio_enc =
+                        first_available(&["avenc_aac", "faac", "voaacenc"]).unwrap_or("avenc_aac");
+                    return Ok((
+                        Codec {
+                            video_enc,
+                            audio_enc,
+                            muxer: "mp4mux",
+                            is_webm: false,
+                        },
+                        Container::Mp4,
+                    ));
+                }
+            }
+            // No H.264 encoder (or no mp4mux): fall back to VP8/WebM. `start`
+            // adjusts the file extension so the `.mp4` name becomes `.webm` and
+            // the caller learns the real path from `stop()`.
+            if !webm_available {
                 return Err(MediaWriterError::Backend(
-                    "`mp4mux` muxer missing (need gstreamer1.0-plugins-good)".into(),
+                    "no H.264 encoder for MP4 and the VP8/WebM fallback plugins are also \
+                     missing (need `vp8enc` + `webmmux` from gstreamer1.0-plugins-good)"
+                        .into(),
                 ));
             }
-            // AAC encoder name varies by distro packaging; pick whatever exists.
-            let audio_enc =
-                first_available(&["avenc_aac", "faac", "voaacenc"]).unwrap_or("avenc_aac");
-            Ok(Codec {
-                video_enc,
-                audio_enc,
-                muxer: "mp4mux",
-                is_webm: false,
-            })
+            Ok((webm_codec(), Container::WebM))
         }
+    }
+}
+
+/// When a requested container couldn't be honored and the backend fell back to
+/// another, rewrite the output path's extension so the filename matches its real
+/// content — but ONLY if the path actually carries the requested container's
+/// extension (case-insensitive). A custom or extension-less path the caller
+/// chose deliberately is left untouched: we relocate no lie, and we invent no
+/// extension the caller didn't ask for.
+fn adjust_extension(rel_path: &str, requested: Container, effective: Container) -> String {
+    if requested == effective {
+        return rel_path.to_string();
+    }
+    let req_ext = requested.extension();
+    match rel_path.rsplit_once('.') {
+        Some((stem, ext)) if ext.eq_ignore_ascii_case(req_ext) => {
+            format!("{stem}.{}", effective.extension())
+        }
+        _ => rel_path.to_string(),
     }
 }
 
@@ -254,6 +298,13 @@ fn build_pipeline(
     fps: u32,
     video_bitrate: Option<u32>,
     audio_bitrate: Option<u32>,
+    // Zero-copy dma-buf video source: insert `glupload ! glcolorconvert !
+    // gldownload` before `videoconvert` so the appsrc's dma-buf memory is imported
+    // as a GL texture and downloaded to sysmem AT THE ENCODER BOUNDARY (the software
+    // VP8 encoder is "the consumer that demands CPU"), NOT by a readback in the
+    // canvas. A hardware (VAAPI) encoder would consume the GL/dma-buf with no
+    // download. Ignored when the video source is CPU RGBA (`false`).
+    video_dmabuf: bool,
 ) -> Result<Pipeline, MediaWriterError> {
     let pipeline = gst::Pipeline::default();
 
@@ -280,11 +331,44 @@ fn build_pipeline(
                 venc.set_property("target-bitrate", bps as i32);
             }
         }
-        pipeline
-            .add_many([src.upcast_ref::<gst::Element>(), &convert, &venc])
-            .map_err(|e| MediaWriterError::Backend(format!("video add failed: {e}")))?;
-        gst::Element::link_many([src.upcast_ref::<gst::Element>(), &convert, &venc])
-            .map_err(|e| MediaWriterError::Backend(format!("video chain link failed: {e}")))?;
+        if video_dmabuf {
+            // Zero-copy path: appsrc(dma-buf) ! glupload ! glcolorconvert !
+            // gldownload ! videoconvert ! venc. `glupload` imports the dma-buf fd as
+            // a GL texture in GStreamer's OWN GL context (dma-buf is the cross-context
+            // sharing primitive, so no shared context with the canvas is needed);
+            // `gldownload` performs the GPU→sysmem download at the software encoder's
+            // boundary; `videoconvert` finalizes the encoder's planar format.
+            let glupload = make("glupload")?;
+            let glcolorconvert = make("glcolorconvert")?;
+            let gldownload = make("gldownload")?;
+            pipeline
+                .add_many([
+                    src.upcast_ref::<gst::Element>(),
+                    &glupload,
+                    &glcolorconvert,
+                    &gldownload,
+                    &convert,
+                    &venc,
+                ])
+                .map_err(|e| MediaWriterError::Backend(format!("video (dma-buf) add failed: {e}")))?;
+            gst::Element::link_many([
+                src.upcast_ref::<gst::Element>(),
+                &glupload,
+                &glcolorconvert,
+                &gldownload,
+                &convert,
+                &venc,
+            ])
+            .map_err(|e| {
+                MediaWriterError::Backend(format!("video (dma-buf) chain link failed: {e}"))
+            })?;
+        } else {
+            pipeline
+                .add_many([src.upcast_ref::<gst::Element>(), &convert, &venc])
+                .map_err(|e| MediaWriterError::Backend(format!("video add failed: {e}")))?;
+            gst::Element::link_many([src.upcast_ref::<gst::Element>(), &convert, &venc])
+                .map_err(|e| MediaWriterError::Backend(format!("video chain link failed: {e}")))?;
+        }
         // Muxers expose request pads; `link` requests a compatible one for us.
         venc.link(&muxer)
             .map_err(|e| MediaWriterError::Backend(format!("video→muxer link failed: {e}")))?;
@@ -334,6 +418,18 @@ enum Msg {
         height: u32,
         pts_us: u64,
         rgba: Vec<u8>,
+    },
+    /// A pre-built dma-buf-backed video buffer (the zero-copy path). The poll
+    /// thread wrapped the exported fd into a `GstMemory` + `GstVideoMeta` and
+    /// stamped the DMA_DRM `drm-format`; the encoder sets the appsrc caps from the
+    /// first one and pushes. `gst::Buffer` is `Send`, so it crosses the channel
+    /// like any other message.
+    VideoDmaBuf {
+        width: u32,
+        height: u32,
+        pts_us: u64,
+        drm_format: String,
+        buffer: gst::Buffer,
     },
     Audio {
         sample_rate: u32,
@@ -422,6 +518,55 @@ impl Encoder {
             ));
         }
         self.push(&src, buffer, "video");
+    }
+
+    /// Push a pre-built dma-buf-backed video buffer (the zero-copy path). The
+    /// buffer already carries its `GstMemory` (the imported fd) + a `GstVideoMeta`
+    /// describing the plane layout; we only set the DMA_DRM appsrc caps from the
+    /// first frame and stamp the PTS. Downstream `glupload` imports the fd.
+    fn on_video_dmabuf(
+        &mut self,
+        width: u32,
+        height: u32,
+        pts_us: u64,
+        drm_format: String,
+        mut buffer: gst::Buffer,
+    ) {
+        if self.failed.is_some() {
+            return;
+        }
+        let Some(src) = self.pipe.video_src.clone() else {
+            return;
+        };
+        if width == 0 || height == 0 {
+            return;
+        }
+        if !self.video_caps_set {
+            // `video/x-raw(memory:DMABuf), format=DMA_DRM, drm-format=<fourcc:mod>`
+            // is the GStreamer 1.24+ dma-buf import caps `glupload` negotiates
+            // against (verified present on this host's glupload — see the crate
+            // docs). `drm-format` encodes the exported fourcc + modifier.
+            let caps = gst::Caps::builder("video/x-raw")
+                .features(["memory:DMABuf"])
+                .field("format", "DMA_DRM")
+                .field("drm-format", drm_format.as_str())
+                .field("width", width as i32)
+                .field("height", height as i32)
+                .field("framerate", gst::Fraction::new(self.pipe.fps as i32, 1))
+                .build();
+            src.set_caps(Some(&caps));
+            self.video_caps_set = true;
+        }
+
+        let pts = self.pts(pts_us);
+        {
+            let b = buffer.get_mut().expect("fresh dma-buf buffer is uniquely owned");
+            b.set_pts(pts);
+            b.set_duration(gst::ClockTime::from_nseconds(
+                1_000_000_000 / self.pipe.fps as u64,
+            ));
+        }
+        self.push(&src, buffer, "video-dmabuf");
     }
 
     fn on_audio(&mut self, sample_rate: u32, channels: u16, pts_us: u64, samples: Vec<f32>) {
@@ -561,6 +706,18 @@ fn encoder_thread(rx: Receiver<Msg>, pipe: Pipeline, path: PathBuf, inflight: Ar
                 inflight.fetch_sub(1, Ordering::AcqRel);
                 enc.on_video(width, height, pts_us, rgba);
             }
+            Ok(Msg::VideoDmaBuf {
+                width,
+                height,
+                pts_us,
+                drm_format,
+                buffer,
+            }) => {
+                // Release the reservation as soon as we own the frame (mirrors the
+                // CPU `Msg::Video` path).
+                inflight.fetch_sub(1, Ordering::AcqRel);
+                enc.on_video_dmabuf(width, height, pts_us, drm_format, buffer);
+            }
             Ok(Msg::Audio {
                 sample_rate,
                 channels,
@@ -591,13 +748,39 @@ pub(crate) struct RecordingHandle {
     join: Option<JoinHandle<()>>,
     _video_sub: Option<Subscription>,
     _audio_sub: Option<AudioSubscription>,
+    /// The zero-copy dma-buf poll loop (video). `Some` only on the dma-buf path
+    /// (a canvas `MediaStream` with a `DmaBufSource` native source). Its `running`
+    /// flag is cleared to stop it; it holds the `NativeTap` that keeps the canvas
+    /// exporting, so dropping it also lets the producer stop the per-frame export.
+    dmabuf_poll: Option<DmaBufPoll>,
+}
+
+/// The dma-buf video poll loop's control handle (see [`spawn_dmabuf_poll`]).
+struct DmaBufPoll {
+    running: Arc<std::sync::atomic::AtomicBool>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl DmaBufPoll {
+    /// Signal the loop to stop and join it. Idempotent.
+    fn stop(&mut self) {
+        self.running.store(false, Ordering::Release);
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
 }
 
 impl RecordingHandle {
     pub(crate) async fn stop(mut self) -> Result<(), MediaWriterError> {
-        // Stop the taps first so no further samples enqueue.
+        // Stop the taps first so no further samples enqueue. The dma-buf poll loop
+        // (if any) is stopped + joined here too, releasing its `NativeTap` (the
+        // canvas stops exporting) and its `tx` clone.
         self._video_sub = None;
         self._audio_sub = None;
+        if let Some(mut poll) = self.dmabuf_poll.take() {
+            poll.stop();
+        }
 
         let tx = self
             .tx
@@ -630,6 +813,9 @@ impl Drop for RecordingHandle {
         // partial file), then join. No-op if `stop()` already ran.
         self._video_sub = None;
         self._audio_sub = None;
+        if let Some(mut poll) = self.dmabuf_poll.take() {
+            poll.stop();
+        }
         self.tx = None;
         if let Some(join) = self.join.take() {
             let _ = join.join();
@@ -644,24 +830,37 @@ impl Drop for RecordingHandle {
 pub(crate) async fn start(
     inputs: MediaInputs<'_>,
     config: &RecordConfig,
-) -> Result<RecordingHandle, MediaWriterError> {
+) -> Result<(RecordingHandle, String), MediaWriterError> {
+    ensure_gst()?;
+
+    // Select the codec FIRST — it decides the effective container (an
+    // unsatisfiable H.264/MP4 request falls back to VP8/WebM here, not silently
+    // at stop). Then rewrite the output extension to match, so the file we write
+    // and the path we return to the caller name their real content.
+    let (codec, effective_container) = select_codec(config.container)?;
+    let effective_rel = adjust_extension(&config.path, config.container, effective_container);
+
     let path = config
         .store
-        .local_path(&config.path)
+        .local_path(&effective_rel)
         .ok_or(MediaWriterError::NoLocalPath)?;
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     let _ = std::fs::remove_file(&path);
 
-    ensure_gst()?;
-
-    // Eager codec check: an unsatisfiable H.264/MP4 request fails HERE (at
-    // `record()`), not silently at stop with a broken file.
-    let codec = select_codec(config.container)?;
-
     let has_video = inputs.video.is_some();
     let has_audio = inputs.audio.is_some();
+
+    // Zero-copy selection: if the video stream exposes a `DmaBufSource` native
+    // source (a canvas that exported its GL render target as a dma-buf — see
+    // `media-stream::dmabuf` / `canvas-vello`), record via the dma-buf import
+    // pipeline. Otherwise push CPU RGBA frames (camera, screen-recorder, or a
+    // canvas built without `with_surface_capture`). This is the deterministic
+    // fork `dmabuf_source_of` decides — unit-tested below.
+    let dmabuf_source = inputs.video.and_then(dmabuf_source_of);
+    let video_dmabuf = dmabuf_source.is_some();
+
     let pipe = build_pipeline(
         &codec,
         &path,
@@ -670,6 +869,7 @@ pub(crate) async fn start(
         config.fps,
         config.video_bitrate,
         config.audio_bitrate,
+        video_dmabuf,
     )?;
 
     // Go live. appsrc caps are set lazily from the first frame (we learn W×H
@@ -691,30 +891,43 @@ pub(crate) async fn start(
             .map_err(|e| MediaWriterError::Backend(format!("spawn encoder thread: {e}")))?
     };
 
-    let video_sub = inputs.video.map(|stream| {
-        let tx = tx.clone();
-        let inflight = inflight.clone();
-        stream.subscribe(move |f: &VideoFrame| {
-            // Real-time drop: if the encoder is already `MAX_INFLIGHT_VIDEO_FRAMES`
-            // behind, skip this frame rather than grow the backlog `stop()` must
-            // later drain.
-            if inflight.load(Ordering::Acquire) >= MAX_INFLIGHT_VIDEO_FRAMES {
-                return;
-            }
-            inflight.fetch_add(1, Ordering::AcqRel);
-            if tx
-                .send(Msg::Video {
-                    width: f.width,
-                    height: f.height,
-                    pts_us: f.pts_micros,
-                    rgba: f.data.to_vec(),
+    // Video: either the zero-copy dma-buf poll loop OR the CPU subscribe tap — never
+    // both (the fork above). The dma-buf loop registers a `NativeTap` (so the canvas
+    // starts exporting) and pulls exported frames at the capture cadence.
+    let (video_sub, dmabuf_poll) = match dmabuf_source {
+        Some(source) => {
+            let poll =
+                spawn_dmabuf_poll(source, tx.clone(), inflight.clone(), config.fps)?;
+            (None, Some(poll))
+        }
+        None => {
+            let sub = inputs.video.map(|stream| {
+                let tx = tx.clone();
+                let inflight = inflight.clone();
+                stream.subscribe(move |f: &VideoFrame| {
+                    // Real-time drop: if the encoder is already
+                    // `MAX_INFLIGHT_VIDEO_FRAMES` behind, skip this frame rather than
+                    // grow the backlog `stop()` must later drain.
+                    if inflight.load(Ordering::Acquire) >= MAX_INFLIGHT_VIDEO_FRAMES {
+                        return;
+                    }
+                    inflight.fetch_add(1, Ordering::AcqRel);
+                    if tx
+                        .send(Msg::Video {
+                            width: f.width,
+                            height: f.height,
+                            pts_us: f.pts_micros,
+                            rgba: f.data.to_vec(),
+                        })
+                        .is_err()
+                    {
+                        inflight.fetch_sub(1, Ordering::AcqRel);
+                    }
                 })
-                .is_err()
-            {
-                inflight.fetch_sub(1, Ordering::AcqRel);
-            }
-        })
-    });
+            });
+            (sub, None)
+        }
+    };
 
     let audio_sub = inputs.audio.map(|stream| {
         let tx = tx.clone();
@@ -728,12 +941,172 @@ pub(crate) async fn start(
         })
     });
 
-    Ok(RecordingHandle {
-        tx: Some(tx),
-        join: Some(join),
-        _video_sub: video_sub,
-        _audio_sub: audio_sub,
-    })
+    Ok((
+        RecordingHandle {
+            tx: Some(tx),
+            join: Some(join),
+            _video_sub: video_sub,
+            _audio_sub: audio_sub,
+            dmabuf_poll,
+        },
+        effective_rel,
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// Zero-copy dma-buf import (the Linux analog of macOS's IOSurface consume path).
+// ---------------------------------------------------------------------------
+
+/// The video stream's [`DmaBufSource`] native fast-path, if it has one. This is
+/// the deterministic fork between the zero-copy dma-buf pipeline and the CPU RGBA
+/// pipeline: a canvas built via `MediaStream::with_surface_capture` on Linux
+/// publishes a `DmaBufSource`; a camera / screen-recorder / plain canvas does not.
+fn dmabuf_source_of(stream: &media_stream::MediaStream) -> Option<DmaBufSource> {
+    let native = stream.native_source()?;
+    // Downcast the type-erased `Rc<dyn Any>`; clone the `DmaBufSource` out (it's an
+    // `Arc`, `Send`) so the poll thread can hold it independently of the `!Send`
+    // `MediaStream`.
+    native.downcast::<DmaBufSource>().ok().map(|rc| (*rc).clone())
+}
+
+/// Spawn the dma-buf video poll loop. It holds a [`NativeTap`] on `source` (so the
+/// canvas exports each frame), and at the capture cadence pulls the latest exported
+/// [`DmaBufFrame`], `dup(2)`s its (borrowed) fd, wraps it into a dma-buf `GstMemory`
+/// + a `GstVideoMeta` (the exported stride/offset), and sends it to the encoder
+/// thread as [`Msg::VideoDmaBuf`]. No pixels are copied on the CPU here — the
+/// software encoder's `gldownload` does the only GPU→CPU move, at its boundary.
+fn spawn_dmabuf_poll(
+    source: DmaBufSource,
+    tx: Sender<Msg>,
+    inflight: Arc<AtomicUsize>,
+    fps: u32,
+) -> Result<DmaBufPoll, MediaWriterError> {
+    use std::sync::atomic::AtomicBool;
+    let running = Arc::new(AtomicBool::new(true));
+    let tap = source.register_tap();
+    let interval = Duration::from_nanos(1_000_000_000 / fps.max(1) as u64);
+
+    let join = {
+        let running = running.clone();
+        std::thread::Builder::new()
+            .name("media-writer-dmabuf".into())
+            .spawn(move || {
+                // Keep the tap alive for the whole loop — dropping it lets the canvas
+                // stop exporting.
+                let _tap = tap;
+                let allocator = gstreamer_allocators::DmaBufAllocator::new();
+                let mut last_gen: u64 = 0;
+                while running.load(Ordering::Acquire) {
+                    std::thread::sleep(interval);
+                    let gen = source.generation();
+                    if gen == last_gen {
+                        continue; // no new frame published since last tick
+                    }
+                    let Some(frame) = source.acquire() else {
+                        continue;
+                    };
+                    last_gen = gen;
+
+                    // Real-time drop: don't outrun the software encoder.
+                    if inflight.load(Ordering::Acquire) >= MAX_INFLIGHT_VIDEO_FRAMES {
+                        continue;
+                    }
+                    let Some((buffer, drm_format)) = build_dmabuf_buffer(&allocator, &frame) else {
+                        continue;
+                    };
+                    inflight.fetch_add(1, Ordering::AcqRel);
+                    if tx
+                        .send(Msg::VideoDmaBuf {
+                            width: frame.width,
+                            height: frame.height,
+                            pts_us: media_stream::clock::now_micros(),
+                            drm_format,
+                            buffer,
+                        })
+                        .is_err()
+                    {
+                        inflight.fetch_sub(1, Ordering::AcqRel);
+                        return; // encoder thread gone
+                    }
+                }
+            })
+            .map_err(|e| MediaWriterError::Backend(format!("spawn dma-buf poll thread: {e}")))?
+    };
+
+    Ok(DmaBufPoll { running, join: Some(join) })
+}
+
+/// Wrap a published [`DmaBufFrame`] into a dma-buf-backed `GstBuffer` + a
+/// `GstVideoMeta`, returning it with the DMA_DRM `drm-format` caps string. Returns
+/// `None` if the fd can't be `dup`'d or the allocation fails.
+///
+/// # fd ownership
+/// The frame's `fd` is **borrowed** (owned by the canvas's export ring). We `dup(2)`
+/// it and hand the *owned* dup to `DmaBufAllocator::alloc`, which takes ownership and
+/// closes it when the `GstMemory` is freed. The original stays with the producer.
+fn build_dmabuf_buffer(
+    allocator: &gstreamer_allocators::DmaBufAllocator,
+    frame: &DmaBufFrame,
+) -> Option<(gst::Buffer, String)> {
+    use gstreamer_video::{VideoFormat, VideoFrameFlags, VideoMeta};
+    use std::os::fd::BorrowedFd;
+
+    if frame.width == 0 || frame.height == 0 || frame.stride <= 0 {
+        return None;
+    }
+    // dup the borrowed fd into an owned one (CLOEXEC) so GStreamer can own it.
+    let owned = unsafe { BorrowedFd::borrow_raw(frame.fd) }
+        .try_clone_to_owned()
+        .ok()?;
+
+    let offset = frame.offset.max(0) as usize;
+    let stride = frame.stride as usize;
+    let size = offset + stride * frame.height as usize;
+
+    // SAFETY: `owned` is a valid, owned dma-buf fd; `alloc` consumes it and closes
+    // it with the memory. `size` covers the plane.
+    let mem = unsafe { allocator.alloc(owned, size) }.ok()?;
+
+    let mut buffer = gst::Buffer::new();
+    {
+        let b = buffer.get_mut().expect("fresh buffer is uniquely owned");
+        b.append_memory(mem);
+        // Describe the single RGBA plane's real layout so `glupload` reads the
+        // exported stride/offset rather than assuming a tightly-packed default. The
+        // exported fourcc `AB24` (DRM_FORMAT_ABGR8888) is byte order R,G,B,A in
+        // memory = `VideoFormat::Rgba`.
+        VideoMeta::add_full(
+            b,
+            VideoFrameFlags::empty(),
+            VideoFormat::Rgba,
+            frame.width,
+            frame.height,
+            &[offset],
+            &[frame.stride],
+        )
+        .ok()?;
+    }
+
+    Some((buffer, drm_format_string(frame.fourcc, frame.modifier)))
+}
+
+/// Build the DMA_DRM `drm-format` caps string for `fourcc` + `modifier`.
+///
+/// `EGL_MESA_image_dma_buf_export` on this stack reports
+/// `DRM_FORMAT_MOD_INVALID` (an implicit, driver-internal modifier — the common
+/// case). GStreamer's `gst_video_dma_drm_fourcc_to_string` **asserts** the
+/// modifier is not `INVALID` (it would return null and abort), so for the implicit
+/// case we emit the **bare fourcc** string (`"AB24"`) — the DMA_DRM convention for
+/// "modifier unknown", which `glupload` resolves itself. An explicit modifier
+/// (e.g. `DRM_FORMAT_MOD_LINEAR` or a real tiling modifier) goes through the
+/// GStreamer helper, which appends `:0x<modifier>`.
+fn drm_format_string(fourcc: u32, modifier: u64) -> String {
+    if modifier == media_stream::DRM_FORMAT_MOD_INVALID {
+        // Bare 4-char fourcc, low byte first (DRM fourcc byte order).
+        fourcc.to_le_bytes().iter().map(|&b| b as char).collect()
+    } else {
+        gstreamer_video::dma_drm_fourcc_to_string(fourcc, modifier).to_string()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -809,39 +1182,74 @@ mod tests {
         assert!(reached_eos, "decodebin never reached EOS — file not decodable");
     }
 
-    /// WebM selects the always-available VP8/Opus/webmmux stack.
+    /// WebM selects the always-available VP8/Opus/webmmux stack, unchanged.
     #[test]
     fn select_codec_webm_is_vp8_opus_webm() {
         ensure_gst().expect("gst init");
-        let c = select_codec(Container::WebM).expect("webm must be available");
+        let (c, effective) = select_codec(Container::WebM).expect("webm must be available");
         assert_eq!(c.video_enc, "vp8enc");
         assert_eq!(c.audio_enc, "opusenc");
         assert_eq!(c.muxer, "webmmux");
+        assert_eq!(effective, Container::WebM);
     }
 
-    /// The codec-selection / unsupported path: `Container::Mp4` is honored iff an
-    /// H.264 encoder plugin is installed. On a box without one it must return an
-    /// honest `Backend` error naming the missing plugin — NOT a broken file, not
-    /// a panic. Portable: asserts the branch that matches this host.
+    /// The codec-selection path: `Container::Mp4` is honored iff an H.264 encoder
+    /// plugin is installed; otherwise it FALLS BACK to VP8/WebM (never an error,
+    /// never a broken file). Portable: asserts the branch matching this host.
     #[test]
-    fn select_codec_mp4_requires_h264_encoder() {
+    fn select_codec_mp4_falls_back_to_webm_without_h264() {
         ensure_gst().expect("gst init");
-        let has_h264 = plugin_present("x264enc") || plugin_present("openh264enc");
-        match (has_h264, select_codec(Container::Mp4)) {
-            (true, Ok(c)) => {
-                assert_eq!(c.muxer, "mp4mux");
-                assert!(c.video_enc == "x264enc" || c.video_enc == "openh264enc");
-            }
-            (false, Err(MediaWriterError::Backend(msg))) => {
-                assert!(
-                    msg.contains("H.264"),
-                    "error must name the missing H.264 encoder, got: {msg}"
-                );
-            }
-            (true, Err(e)) => panic!("H.264 encoder present but Mp4 rejected: {e:?}"),
-            (false, Ok(_)) => panic!("no H.264 encoder yet Mp4 was accepted (would write a broken file)"),
-            (false, Err(other)) => panic!("expected an H.264-encoder Backend error, got: {other:?}"),
+        let has_h264 =
+            (plugin_present("x264enc") || plugin_present("openh264enc")) && plugin_present("mp4mux");
+        let (codec, effective) =
+            select_codec(Container::Mp4).expect("Mp4 must resolve (honor or fall back), never error");
+        if has_h264 {
+            assert_eq!(effective, Container::Mp4);
+            assert_eq!(codec.muxer, "mp4mux");
+            assert!(codec.video_enc == "x264enc" || codec.video_enc == "openh264enc");
+        } else {
+            // Fallback to the always-available VP8/WebM stack.
+            assert_eq!(effective, Container::WebM);
+            assert_eq!(codec.video_enc, "vp8enc");
+            assert_eq!(codec.muxer, "webmmux");
         }
+    }
+
+    /// `adjust_extension` rewrites the extension ONLY on a real fallback whose
+    /// path carries the requested container's extension; it leaves matching,
+    /// custom, and extension-less paths untouched.
+    #[test]
+    fn adjust_extension_rewrites_only_on_fallback() {
+        // Fallback mp4 → webm: the `.mp4` name is rewritten.
+        assert_eq!(
+            adjust_extension("clip.mp4", Container::Mp4, Container::WebM),
+            "clip.webm"
+        );
+        // Case-insensitive on the requested extension.
+        assert_eq!(
+            adjust_extension("dir/Clip.MP4", Container::Mp4, Container::WebM),
+            "dir/Clip.webm"
+        );
+        // No fallback (requested == effective): untouched.
+        assert_eq!(
+            adjust_extension("clip.mp4", Container::Mp4, Container::Mp4),
+            "clip.mp4"
+        );
+        assert_eq!(
+            adjust_extension("clip.webm", Container::WebM, Container::WebM),
+            "clip.webm"
+        );
+        // Extension-less / custom path the caller chose: untouched even on a
+        // fallback — we don't invent an extension they didn't ask for.
+        assert_eq!(
+            adjust_extension("recording", Container::Mp4, Container::WebM),
+            "recording"
+        );
+        // Path whose extension isn't the requested container's: untouched.
+        assert_eq!(
+            adjust_extension("clip.mov", Container::Mp4, Container::WebM),
+            "clip.mov"
+        );
     }
 
     /// The core headless proof: encode a handful of synthetic RGBA frames to a
@@ -854,11 +1262,11 @@ mod tests {
     #[test]
     fn writes_and_reopens_a_valid_webm() {
         ensure_gst().expect("gst init");
-        let codec = select_codec(Container::WebM).expect("webm available");
+        let (codec, _) = select_codec(Container::WebM).expect("webm available");
         let path = std::env::temp_dir().join("mw_linux_video_only.webm");
         let _ = std::fs::remove_file(&path);
 
-        let pipe = build_pipeline(&codec, &path, true, false, 30, None, None)
+        let pipe = build_pipeline(&codec, &path, true, false, 30, None, None, false)
             .expect("build video-only webm pipeline");
         pipe.pipeline
             .set_state(gst::State::Playing)
@@ -891,11 +1299,11 @@ mod tests {
     #[test]
     fn writes_and_reopens_a_valid_av_webm() {
         ensure_gst().expect("gst init");
-        let codec = select_codec(Container::WebM).expect("webm available");
+        let (codec, _) = select_codec(Container::WebM).expect("webm available");
         let path = std::env::temp_dir().join("mw_linux_av.webm");
         let _ = std::fs::remove_file(&path);
 
-        let pipe = build_pipeline(&codec, &path, true, true, 30, None, None)
+        let pipe = build_pipeline(&codec, &path, true, true, 30, None, None, false)
             .expect("build av webm pipeline");
         pipe.pipeline
             .set_state(gst::State::Playing)
@@ -936,5 +1344,86 @@ mod tests {
             map_gst_error(&resource, None),
             MediaWriterError::Backend(_)
         ));
+    }
+
+    /// The zero-copy FORK: a canvas stream built via `with_surface_capture` on
+    /// Linux exposes a `DmaBufSource` native source, so `dmabuf_source_of` selects
+    /// the dma-buf import pipeline; a plain stream (camera / screen-recorder / a
+    /// canvas built with `new`) has none, so the CPU RGBA path is chosen. This is
+    /// the deterministic selection logic — no live GPU needed.
+    #[test]
+    fn dmabuf_source_selects_zero_copy_path_only_for_surface_capture() {
+        // Plain stream → no native source → CPU path.
+        let (plain, _w) = media_stream::MediaStream::new();
+        assert!(
+            dmabuf_source_of(&plain).is_none(),
+            "a plain MediaStream must select the CPU RGBA path"
+        );
+
+        // Surface-capture stream: selects the dma-buf path ONLY when the stream
+        // actually advertises a `DmaBufSource` native source — i.e. when dma-buf
+        // capture is enabled (`IDEALYST_CANVAS_DMABUF=1`). With the flag OFF (the
+        // default, and the case here since the test doesn't set it),
+        // `with_surface_capture` returns a plain stream and the recorder must fall
+        // to the CPU path — the gate that avoids the producer/consumer mismatch
+        // (canvas sends CPU frames, recorder waits for dma-bufs → hung `stop()`).
+        let (canvas, _w) = media_stream::MediaStream::with_surface_capture();
+        let enabled = std::env::var("IDEALYST_CANVAS_DMABUF")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false);
+        assert_eq!(
+            dmabuf_source_of(&canvas).is_some(),
+            enabled,
+            "with_surface_capture must advertise a dma-buf source IFF the dma-buf \
+             flag is set — otherwise it must be a plain (CPU) stream",
+        );
+    }
+
+    /// The zero-copy video pipeline actually CONSTRUCTS and LINKS on this host:
+    /// `appsrc ! glupload ! glcolorconvert ! gldownload ! videoconvert ! vp8enc !
+    /// webmmux ! filesink`. Proves the GL elements are installed and the chain is
+    /// element-compatible (a missing plugin or an unlinkable pad fails here) —
+    /// without needing a live GL context or a real dma-buf (no `set_state`). The
+    /// CPU path's `writes_and_reopens_a_valid_webm` covers the non-GL graph.
+    #[test]
+    fn dmabuf_video_pipeline_constructs_and_links() {
+        ensure_gst().expect("gst init");
+        let (codec, _) = select_codec(Container::WebM).expect("webm available");
+        let path = std::env::temp_dir().join("mw_linux_dmabuf_build_only.webm");
+        let pipe = build_pipeline(&codec, &path, true, false, 30, None, None, true)
+            .expect("dma-buf video pipeline must construct + link (glupload chain present)");
+        // Tear down without going live (PLAYING would create a GL context, which a
+        // headless CI box lacks); construction + linking is what this asserts.
+        drop(pipe);
+    }
+
+    /// The DMA_DRM caps string encodes the exported fourcc. `AB24`
+    /// (`DRM_FORMAT_ABGR8888`, the export of a wgpu `Rgba8Unorm` texture — the exact
+    /// fourcc the spike measured) round-trips through GStreamer's fourcc parser back
+    /// to the same fourcc, so the caps `glupload` negotiates name the real format.
+    ///
+    /// Regression guard for the `DRM_FORMAT_MOD_INVALID` sharp edge: Mesa exports an
+    /// implicit modifier, and `gst_video_dma_drm_fourcc_to_string` **aborts** on
+    /// `INVALID` — so `drm_format_string` must emit the BARE fourcc for that case,
+    /// never call the asserting helper. (Test would panic/abort before this fix.)
+    #[test]
+    fn drm_format_string_round_trips_the_exported_fourcc() {
+        ensure_gst().expect("gst init");
+        const ABGR8888: u32 = 0x3432_4241; // 'AB24'
+
+        // Implicit modifier (the Mesa export case): a bare fourcc GStreamer parses
+        // back to the same fourcc (modifier = INVALID/implicit).
+        let s = drm_format_string(ABGR8888, media_stream::DRM_FORMAT_MOD_INVALID);
+        assert_eq!(s, "AB24", "implicit modifier must yield the bare fourcc string");
+        let (fourcc, _modifier) = gstreamer_video::dma_drm_fourcc_from_str(&s)
+            .expect("GStreamer must parse the bare fourcc string");
+        assert_eq!(fourcc, ABGR8888, "fourcc must survive the round-trip");
+
+        // An explicit modifier (LINEAR) goes through GStreamer's helper unchanged.
+        let linear = drm_format_string(ABGR8888, 0);
+        let (fourcc2, modifier2) = gstreamer_video::dma_drm_fourcc_from_str(&linear)
+            .expect("GStreamer must parse an explicit-modifier drm-format string");
+        assert_eq!(fourcc2, ABGR8888);
+        assert_eq!(modifier2, 0, "explicit LINEAR modifier round-trips");
     }
 }

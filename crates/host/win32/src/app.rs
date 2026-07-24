@@ -17,7 +17,9 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 // `ScreenToClient` ships under Graphics::Gdi in windows 0.58, not
 // WindowsAndMessaging where the C headers put it.
-use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, ScreenToClient, HBRUSH, PAINTSTRUCT};
+use windows::Win32::Graphics::Gdi::{
+    BeginPaint, EndPaint, ScreenToClient, UpdateWindow, HBRUSH, PAINTSTRUCT,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect,
@@ -359,11 +361,25 @@ unsafe extern "system" fn wnd_proc(
             let _ = ScreenToClient(hwnd, &mut pt);
             let delta = ((wparam.0 >> 16) & 0xffff) as u16 as i16 as f32;
             let scroll_px = -delta * (40.0 / 120.0);
+            let mut handled = false;
             if let Some(state) = host_state(hwnd) {
-                state
+                handled = state
                     .backend
                     .borrow_mut()
                     .wheel_scroll(pt.x as f32, pt.y as f32, scroll_px);
+            }
+            if handled {
+                // Synchronous catch-up paint, AFTER the backend borrow
+                // above is released (UpdateWindow dispatches WM_PAINT
+                // inline, which re-borrows the backend — inside the
+                // borrow it double-borrow panics on every wheel tick).
+                // Why synchronous at all: WM_PAINT is the lowest-
+                // priority message and a fast wheel stream starves it,
+                // so the wgpu canvas HWND (moved by SetWindowPos
+                // immediately) visibly detached from the painted scene
+                // that lagged frames behind. Painting in the same
+                // message keeps both on the same DWM compose.
+                let _ = unsafe { UpdateWindow(hwnd) };
             }
             LRESULT(0)
         }

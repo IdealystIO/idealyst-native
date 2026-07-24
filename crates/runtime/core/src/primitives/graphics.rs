@@ -43,6 +43,12 @@
 //!   `CAMetalLayer` as `AppKitWindowHandle`/`UiKitWindowHandle`.
 //! - **Linux (GTK4)**: a `GtkGLArea`, exposed as a [`GlTarget`] rather
 //!   than a window handle — see below.
+//! - **Windows**: a DirectComposition visual in a composition tree
+//!   over the host window, exposed through the optional
+//!   [`ComposedTarget`] capability ([`GraphicsSurface::composed_target`])
+//!   rather than a window handle — `window_handle()` deliberately
+//!   answers `Unavailable`. See that trait's docs for the host-side
+//!   contract (commit-after-configure, visibility).
 //!
 //! # Why the target is an enum
 //!
@@ -108,12 +114,74 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct GraphicsSurface {
     pub(crate) inner: Arc<dyn SurfaceProvider + Send + Sync>,
+    /// Optional composition-tree capability — see [`ComposedTarget`].
+    /// `None` on backends whose surface is a real native window/view.
+    pub(crate) composed: Option<Arc<dyn ComposedTarget>>,
 }
 
 impl GraphicsSurface {
     pub fn new(inner: Arc<dyn SurfaceProvider + Send + Sync>) -> Self {
-        Self { inner }
+        Self { inner, composed: None }
     }
+
+    /// Construct a surface whose drawable is a compositor visual rather
+    /// than a native window. `inner` still provides the display handle
+    /// (and typically answers `window_handle()` with
+    /// `HandleError::Unavailable` — there is deliberately no HWND/view
+    /// to hand out, or a consumer that ignored [`Self::composed_target`]
+    /// would build a swapchain over the whole host window).
+    pub fn new_composed(
+        inner: Arc<dyn SurfaceProvider + Send + Sync>,
+        composed: Arc<dyn ComposedTarget>,
+    ) -> Self {
+        Self { inner, composed: Some(composed) }
+    }
+
+    /// The composition-visual capability, when this surface is backed
+    /// by one. Hosts check this FIRST and fall back to the
+    /// raw-window-handle path when it's `None`.
+    pub fn composed_target(&self) -> Option<&Arc<dyn ComposedTarget>> {
+        self.composed.as_ref()
+    }
+}
+
+/// Optional capability of a [`GraphicsSurface`]: the drawable is a
+/// visual in the platform's retained composition tree (Windows
+/// DirectComposition today) instead of a native window/view.
+///
+/// Why this exists: positioning a *window*-backed surface means moving
+/// an OS window, which composes on its own schedule — during fast
+/// scrolling the surface visibly detaches from painted content around
+/// it. A composition visual moves by a property write + commit that is
+/// atomic with the compositor's next frame, so the backend can keep the
+/// surface glued to the scene by construction. wgpu supports mounting a
+/// swapchain directly on such a visual
+/// (`SurfaceTargetUnsafe::CompositionVisual`), which is why the raw
+/// pointer is exposed rather than a `raw-window-handle` type (that
+/// crate has no composition-visual variant).
+///
+/// `Send + Sync` for the same reason [`GraphicsSurface`] carries those
+/// bounds (wgpu requires them); backends that are single-threaded by
+/// construction document their `unsafe impl`s accordingly.
+pub trait ComposedTarget: Send + Sync + 'static {
+    /// Raw pointer to the platform visual (`IDCompositionVisual` on
+    /// Windows). The provider owns a reference for the surface's
+    /// lifetime; consumers that outlive it must add their own
+    /// (wgpu's `CompositionVisual` target does).
+    fn visual(&self) -> std::ptr::NonNull<std::ffi::c_void>;
+
+    /// Commit pending composition-tree changes. A swapchain bound to
+    /// the visual (`SetContent`) only appears at the next device
+    /// commit, so hosts MUST call this after (re)configuring their
+    /// surface — the backend's own commits happen on layout/scroll and
+    /// may never fire for a static scene.
+    fn commit(&self);
+
+    /// Whether the visual currently sits in a visible part of the
+    /// tree (portal-hidden subtrees report `false`). Replaces the
+    /// `IsWindowVisible`-style walk hosts use to skip rendering for
+    /// window-backed surfaces.
+    fn is_visible(&self) -> bool;
 }
 
 impl HasWindowHandle for GraphicsSurface {
@@ -219,13 +287,32 @@ impl GlTarget {
         self.inner.origin()
     }
 
-    /// Tell the backend a frame is finished, so it composites the
-    /// framebuffer into the rest of its widget tree.
+    /// Register the per-frame draw. The backend invokes `cb` **with the
+    /// GL context current and the target framebuffer bound**, each time
+    /// it composites this drawable into its widget tree.
+    ///
+    /// This is where drawing MUST happen. A toolkit like GTK4 only
+    /// composites what is rendered *during its own render pass*
+    /// (`GtkGLArea::render`); a frame drawn out-of-band (via
+    /// [`make_current`](Self::make_current)) between passes is **not
+    /// reliably composited** — the widget keeps showing the last frame
+    /// the toolkit actually captured. So the model is: mutate your
+    /// GPU-side state whenever you like, call [`present`](Self::present)
+    /// to schedule a pass, and do the blit-to-framebuffer *here*.
+    ///
+    /// `cb` runs on the UI thread. Re-registering replaces the previous
+    /// callback. The context is already current inside `cb`, so it need
+    /// not call `make_current` itself.
+    pub fn on_render(&self, cb: Box<dyn FnMut()>) {
+        self.inner.set_render_callback(cb);
+    }
+
+    /// Request that the backend composite a frame. On GTK this schedules
+    /// the render pass that will invoke your [`on_render`](Self::on_render)
+    /// callback — the actual drawing happens there, not before this call.
     ///
     /// The raw-window path has no equivalent because there the author
-    /// owns a swapchain and calls `present()` on the frame itself. Here
-    /// the backend owns presentation, so a frame drawn between its
-    /// repaints sits in the framebuffer unseen until this is called.
+    /// owns a swapchain and calls `present()` on the frame itself.
     pub fn present(&self) {
         self.inner.present();
     }
@@ -264,6 +351,9 @@ pub trait GlContextProvider: 'static {
     fn make_current(&self);
     fn framebuffer(&self) -> u32;
     fn origin(&self) -> FramebufferOrigin;
+    /// Store the per-frame draw callback. Interior-mutable: called
+    /// through a shared `&self`. See [`GlTarget::on_render`].
+    fn set_render_callback(&self, cb: Box<dyn FnMut()>);
     fn present(&self);
 }
 
@@ -451,6 +541,7 @@ mod tests {
 
     struct FakeGl {
         presented: std::cell::Cell<u32>,
+        render_cb: std::cell::RefCell<Option<Box<dyn FnMut()>>>,
     }
 
     impl GlContextProvider for FakeGl {
@@ -469,8 +560,16 @@ mod tests {
         fn origin(&self) -> FramebufferOrigin {
             FramebufferOrigin::BottomLeft
         }
+        fn set_render_callback(&self, cb: Box<dyn FnMut()>) {
+            *self.render_cb.borrow_mut() = Some(cb);
+        }
         fn present(&self) {
             self.presented.set(self.presented.get() + 1);
+            // Mimic a backend that composites by invoking the registered
+            // draw synchronously (a real backend does it in its render pass).
+            if let Some(cb) = self.render_cb.borrow_mut().as_mut() {
+                cb();
+            }
         }
     }
 
@@ -496,6 +595,7 @@ mod tests {
         OnReadyEvent {
             target: GraphicsTarget::Gl(GlTarget::new(Rc::new(FakeGl {
                 presented: std::cell::Cell::new(0),
+                render_cb: std::cell::RefCell::new(None),
             }))),
             size: (800, 600),
             scale: 1.0,
@@ -529,12 +629,53 @@ mod tests {
         assert!(window_event().gl().is_none());
     }
 
+    struct FakeComposed {
+        committed: std::sync::atomic::AtomicU32,
+        visible: std::sync::atomic::AtomicBool,
+    }
+
+    impl ComposedTarget for FakeComposed {
+        fn visual(&self) -> std::ptr::NonNull<std::ffi::c_void> {
+            std::ptr::NonNull::new(0x1234 as *mut std::ffi::c_void).unwrap()
+        }
+        fn commit(&self) {
+            self.committed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        fn is_visible(&self) -> bool {
+            self.visible.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    /// Hosts branch on `composed_target()` FIRST — a plain surface must
+    /// answer `None` (fall through to raw-window-handle), a composed
+    /// one must expose the live capability object, and clones must
+    /// address the SAME capability (the host stashes a clone in its
+    /// render state and reads `is_visible` every frame).
+    #[test]
+    fn composed_target_capability_is_none_by_default_and_shared_when_present() {
+        assert!(GraphicsSurface::new(Arc::new(FakeWindow)).composed_target().is_none());
+
+        let cap = Arc::new(FakeComposed {
+            committed: std::sync::atomic::AtomicU32::new(0),
+            visible: std::sync::atomic::AtomicBool::new(true),
+        });
+        let surface = GraphicsSurface::new_composed(Arc::new(FakeWindow), cap.clone());
+        let clone = surface.clone();
+
+        let ct = clone.composed_target().expect("composed surface exposes the capability");
+        assert_eq!(ct.visual().as_ptr() as usize, 0x1234);
+        ct.commit();
+        assert_eq!(cap.committed.load(std::sync::atomic::Ordering::SeqCst), 1);
+        cap.visible.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(!ct.is_visible(), "clone must observe the backend's live visibility");
+    }
+
     /// Every accessor on the wrapper must reach the backend's provider.
     /// A defaulted or swallowed method here is invisible at the call
     /// site and shows up as a blank or upside-down GPU surface.
     #[test]
     fn gl_target_forwards_every_accessor_to_the_provider() {
-        let provider = Rc::new(FakeGl { presented: std::cell::Cell::new(0) });
+        let provider = Rc::new(FakeGl { presented: std::cell::Cell::new(0), render_cb: std::cell::RefCell::new(None) });
         let target = GlTarget::new(provider.clone());
 
         assert!(!target.get_proc_address("glClear").is_null());
@@ -551,7 +692,7 @@ mod tests {
     /// state; clones must address the SAME context, not a detached copy.
     #[test]
     fn cloning_a_gl_target_shares_one_context() {
-        let provider = Rc::new(FakeGl { presented: std::cell::Cell::new(0) });
+        let provider = Rc::new(FakeGl { presented: std::cell::Cell::new(0), render_cb: std::cell::RefCell::new(None) });
         let target = GlTarget::new(provider.clone());
         let clone = target.clone();
         clone.present();

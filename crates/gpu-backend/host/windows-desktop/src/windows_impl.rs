@@ -1,14 +1,23 @@
 //! Windows-only implementation of [`crate::mount`]. Mirrors
 //! `host-macos-desktop::macos` end-to-end with two deltas:
 //!
-//! 1. The surface exposes a Win32 window handle (`hwnd`), not an
-//!    AppKit one, and the wgpu backend is DX12 instead of Metal.
-//!    Same adapter-limits clamp (harmless on desktop — the adapter
-//!    advertises more than `downlevel_defaults` asks for).
-//! 2. The visibility walk is one Win32 call: `IsWindowVisible`
-//!    already checks the WS_VISIBLE bit up the whole parent chain
-//!    (plus `IsWindow` for a destroyed handle), replacing the
-//!    per-ancestor `isHidden`/`alphaValue` NSView walk.
+//! 1. The surface is a DirectComposition VISUAL (see
+//!    `backend-windows::dcomp`), not a window/view handle — wgpu
+//!    mounts on it via `SurfaceTargetUnsafe::CompositionVisual` and
+//!    the wgpu backend is DX12 instead of Metal. Two contract points
+//!    the visual path adds: the alpha mode must be explicit (`Opaque`;
+//!    composition swapchains reject the caps-default `Auto` →
+//!    DXGI_ALPHA_MODE_UNSPECIFIED), and every `surface.configure`
+//!    must be followed by a composition-device commit
+//!    ([`SurfaceAnchor::commit_after_configure`]) or the bound
+//!    swapchain never appears. A plain Win32 window handle remains as
+//!    a fallback anchor. Same adapter-limits clamp (harmless on
+//!    desktop — the adapter advertises more than `downlevel_defaults`
+//!    asks for).
+//! 2. Visibility comes from the anchor: the backend's live
+//!    `ComposedTarget::is_visible` flag for visuals (portal-hidden ⇒
+//!    false), or one `IsWindowVisible` call for the HWND fallback —
+//!    replacing the per-ancestor `isHidden`/`alphaValue` NSView walk.
 //!
 //! Font behavior matches macOS: no fetching — `face!` fonts are
 //! embedded into the binary by the `embed-font-bytes` feature, so
@@ -16,15 +25,19 @@
 //! default face when the registered fonts aren't bytes-backed.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use render_api::DeviceProfile;
 use render_wgpu::{Host, Painter, Renderer};
 use runtime_core::driver::{render_loop, RenderLoop};
-use runtime_core::primitives::graphics::GraphicsSurface;
+use runtime_core::primitives::graphics::{ComposedTarget, GraphicsSurface};
 use runtime_core::Element;
+
+use std::sync::Arc;
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{IsWindow, IsWindowVisible};
@@ -35,10 +48,10 @@ use windows::Win32::UI::WindowsAndMessaging::{IsWindow, IsWindowVisible};
 
 #[derive(Debug)]
 pub enum MountError {
-    /// `GraphicsSurface` doesn't expose a Win32 window handle. The
-    /// Windows `Graphics` primitive always provides one, so this
-    /// should only fire on a misuse (e.g. handing in a web
-    /// `CanvasSurfaceProvider`).
+    /// `GraphicsSurface` exposes neither a composition visual nor a
+    /// Win32 window handle. The Windows `Graphics` primitive always
+    /// provides the former, so this should only fire on a misuse
+    /// (e.g. handing in a web `CanvasSurfaceProvider`).
     NoWin32Handle,
     /// `wgpu::Instance::create_surface` rejected the handle.
     CreateSurface,
@@ -94,6 +107,7 @@ impl WindowsHostHandle {
         inner.config.width = size.0.max(1);
         inner.config.height = size.1.max(1);
         inner.surface.configure(&inner.device, &inner.config);
+        inner.anchor.commit_after_configure();
     }
 
     /// Pause the embedded app: drop its reactive scope. Pair with
@@ -121,6 +135,7 @@ impl WindowsHostHandle {
         // returns Outdated/Lost for several frames and the canvas
         // stays at the clear color (see the iOS host's `resume`).
         inner.surface.configure(&inner.device, &inner.config);
+        inner.anchor.commit_after_configure();
     }
 
     /// True iff the embedded app is currently mounted.
@@ -140,16 +155,19 @@ pub async fn mount(
     skin: Rc<dyn Painter>,
     build_ui: Rc<dyn Fn() -> Element + 'static>,
 ) -> Result<WindowsHostHandle, MountError> {
-    // 1. Validate the surface exposes a Win32 handle (see
-    //    `backend-windows::graphics::Win32SurfaceProvider`). Capture
-    //    the raw HWND for the per-frame visibility check.
-    let hwnd: isize = match surface_handle
-        .window_handle()
-        .map_err(|_| MountError::NoWin32Handle)?
-        .as_raw()
-    {
-        RawWindowHandle::Win32(h) => h.hwnd.get(),
-        _ => return Err(MountError::NoWin32Handle),
+    // 1. Resolve where the swapchain lives. Preferred: the surface's
+    //    composition-visual capability (the Windows backend's graphics
+    //    surfaces are DirectComposition visuals — see
+    //    `backend-windows::dcomp`); wgpu mounts on the visual directly.
+    //    Fallback: a real Win32 window handle (kept for any host that
+    //    still hands one in). The anchor is stored for the per-frame
+    //    visibility check.
+    let anchor: SurfaceAnchor = match surface_handle.composed_target() {
+        Some(ct) => SurfaceAnchor::Composed(ct.clone()),
+        None => match surface_handle.window_handle().map(|h| h.as_raw()) {
+            Ok(RawWindowHandle::Win32(h)) => SurfaceAnchor::Window(h.hwnd.get()),
+            _ => return Err(MountError::NoWin32Handle),
+        },
     };
 
     // 2. wgpu init — DX12 backend, same shape as host-macos-desktop.
@@ -160,9 +178,21 @@ pub async fn mount(
         backend_options: wgpu::BackendOptions::default(),
         display: None,
     });
-    let surface = instance
-        .create_surface(surface_handle)
-        .map_err(|_| MountError::CreateSurface)?;
+    let surface = match &anchor {
+        SurfaceAnchor::Composed(ct) => unsafe {
+            // SAFETY: the visual is a live IDCompositionVisual whose
+            // reference the provider (held via `anchor` in HostInner)
+            // owns for this host's whole lifetime; wgpu additionally
+            // AddRefs it internally.
+            instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::CompositionVisual(
+                ct.visual().as_ptr(),
+            ))
+        }
+        .map_err(|_| MountError::CreateSurface)?,
+        SurfaceAnchor::Window(_) => instance
+            .create_surface(surface_handle)
+            .map_err(|_| MountError::CreateSurface)?,
+    };
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -196,6 +226,17 @@ pub async fn mount(
         .copied()
         .find(|f| f.is_srgb())
         .unwrap_or(caps.formats[0]);
+    // Alpha: on a composition target the caps list leads with `Auto`,
+    // which DX12 maps to DXGI_ALPHA_MODE_UNSPECIFIED — and
+    // `CreateSwapChainForComposition` REJECTS unspecified alpha, so the
+    // swapchain would fail at first configure. Pick `Opaque`
+    // explicitly (→ DXGI_ALPHA_MODE_IGNORE, valid for composition, and
+    // the canvas is opaque anyway). The HWND path keeps the caps
+    // default as before.
+    let alpha_mode = match &anchor {
+        SurfaceAnchor::Composed(_) => wgpu::CompositeAlphaMode::Opaque,
+        SurfaceAnchor::Window(_) => caps.alpha_modes[0],
+    };
     let config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format,
@@ -203,10 +244,15 @@ pub async fn mount(
         height: size.1.max(1),
         present_mode: wgpu::PresentMode::Fifo,
         desired_maximum_frame_latency: 2,
-        alpha_mode: caps.alpha_modes[0],
+        alpha_mode,
         view_formats: vec![],
     };
     surface.configure(&device, &config);
+    // Composition contract: wgpu's configure binds the new swapchain to
+    // the visual (`SetContent`) but cannot commit — the composition
+    // device is the backend's. Without this commit the canvas stays
+    // invisible until some unrelated layout/scroll change commits.
+    anchor.commit_after_configure();
 
     // 3. Build the render-side stack + mount the user app. A fresh
     //    `session::REGISTRY` scope isolates the embedded app's
@@ -246,7 +292,8 @@ pub async fn mount(
         renderer,
         host,
         logical,
-        hwnd,
+        anchor,
+        host_id: NEXT_HOST_ID.fetch_add(1, Ordering::Relaxed),
         build_ui,
         presented_once: false,
         _session_scope: session_scope,
@@ -271,15 +318,60 @@ pub async fn mount(
 // Internals
 // ---------------------------------------------------------------------------
 
-/// Restore the frame-active flag when the host dies. `draw_frame`
-/// publishes `set_frame_active(visible)` every tick; if the host is
-/// torn down while its surface is hidden (navigating away from the
-/// screen embedding it), the flag would otherwise stay `false`
-/// forever and every author `raf_loop_scoped` ticker that reads
-/// `is_frame_active()` stays frozen app-wide.
+// ---------------------------------------------------------------------------
+// Frame-active aggregation across hosts
+// ---------------------------------------------------------------------------
+//
+// `runtime_core::set_frame_active` is ONE thread-local flag, but this
+// thread can run SEVERAL hosts at once: the website's swap navigator
+// keeps the home screen (and its Simulator host) MOUNTED and merely
+// portal-hides it on navigation, so returning home via a fresh route
+// instance leaves a hidden host + a visible host ticking side by side.
+// If each published its own visibility directly, the hidden one
+// stomped `false` every frame and the visible Simulator's timeline
+// froze at t=0 (the "site loads then the demo freezes" bug). Instead
+// every host VOTES its visibility here and the flag is the aggregate:
+// any-visible, or `true` when no hosts are alive (the framework
+// default, so author tickers never stay frozen after teardown).
+
+thread_local! {
+    static HOST_VISIBILITY: RefCell<HashMap<u64, bool>> = RefCell::new(HashMap::new());
+}
+
+static NEXT_HOST_ID: AtomicU64 = AtomicU64::new(1);
+
+/// The aggregate the votes imply: any visible host, or `true` for an
+/// empty map. Pure — unit-tested below.
+fn aggregate_frame_active(votes: &HashMap<u64, bool>) -> bool {
+    votes.is_empty() || votes.values().any(|v| *v)
+}
+
+/// Record `visible` for host `id` and publish the aggregate.
+fn publish_visibility(id: u64, visible: bool) {
+    let agg = HOST_VISIBILITY.with(|m| {
+        let mut m = m.borrow_mut();
+        m.insert(id, visible);
+        aggregate_frame_active(&m)
+    });
+    runtime_core::set_frame_active(agg);
+}
+
+/// Drop host `id`'s vote and publish the aggregate.
+fn retire_visibility(id: u64) {
+    let agg = HOST_VISIBILITY.with(|m| {
+        let mut m = m.borrow_mut();
+        m.remove(&id);
+        aggregate_frame_active(&m)
+    });
+    runtime_core::set_frame_active(agg);
+}
+
+/// Retire this host's visibility vote when it dies, restoring the
+/// aggregate (or the `true` default once no hosts remain) so author
+/// `raf_loop_scoped` tickers never stay frozen after teardown.
 impl Drop for HostInner {
     fn drop(&mut self) {
-        runtime_core::set_frame_active(true);
+        retire_visibility(self.host_id);
     }
 }
 
@@ -293,14 +385,14 @@ struct HostInner {
     /// Logical viewport in CSS px from the `DeviceProfile`. Fed to
     /// the renderer every frame.
     logical: (f32, f32),
-    /// Raw HWND (as isize) of the child window this host renders
-    /// into. Checked each frame via `is_surface_visible` so we skip
-    /// the GPU encode when the window is hidden behind a navigator's
-    /// persistent-but-not-visible screen. Lifetime contract matches
-    /// the other hosts: the framework's `Graphics` callbacks hold the
-    /// `Slot<HostHandle>` that owns this `HostInner`, so while
-    /// `HostInner` exists, the HWND exists.
-    hwnd: isize,
+    /// What the swapchain is mounted on — checked each frame for
+    /// visibility so we skip the GPU encode when the surface is hidden
+    /// behind a navigator's persistent-but-not-visible screen. The
+    /// `Composed` variant also keeps the backend's provider (and thus
+    /// the composition visual) alive for this host's whole lifetime.
+    anchor: SurfaceAnchor,
+    /// This host's key in the thread's `HOST_VISIBILITY` vote map.
+    host_id: u64,
     /// Re-callable embedded-app builder, cached for [`WindowsHostHandle::resume`].
     build_ui: Rc<dyn Fn() -> Element + 'static>,
     /// One-shot "first frame presented" diagnostic flag — scriptable
@@ -312,26 +404,114 @@ struct HostInner {
     _session_scope: runtime_core::session::ScopeGuard,
 }
 
-/// Whether the target HWND is live and visible. `IsWindowVisible`
-/// already ANDs the WS_VISIBLE bit up the entire parent chain (so a
-/// `set_portal_hidden` ShowWindow(SW_HIDE) on any ancestor gates the
-/// render), and `IsWindow` catches a destroyed handle during teardown
-/// races.
-fn is_surface_visible(hwnd: isize) -> bool {
-    let h = HWND(hwnd as *mut c_void);
-    unsafe { IsWindow(h).as_bool() && IsWindowVisible(h).as_bool() }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The website freeze: navigating away portal-hides the home
+    /// screen (its Simulator host stays mounted), returning mounts a
+    /// second host. With one shared flag, the hidden host's every-tick
+    /// `false` froze the visible host's timeline at t=0. The
+    /// aggregate must be any-visible; and with no hosts at all it
+    /// must be `true` (the framework default) so tickers never stay
+    /// frozen after teardown.
+    #[test]
+    fn regression_hidden_host_does_not_freeze_visible_host() {
+        let mut votes = HashMap::new();
+        assert!(aggregate_frame_active(&votes), "no hosts = default active");
+        votes.insert(1, false); // hidden home-screen host
+        votes.insert(2, true); // visible remounted host
+        assert!(aggregate_frame_active(&votes), "one visible host keeps frames active");
+        votes.insert(2, false);
+        assert!(!aggregate_frame_active(&votes), "all hidden = paused");
+        votes.remove(&1);
+        votes.remove(&2);
+        assert!(aggregate_frame_active(&votes), "teardown restores the default");
+    }
+
+    struct FakeComposed {
+        visible: std::sync::atomic::AtomicBool,
+        commits: std::sync::atomic::AtomicU32,
+    }
+
+    impl ComposedTarget for FakeComposed {
+        fn visual(&self) -> std::ptr::NonNull<std::ffi::c_void> {
+            std::ptr::NonNull::new(0x1 as *mut std::ffi::c_void).unwrap()
+        }
+        fn commit(&self) {
+            self.commits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        fn is_visible(&self) -> bool {
+            self.visible.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    /// The composed anchor must relay the backend's LIVE visibility
+    /// flag (the frame gate + the multi-host votes both read it), and
+    /// `commit_after_configure` must reach the backend's composition
+    /// device — a swapchain bound by `configure` is invisible until
+    /// that commit, so a swallowed call = permanently blank canvas.
+    #[test]
+    fn composed_anchor_relays_visibility_and_commits() {
+        let ct = Arc::new(FakeComposed {
+            visible: std::sync::atomic::AtomicBool::new(true),
+            commits: std::sync::atomic::AtomicU32::new(0),
+        });
+        let anchor = SurfaceAnchor::Composed(ct.clone());
+        assert!(anchor.is_visible());
+        ct.visible.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(!anchor.is_visible(), "anchor must observe live changes");
+        anchor.commit_after_configure();
+        anchor.commit_after_configure();
+        assert_eq!(ct.commits.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+}
+
+/// Where this host's swapchain is mounted: a composition visual (the
+/// Windows backend's graphics surfaces) or a real window handle (the
+/// legacy fallback).
+enum SurfaceAnchor {
+    Composed(Arc<dyn ComposedTarget>),
+    Window(isize),
+}
+
+impl SurfaceAnchor {
+    /// Whether the surface currently shows anything. Composed: the
+    /// backend's live flag (portal-hidden ⇒ false). Window:
+    /// `IsWindowVisible` ANDs the WS_VISIBLE bit up the entire parent
+    /// chain, and `IsWindow` catches a destroyed handle during
+    /// teardown races.
+    fn is_visible(&self) -> bool {
+        match self {
+            SurfaceAnchor::Composed(ct) => ct.is_visible(),
+            SurfaceAnchor::Window(hwnd) => {
+                let h = HWND(*hwnd as *mut c_void);
+                unsafe { IsWindow(h).as_bool() && IsWindowVisible(h).as_bool() }
+            }
+        }
+    }
+
+    /// A swapchain (re)bound to a composition visual only appears at
+    /// the next composition-device commit — call after every
+    /// `surface.configure`. No-op for a window-mounted swapchain.
+    fn commit_after_configure(&self) {
+        if let SurfaceAnchor::Composed(ct) = self {
+            ct.commit();
+        }
+    }
 }
 
 fn draw_frame(inner: &mut HostInner) {
-    // Visibility gate — skip the GPU encode + present when the window
+    // Visibility gate — skip the GPU encode + present when the surface
     // is hidden. Same policy as the other hosts: no auto-unmount here
     // (whether a hidden embedded app keeps running is the caller's
     // policy via pause/resume).
-    let visible = is_surface_visible(inner.hwnd);
-    // Publish to the per-thread frame-active flag so author-side
-    // `raf_loop_scoped` tickers that read `runtime_core::is_frame_active()`
-    // can short-circuit while nothing paints.
-    runtime_core::set_frame_active(visible);
+    let visible = inner.anchor.is_visible();
+    // Vote this host's visibility into the per-thread aggregate (see
+    // `HOST_VISIBILITY`) so author-side `raf_loop_scoped` tickers that
+    // read `runtime_core::is_frame_active()` can short-circuit while
+    // nothing paints — without a hidden sibling host freezing them.
+    publish_visibility(inner.host_id, visible);
     if !visible {
         return;
     }
@@ -343,6 +523,7 @@ fn draw_frame(inner: &mut HostInner) {
         wgpu::CurrentSurfaceTexture::Outdated
         | wgpu::CurrentSurfaceTexture::Lost => {
             inner.surface.configure(&inner.device, &inner.config);
+            inner.anchor.commit_after_configure();
             return;
         }
         wgpu::CurrentSurfaceTexture::Timeout

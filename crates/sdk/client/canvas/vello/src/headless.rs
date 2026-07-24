@@ -61,7 +61,8 @@ impl HeadlessCompositor {
     /// software fallback). `None` if no usable adapter/device or vello init fails.
     pub fn new() -> Option<Self> {
         let (device, queue) = headless_device()?;
-        let renderer = new_vello_renderer(&device)?;
+        // Headless: a fresh native (non-GL) device, so parallel shader init is fine.
+        let renderer = new_vello_renderer(&device, false)?;
         let layer_compositor = LayerCompositor::new(&device);
         let overlay_compositor = OverlayCompositor::new(&device);
         Some(Self {

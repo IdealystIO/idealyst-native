@@ -17,9 +17,13 @@ pub enum Container {
     /// On **Linux** H.264 *encoding* requires an extra GStreamer plugin
     /// (`x264enc` from `gstreamer1.0-plugins-ugly`, or `openh264enc` from
     /// `-plugins-bad`) that a base install omits. Where no H.264 encoder is
-    /// present the Linux backend returns an honest error rather than writing a
-    /// broken file — request [`Container::WebM`] there. Apple / Android / web
-    /// always have a hardware/system H.264 encoder, so `Mp4` is their default.
+    /// present the Linux backend transparently **falls back to VP8/WebM**
+    /// (like the web backend's browser-chosen container) and rewrites the output
+    /// file's extension to `.webm` so its name matches its content —
+    /// [`Recording::stop`](crate::Recording::stop) returns the adjusted path.
+    /// Install `gstreamer1.0-plugins-ugly` for true H.264/MP4. Apple / Android /
+    /// web always have a hardware/system H.264 encoder, so `Mp4` is their
+    /// default and is written as-is.
     #[default]
     Mp4,
     /// `.webm` — VP8 video + Opus audio. A royalty-free container built from a

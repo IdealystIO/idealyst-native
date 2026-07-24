@@ -362,7 +362,7 @@ impl Drop for RecordingHandle {
 pub(crate) async fn start(
     inputs: MediaInputs<'_>,
     config: &RecordConfig,
-) -> Result<RecordingHandle, MediaWriterError> {
+) -> Result<(RecordingHandle, String), MediaWriterError> {
     let path = config
         .store
         .local_path(&config.path)
@@ -457,14 +457,19 @@ pub(crate) async fn start(
         })
     });
 
-    Ok(RecordingHandle {
-        tx,
-        join: Some(join),
-        _video_sub: video_sub,
-        _audio_sub: audio_sub,
-        #[cfg(target_os = "macos")]
-        _native_tap: native_tap,
-    })
+    // The Apple backend always writes the requested container (H.264/AAC in
+    // MP4), so the effective relative path is exactly the one asked for.
+    Ok((
+        RecordingHandle {
+            tx,
+            join: Some(join),
+            _video_sub: video_sub,
+            _audio_sub: audio_sub,
+            #[cfg(target_os = "macos")]
+            _native_tap: native_tap,
+        },
+        config.path.clone(),
+    ))
 }
 
 // ---------------------------------------------------------------------------

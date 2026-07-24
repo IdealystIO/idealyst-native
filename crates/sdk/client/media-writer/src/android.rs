@@ -91,7 +91,7 @@ impl Drop for RecordingHandle {
 pub(crate) async fn start(
     inputs: MediaInputs<'_>,
     config: &RecordConfig,
-) -> Result<RecordingHandle, MediaWriterError> {
+) -> Result<(RecordingHandle, String), MediaWriterError> {
     let path = config
         .store
         .local_path(&config.path)
@@ -136,11 +136,16 @@ pub(crate) async fn start(
         })
     });
 
-    Ok(RecordingHandle {
-        token,
-        _video_sub: video_sub,
-        _audio_sub: audio_sub,
-    })
+    // The Android backend always writes the requested container (H.264/AAC in
+    // MP4), so the effective relative path is exactly the one asked for.
+    Ok((
+        RecordingHandle {
+            token,
+            _video_sub: video_sub,
+            _audio_sub: audio_sub,
+        },
+        config.path.clone(),
+    ))
 }
 
 /// Forward one RGBA frame to the Kotlin shim. Runs on the capture tap's thread,
