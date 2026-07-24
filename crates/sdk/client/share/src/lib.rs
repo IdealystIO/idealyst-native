@@ -44,8 +44,12 @@
 //!   wrapped in `Intent.createChooser`, started on the current Activity.
 //! - **web** — `navigator.share(...)` (the Web Share API); requires a user
 //!   gesture and a secure context, else [`ShareError::NotSupported`].
-//! - **Windows / Linux** — [`ShareError::NotSupported`] (no universal native
-//!   share surface to target uniformly).
+//! - **Linux** — the XDG desktop portal (`xdg-desktop-portal`) via `ashpd`: a
+//!   lone URL goes through `OpenURI`'s "Open With" app chooser; content with
+//!   body text, a title, or files goes through the `Email` portal
+//!   (`ComposeEmail`), the only portal that carries all three together.
+//! - **Windows** — [`ShareError::NotSupported`] (a real Data Transfer Manager
+//!   backend is a later layer).
 
 #![deny(missing_docs)]
 
@@ -57,9 +61,9 @@ mod recipes;
 // ---------------------------------------------------------------------------
 // Backend selector. Exactly one compiles per target; each supplies an `imp`
 // module with `async fn share(&ShareContent) -> Result<ShareOutcome, ShareError>`.
-// Desktop (Windows/Linux) and any other target fall through to the `stub`,
-// which returns `NotSupported` — there is no uniform native share surface
-// there, and silently degrading would hide that.
+// Linux drives the XDG desktop portal; Windows (and any other target with no
+// uniform native share surface) falls through to the `stub`, which returns
+// `NotSupported` — silently degrading would hide that.
 // ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "wasm32")]
@@ -74,11 +78,16 @@ mod imp;
 #[path = "apple.rs"]
 mod imp;
 
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+#[path = "linux.rs"]
+mod imp;
+
 #[cfg(not(any(
     target_arch = "wasm32",
     target_os = "android",
     target_os = "ios",
-    target_os = "macos"
+    target_os = "macos",
+    target_os = "linux"
 )))]
 #[path = "stub.rs"]
 mod imp;

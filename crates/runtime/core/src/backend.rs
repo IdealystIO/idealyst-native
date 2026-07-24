@@ -797,10 +797,10 @@ pub trait Backend {
     /// [`crate::DroppedFile`]s.
     ///
     /// Default impl is a no-op — correct for iOS / Android (no OS file-drag
-    /// concept) and non-interactive backends (terminal, SSR, CPU). The
-    /// scaffold Windows / Linux backends should fill this in when they mature
-    /// (IDropTarget / GTK drag-dest); the web and macOS impls are the
-    /// template. See [`crate::file_drop`].
+    /// concept) and non-interactive backends (terminal, SSR, CPU). The web,
+    /// macOS, and Linux (GTK4 `DropTarget`) backends implement it; the scaffold
+    /// Windows backend should fill this in when it matures (IDropTarget). See
+    /// [`crate::file_drop`].
     #[allow(unused_variables)]
     fn install_file_drop_handler(
         &mut self,

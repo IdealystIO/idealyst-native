@@ -33,8 +33,8 @@
 //! and drops them. [`FileDropZone`] (behind the default-on `drop` feature) makes
 //! any view a drop target and surfaces each dropped file as the same
 //! [`PickedFile`] a picker returns — so upload code is identical however the
-//! file arrived. Delivered on web + macOS; a no-op where the platform has no OS
-//! file-drag. See the [`FileDropZone`] docs.
+//! file arrived. Delivered on web, macOS, and Linux (GTK4); a no-op where the
+//! platform has no OS file-drag. See the [`FileDropZone`] docs.
 //!
 //! # No permission required
 //!

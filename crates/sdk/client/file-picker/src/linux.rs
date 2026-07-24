@@ -42,10 +42,10 @@ impl PickedFile {
     }
 }
 
-/// Convert a dropped OS file into a `PickedFile` from its real path. The
-/// scaffold GTK4 Linux backend does not yet source file drops (its
-/// `install_file_drop_handler` is the no-op default), so this is dead until a
-/// GTK drag-dest impl lands — but it's ready for it.
+/// Convert a dropped OS file into a `PickedFile` from its real path. The GTK4
+/// Linux backend sources file drops via a `DropTarget` (see
+/// `backend-linux`'s `file_drop` module + `install_file_drop_handler`), which
+/// hands each dropped file a real filesystem `path` — exactly what this maps.
 #[cfg(feature = "drop")]
 pub(crate) fn picked_from_dropped(f: &runtime_core::DroppedFile) -> Option<PickedFile> {
     let path = f.path.clone()?;

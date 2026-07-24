@@ -232,12 +232,32 @@ inventory::submit! {
 /// background/underline/strike attributes, the GTK analogue of the iOS
 /// `NSAttributedString` path).
 ///
-/// `backend-linux` has no inventory registrar, so apps wire this
-/// explicitly in their `register_extensions` (`markdown::register(backend);`).
+/// Linux — registers the `linux` handler (a GTK `Label` with Pango markup).
+/// Explicit `markdown::register(backend)` still works, but the submit below
+/// self-registers at backend construction like the other platforms.
 #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
 pub fn register(backend: &mut backend_linux::LinuxBackend) {
     ensure_wire_serde();
     linux::register(backend);
+}
+
+// Self-register at backend construction. See [[project_inventory_self_registration]].
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+inventory::submit! {
+    backend_linux::LinuxExternalRegistrar(register)
+}
+
+#[cfg(all(test, target_os = "linux", not(target_arch = "wasm32")))]
+mod linux_registration_tests {
+    /// Regression: `markdown` had a real GTK backend but no `inventory::submit!`,
+    /// so it never self-registered and fell to the External placeholder unless an
+    /// app called `markdown::register` explicitly. Asserts the submit is collected
+    /// (drained by `LinuxBackend::new`).
+    #[test]
+    fn markdown_handler_auto_registers_on_linux() {
+        let count = inventory::iter::<backend_linux::LinuxExternalRegistrar>().count();
+        assert!(count >= 1, "markdown must submit a LinuxExternalRegistrar so Markdown self-registers");
+    }
 }
 
 /// Fallback for other targets (macOS / terminal / gpu). No native

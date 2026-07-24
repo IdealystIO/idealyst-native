@@ -61,11 +61,20 @@ subscribe to, so they report `Completed` once the share UI has run. Treat
 | macOS | `NSSharingServicePicker`, shown relative to the key window (objc2) | ⚠️ compile-checked only |
 | Android | `Intent.ACTION_SEND` wrapped in `Intent.createChooser`, `startActivity` (JNI) | ⚠️ compile-checked only; text/url only — see below |
 | web (wasm32) | `navigator.share({ title, text, url })` (Web Share API) | needs a user gesture + secure context; `files` ignored |
-| Windows / Linux / other native | `ShareError::NotSupported` | no uniform native outbound-share surface |
+| Linux | XDG desktop portal via `ashpd`: `OpenURI` app chooser for a lone URL, else `Email`/`ComposeEmail` for body + subject + files | ⚠️ routing unit-tested; portal round-trip needs a live session |
+| Windows / other native | `ShareError::NotSupported` | no backend yet (Data Transfer Manager is a later layer) |
 
 The iOS, macOS, and Android backends are **compile-checked only** — the share
 UI resolves at runtime on a real device/desktop session (the same posture as
 `file-export`). The web backend runs wherever `navigator.share` is available.
+
+**Linux routes across two portals.** There is no single share-sheet portal, so
+a bare URL uses `OpenURI` (the "Open With" app chooser) while anything with body
+text, a title, or files uses the `Email` portal (`ComposeEmail`) — the only
+portal that carries all three together. When both text and a URL are present the
+URL is appended to the body (mirroring Android's single-blob `EXTRA_TEXT`). The
+routing decision is unit-tested; the D-Bus portal exchange resolves only against
+a running `xdg-desktop-portal` session.
 
 **Android file sharing is a seam.** Attaching files needs a `content://` URI
 from a `FileProvider` declared in the app manifest (a raw `file://` URI throws

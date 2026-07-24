@@ -13,7 +13,8 @@ license.workspace = true
 #   - macOS:   NSSharingServicePicker (shown relative to the key window)
 #   - Android: Intent.ACTION_SEND / ACTION_SEND_MULTIPLE wrapped in createChooser
 #   - web:     navigator.share() (Web Share API; needs a user gesture + https)
-#   - Windows / Linux: NotSupported (no universal native share surface)
+#   - Linux:   XDG desktop portal via ashpd (OpenURI app chooser / Email compose)
+#   - Windows: NotSupported (Data Transfer Manager backend is a later layer)
 #
 # The share sheet is user-initiated UI, so this SDK needs NO permission on any
 # platform.
@@ -54,6 +55,13 @@ js-sys = "0.3"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["Window", "Navigator"] }
+
+# Linux: outbound share through the XDG desktop portal — `OpenURI` for a lone
+# link (app chooser) and `Email`/`ComposeEmail` for body + subject + file
+# attachments. `ashpd` wraps the D-Bus portal protocol, the same posture
+# `file-export` / `file-picker` take for their Linux dialogs.
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = "0.9"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

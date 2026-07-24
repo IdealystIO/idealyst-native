@@ -148,15 +148,12 @@ impl CompositionTree {
                     }
                 }
             }
-            // Offset + rounded clip (bezel) on the content — both in
-            // root coords (container sits at 0,0), so the corners ride
-            // with the content as it scrolls.
-            let rx = v.content.SetOffsetX2(p.x as f32);
-            let ry = v.content.SetOffsetY2(p.y as f32);
-            eprintln!(
-                "[dcomp-debug] apply x={} y={} ox={:?} oy={:?} square={:?} rounded={:?}",
-                p.x, p.y, rx, ry, p.square, p.rounded
-            );
+            // Offset on the content; its rounded clip is CONTENT-LOCAL
+            // (a visual's clip transforms with the visual), so the
+            // corners ride the offset with no per-tick rewrite of the
+            // rect — see `Placement`'s coordinate-space invariant.
+            let _ = v.content.SetOffsetX2(p.x as f32);
+            let _ = v.content.SetOffsetY2(p.y as f32);
             match p.rounded {
                 None => {
                     let _ = v.content.SetClip(None::<&IDCompositionClip>);
@@ -268,17 +265,27 @@ impl ClipChain {
 /// Diffed against the last applied placement so an unchanged layout
 /// pass writes nothing (and triggers no commit).
 ///
-/// Both clip rects are `(left, top, right, bottom)` in ROOT-VISUAL
-/// coordinates (= host client coordinates): a DComp visual's clip is
-/// specified in its PARENT's coordinate space, and both levels of the
-/// chain resolve to root space (the container sits at 0,0).
+/// COORDINATE SPACES — the load-bearing invariant, established
+/// empirically (a clip written in the wrong space renders the canvas
+/// fully black, because the rect misses the buffer entirely): a DComp
+/// visual's clip is specified in the visual's OWN coordinate space and
+/// transforms WITH the visual.
+///
+/// - `square` sits on the CONTAINER, which is never offset, so its
+///   local space equals root/window space — the clip stays pinned to
+///   the viewport while the content moves. `(l, t, r, b)` in window
+///   coordinates.
+/// - `rounded` sits on the CONTENT visual, so it is in CONTENT-LOCAL
+///   coordinates (relative to the buffer's top-left) and rides the
+///   content's offset automatically. `(l, t, r, b, radius)` local.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct Placement {
     pub x: i32,
     pub y: i32,
-    /// Container clip: viewport/overflow intersection. `None` = none.
+    /// Container clip: viewport/overflow intersection, window coords.
     pub square: Option<(f32, f32, f32, f32)>,
-    /// Content clip: nearest rounded ancestor's rect + corner radius.
+    /// Content clip: nearest rounded ancestor's rect + corner radius,
+    /// CONTENT-LOCAL coords.
     pub rounded: Option<(f32, f32, f32, f32, f32)>,
 }
 
@@ -291,9 +298,11 @@ pub(crate) struct Placement {
 ///   independently skips rendering via `ComposedTarget::is_visible`.)
 /// - A square intersection that fully contains the frame clips
 ///   nothing → `None`. Empty intersection → empty clip.
-/// - The rounded clip is passed through UNINTERSECTED — cutting it to
-///   the viewport is exactly what moved the bezel's corners onto the
-///   scroll edge.
+/// - The rounded clip is passed through UNINTERSECTED with the
+///   viewport — cutting it to the viewport is exactly what moved the
+///   bezel's corners onto the scroll edge — and is translated into
+///   content-local coordinates (the walk supplies it in window
+///   coords; the content visual's clip space is its own buffer).
 pub(crate) fn visual_placement(
     abs: (f32, f32, f32, f32),
     chain: ClipChain,
@@ -323,7 +332,9 @@ pub(crate) fn visual_placement(
             }
         }
     };
-    let rounded = chain.rounded.map(|((l, t, r, b), rad)| (l, t, r, b, rad));
+    let rounded = chain
+        .rounded
+        .map(|((l, t, r, b), rad)| (l - ax, t - ay, r - ax, b - ay, rad));
     Placement { x, y, square, rounded }
 }
 
@@ -374,6 +385,7 @@ mod tests {
 
     /// The simulator-bezel case: a rounded ancestor keeps its clip
     /// even when it fully contains the frame — the corners still cut.
+    /// The rect comes out in CONTENT-LOCAL coords (buffer space).
     #[test]
     fn regression_rounded_full_cover_clip_is_kept() {
         let p = visual_placement(
@@ -381,7 +393,7 @@ mod tests {
             chain(&[((100.0, 100.0, 400.0, 740.0), 42.0)]),
             false,
         );
-        assert_eq!(p.rounded, Some((100.0, 100.0, 400.0, 740.0, 42.0)));
+        assert_eq!(p.rounded, Some((0.0, 0.0, 300.0, 640.0, 42.0)));
         assert_eq!(p.square, None);
     }
 
@@ -404,12 +416,13 @@ mod tests {
         assert_eq!(
             p.square,
             Some((650.0, 100.0, 950.0, 559.0)),
-            "square clip = viewport ∩ frame — the straight cut"
+            "square clip = viewport ∩ frame — the straight cut, window coords"
         );
         assert_eq!(
             p.rounded,
-            Some((640.0, -80.0, 960.0, 569.0, 42.0)),
-            "rounded clip = bezel's OWN rect, not intersected with the viewport"
+            Some((-10.0, -10.0, 310.0, 639.0, 42.0)),
+            "rounded clip = bezel's OWN rect in content-local coords, not \
+             intersected with the viewport"
         );
     }
 

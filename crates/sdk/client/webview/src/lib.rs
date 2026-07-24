@@ -344,6 +344,19 @@ pub use linux::register;
 ))]
 static OPS: &dyn WebViewOps = linux::OPS;
 
+// Self-register at backend construction (mirrors the web/android/ios submits), so
+// `WebView` lowers to the WebKitGTK leaf without an explicit `webview::register`.
+// Only compiled with `linux-webkit` (WebKitGTK present); off ⇒ the fallback
+// placeholder applies. NOTE: unbuildable on a host without webkitgtk-6.0.
+#[cfg(all(
+    target_os = "linux",
+    not(target_arch = "wasm32"),
+    feature = "linux-webkit"
+))]
+inventory::submit! {
+    backend_linux::LinuxExternalRegistrar(register)
+}
+
 #[cfg(not(any(
     target_arch = "wasm32",
     target_os = "android",

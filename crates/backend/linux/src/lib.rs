@@ -109,6 +109,7 @@ impl runtime_core::primitives::navigator::NavigatorOps for NoopNavOps {}
 static NOOP_NAV_OPS: NoopNavOps = NoopNavOps;
 
 mod color;
+mod file_drop;
 mod fonts;
 mod gl_loader;
 mod graphics;
@@ -1126,6 +1127,18 @@ impl Backend for LinuxBackend {
         // unimplemented is invisible: `.on_touch()` views render fine
         // and simply never fire. See `touch.rs`.
         touch::install(&node.widget, handler);
+    }
+
+    fn install_file_drop_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: runtime_core::FileDropHandler,
+    ) {
+        // Like `install_touch_handler`, the trait default is a NO-OP — which
+        // is exactly what left the file-picker SDK's `FileDropZone` inert on
+        // Linux. Attach a GTK `DropTarget` so an OS file drag reaches the
+        // handler (and thence `picked_from_dropped`). See `file_drop.rs`.
+        file_drop::install(&node.widget, handler);
     }
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {

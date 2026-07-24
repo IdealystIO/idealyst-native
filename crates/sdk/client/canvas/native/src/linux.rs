@@ -357,9 +357,31 @@ fn replay(ctx: &cairo::Context, ops: &[DrawOp], layers: &mut LayerCache, size: (
                 }
                 composite_surface(ctx, &surface, *alpha, *blend, Some(transform));
             }
-            // `DrawOp` is `#[non_exhaustive]`; ops without a Cairo mapping
-            // yet (instanced Shapes, Glyphs) no-op rather than abort the
-            // frame. See the module TODO.
+            DrawOp::Shapes { shapes, blend } => {
+                // Cairo has no instanced fast path: expand the batch to
+                // per-shape fills, in array order, replaying each through the
+                // Fill arm so a batched shape and a hand-authored fill produce
+                // identical pixels (CLAUDE.md §7).
+                for sh in shapes {
+                    replay(ctx, std::slice::from_ref(&sh.to_fill_op(*blend)), layers, size);
+                }
+            }
+            DrawOp::Glyphs { font, glyphs, paint } => {
+                // Cairo has no embedded-font glyph engine reachable here, so —
+                // like the CoreGraphics / Canvas2D / android backends — outline
+                // each glyph from the run's font bytes with skrifa (at upem
+                // 1000) and fill it through the existing Fill path. Both this
+                // and the GPU (vello) path outline at the SAME upem with hinting
+                // off, so the pixels match (CLAUDE.md §7). `expand_run` returns
+                // Save·Transform·Fill·Restore quartets; replaying them reuses the
+                // Fill arm's colour/alpha/blend handling verbatim, and the
+                // per-glyph Transform composes on top of the context's current
+                // (accumulated) CTM exactly as the run's affine intends.
+                let ops = crate::glyphs::expand_run(font, glyphs, paint);
+                replay(ctx, &ops, layers, size);
+            }
+            // `DrawOp` is `#[non_exhaustive]`; any future op without a Cairo
+            // mapping no-ops rather than abort the frame.
             _ => {}
         }
     }
@@ -519,4 +541,174 @@ fn build_canvas(
     });
 
     node
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    // `Color`, `Paint`, `Path`, `PathSeg`, `Transform`, `Scene` are already in
+    // scope via the module's own `use canvas_core::{…}`.
+    use super::*;
+    use canvas_core::{FontResource, PositionedGlyph};
+    use skrifa::instance::{LocationRef, Size};
+    use skrifa::outline::{DrawSettings, OutlinePen};
+    use skrifa::{FontRef, GlyphId, MetadataProvider};
+
+    /// The em a glyph run is normalized to — must match `glyphs::GLYPH_UPEM`.
+    const UPEM: f32 = 1000.0;
+
+    /// A real system font's bytes + face index, or `None` to skip on a CI box
+    /// with no fonts installed.
+    fn load_test_font() -> Option<(Vec<u8>, u32)> {
+        for path in [
+            "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+        ] {
+            if let Ok(bytes) = std::fs::read(path) {
+                return Some((bytes, 0));
+            }
+        }
+        None
+    }
+
+    /// Replay `scene` into a fresh transparent ARgb32 surface and return its
+    /// premultiplied-BGRA bytes + row stride. No GTK display needed — Cairo's
+    /// image surface is self-contained.
+    fn render(scene: &Scene, s: i32) -> (Vec<u8>, usize) {
+        let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, s, s).unwrap();
+        {
+            let ctx = cairo::Context::new(&surface).unwrap();
+            let mut layers = LayerCache::default();
+            replay(&ctx, scene.ops(), &mut layers, (s, s));
+            // The context must be dropped before `surface.data()` — a live
+            // context holds an exclusive borrow of the surface pixels.
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().unwrap().to_vec();
+        (data, stride)
+    }
+
+    /// A skrifa outline pen recording into a canvas `Path` (font-design units,
+    /// y-up), the same expansion `glyphs::expand_run` performs internally.
+    #[derive(Default)]
+    struct PathPen(Path);
+    impl OutlinePen for PathPen {
+        fn move_to(&mut self, x: f32, y: f32) {
+            self.0.segs.push(PathSeg::MoveTo { x, y });
+        }
+        fn line_to(&mut self, x: f32, y: f32) {
+            self.0.segs.push(PathSeg::LineTo { x, y });
+        }
+        fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
+            self.0.segs.push(PathSeg::QuadTo { cx, cy, x, y });
+        }
+        fn curve_to(&mut self, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32) {
+            self.0.segs.push(PathSeg::CubicTo { c1x, c1y, c2x, c2y, x, y });
+        }
+        fn close(&mut self) {
+            self.0.segs.push(PathSeg::Close);
+        }
+    }
+
+    /// Regression for the no-op `DrawOp::Glyphs` arm: a glyph run must actually
+    /// rasterize onto the Cairo surface. Before this backend outlined glyphs,
+    /// the arm was a no-op and canvas/PDF-export text vanished — `ink` would be
+    /// 0 and this fails. The run is also compared, pixel-for-pixel, against the
+    /// same glyph authored as an outline `Fill` under the same transform: the
+    /// contract is that the two produce the same pixels (CLAUDE.md §7), which
+    /// also catches a mirrored/mis-scaled glyph (a filled-but-wrong arm).
+    #[test]
+    fn regression_glyph_run_rasterizes_on_cairo() {
+        const S: i32 = 64;
+        let Some((bytes, index)) = load_test_font() else {
+            eprintln!("skip: no system font");
+            return;
+        };
+        let font_ref = FontRef::from_index(&bytes, index).expect("parse font");
+        // 'F' — vertically asymmetric, so a flip/mirror is unmissable.
+        let Some(gid) = font_ref.charmap().map('F') else {
+            eprintln!("skip: font lacks 'F'");
+            return;
+        };
+        // 48px 'F', y-up outline flipped to y-down (d < 0, the page flip a PDF
+        // carries), baseline near y≈52, left edge x=12.
+        let em = 48.0 / UPEM;
+        let t = Transform { a: em, b: 0.0, c: 0.0, d: -em, e: 12.0, f: 52.0 };
+        let black = Paint::solid(Color::new(0, 0, 0, 255));
+
+        // (1) The glyph run through the Glyphs arm under test.
+        let mut run = Scene::new();
+        run.glyphs(
+            FontResource::new(0xF0, index, bytes.clone()),
+            [PositionedGlyph::new(gid.to_u32(), t)],
+            black.clone(),
+        );
+
+        // (2) The same glyph as a hand-authored outline Fill (skrifa at upem
+        // 1000, same `t`) — an independent reference for the expected pixels.
+        let mut pen = PathPen::default();
+        font_ref
+            .outline_glyphs()
+            .get(GlyphId::new(gid.to_u32()))
+            .expect("outline")
+            .draw(DrawSettings::unhinted(Size::new(UPEM), LocationRef::default()), &mut pen)
+            .expect("draw outline");
+        let mut reference = Scene::new();
+        reference.save();
+        reference.transform(t);
+        reference.add_path(pen.0);
+        reference.fill(black);
+        reference.restore();
+
+        let (run_px, stride) = render(&run, S);
+        let (ref_px, _) = render(&reference, S);
+
+        // ARgb32 is premultiplied BGRA, native-endian; the alpha byte is [3].
+        let inked = |px: &[u8], x: i32, y: i32| px[y as usize * stride + x as usize * BPP + 3] > 128;
+        let (mut ink_run, mut ink_ref, mut mismatch) = (0u32, 0u32, 0u32);
+        for y in 0..S {
+            for x in 0..S {
+                let (a, b) = (inked(&run_px, x, y), inked(&ref_px, x, y));
+                ink_run += a as u32;
+                ink_ref += b as u32;
+                mismatch += (a != b) as u32;
+            }
+        }
+        assert!(ink_run > 40, "glyph run drew no ink ({ink_run}) — Glyphs arm is a no-op");
+        assert!(ink_ref > 40, "outline reference drew no ink ({ink_ref})");
+        // Correctly-oriented/scaled run overlaps the outline almost perfectly
+        // (only antialiased edges differ); a flipped or mis-scaled run diverges
+        // on most of its ink.
+        assert!(
+            mismatch < ink_ref / 3,
+            "glyph run diverges from its outline (mismatch {mismatch} vs ink {ink_ref})"
+        );
+    }
+
+    /// A `DrawOp::Shapes` batch must expand to per-shape fills on Cairo (the arm
+    /// was also a no-op). One solid rounded-rect must paint ink where it sits.
+    #[test]
+    fn shapes_batch_rasterizes_on_cairo() {
+        const S: i32 = 64;
+        let mut scene = Scene::new();
+        scene.shapes([canvas_core::ShapeInstance::rect(
+            8.0,
+            8.0,
+            32.0,
+            32.0,
+            Color::new(0, 0, 0, 255),
+        )]);
+        let (px, stride) = render(&scene, S);
+        let alpha = |x: i32, y: i32| px[y as usize * stride + x as usize * BPP + 3];
+        // Centre of the rect is inked; a corner well outside it is not.
+        assert!(alpha(24, 24) > 128, "shape batch drew no ink — Shapes arm is a no-op");
+        assert_eq!(alpha(60, 60), 0, "shape ink leaked outside its rect");
+    }
 }

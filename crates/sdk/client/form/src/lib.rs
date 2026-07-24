@@ -256,6 +256,26 @@ pub use linux::register;
 #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
 static OPS: &dyn FormOps = linux::OPS;
 
+// Self-register at backend construction (mirrors the web/android/ios submits) —
+// without this, `Form` fell to the External placeholder on GTK unless an app called
+// `form::register` explicitly. See [[project_inventory_self_registration]].
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+inventory::submit! {
+    backend_linux::LinuxExternalRegistrar(register)
+}
+
+#[cfg(all(test, target_os = "linux", not(target_arch = "wasm32")))]
+mod linux_registration_tests {
+    /// Regression: `form` self-registered on web/android/ios but NOT Linux, so a
+    /// `Form` fell to the External placeholder on GTK unless an app called
+    /// `form::register` explicitly. Asserts the Linux submit is collected.
+    #[test]
+    fn form_handler_auto_registers_on_linux() {
+        let count = inventory::iter::<backend_linux::LinuxExternalRegistrar>().count();
+        assert!(count >= 1, "form must submit a LinuxExternalRegistrar so Form self-registers");
+    }
+}
+
 #[cfg(not(any(
     target_arch = "wasm32",
     target_os = "android",
