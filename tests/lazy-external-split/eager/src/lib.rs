@@ -3,22 +3,24 @@
 //! `build_heavy` and carries its 512 KiB `HEAVY` payload.
 //!
 //! Identical to the `lazy` sibling except for this one thing — where the
-//! handler is registered. The `lazy!` body renders the exact same
-//! `heavy::widget()`. Comparing the two `main.wasm` sizes isolates the
-//! cost of the eager registration anchor. See `heavy/src/lib.rs`.
+//! handler is registered. The lazy component's body renders the exact
+//! same `heavy::widget()`. Comparing the two `main.wasm` sizes isolates
+//! the cost of the eager registration anchor. See `heavy/src/lib.rs`.
 
 use idea_ui::{install_idea_theme, light_theme, Stack, StackGap, Typography};
 use lazy_external_split_heavy as heavy;
-use runtime_core::{lazy, ui, Element, IntoElement};
+use runtime_core::{component, ui, Element, IntoElement};
+
+/// The chunk boundary. The handler is already registered (eagerly, at
+/// boot) — the chunk only renders the external. No `register_lazy()`
+/// call here.
+#[component(lazy)]
+fn HeavyChunk() -> Element {
+    heavy::widget()
+}
 
 pub fn app() -> Element {
     install_idea_theme(light_theme());
-
-    // The handler is already registered (eagerly, at boot) — the chunk
-    // only renders the external. No `register_lazy()` call here.
-    let chunk = lazy! { heavy::widget() }
-        .placeholder(|| ui! { Typography(content = "Loading heavy chunk\u{2026}".to_string()) })
-        .into_element();
 
     ui! {
         view {
@@ -27,7 +29,9 @@ pub fn app() -> Element {
                     content = "eager registration \u{2014} heavy SDK anchored in main.wasm".to_string(),
                     kind = idea_ui::typography_kind::H2,
                 )
-                chunk
+                HeavyChunk(
+                    loading = || ui! { Typography(content = "Loading heavy chunk\u{2026}".to_string()) },
+                )
             }
         }
     }

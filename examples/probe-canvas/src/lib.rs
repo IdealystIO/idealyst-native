@@ -12,27 +12,27 @@
 //! path) and `examples/eager-canvas` (main-registered). If main drops toward the
 //! floor here, the registry `call_indirect` was the anchor.
 
-use runtime_core::{lazy, ui, Element, IntoElement};
+use runtime_core::{component, ui, Element, IntoElement};
+
+/// The lazily-split probe screen; its body is the chunk boundary.
+#[component(lazy)]
+fn ProbeCanvas() -> Element {
+    // The handler reference lives ONLY here, in the chunk. It's
+    // reachable for the linker (compiled into the chunk) whether
+    // or not the ambient backend is present at runtime — that's
+    // all the size probe needs.
+    #[cfg(target_arch = "wasm32")]
+    let _node = backend_web::with_ambient_backend(|b| {
+        canvas_vello::build_canvas(&probe_props(), b)
+    });
+    ui! { view { text { "in-chunk canvas (probe)" } } }
+}
 
 pub fn app() -> Element {
     ui! {
         view {
             text { "probe: in-chunk canvas build (no registry)" }
-            {
-                lazy! {
-                    // The handler reference lives ONLY here, in the chunk. It's
-                    // reachable for the linker (compiled into the chunk) whether
-                    // or not the ambient backend is present at runtime — that's
-                    // all the size probe needs.
-                    #[cfg(target_arch = "wasm32")]
-                    let _node = backend_web::with_ambient_backend(|b| {
-                        canvas_vello::build_canvas(&probe_props(), b)
-                    });
-                    ui! { view { text { "in-chunk canvas (probe)" } } }
-                }
-                .placeholder(|| ui! { text { "loading…" } })
-                .into_element()
-            }
+            ProbeCanvas(loading = || ui! { text { "loading…" } })
         }
     }
 }
@@ -50,5 +50,6 @@ fn probe_props() -> std::rc::Rc<canvas::prelude::CanvasProps> {
     })
 }
 
-/// No registration — the handler is reached only from the chunk (see `app`).
+/// No registration — the handler is reached only from the chunk (see
+/// [`ProbeCanvas`]).
 pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}

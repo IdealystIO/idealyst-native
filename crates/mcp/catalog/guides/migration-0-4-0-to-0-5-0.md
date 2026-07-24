@@ -193,6 +193,41 @@ pattern — see [[lazy-loading]] for the full transitive-anchor rule.
 
 **Status:** landed.
 
+## `lazy! { … }` is deprecated — use `#[component(lazy)]`
+
+**What changed.** The anonymous-block `lazy!` macro is deprecated (a
+compiler `deprecated` warning at every use site). Lazy components —
+`#[component(lazy)]` / `#[lazy_component]` — are the one blessed
+code-splitting surface: same wasm-split chunking mechanism, plus typed
+props across the boundary, readable chunk filenames
+(`…_lazy_Editor.wasm` instead of a content hash), and the standard
+`loading` / `error` props instead of builder methods.
+
+**Migration.** Hoist the block's body into a lazy component; anything the
+block created internally (signals, closures) moves into the component fn,
+and anything it *couldn't* capture becomes a prop:
+
+```rust
+// before
+lazy! { heavy_sdk::register_lazy(); heavy_sdk::widget() }
+    .placeholder(|| ui! { text { "loading…" } })
+
+// after
+#[component(lazy)]
+fn HeavyCorner() -> Element {
+    heavy_sdk::register_lazy();
+    heavy_sdk::widget()
+}
+// call site:
+ui! { HeavyCorner(loading = || ui! { text { "loading…" } }) }
+```
+
+`lazy!` keeps working (and splitting) while deprecated — this is a warning,
+not a break.
+
+**Status:** landed (deprecation + in-repo migration; the block form remains
+covered by `tests/lazy-chunk-handoff`).
+
 ## Migration checklist
 
 - [ ] Apps: nothing mandatory. Optionally adopt `--primitives` + the
@@ -209,3 +244,5 @@ pattern — see [[lazy-loading]] for the full transitive-anchor rule.
 - [ ] Deploy scripts: account for `*.br` siblings in `dist/web`, or pass
       `--no-brotli`.
 - [ ] If you previously avoided `--data-prune`, it's safe to re-verify.
+- [ ] Replace `lazy! { … }` blocks with `#[component(lazy)]` components
+      (deprecation warning; the block form still works for now).

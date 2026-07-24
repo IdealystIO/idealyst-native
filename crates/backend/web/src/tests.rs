@@ -1273,7 +1273,7 @@ fn regression_fstring_two_bindings_one_signal() {
 /// `WebBackend` instances on the same wasm thread must inject the
 /// `@font-face` rule exactly ONCE.
 ///
-/// The bug this guards against: when a `lazy!` chunk's `mount_chunk`
+/// The bug this guards against: when a lazy chunk's `mount_chunk`
 /// spins up its own `WebBackend` (so the chunk's children get their
 /// own walker), it re-runs the theme's typeface registration. Each
 /// backend has its own `font_face_rule_indices`, so without a
@@ -1563,7 +1563,7 @@ fn insert_many_removes_stale_ssr_node_on_divergence_remount() {
 /// `[hydrate] SSR/client diverge`), and the stale host `<div>` was orphaned in
 /// the DOM. After the fix `create_external` arms a subtree remount that swaps
 /// A handler registered LAZILY — via `runtime_core::defer_external_registration`
-/// from what would be a `lazy!` chunk body, never eagerly — must be installed by
+/// from what would be a lazy chunk body, never eagerly — must be installed by
 /// `create_external`'s drain and dispatched, instead of falling through to the
 /// "not supported" placeholder. This is the code-splitting seam: an SDK's heavy
 /// handler stays out of `main.wasm` by registering from inside its chunk, and
@@ -1582,7 +1582,7 @@ fn create_external_drains_lazily_deferred_handler_before_dispatch() {
 
     // No eager `register_external` here — mimic a heavy SDK that keeps its
     // handler out of the main bundle. Instead defer it, as the SDK's chunk body
-    // would once the `lazy!` boundary loads. A flag proves the deferred handler
+    // would once the lazy boundary loads. A flag proves the deferred handler
     // (not the placeholder) actually ran.
     let handler_ran = Rc::new(Cell::new(false));
     let flag = handler_ran.clone();

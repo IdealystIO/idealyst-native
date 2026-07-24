@@ -78,7 +78,20 @@ pub(crate) fn try_expand(
     item_fn: &mut ItemFn,
     attr: &ComponentAttr,
 ) -> syn::Result<Option<TokenStream2>> {
-    if item_fn.sig.inputs.is_empty() || is_legacy_props_sig(&item_fn.sig) {
+    if item_fn.sig.inputs.is_empty() {
+        // Zero-parameter components stay on the legacy path (empty marker
+        // struct via `invocation_macro`) — EXCEPT lazy ones: the chunk glue
+        // needs the generated inline-props struct to carry the `loading` /
+        // `error` config fields, and an empty parameter list is trivially
+        // the inline shape (a props struct with only those two fields).
+        // Zero-arg lazy components are common — a route screen or a heavy
+        // SDK corner takes no input.
+        if attr.lazy && item_fn.sig.generics.params.is_empty() {
+            return Ok(Some(emit_glue(item_fn, &[], attr)));
+        }
+        return Ok(None);
+    }
+    if is_legacy_props_sig(&item_fn.sig) {
         return Ok(None);
     }
     // Generic components keep the legacy behavior (their sig can't have

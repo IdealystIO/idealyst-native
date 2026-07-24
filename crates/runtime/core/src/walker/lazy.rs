@@ -58,7 +58,7 @@ impl Drop for LazyCancelGuard {
 }
 
 /// Wraps the chunk loader future so every poll runs with the chunk's
-/// reactive scope active. A `lazy!` chunk constructs its `Element` *inside*
+/// reactive scope active. A lazy chunk constructs its `Element` *inside*
 /// this future — the wasm-split chunk fn runs there, and any state the chunk
 /// builds eagerly at construction (an `Element::External` extension that
 /// allocates signals in its constructor, a component calling `signal()` as it

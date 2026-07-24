@@ -179,7 +179,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     //      chunk. wasm-pack ran it BEFORE wasm-bindgen which mangled
     //      symbols wasm-split needed — that's why my earlier
     //      website measurements showed 0 KB chunks even when the
-    //      lazy! body was clearly extractable.
+    //      lazy body was clearly extractable.
     let wrapper_pkg = wrapper_dir.join("pkg");
     let original_wasm = wrapper_dir
         .join("target/wasm32-unknown-unknown")
@@ -1710,7 +1710,7 @@ fn wasm_bindgen_build(original_wasm: &Path, out_dir: &Path, lib_name: &str) -> R
         // the bindgened wasm's symbol table — demangled names
         // there mean nothing matches, so wasm-split conservatively
         // keeps everything in main and emits empty chunks. Without
-        // this flag the website's `lazy! { Simulator(…) }` chunk
+        // this flag the website's lazy hero-simulator chunk
         // measured 469 bytes; with it, the wgpu/welcome/sim stack
         // actually moves out of main.
         .arg("--no-demangle")

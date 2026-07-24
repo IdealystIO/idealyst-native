@@ -72,8 +72,9 @@ const APPS: &[AppCfg] = &[
     AppCfg {
         dir: "lazy-chunk-handoff",
         wasm_stem: "lazy_chunk_handoff_test",
-        // This text lives inside the lazy! body, so seeing it means the
-        // chunk loaded, instantiated, and mounted.
+        // This text lives inside the fixture's `lazy!` body (that app
+        // deliberately still exercises the deprecated block form), so
+        // seeing it means the chunk loaded, instantiated, and mounted.
         expected_marker: "Loaded from a separate wasm chunk",
         marker_wait_ms: 15_000,
     },

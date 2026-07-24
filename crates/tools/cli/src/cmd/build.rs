@@ -153,7 +153,7 @@ pub struct Args {
     /// **EXPERIMENTAL, off by default.** Web + release only: opt IN to
     /// chunk-only data pruning in the main wasm bundle. When enabled, release
     /// builds zero data symbols (≥ 24 bytes) that wasm-split-cli classifies as
-    /// reachable only from `lazy!` chunks — recovering ~25-50% of the gzipped
+    /// reachable only from lazy chunks — recovering ~25-50% of the gzipped
     /// main bundle on apps with a heavy lazy chunk.
     ///
     /// Every pruned symbol is re-materialized by the chunk that owns it, from

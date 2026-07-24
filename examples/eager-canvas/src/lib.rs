@@ -1,6 +1,6 @@
 //! `eager-canvas` — the control app for the External-anchoring experiment.
 //! Identical canvas to `examples/lazy-canvas`, but the renderer is registered
-//! EAGERLY at boot (in `register_extensions`, main code) with no `lazy!` split.
+//! EAGERLY at boot (in `register_extensions`, main code) with no lazy split.
 //! Diffing main.wasm vs lazy-canvas shows how much (if any) lazy registration
 //! actually removes from main.
 

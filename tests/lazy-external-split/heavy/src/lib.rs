@@ -3,7 +3,7 @@
 //!
 //! The whole crate exists to answer one question with bytes: when a
 //! third-party external handler is registered **eagerly** (at boot) vs
-//! **lazily** (from inside a `lazy!` chunk via
+//! **lazily** (from inside a lazy component's chunk via
 //! [`runtime_core::defer_external_registration`]), where does its code +
 //! data end up?
 //!
@@ -72,7 +72,7 @@ pub fn build_heavy<B: Backend>(_props: &Rc<HeavyProps>, b: &mut B) -> B::Node {
 }
 
 /// Construct the heavy external element. Called from both app variants —
-/// inside the `lazy!` body — so the *rendered* tree is identical and the
+/// inside the lazy component's body — so the *rendered* tree is identical and the
 /// only variable is where the handler was registered.
 pub fn widget() -> runtime_core::Element {
     use runtime_core::IntoElement;
@@ -87,7 +87,7 @@ pub fn register<B: RegisterExternal>(backend: &mut B) {
     backend.register_external::<HeavyProps, _>(build_heavy::<B>);
 }
 
-/// LAZY registration. Queues the same registration from inside a `lazy!`
+/// LAZY registration. Queues the same registration from inside a lazy
 /// chunk body via the deferral seam, keyed to the concrete web backend.
 /// Because the closure — and the `build_heavy`/HEAVY it reaches — is
 /// constructed only here (called only from the chunk), `main.wasm` never

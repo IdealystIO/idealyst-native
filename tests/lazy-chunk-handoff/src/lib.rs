@@ -22,6 +22,12 @@
 //! - The chunk's subtree mounts with a working button: each click
 //!   increments the displayed count. No console errors.
 
+// `lazy!` is deprecated in favor of `#[component(lazy)]`, but this fixture
+// deliberately keeps exercising it: the block form must keep splitting
+// correctly for as long as it exists. The component-form equivalent of this
+// boundary is covered by `tests/lazy-external-split`.
+#![allow(deprecated)]
+
 use idea_ui::{
     install_idea_theme, light_theme, tone, variant, Button, Stack, StackGap, Typography,
 };

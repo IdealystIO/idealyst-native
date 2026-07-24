@@ -349,7 +349,7 @@ pub enum MacroKind {
     /// and memoization are the plain `signal(…)` / `memo(…)` functions —
     /// [`UtilityEntry`]s, not macros.)
     Reactive,
-    /// Element-tree construction: `ui!`, `jsx!`, `lazy!`,
+    /// Element-tree construction: `ui!`, `jsx!`, `lazy!` (deprecated),
     /// `node_ref!`, `children!`.
     Markup,
     /// Motion: `animated!`, `animate_at!`, `timeline!`.

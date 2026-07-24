@@ -2,33 +2,34 @@
 //!
 //! Purpose: measure how much of `canvas-vello` (vello + wgpu + the font stack)
 //! actually leaves `main.wasm` when the canvas is code-split into a chunk. The
-//! renderer is registered from *inside* the `lazy!` chunk (via
+//! renderer is registered from *inside* the lazy component's body (via
 //! `defer_external_registration`), so wasm-split classifies its code as
 //! chunk-only — the question is whether its large static DATA follows the code
 //! out of main, or gets stranded there.
 //!
 //! Compare `main.wasm` size against `examples/baseline` (the framework floor).
 
-use runtime_core::{lazy, ui, Element, IntoElement};
+use runtime_core::{component, ui, Element, IntoElement};
 
-/// A tiny always-loaded shell around a lazily-loaded canvas screen.
+/// The lazily-split canvas screen. On web the body (and its transitive
+/// vello/wgpu deps) ships as a separate chunk; on native it compiles inline.
+#[component(lazy)]
+fn LazyCanvas() -> Element {
+    // Register the vello renderer from INSIDE the chunk so its
+    // code is reachable only here — never statically from main.
+    #[cfg(target_arch = "wasm32")]
+    runtime_core::defer_external_registration::<backend_web::WebBackend, _>(|b| {
+        canvas_vello::register(b);
+    });
+    canvas_screen()
+}
+
+/// A tiny always-loaded shell around the lazily-loaded canvas screen.
 pub fn app() -> Element {
     ui! {
         view {
             text { "lazy canvas demo" }
-            {
-                lazy! {
-                    // Register the vello renderer from INSIDE the chunk so its
-                    // code is reachable only here — never statically from main.
-                    #[cfg(target_arch = "wasm32")]
-                    runtime_core::defer_external_registration::<backend_web::WebBackend, _>(|b| {
-                        canvas_vello::register(b);
-                    });
-                    canvas_screen()
-                }
-                .placeholder(|| ui! { text { "loading canvas…" } })
-                .into_element()
-            }
+            LazyCanvas(loading = || ui! { text { "loading canvas…" } })
         }
     }
 }
@@ -49,5 +50,5 @@ fn canvas_screen() -> Element {
 }
 
 /// No eager SDK registration — the renderer registers itself lazily, inside the
-/// chunk (see `app`). Keeping this empty is what lets the split work.
+/// chunk (see [`LazyCanvas`]). Keeping this empty is what lets the split work.
 pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}

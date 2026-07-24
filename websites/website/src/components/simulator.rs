@@ -36,7 +36,7 @@ use runtime_core::{
 // Code-reachability cost on web: `host_wgpu` transitively pulls the
 // same `host-web` → `render-wgpu` → `glyphon` / `cosmic-text` / `wgpu`
 // / `naga` graph the previous direct `host_web` import did. wasm-split
-// keeps that behind the same `lazy!` chunk as before because the
+// keeps that behind the same lazy chunk as before because the
 // `mount`/`DeviceProfile` reachability surface is unchanged.
 use host_wgpu::{DeviceProfile, Painter};
 use runtime_core::driver::spawn_async;
@@ -113,8 +113,8 @@ pub struct SimulatorProps {
     /// corners + drop shadow + clip) so the embedded device reads
     /// as a complete handset rather than a bare wgpu surface.
     /// Matches the chassis used by [`simulator_placeholder`], so a
-    /// `lazy! { simulator(...) }` + `placeholder(simulator_placeholder)`
-    /// pair has zero on-load layout shift and a continuous bezel
+    /// lazy simulator component with `loading = simulator_placeholder`
+    /// has zero on-load layout shift and a continuous bezel
     /// across the loading→loaded transition. Defaults to `true`.
     pub chassis: bool,
 }
@@ -206,7 +206,7 @@ fn preview_dimensions(logical: (u32, u32)) -> (f32, f32) {
 
 /// Renders the same outer chassis the loaded simulator uses, with
 /// an "off" screen inside (welcome's `COLOR_LIGHT_BG`). Designed to
-/// be the placeholder for a `lazy! { simulator(...) }` block so the
+/// be the loading UI for a lazily-split simulator component so the
 /// hero layout reserves the device's exact footprint while the
 /// chunk fetches and the only visual delta on load is the canvas
 /// painting INSIDE the chassis.

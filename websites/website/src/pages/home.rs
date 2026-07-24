@@ -8,7 +8,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{component, lazy, ui, Element, IntoElement, Route, StyleApplication};
+use runtime_core::{component, ui, Element, IntoElement, Route, StyleApplication};
 use idea_ui::Typography;
 
 use crate::components::simulator::{
@@ -100,37 +100,38 @@ fn hero() -> Element {
 // headline + device read as one visual unit.
 // =============================================================================
 
-fn hero_simulator() -> Element {
-    // Wrap the simulator subtree in `lazy! { … }` — on web,
-    // wasm-split-cli post-build hoists the body (and its transitive
-    // wgpu / welcome / ios_sim deps) into a separate chunk wasm
-    // loaded on demand. On native targets the macro is transparent:
-    // the body compiles inline and runs synchronously.
-    lazy! {
-        let build_ui: Rc<dyn Fn() -> Element> = Rc::new(welcome::app);
-        ui! {
-            view(style = crate::styles::SimulatorStage()) {
-                Simulator(
-                    build_ui = build_ui,
-                    skin = SimulatorSkin::Ios,
-                )
-            }
+// Lazy component: on web, wasm-split-cli post-build hoists the body
+// (and its transitive wgpu / welcome / ios_sim deps) into a separate
+// chunk wasm loaded on demand. On native targets the attribute is
+// transparent: the body compiles inline and runs synchronously.
+#[component(lazy)]
+fn HeroSimulator() -> Element {
+    let build_ui: Rc<dyn Fn() -> Element> = Rc::new(welcome::app);
+    ui! {
+        view(style = crate::styles::SimulatorStage()) {
+            Simulator(
+                build_ui = build_ui,
+                skin = SimulatorSkin::Ios,
+            )
         }
     }
+}
+
+fn hero_simulator() -> Element {
     // While the chunk loads, render the device chassis with an "off"
     // screen inside (from `simulator_placeholder`). Reserving the
     // footprint means the surrounding hero layout doesn't reflow
     // when the simulator pops in — the only on-load delta is the
     // wgpu canvas painting INSIDE the chassis.
-    .placeholder(|| {
-        ui! {
-            view(style = crate::styles::SimulatorStage()) {
-                { simulator_placeholder(None) }
-            }
-        }
-        .into_element()
-    })
-    .into_element()
+    ui! {
+        HeroSimulator(
+            loading = || ui! {
+                view(style = crate::styles::SimulatorStage()) {
+                    { simulator_placeholder(None) }
+                }
+            },
+        )
+    }
 }
 
 // =============================================================================

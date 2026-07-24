@@ -1,4 +1,12 @@
-//! `lazy! { … }` — inline code-splitting boundary.
+//! `lazy! { … }` — inline code-splitting boundary. **Deprecated.**
+//!
+//! Prefer a lazy component: `#[component(lazy)]` / `#[lazy]` marks a
+//! component fn as the chunk boundary, with the component's typed props
+//! crossing the split and the standard `loading` / `error` props for the
+//! fallback UI. The anonymous-block form predates lazy components, offers
+//! no way to pass input across the boundary (no captures), and names its
+//! chunks by content hash instead of by component. It keeps working while
+//! deprecated — same expansion, same wasm-split pipeline.
 //!
 //! Wraps a `ui!`-style block in a `#[wasm_split]` async function so
 //! the build's wasm-split post-process pulls the body into a separate
@@ -51,9 +59,8 @@
 //!   anonymous block that needs no inputs.
 //! - **Return type is `Element`.** The block is interpreted as a
 //!   `ui!` block — its value is coerced through `IntoElement`, then wrapped
-//!   `Ok` for the loader (whose output is `Result<Element, String>`; real load
-//!   failures on the dynamic-split path surface as `Err` and drive the
-//!   `.on_error(..)` UI).
+//!   `Ok` for the loader (whose output is `Result<Element, String>`; the `Err`
+//!   arm drives the `.on_error(..)` UI for hand-rolled loaders).
 //!
 //! # Naming
 //!
@@ -107,11 +114,10 @@ pub fn emit(input: TokenStream) -> TokenStream {
                 { #body_tokens }.into_element()
             }
             ::runtime_core::primitives::lazy::lazy_split(|| {
-                // The loader yields `Result<Element, String>`. On the inline /
-                // static-wasm-split path the body always produces an `Element`,
-                // so wrap it `Ok`. Real load failures are surfaced by the
-                // dynamic-split loader (`__dynlink_load`) and land in the
-                // `.on_error(..)` UI.
+                // The loader yields `Result<Element, String>`. The wasm-split
+                // wrapper resolves to the body's `Element` once the chunk is
+                // linked, so wrap it `Ok`; the `Err` arm exists for hand-rolled
+                // loaders and drives the `.on_error(..)` UI.
                 ::std::boxed::Box::pin(async move {
                     ::std::result::Result::Ok(#body_ident(()).await)
                 })

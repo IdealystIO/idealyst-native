@@ -569,7 +569,7 @@ inventory::submit! {
     PrimitiveEntry {
         name: "external",
         pascal_name: "External",
-        docs: "Third-party extension escape hatch. Use the per-backend `ExternalRegistry` to register a renderer keyed by the payload type; the runtime resolves the registered impl at mount time. Reference impls: maps, webview (see [[third_party_extension]]). Heavy SDK used in only one corner of a web app? Register the handler LAZILY from inside a `lazy!` chunk via [[defer_external_registration]] instead of eagerly at boot — eager registration anchors the whole SDK in `main.wasm`, defeating code-splitting.",
+        docs: "Third-party extension escape hatch. Use the per-backend `ExternalRegistry` to register a renderer keyed by the payload type; the runtime resolves the registered impl at mount time. Reference impls: maps, webview (see [[third_party_extension]]). Heavy SDK used in only one corner of a web app? Register the handler LAZILY from inside a lazy component's body (`#[component(lazy)]`) via [[defer_external_registration]] instead of eagerly at boot — eager registration anchors the whole SDK in `main.wasm`, defeating code-splitting.",
         props: &[
             PropFieldSpec {
                 name: "kind",

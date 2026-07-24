@@ -125,7 +125,7 @@ fn created_texts(rt: &TestRuntime) -> Vec<String> {
 /// When the loader fails, the walker fires `Error` and mounts the author's
 /// `.on_error(..)` UI (with the failure message) in place of the loading UI —
 /// the chunk body never renders. Before this the loader couldn't fail
-/// (`Output = Element`); a dynamic-split fetch error was swallowed to an empty
+/// (`Output = Element`); a chunk fetch error was swallowed to an empty
 /// view with no way for the author to react.
 #[test]
 fn error_ui_renders_on_load_failure() {
@@ -233,6 +233,39 @@ fn lazy_component_attribute_mounts_body_with_props() {
     assert!(
         created_texts(&rt).iter().any(|t| t == "HEAVY-BODY"),
         "lazy component's chunk body must mount (props threaded across the split)"
+    );
+}
+
+/// Regression: a ZERO-parameter `#[component(lazy)]` must compile and mount.
+/// The inline-props detector used to route empty parameter lists to the legacy
+/// marker-struct path, and lazy mode then hard-errored with "requires inline
+/// props" — forcing authors to add a dummy parameter. Zero-arg lazy components
+/// are the common shape for route screens and heavy-SDK corners, so the empty
+/// list now counts as the (trivially) inline shape: the generated props struct
+/// carries only the `loading` / `error` config fields.
+#[test]
+fn regression_zero_arg_lazy_component_compiles_and_mounts() {
+    use runtime_core::{component, BuildElement};
+
+    /// A heavy component that takes no input.
+    #[component(lazy)]
+    fn HeavyZero() -> runtime_core::Element {
+        text("ZERO-ARG-BODY").into_element()
+    }
+
+    let rt = TestRuntime::new();
+    // The generated props struct still has the config fields (proof the
+    // inline glue ran): `loading` is settable even with no data props.
+    let elem = HeavyZero {
+        loading: (|| text("ZERO-LOADING").into_element()).into(),
+        ..Default::default()
+    }
+    .build();
+    let _owner = rt.render(elem);
+
+    assert!(
+        created_texts(&rt).iter().any(|t| t == "ZERO-ARG-BODY"),
+        "zero-arg lazy component's chunk body must mount"
     );
 }
 

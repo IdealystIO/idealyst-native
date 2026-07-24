@@ -50,10 +50,10 @@ ui! {
   mounts synchronously — the placeholder never shows.
 
 > `#[component(lazy)]` currently requires **inline props** (declare the props as
-> `fn` parameters, as above). A no-arg component should take a parameter; a
-> component you need both eager *and* lazy is best expressed by extracting the
-> body into a shared `fn` that a plain `#[component]` and a `#[lazy_component]`
-> both call.
+> `fn` parameters, as above; zero parameters is fine — the generated props
+> struct then carries just the `loading`/`error` config fields). A component you
+> need both eager *and* lazy is best expressed by extracting the body into a
+> shared `fn` that a plain `#[component]` and a `#[lazy_component]` both call.
 
 ## Handle the three states
 

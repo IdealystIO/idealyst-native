@@ -302,7 +302,7 @@ mod virtualizer_gated_on {
         let _ = runtime_core::primitives::graphics::graphics::<
             fn(runtime_core::primitives::graphics::OnReadyEvent),
         >;
-        // prim-lazy: the `lazy!` / `#[lazy_component]` constructor.
+        // prim-lazy: the `#[lazy_component]` (and deprecated `lazy!`) constructor.
         let _ = runtime_core::primitives::lazy::lazy_split::<
             fn() -> runtime_core::primitives::lazy::LazyFuture,
         >;

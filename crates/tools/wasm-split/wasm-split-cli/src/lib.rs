@@ -41,7 +41,7 @@ pub const MAKE_LOAD_JS: &str = include_str!("./__wasm_split.js");
 /// so it looks like a different bug every time (walker OOB, signal
 /// arena OOB, etc.).
 ///
-/// The wrapper around `main` / `host_reserve` *does* legitimately need
+/// The wrapper around `main` *does* legitimately need
 /// to call `__wasm_call_ctors` (first-invocation init), so we leave
 /// unsuffixed exports alone.
 ///
@@ -76,9 +76,9 @@ pub fn neutralize_command_export_wrappers(bindgened: &[u8]) -> Result<Vec<u8>> {
     // caller paths — direct, indirect, or via the export.
     //
     // We touch only wrappers whose export name ends in
-    // `_command_export` (or that are unexported). The `main` and
-    // `host_reserve` wrappers are exported under their bare names —
-    // they're the legitimate one-time-init entrypoints called from
+    // `_command_export` (or that are unexported). The `main` wrapper is
+    // exported under its bare name — it's the legitimate one-time-init
+    // entrypoint called from
     // `__wbindgen_start`, and `__wasm_call_ctors` MUST run on first
     // invocation. Stripping their ctor call would mean ctors never run.
 
@@ -89,7 +89,7 @@ pub fn neutralize_command_export_wrappers(bindgened: &[u8]) -> Result<Vec<u8>> {
         .map(|f| f.id());
 
     // Map FunctionId → its export name (if exported). Used to spare the
-    // legitimate-init wrappers (`main`, `host_reserve`).
+    // legitimate-init wrappers (`main`).
     let exported_func_names: HashMap<FunctionId, String> = module
         .exports
         .iter()
@@ -116,8 +116,8 @@ pub fn neutralize_command_export_wrappers(bindgened: &[u8]) -> Result<Vec<u8>> {
                 // Not exported — purely internal wrapper still reached
                 // via `call_indirect`. Gut it.
                 None => to_gut.push(func.id()),
-                // Exported under a bare name (`main`, `host_reserve`) —
-                // legitimate one-time-init. LEAVE ALONE.
+                // Exported under a bare name (`main`) — legitimate
+                // one-time-init. LEAVE ALONE.
                 Some(_) => {}
             }
         }
@@ -3008,9 +3008,9 @@ mod tests {
         );
     }
 
-    /// The `main` and `host_reserve` wrappers are exported under their
-    /// bare names (no `_command_export` suffix) and legitimately need
-    /// the ctor call on first invocation. The pass must NOT touch them.
+    /// The `main` wrapper is exported under its bare name (no
+    /// `_command_export` suffix) and legitimately needs the ctor call on
+    /// first invocation. The pass must NOT touch it.
     #[test]
     fn neutralize_command_export_leaves_unsuffixed_exports_alone() {
         // Same wrapper-shape, but the export is `main` (no suffix).
@@ -3020,8 +3020,8 @@ mod tests {
             .expect("neutralize_command_export_wrappers");
 
         // The export must still point at the wrapper. Unsuffixed exports
-        // are the legitimate one-time-init entry points (`main`,
-        // `host_reserve`) — touching them would skip the ctors.
+        // are the legitimate one-time-init entry points (`main`) —
+        // touching them would skip the ctors.
         assert_eq!(
             export_target_name(&patched, "main"),
             Some("__wbindgen_malloc.command_export".to_string()),
@@ -3067,8 +3067,8 @@ mod tests {
     ///
     /// Pre-fix the wrapper body has exactly one `call __wasm_call_ctors`.
     /// Post-fix it must have zero. The bare-name-exported wrappers (the
-    /// `main`-and-`host_reserve` fixture below) must KEEP their call —
-    /// they're the legitimate one-time-init entry points.
+    /// `main` fixture below) must KEEP their call — they're the
+    /// legitimate one-time-init entry points.
     #[test]
     fn neutralize_strips_ctor_call_from_suffixed_wrapper_body() {
         let pre = build_wrapper_fixture("__wbindgen_malloc_command_export");

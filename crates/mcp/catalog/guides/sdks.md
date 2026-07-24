@@ -115,15 +115,15 @@ variant that defers registration into a code-split chunk.
 
 If an `External` SDK is large but used in only one corner of the app, you can
 keep it out of the web **main bundle** so it downloads only when that corner
-mounts. The catch: wrapping the *usage* in `lazy!` is not enough. An `External`
-handler registered eagerly — at boot in `register_extensions`, or via an
-`inventory::submit!` drained at backend construction — is statically reachable
-from `main.wasm`, so wasm-split keeps the whole SDK there. **Registration, not
-rendering, is the anchor.**
+mounts. The catch: wrapping the *usage* in a lazy component is not enough. An
+`External` handler registered eagerly — at boot in `register_extensions`, or via
+an `inventory::submit!` drained at backend construction — is statically
+reachable from `main.wasm`, so wasm-split keeps the whole SDK there.
+**Registration, not rendering, is the anchor.**
 
 Move registration into the chunk. The SDK exposes a `register_lazy()` built on
-`defer_external_registration`; the app calls it as the first line of the `lazy!`
-body, then renders the primitive:
+`defer_external_registration`; the app calls it as the first line of the lazy
+component's body, then renders the primitive:
 
 ```rust
 // In the SDK (web target): queue the handler instead of installing it now.
@@ -137,7 +137,8 @@ pub fn register_lazy() {
 pub fn register_lazy() {} // native registers eagerly; no chunk, no bundle cost
 
 // In the app: register-then-render, both inside the chunk.
-lazy! {
+#[component(lazy)]
+fn HeavyCorner(props: HeavyProps) -> Element {
     heavy_sdk::register_lazy();
     heavy_sdk::widget(props)
 }
@@ -151,8 +152,8 @@ the backend applies the queued registration before dispatching the chunk's own
 per-SDK opt-in — an SDK that wants it must NOT also `inventory::submit!` its web
 handler (that submission is itself a main-bundle anchor); it keeps inventory
 self-registration for native, where bundle size is a non-issue. Measured on a
-512 KiB test SDK: main bundle 1294 KiB → 781 KiB. See the `lazy!` macro and
-[[defer_external_registration]].
+512 KiB test SDK: main bundle 1294 KiB → 781 KiB. See the [[lazy-loading]]
+guide and [[defer_external_registration]].
 
 Beyond lazy chunks, the framework itself is trimmable: runtime-core exposes
 `prim-*` cargo features (all ON by default) that gate whole primitive

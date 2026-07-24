@@ -833,7 +833,11 @@ recipe!(
     }
 );
 
-#[cfg(test)]
+// Every test here builds the Field COMPONENT, which carries the
+// all(prim-icon, prim-activity) gate inside this text-input-gated
+// module — so the tests need the same gate or a narrow
+// `--features prim-text-input` test run fails to compile.
+#[cfg(all(test, feature = "prim-icon", feature = "prim-activity"))]
 mod tests {
     use super::*;
     use idea_theme::theme::install_idea_theme;

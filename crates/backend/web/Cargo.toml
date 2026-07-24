@@ -35,9 +35,10 @@ prim-presence = ["runtime-core/prim-presence"]
 # provider entirely — url_sync in runtime-core then has no reachability
 # anchor and the linker drops the whole navigator substrate.
 prim-navigator = ["runtime-core/prim-navigator"]
-# Lazy (`#[lazy_component]` / wasm-split): the dynamic-split dynlink loader
-# seam. The chunk-fetch loader itself is generated into the app by
-# wasm-split; this backend carries only the `--dynamic-split` linker glue.
+# Lazy (`#[lazy_component]` / wasm-split): forwards the feature so
+# `Element::Lazy` + the walker's chunk-mount path compile in runtime-core.
+# The chunk-fetch loader itself is generated into the app by wasm-split;
+# this backend carries no lazy-specific code.
 prim-lazy = ["runtime-core/prim-lazy"]
 # Compile in the in-place hydration machinery: cursor + remount
 # bookkeeping in `WebBackend::hydrate`, the `hydrate_next` /

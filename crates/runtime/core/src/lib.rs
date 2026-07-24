@@ -207,10 +207,11 @@ pub use reactive::{__component_build_probe, ComponentBuildProbe};
 pub use reactive::__take_untracked_build_read_warnings;
 
 /// Re-export of `wasm-split` (the runtime crate, published as
-/// `wasm-splitter` and aliased back via `package =`) so the `lazy!`
-/// macro's expansion can reach the `#[wasm_split]` attribute without
-/// forcing every author crate to add the dep to its own
-/// `[dependencies]`. Same pattern as `__serde_json` above.
+/// `wasm-splitter` and aliased back via `package =`) so the
+/// `#[component(lazy)]` glue (and the deprecated `lazy!` macro) can
+/// reach the `#[wasm_split]` attribute without forcing every author
+/// crate to add the dep to its own `[dependencies]`. Same pattern as
+/// `__serde_json` above.
 #[doc(hidden)]
 pub use wasm_split as __wasm_split;
 
@@ -400,8 +401,13 @@ pub use text_defaults::{
 pub use styled_text::{TextRun, TextRunStyle};
 
 pub use runtime_macros::{
-    component, doc_scope, jsx, lazy, lazy_component, props, recipe, stylesheet, ui,
+    component, doc_scope, jsx, lazy_component, props, recipe, stylesheet, ui,
 };
+// `lazy!` is deprecated (use `#[component(lazy)]`); re-exported for
+// compatibility while call sites migrate. The `allow` silences the
+// deprecation warning on the re-export itself — use sites still warn.
+#[allow(deprecated)]
+pub use runtime_macros::lazy;
 
 /// `#[idealyst_tool]` and `#[derive(IdealystSchema)]` — the
 /// catalog-registration macros. **Always re-exported**, exactly like

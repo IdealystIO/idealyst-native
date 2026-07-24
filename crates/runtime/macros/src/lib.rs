@@ -199,6 +199,13 @@ pub fn ui(input: TokenStream) -> TokenStream {
 /// (wasm-split's macro is transparent off-wasm).
 ///
 /// See the [`lazy`] module for details, constraints, and naming.
+#[deprecated(
+    since = "0.5.0",
+    note = "use a lazy component instead: `#[component(lazy)] fn Chunk() -> Element { … }` \
+            (or the `#[lazy]` shorthand). Same chunking mechanism, but with typed props \
+            across the boundary, named chunk files, and the standard `loading`/`error` \
+            props instead of builder methods."
+)]
 #[proc_macro]
 pub fn lazy(input: TokenStream) -> TokenStream {
     lazy::emit(input)
@@ -384,8 +391,9 @@ fn emit_component(attr: component_attr::ComponentAttr, item: TokenStream) -> Tok
         return syn::Error::new_spanned(
             &item_fn.sig.ident,
             "#[component(lazy)] / #[lazy] currently requires inline props \
-             (declare the props as fn parameters: `#[lazy] fn Foo(id: u32) -> Element`). \
-             For a no-arg component add a parameter, and for a component both eager and \
+             (declare the props as fn parameters: `#[lazy] fn Foo(id: u32) -> Element`; \
+             zero parameters is fine). Generic components can't be lazy (the generated \
+             props struct is monomorphic); for a component you need both eager and \
              lazy, wrap the eager one with `lazy_component!(LazyFoo = Foo)`.",
         )
         .to_compile_error()

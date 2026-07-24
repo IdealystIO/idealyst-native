@@ -101,8 +101,8 @@ fn grid() -> Element {
         ),
         (
             "Code splitting",
-            "The `lazy!` macro carves a UI subtree into a separate wasm chunk that \
-             loads on demand. Native targets compile the same block inline.",
+            "Mark a component `#[component(lazy)]` and it ships as a separate wasm \
+             chunk that loads on demand. Native targets compile the same body inline.",
             &CODE_SPLITTING_ROUTE,
         ),
         (

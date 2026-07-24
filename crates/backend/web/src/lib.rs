@@ -44,9 +44,6 @@ mod introspect;
 mod tests;
 #[cfg(feature = "async-driver")]
 pub mod async_executor;
-#[cfg(feature = "async-driver")]
-#[cfg(feature = "prim-lazy")]
-pub mod dynlink;
 mod assets;
 mod defaults;
 #[cfg(feature = "runtime-server")]
@@ -70,9 +67,6 @@ mod viewport_observer;
 
 #[cfg(feature = "async-driver")]
 pub use async_executor::install_async_executor;
-#[cfg(feature = "async-driver")]
-#[cfg(feature = "prim-lazy")]
-pub use dynlink::{host_reserve, install_dynlink_loader};
 #[cfg(feature = "runtime-server")]
 pub use dev_transport::{connect_web, WebClientHandle};
 #[cfg(feature = "robot")]
@@ -3117,7 +3111,7 @@ impl Backend for WebBackend {
         payload: &Rc<dyn std::any::Any>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        // LAZY REGISTRATION: a `lazy!` chunk that registers its own external
+        // LAZY REGISTRATION: a lazy chunk that registers its own external
         // handler (to keep the SDK out of `main.wasm` — see
         // `runtime_core::defer_external_registration`) queued it when the chunk
         // loaded. Apply the queue now, before lookup, so the chunk's own

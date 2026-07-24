@@ -194,10 +194,10 @@ pub trait RegisterExternal: Backend + Sized + 'static {
 // backend construction. Both paths *statically reference* the handler from the
 // main module, so wasm-split's reachability analysis keeps the whole SDK in
 // `main.wasm`. For a heavy library used in only one corner of the app, that
-// defeats code-splitting: wrapping the *usage* in `lazy!` doesn't help, because
+// defeats code-splitting: wrapping the *usage* in a lazy component doesn't help, because
 // registration — not rendering — is the anchor.
 //
-// The fix: register from INSIDE a `lazy!` chunk body instead of at boot. The
+// The fix: register from INSIDE a lazy component's body instead of at boot. The
 // chunk body doesn't hold `&mut Backend`, so it can't call `register_external`
 // directly. It calls [`defer_external_registration`] to queue a boxed
 // `FnOnce(&mut B)`; the backend [`drain_external_registrations`] applies the
@@ -207,7 +207,7 @@ pub trait RegisterExternal: Backend + Sized + 'static {
 // main only names the type-erased `Box<dyn FnOnce(&mut B)>`, not the concrete
 // closure, so the SDK's code moves into the chunk where it belongs.
 //
-// On native there is no chunk (the `lazy!` body is compiled inline) and no
+// On native there is no chunk (the lazy body is compiled inline) and no
 // bundle-size concern, so SDKs keep their eager/inventory registration and make
 // their `register_lazy()` a no-op. The queue is only exercised on web.
 //
@@ -226,7 +226,7 @@ thread_local! {
 }
 
 /// Queue an external-handler registration to be applied the next time backend
-/// `B` dispatches an `Element::External`. Called from inside a `lazy!` chunk
+/// `B` dispatches an `Element::External`. Called from inside a lazy chunk
 /// body (where `&mut B` isn't available) so the handler — and the heavy SDK it
 /// closes over — is reachable only from the chunk, not from `main.wasm`.
 ///
@@ -264,7 +264,7 @@ pub fn has_pending_external_registrations() -> bool {
 /// Apply and remove every deferred registration queued for backend `B`.
 /// Returns the number applied. Backends call this at the top of
 /// `create_external` (guarded by [`has_pending_external_registrations`]) so a
-/// handler queued by a just-loaded `lazy!` chunk is installed before the chunk's
+/// handler queued by a just-loaded lazy chunk is installed before the chunk's
 /// own `Element::External` is dispatched. Registrations queued for *other*
 /// backend types are left in place.
 pub fn drain_external_registrations<B: 'static>(backend: &mut B) -> usize {
