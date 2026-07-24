@@ -1092,14 +1092,21 @@ fn build_dmabuf_buffer(
 
 /// Build the DMA_DRM `drm-format` caps string for `fourcc` + `modifier`.
 ///
-/// `EGL_MESA_image_dma_buf_export` on this stack reports
-/// `DRM_FORMAT_MOD_INVALID` (an implicit, driver-internal modifier — the common
-/// case). GStreamer's `gst_video_dma_drm_fourcc_to_string` **asserts** the
-/// modifier is not `INVALID` (it would return null and abort), so for the implicit
-/// case we emit the **bare fourcc** string (`"AB24"`) — the DMA_DRM convention for
-/// "modifier unknown", which `glupload` resolves itself. An explicit modifier
-/// (e.g. `DRM_FORMAT_MOD_LINEAR` or a real tiling modifier) goes through the
-/// GStreamer helper, which appends `:0x<modifier>`.
+/// KEY FACT: in GStreamer DMA_DRM a **bare fourcc means `DRM_FORMAT_MOD_LINEAR`**.
+/// `gst_video_dma_drm_fourcc_to_string(fourcc, 0)` therefore returns just `"AB24"`
+/// (no `:0x…` suffix) — the same string as the implicit branch below. So the caps
+/// string cannot distinguish "linear" from "unknown", and it was NEVER the source of
+/// the recording corruption: that was a GPU-*tiled* buffer wearing these linear caps.
+///
+/// The canvas producer (`canvas_vello::native_capture_linux`) now allocates a
+/// genuinely-LINEAR GBM buffer and publishes `DRM_FORMAT_MOD_LINEAR`, so `"AB24"` is
+/// honest and `glupload` imports it correctly. The `DRM_FORMAT_MOD_INVALID` branch is
+/// a FALLBACK for a producer that hands us an implicit-modifier buffer whose layout
+/// can't be named; it emits the bare fourcc, which is only correct if that buffer is
+/// actually linear (a tiled implicit buffer would be read as linear and CORRUPTED —
+/// the original bug). The fix was to stop producing implicit-modifier tiled buffers,
+/// not to paper over them here. The branch also avoids a panic:
+/// `gst_video_dma_drm_fourcc_to_string` asserts the modifier is not `INVALID`.
 fn drm_format_string(fourcc: u32, modifier: u64) -> String {
     if modifier == media_stream::DRM_FORMAT_MOD_INVALID {
         // Bare 4-char fourcc, low byte first (DRM fourcc byte order).
@@ -1183,6 +1190,26 @@ mod tests {
     }
 
     /// WebM selects the always-available VP8/Opus/webmmux stack, unchanged.
+    /// In GStreamer DMA_DRM a **bare fourcc means `DRM_FORMAT_MOD_LINEAR`**, so both
+    /// `LINEAR` (0) and `INVALID` map to the same `"AB24"` caps string. That is
+    /// exactly why the caps string was NEVER the bug and could not be: the corruption
+    /// was that the *buffer* was GPU-tiled while these linear caps claimed otherwise.
+    /// The canvas producer now allocates a genuinely-LINEAR buffer, so `"AB24"` is
+    /// honest and `glupload` imports it correctly. This test pins the mapping so a
+    /// future change to `drm_format_string` can't silently emit a tiling modifier the
+    /// producer doesn't actually use.
+    #[test]
+    fn drm_format_string_linear_matches_the_linear_buffer_the_canvas_exports() {
+        let ab24 = u32::from_le_bytes([b'A', b'B', b'2', b'4']);
+        // GStreamer canonicalizes LINEAR to the bare fourcc.
+        assert_eq!(drm_format_string(ab24, 0), "AB24", "LINEAR → bare fourcc");
+        assert_eq!(
+            drm_format_string(ab24, media_stream::DRM_FORMAT_MOD_INVALID),
+            "AB24",
+            "implicit modifier stays a bare fourcc (linear-interpreted)"
+        );
+    }
+
     #[test]
     fn select_codec_webm_is_vp8_opus_webm() {
         ensure_gst().expect("gst init");
@@ -1368,9 +1395,11 @@ mod tests {
         // to the CPU path — the gate that avoids the producer/consumer mismatch
         // (canvas sends CPU frames, recorder waits for dma-bufs → hung `stop()`).
         let (canvas, _w) = media_stream::MediaStream::with_surface_capture();
+        // Mirror `media_stream::dmabuf_capture_enabled`: ON by default, off only when
+        // the flag is explicitly "0"/"false".
         let enabled = std::env::var("IDEALYST_CANVAS_DMABUF")
-            .map(|v| v == "1" || v == "true")
-            .unwrap_or(false);
+            .map(|v| !(v == "0" || v == "false"))
+            .unwrap_or(true);
         assert_eq!(
             dmabuf_source_of(&canvas).is_some(),
             enabled,

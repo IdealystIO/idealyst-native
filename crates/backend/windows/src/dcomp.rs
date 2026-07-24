@@ -126,7 +126,7 @@ impl CompositionTree {
     pub(crate) fn commit(&self) {
         unsafe {
             if let Err(e) = self.device.Commit() {
-                eprintln!("[dcomp-debug] Commit failed: {e}");
+                eprintln!("[backend-windows] IDCompositionDevice::Commit failed: {e}");
             }
         }
     }
@@ -144,15 +144,19 @@ impl CompositionTree {
                 Some((l, t, r, b)) => {
                     let rect = D2D_RECT_F { left: l, top: t, right: r, bottom: b };
                     if let Err(e) = v.container.SetClip2(&rect) {
-                        eprintln!("[dcomp-debug] container SetClip2(square) failed: {e}");
+                        eprintln!("[backend-windows] SetClip2(square) failed: {e}");
                     }
                 }
             }
             // Offset + rounded clip (bezel) on the content — both in
             // root coords (container sits at 0,0), so the corners ride
             // with the content as it scrolls.
-            let _ = v.content.SetOffsetX2(p.x as f32);
-            let _ = v.content.SetOffsetY2(p.y as f32);
+            let rx = v.content.SetOffsetX2(p.x as f32);
+            let ry = v.content.SetOffsetY2(p.y as f32);
+            eprintln!(
+                "[dcomp-debug] apply x={} y={} ox={:?} oy={:?} square={:?} rounded={:?}",
+                p.x, p.y, rx, ry, p.square, p.rounded
+            );
             match p.rounded {
                 None => {
                     let _ = v.content.SetClip(None::<&IDCompositionClip>);
@@ -173,13 +177,15 @@ impl CompositionTree {
                         let _ = clip.SetBottomLeftRadiusY2(radius);
                         let _ = clip.SetBottomRightRadiusX2(radius);
                         let _ = clip.SetBottomRightRadiusY2(radius);
+                        // Failures logged, not ignored: a silently
+                        // retained stale clip renders as a phantom
+                        // rounded cut pinned mid-scene — nearly
+                        // undiagnosable from the visual alone.
                         if let Err(e) = v.content.SetClip(&clip) {
-                            eprintln!("[dcomp-debug] content SetClip(rounded) failed: {e} rect=({l},{t},{r},{b}) rad={radius}");
-                        } else {
-                            eprintln!("[dcomp-debug] rounded clip ok rect=({l},{t},{r},{b}) rad={radius}");
+                            eprintln!("[backend-windows] SetClip(rounded) failed: {e}");
                         }
                     } else {
-                        eprintln!("[dcomp-debug] CreateRectangleClip FAILED");
+                        eprintln!("[backend-windows] CreateRectangleClip failed");
                     }
                 }
             }

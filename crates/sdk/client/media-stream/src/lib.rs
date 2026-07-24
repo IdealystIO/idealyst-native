@@ -529,16 +529,18 @@ impl MediaStream {
     /// a recorder imports it into GStreamer with no CPU readback in the canvas).
     #[cfg(target_os = "linux")]
     pub fn with_surface_capture() -> (MediaStream, FrameWriter) {
-        // dma-buf zero-copy is opt-in (`IDEALYST_CANVAS_DMABUF=1`) and OFF by
-        // default: a Mesa `RENDER_ATTACHMENT` texture is GPU-tiled and exported
-        // with an implicit modifier that `glupload` misreads as linear → corrupt
-        // recordings. When disabled, return a PLAIN stream (no native source), so
-        // `native_source()` is `None` and BOTH the recorder and the canvas take
-        // the GPU→CPU read-back path. Gating only the canvas producer while the
-        // stream still advertised a `DmaBufSource` made the recorder pick the
-        // dma-buf pipeline and wait forever for frames the canvas never sent —
-        // which HUNG `stop()`. The gate must live at the source of the native
-        // source, i.e. here.
+        // dma-buf zero-copy is ON by default (opt out with `IDEALYST_CANVAS_DMABUF=0`).
+        // The canvas exports a genuinely-LINEAR GBM buffer (see
+        // `canvas_vello::native_capture_linux`), which `glupload` imports correctly —
+        // the earlier corruption was a GPU-tiled export mislabelled as linear, now
+        // fixed. When disabled, return a PLAIN stream (no native source), so
+        // `native_source()` is `None` and BOTH the recorder and the canvas take the
+        // GPU→CPU read-back path. The gate MUST live here (the source of the native
+        // source): gating only the canvas producer while the stream still advertised
+        // a `DmaBufSource` made the recorder pick the dma-buf pipeline and wait
+        // forever for frames the canvas never sent — which HUNG `stop()`. Both this
+        // gate and the canvas producer's read the same `IDEALYST_CANVAS_DMABUF`, so
+        // they always agree.
         if !dmabuf_capture_enabled() {
             return Self::new();
         }
@@ -795,16 +797,16 @@ mod tests {
     }
 }
 
-/// Whether dma-buf zero-copy self-capture is enabled (`IDEALYST_CANVAS_DMABUF=1`),
-/// OFF by default. When off, `with_surface_capture` returns a plain stream so
-/// capture uses the correct GPU→CPU read-back. Read once, cached. Same flag the
-/// `canvas-vello` producer reads, so both sides agree.
+/// Whether dma-buf zero-copy self-capture is enabled. **ON by default** now that the
+/// canvas exports a genuinely-linear buffer that `glupload` imports correctly; set
+/// `IDEALYST_CANVAS_DMABUF=0` (or `false`) to force the GPU→CPU read-back path. Read
+/// once, cached. Same flag the `canvas-vello` producer reads, so both sides agree.
 #[cfg(target_os = "linux")]
 fn dmabuf_capture_enabled() -> bool {
     use std::sync::OnceLock;
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
-        std::env::var("IDEALYST_CANVAS_DMABUF").map(|v| v == "1" || v == "true").unwrap_or(false)
+        std::env::var("IDEALYST_CANVAS_DMABUF").map(|v| !(v == "0" || v == "false")).unwrap_or(true)
     })
 }
 
