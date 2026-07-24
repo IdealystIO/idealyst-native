@@ -19,7 +19,7 @@
 //! is identical.
 
 use runtime_core::primitives::graphics::{
-    GraphicsSurface, OnLost, OnReady, OnReadyEvent, OnResize, OnResizeEvent,
+    GraphicsSurface, GraphicsTarget, OnLost, OnReady, OnReadyEvent, OnResize, OnResizeEvent,
 };
 use objc2::msg_send;
 use objc2::msg_send_id;
@@ -289,7 +289,7 @@ pub(crate) fn create_graphics(
             let w = (frame.size.width * scale).max(1.0) as u32;
             let h = (frame.size.height * scale).max(1.0) as u32;
             cb(OnReadyEvent {
-                surface: surface.clone(),
+                target: GraphicsTarget::RawWindow(surface.clone()),
                 size: (w, h),
                 // Physical `size` = logical frame × backingScaleFactor; report the
                 // factor so a logical-coordinate renderer (vello) fills the

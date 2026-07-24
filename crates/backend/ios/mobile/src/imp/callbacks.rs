@@ -313,7 +313,7 @@ impl StringCallbackTarget {
 
 use std::cell::Cell;
 use runtime_core::primitives::graphics::{
-    GraphicsSurface, OnLost, OnReady, OnReadyEvent, OnResize, OnResizeEvent,
+    GraphicsSurface, GraphicsTarget, OnLost, OnReady, OnReadyEvent, OnResize, OnResizeEvent,
 };
 use objc2_foundation::CGRect;
 
@@ -384,7 +384,7 @@ declare_class!(
                 let mut handler = self.ivars().on_ready.borrow_mut();
                 if let Some(cb) = handler.as_mut() {
                     cb(OnReadyEvent {
-                        surface,
+                        target: GraphicsTarget::RawWindow(surface),
                         size: new_size,
                         // iOS rides canvas-native (no vello yet); 1.0 keeps the
                         // physical-size contract until iOS GPU canvas is wired.

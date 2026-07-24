@@ -42,5 +42,10 @@ host-ios-mobile = { workspace = true }
 [target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
 host-android-mobile = { workspace = true }
 
+[target.'cfg(all(target_os = "linux", not(target_arch = "wasm32")))'.dependencies]
+# GTK4 lends a GL context rather than a window handle; this host
+# adopts it through wgpu's GLES HAL. See its crate docs.
+host-linux-desktop = { workspace = true }
+
 [target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
 host-macos-desktop = { workspace = true }

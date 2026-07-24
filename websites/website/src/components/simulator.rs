@@ -321,15 +321,18 @@ pub fn Simulator(props: SimulatorProps) -> Element {
         // and on web wasm-split keeps that behind the lazy chunk
         // that materializes this on_ready closure.
         let profile = default_profile();
-        let surface = event.surface;
         let size = event.size;
+        // Hand the target through as-is: `host_wgpu::mount` routes on
+        // its shape (raw-window handle on web/iOS/macOS/Android, a lent
+        // GL context on GTK) and picks the matching platform host.
+        let target = event.target;
         // `spawn_async` is the runtime-installed executor. On wasm it
         // rides wasm-bindgen-futures; on iOS the `async-driver`
         // feature on `backend-ios-mobile` plugs into libdispatch.
         // Either way the `request_adapter` / `request_device`
         // futures resolve on the main thread without blocking.
         spawn_async(async move {
-            match host_wgpu::mount(surface, size, profile, painter, build_ui).await {
+            match host_wgpu::mount(target, size, profile, painter, build_ui).await {
                 Ok(handle) => shared::fill(&slot, handle),
                 Err(err) => {
                     // On wasm this goes to the browser console via

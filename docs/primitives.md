@@ -461,14 +461,38 @@ in framework Rust — pointless.
 pub fn graphics(on_ready, on_resize, on_lost) -> Bound<GraphicsHandle>
 ```
 
-A backend-provided drawable surface, exposed as a
-`raw_window_handle`-compatible handle. The author owns the
-rendering — the framework just stands up the surface, fires
-lifecycle callbacks, and otherwise stays out.
+A backend-provided render target, delivered as
+`OnReadyEvent.target`. The author owns the rendering — the
+framework just stands up the target, fires lifecycle callbacks,
+and otherwise stays out. It doesn't link any GPU crate.
 
-Pair with `wgpu`, `softbuffer`, `glow`, `vello`, or anything else
-that accepts `HasWindowHandle + HasDisplayHandle`. The framework
-doesn't link any GPU crate.
+`GraphicsTarget` has two shapes, because not every toolkit can
+hand out a per-widget window handle:
+
+| Variant | Backends | How you use it |
+| --- | --- | --- |
+| `RawWindow(GraphicsSurface)` | web, iOS, macOS, Android | `event.into_surface()`, then `wgpu::Instance::create_surface(&surface)` — or `softbuffer` / `glow` / `vello`, anything taking `HasWindowHandle + HasDisplayHandle`. |
+| `Gl(GlTarget)` | Linux (GTK4) | `event.gl()`, then adopt the lent GL context (`wgpu_hal::gles::Adapter::new_external`, `glow::Context::from_loader_function`). |
+
+GTK4 forces the second shape: it removed GTK3's per-widget native
+windows, so there is no per-widget `wl_surface`/XID to wrap, and
+the toplevel's handle is both the wrong rect and already driven by
+GTK's own renderer. `GtkGLArea` lends a context + framebuffer
+instead. Making this an enum keeps that visible — an author who
+only supports swapchains gets `None` from `into_surface()` and
+degrades, rather than a fabricated handle that fails inside
+`create_surface`.
+
+Working with a `GlTarget`: `make_current()` (binds the context
+*and* the target framebuffer), draw, `present()`. Two properties
+must feed your base transform:
+
+- `framebuffer()` — render into this FBO, not the default `0`.
+  Re-read after every `make_current()`; it changes on resize.
+- `origin()` — `BottomLeft` on GL. A top-left-origin renderer
+  must flip vertically or it draws upside down. Reported as data
+  on the target (like `scale`) so folding it in is a sign change
+  in a matrix you already have, never a platform check.
 
 Lifecycle:
 
@@ -484,7 +508,7 @@ surface on backgrounding, then recreates it later. Author code
 
 Why this primitive exists: rendering custom 2D/3D content is the
 one thing no composition of other primitives can express. The
-framework gets out of the way and hands you a window handle.
+framework gets out of the way and hands you the drawable.
 
 ### `Navigator` — screen-stack navigator
 

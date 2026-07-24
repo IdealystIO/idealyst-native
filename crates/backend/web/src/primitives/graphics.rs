@@ -27,7 +27,8 @@
 
 use crate::WebBackend;
 use runtime_core::primitives::graphics::{
-    GraphicsHandle, GraphicsOps, GraphicsSurface, OnLost, OnReady, OnReadyEvent, OnResize,
+    GraphicsHandle, GraphicsOps, GraphicsSurface, GraphicsTarget, OnLost, OnReady, OnReadyEvent,
+    OnResize,
     OnResizeEvent, SurfaceProvider,
 };
 use raw_window_handle::{
@@ -270,7 +271,10 @@ fn fire_ready(instance: &Rc<RefCell<GraphicsInstance>>) {
     // `size` already accounts for devicePixelRatio; `scale: 1.0` keeps the
     // historical "size is physical, no separate scale" contract (web has no
     // vello path that needs the logical→physical base transform).
-    invoke_on_ready(instance, OnReadyEvent { surface, size, scale: 1.0 });
+    invoke_on_ready(
+        instance,
+        OnReadyEvent { target: GraphicsTarget::RawWindow(surface), size, scale: 1.0 },
+    );
 }
 
 // ---------------------------------------------------------------------------

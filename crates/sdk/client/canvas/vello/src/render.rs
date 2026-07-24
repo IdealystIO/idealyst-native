@@ -144,8 +144,21 @@ fn build_canvas<B: Backend>(props: &Rc<CanvasProps>, backend: &mut B) -> B::Node
         // Texture layers composited into the canvas (Clone: MediaStream + Rc).
         let layers = props.layers.clone();
         move |ev: OnReadyEvent| {
+            let (size, scale) = (ev.size, ev.scale);
+            // This renderer drives a swapchain, so it needs a real
+            // window handle. A backend that lends a GL context instead
+            // (GTK4 — see `GraphicsTarget`) can't be served by this
+            // path; bail rather than pretend, and the canvas stays on
+            // the `canvas-native` CPU rasterizer.
+            let Some(surface) = ev.into_surface() else {
+                log::warn!(
+                    "canvas-vello: backend supplied a GL context rather than a window \
+                     handle — this renderer needs a swapchain; using canvas-native",
+                );
+                return;
+            };
             if let Some(mut state) =
-                RenderState::new(ev.surface, ev.size, ev.scale, capture.clone(), layers.clone())
+                RenderState::new(surface, size, scale, capture.clone(), layers.clone())
             {
                 let presented = state.render(&scene_cell.borrow());
                 *state_cell.borrow_mut() = Some(state);

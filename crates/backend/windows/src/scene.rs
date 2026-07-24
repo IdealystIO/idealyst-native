@@ -41,7 +41,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{Length, Transform};
+use runtime_core::{Length, TextAlign, Transform};
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::COLORREF;
@@ -616,21 +616,64 @@ unsafe fn paint_node(b: &WindowsBackend, g: *mut GpGraphics, id: u64, alpha: f32
                             .unwrap_or_else(|| argb_with_alpha(t.color.to_argb_u32(), alpha));
                         let mut brush: *mut GpSolidFill = std::ptr::null_mut();
                         if GdipCreateSolidFill(color, &mut brush).0 == 0 {
-                            let wide: Vec<u16> = t.content.encode_utf16().collect();
-                            // A zero-size layout rect = draw from the
-                            // origin, no wrap, no clip (GDI+ contract).
-                            // The node's box is exactly the GDI-measured
-                            // string, so origin-anchored drawing lines up.
-                            let layout = RectF { X: 0.0, Y: 0.0, Width: 0.0, Height: 0.0 };
-                            let _ = GdipDrawString(
-                                g,
-                                PCWSTR(wide.as_ptr()),
-                                wide.len() as i32,
-                                entry.gpfont,
-                                &layout,
-                                typographic_format(),
-                                brush as *mut GpBrush,
-                            );
+                            // Zero-size layout rects = draw from the
+                            // origin, no GDI+ wrap, no clip. Wrapping is
+                            // OURS: the line cache `layout_pass` filled
+                            // from the node's WrapPlan (same breaks the
+                            // measure fn reported to Taffy). Each line is
+                            // its own draw at `advance` steps, offset by
+                            // the CSS half-leading and per-line align.
+                            match (&t.lines, &t.plan) {
+                                (Some(cache), Some(plan)) => {
+                                    let advance =
+                                        t.line_height.unwrap_or(plan.font_height).max(1.0);
+                                    let lead = ((advance - plan.font_height) / 2.0).max(0.0);
+                                    for (i, line) in cache.lines.iter().enumerate() {
+                                        if line.text16.is_empty() {
+                                            continue;
+                                        }
+                                        // `Justify` unsupported → Left.
+                                        let x = match t.align {
+                                            TextAlign::Center => {
+                                                ((w - line.width) / 2.0).max(0.0)
+                                            }
+                                            TextAlign::Right => (w - line.width).max(0.0),
+                                            TextAlign::Left | TextAlign::Justify => 0.0,
+                                        };
+                                        let layout = RectF {
+                                            X: x,
+                                            Y: lead + i as f32 * advance,
+                                            Width: 0.0,
+                                            Height: 0.0,
+                                        };
+                                        let _ = GdipDrawString(
+                                            g,
+                                            PCWSTR(line.text16.as_ptr()),
+                                            line.text16.len() as i32,
+                                            entry.gpfont,
+                                            &layout,
+                                            typographic_format(),
+                                            brush as *mut GpBrush,
+                                        );
+                                    }
+                                }
+                                // No plan/cache yet (paint racing the
+                                // first layout fill) — single-line draw.
+                                _ => {
+                                    let wide: Vec<u16> = t.content.encode_utf16().collect();
+                                    let layout =
+                                        RectF { X: 0.0, Y: 0.0, Width: 0.0, Height: 0.0 };
+                                    let _ = GdipDrawString(
+                                        g,
+                                        PCWSTR(wide.as_ptr()),
+                                        wide.len() as i32,
+                                        entry.gpfont,
+                                        &layout,
+                                        typographic_format(),
+                                        brush as *mut GpBrush,
+                                    );
+                                }
+                            }
                             let _ = GdipDeleteBrush(brush as *mut GpBrush);
                         }
                     }
@@ -655,7 +698,7 @@ unsafe fn paint_node(b: &WindowsBackend, g: *mut GpGraphics, id: u64, alpha: f32
         return;
     }
 
-    if meta.overflow_hidden {
+    if meta.clips_children() {
         let radii = match &meta.kind {
             NodeKind::View(v) => v.radii,
             _ => [0.0; 4],
@@ -724,6 +767,13 @@ fn hit_node(b: &WindowsBackend, id: u64, px: f32, py: f32, ox: f32, oy: f32) -> 
         // the visible content underneath stays clickable).
         return None;
     }
+    // A clipping node's children are not visible outside its box —
+    // they must not be clickable there either (a scrolled-out sidebar
+    // link would otherwise take clicks meant for whatever is painted
+    // in its place).
+    if meta.clips_children() && !(px >= nx && px < nx + w && py >= ny && py < ny + h) {
+        return None;
+    }
     // Children first, topmost (highest z, later insertion) first.
     let (mut cx, mut cy) = (nx, ny);
     if let NodeKind::View(v) = &meta.kind {
@@ -763,14 +813,15 @@ pub(crate) fn scroll_at(b: &mut WindowsBackend, px: f32, py: f32, delta_px: f32)
     let Some(target) = find_scroll_node(b, root, px, py, 0.0, 0.0) else {
         return false;
     };
+    let (max_x, max_y) = max_scroll_offsets(b, target);
     let mut cb: Option<(Rc<dyn Fn(f32, f32)>, f32, f32)> = None;
     if let Some(meta) = b.nodes.get_mut(&target) {
         if let NodeKind::View(v) = &mut meta.kind {
             if let Some(s) = &mut v.scroll {
                 if s.horizontal {
-                    s.offset_x = (s.offset_x + delta_px).max(0.0);
+                    s.offset_x = (s.offset_x + delta_px).clamp(0.0, max_x);
                 } else {
-                    s.offset_y = (s.offset_y + delta_px).max(0.0);
+                    s.offset_y = (s.offset_y + delta_px).clamp(0.0, max_y);
                 }
                 if let Some(f) = &s.on_scroll {
                     cb = Some((f.clone(), s.offset_x, s.offset_y));
@@ -784,6 +835,53 @@ pub(crate) fn scroll_at(b: &mut WindowsBackend, px: f32, py: f32, delta_px: f32)
     true
 }
 
+/// Scrollable range of node `id`: content extent minus the viewport
+/// (the node's own frame), floored at zero. Without the cap the wheel
+/// scrolls forever past the end of the content. Bottom/right container
+/// padding isn't in any child frame, so the last child sits flush at
+/// the end — the same approximation the extent-from-children approach
+/// gives on the other immediate-mode backends.
+fn max_scroll_offsets(b: &WindowsBackend, id: u64) -> (f32, f32) {
+    let Some(meta) = b.nodes.get(&id) else {
+        return (0.0, 0.0);
+    };
+    let (_, _, vw, vh) = meta.frame;
+    let (cw, ch) = content_extent(b, id);
+    ((cw - vw).max(0.0), (ch - vh).max(0.0))
+}
+
+/// Farthest descendant edge inside `id`'s content space. MUST recurse:
+/// a scroll container's direct child is often a viewport-sized wrapper
+/// whose own descendants are what actually overflow — measuring only
+/// direct-child frames reads "nothing to scroll" and clamps every
+/// wheel tick to zero. Recursion stops at nodes that clip (nested
+/// scroll views, `overflow: hidden`): their overflow is bounded by
+/// their own box and must not inflate the outer scroll range.
+fn content_extent(b: &WindowsBackend, id: u64) -> (f32, f32) {
+    let (mut cw, mut ch) = (0.0_f32, 0.0_f32);
+    let Some(kids) = b.children.get(&id) else {
+        return (cw, ch);
+    };
+    for k in kids {
+        let Some(m) = b.nodes.get(k) else {
+            continue;
+        };
+        if m.hidden {
+            continue;
+        }
+        let (fx, fy, w, h) = m.frame;
+        let (mut ew, mut eh) = (w, h);
+        if !m.clips_children() {
+            let (iw, ih) = content_extent(b, *k);
+            ew = ew.max(iw);
+            eh = eh.max(ih);
+        }
+        cw = cw.max(fx + ew);
+        ch = ch.max(fy + eh);
+    }
+    (cw, ch)
+}
+
 fn find_scroll_node(b: &WindowsBackend, id: u64, px: f32, py: f32, ox: f32, oy: f32) -> Option<u64> {
     let (nx, ny, w, h) = node_origin(b, id, ox, oy)?;
     let meta = b.nodes.get(&id)?;
@@ -791,6 +889,11 @@ fn find_scroll_node(b: &WindowsBackend, id: u64, px: f32, py: f32, ox: f32, oy: 
         return None;
     }
     let inside = px >= nx && px < nx + w && py >= ny && py < ny + h;
+    // Same rule as `hit_node`: content outside a clipping box is not
+    // there for input purposes.
+    if meta.clips_children() && !inside {
+        return None;
+    }
     let (mut cx, mut cy) = (nx, ny);
     if let NodeKind::View(v) = &meta.kind {
         if let Some(s) = &v.scroll {
@@ -937,5 +1040,102 @@ mod tests {
         let (colors, _) = blend_arrays(&stops, 0.5, false);
         assert_eq!(colors[0] >> 24, 0x80);
         assert_eq!(colors[1] >> 24, 0x40);
+    }
+
+    // --- scroll clamp + clipped hit testing (backend-fixture tests) ---
+
+    use crate::{NodeMeta, ScrollInfo, ViewVisual};
+    use windows::Win32::Foundation::HWND;
+
+    fn put(b: &mut WindowsBackend, id: u64, kind: NodeKind, frame: (f32, f32, f32, f32)) {
+        let mut m = NodeMeta::new(kind);
+        m.frame = frame;
+        b.nodes.insert(id, m);
+    }
+
+    /// Root(800×600) → scroll box at (0,100) 200×200 → VIEWPORT-SIZED
+    /// wrapper (200×200 — the shape Taffy actually produces for the
+    /// website sidebar) whose child column overflows to content-y 400
+    /// via a pressable at (0,350) 200×50 (visually y 450, below the
+    /// scroll box, until scrolled). The wrapper being no taller than
+    /// the viewport is the load-bearing part: a direct-children-only
+    /// extent reads "nothing to scroll" here and clamps every wheel
+    /// tick to zero.
+    fn scroll_fixture() -> WindowsBackend {
+        let mut b = WindowsBackend::new(HWND(std::ptr::null_mut()));
+        put(&mut b, 1, NodeKind::View(ViewVisual::default()), (0.0, 0.0, 800.0, 600.0));
+        put(
+            &mut b,
+            2,
+            NodeKind::View(ViewVisual {
+                scroll: Some(ScrollInfo {
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                    horizontal: false,
+                    on_scroll: None,
+                }),
+                ..Default::default()
+            }),
+            (0.0, 100.0, 200.0, 200.0),
+        );
+        put(&mut b, 3, NodeKind::View(ViewVisual::default()), (0.0, 0.0, 200.0, 200.0));
+        put(
+            &mut b,
+            4,
+            NodeKind::View(ViewVisual { on_click: Some(Rc::new(|| {})), ..Default::default() }),
+            (0.0, 350.0, 200.0, 50.0),
+        );
+        b.root_id = Some(1);
+        b.children.insert(1, vec![2]);
+        b.children.insert(2, vec![3]);
+        b.children.insert(3, vec![4]);
+        b
+    }
+
+    fn offset_y(b: &WindowsBackend) -> f32 {
+        match &b.nodes[&2].kind {
+            NodeKind::View(v) => v.scroll.as_ref().unwrap().offset_y,
+            _ => unreachable!(),
+        }
+    }
+
+    /// The wheel scrolled forever: only a `.max(0.0)` floor existed, no
+    /// content-extent ceiling, so the page kept moving past its end.
+    /// And the first ceiling attempt over-corrected to zero on the
+    /// wrapper-shaped tree (see `scroll_fixture`) — both failure modes
+    /// pin here.
+    #[test]
+    fn regression_wheel_scroll_clamps_to_content_extent() {
+        let mut b = scroll_fixture();
+        assert!(scroll_at(&mut b, 50.0, 150.0, 120.0), "wheel over the box is consumed");
+        assert_eq!(offset_y(&b), 120.0, "a scrollable box must actually scroll");
+        for _ in 0..10 {
+            scroll_at(&mut b, 50.0, 150.0, 120.0);
+        }
+        // deep content extent 400 − viewport 200 = 200.
+        assert_eq!(offset_y(&b), 200.0, "must stop at content − viewport");
+        for _ in 0..10 {
+            scroll_at(&mut b, 50.0, 150.0, -120.0);
+        }
+        assert_eq!(offset_y(&b), 0.0, "and at zero on the way back");
+    }
+
+    /// Unclipped scroll content wasn't just painted outside the box —
+    /// it took clicks there too.
+    #[test]
+    fn regression_scrolled_out_content_is_not_clickable() {
+        let mut b = scroll_fixture();
+        // Pressable at content y 350 → visual y 450, below the box
+        // (which ends at 300).
+        assert!(
+            pressable_at(&b, 50.0, 450.0).is_none(),
+            "content outside the scroll box must not take clicks"
+        );
+        // Scrolled to the end (offset 200) it sits at visual y 250..300
+        // — clickable.
+        if let NodeKind::View(v) = &mut b.nodes.get_mut(&2).unwrap().kind {
+            v.scroll.as_mut().unwrap().offset_y = 200.0;
+        }
+        assert!(pressable_at(&b, 50.0, 275.0).is_some(), "scrolled-in content hits");
     }
 }

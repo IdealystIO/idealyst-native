@@ -49,10 +49,24 @@ runtime-layout = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk4 = { version = "0.9", features = ["v4_14"] }
 pango = { version = "0.20", features = ["v1_56"] }
-# The `graphics` primitive's `GtkGLArea` clears its FBO via `glClearColor`/
-# `glClear`. libepoxy (which GTK already links for its own GL renderer) exports
-# these as DATA symbols (`epoxy_glClearColor`, a lazily-resolved dispatch
-# pointer), so we `dlopen`/`dlsym` libepoxy and read the stored pointer. `libc`
-# is already in the workspace lock (a transitive dep), so this adds no new
-# external crate. See `src/graphics.rs`.
+# The `graphics` primitive resolves GL entry points out of libepoxy (which GTK
+# already links for its own GL renderer) via `dlopen`/`dlsym`. libepoxy exports
+# GL functions as DATA symbols (`epoxy_glClear`, a lazily-resolved dispatch
+# pointer), not as callable symbols, so the lookup has to read the pointer out
+# of the variable. `libc` is already in the workspace lock (a transitive dep),
+# so this adds no new external crate. See `src/gl_loader.rs`.
 libc = "0.2"
+
+# Proof that the `GlTarget` this backend hands out is actually adoptable by a
+# real GPU library — `tests/gl_target_adoption.rs` stands up a live GtkGLArea,
+# adopts its context through wgpu's GLES HAL exactly the way a consumer would,
+# renders, and reads the pixels back. Dev-only: nothing in the shipped backend
+# links wgpu. Same wgpu major (29) every other GPU consumer in the workspace
+# pins, so `new_external`/`create_adapter_from_hal` match what they'd call.
+# `wgpu-hal` is a direct dep because `wgpu::hal` re-exports only the generic
+# API, not the `gles::Adapter::new_external` constructor.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+wgpu = { version = "29", default-features = false, features = ["gles", "wgsl"] }
+wgpu-hal = { version = "29", features = ["gles"] }
+wgpu-types = "29"
+pollster = "0.4"

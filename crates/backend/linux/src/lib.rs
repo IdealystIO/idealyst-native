@@ -104,6 +104,7 @@ type NavHandler = Rc<RefCell<Box<dyn NavigatorHandler<LinuxBackend>>>>;
 
 mod color;
 mod fonts;
+mod gl_loader;
 mod graphics;
 mod gradient;
 mod handles;
@@ -119,6 +120,25 @@ mod view;
 use transform::NodeTransform;
 pub use view::IdealystView;
 use view::{BorderPaint, PaintModel};
+
+/// Re-exported so downstream crates (`host-gtk`, integration tests) can
+/// name GTK types without pinning their own, necessarily-identical,
+/// `gtk4` version — two `gtk4` majors in one binary would be two sets of
+/// incompatible GObject wrappers over the same C library.
+pub use gtk4;
+
+/// Build the `graphics` primitive's `GtkGLArea` in isolation, for tests
+/// that need a live `GlTarget` without standing up a whole render tree.
+/// Exercises the real `on_ready` wiring — same function the backend's
+/// `create_graphics` calls.
+#[doc(hidden)]
+pub fn build_gl_area_for_test(
+    on_ready: runtime_core::primitives::graphics::OnReady,
+    on_resize: runtime_core::primitives::graphics::OnResize,
+    on_lost: runtime_core::primitives::graphics::OnLost,
+) -> gtk4::Widget {
+    graphics::build_gl_area(on_ready, on_resize, on_lost)
+}
 
 // =========================================================================
 // Node
@@ -319,17 +339,45 @@ fn widget_measure(
     known: Size<Option<f32>>,
     available: Size<AvailableSpace>,
 ) -> Size<f32> {
-    let (_wmin, wnat, _, _) = widget.measure(gtk4::Orientation::Horizontal, -1);
+    // Margins carry this leaf's padding and GTK reports them as part of
+    // the measured size; Taffy wants content and re-adds padding itself.
+    // See the note in `text::measure` — same double-count either way.
+    let (mx, my) = widget_margins(widget);
+    let (wmin, wnat, _, _) = widget.measure(gtk4::Orientation::Horizontal, -1);
+    let (wmin, wnat) = ((wmin - mx).max(0), (wnat - mx).max(0));
     let width = known.width.unwrap_or_else(|| match available.width {
         AvailableSpace::Definite(aw) => (wnat as f32).min(aw),
         _ => wnat as f32,
     });
-    let (_hmin, hnat, _, _) =
-        widget.measure(gtk4::Orientation::Vertical, width.round().max(-1.0) as i32);
+    // Height must be measured at a width the widget can actually take —
+    // GTK warns ("Trying to measure GtkLabel for width of 0, but it
+    // needs at least N") and returns junk when asked for less than its
+    // minimum, and Taffy legitimately probes with a 0 width while
+    // resolving flex minimums. Same clamp as `text::measure`.
+    // `+ mx` puts the value back into GTK's margin-inclusive terms.
+    let for_size = if width >= 1.0 {
+        (width.round() as i32).max(wmin) + mx
+    } else {
+        -1
+    };
+    let (_hmin, hnat, _, _) = widget.measure(gtk4::Orientation::Vertical, for_size);
     Size {
         width,
-        height: known.height.unwrap_or(hnat as f32),
+        height: known.height.unwrap_or((hnat - my).max(0) as f32),
     }
+}
+
+/// Total horizontal and vertical margin on a widget, as `(mx, my)`.
+///
+/// A leaf's author padding lives in its GTK margins (`apply_style` step
+/// 1a), and `gtk_widget_measure` folds margins into every size it
+/// reports. Any code converting between GTK's margin-inclusive sizes and
+/// Taffy's content-box sizes has to go through this.
+pub(crate) fn widget_margins(widget: &gtk4::Widget) -> (i32, i32) {
+    (
+        widget.margin_start() + widget.margin_end(),
+        widget.margin_top() + widget.margin_bottom(),
+    )
 }
 
 fn build_paint_model(s: &StyleRules) -> PaintModel {
@@ -355,8 +403,14 @@ fn build_paint_model(s: &StyleRules) -> PaintModel {
 /// A registered `position: sticky` node.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct StickyEntry {
-    /// The enclosing `scroll_view` node it pins inside.
-    scroll: u64,
+    /// The enclosing `scroll_view` it pins inside — `None` until
+    /// resolved. Deliberately NOT resolved at registration time: the
+    /// walker applies a node's style BEFORE inserting it into its
+    /// parent, so at `apply_style` the node has no ancestry at all
+    /// (observed: `node 247 is Sticky, enclosing_scroll=None
+    /// parent=None`). Resolved on the first
+    /// [`LinuxBackend::update_sticky`] after the tree is assembled.
+    scroll: Option<u64>,
     /// `top` threshold in px — how far below the container's top edge it
     /// parks once engaged.
     top: f32,
@@ -463,6 +517,39 @@ impl LinuxBackend {
         self.nodes.get(&id).map(|s| s.frame)
     }
 
+    /// A node's frame in **window** coordinates: its parent-relative
+    /// Taffy frame accumulated up to the root, with every intervening
+    /// scroll container's current offset subtracted so the result is
+    /// where the node actually sits on screen right now.
+    ///
+    /// This is what `ViewHandle::absolute_frame()` reports, and author
+    /// code does real geometry with it — the website's table of contents
+    /// compares each section's absolute frame against the scroll
+    /// viewport's to decide which entry is active. Returning the
+    /// parent-relative frame instead (as this used to) silently yields a
+    /// section's offset *within its column*, so the scroll-spy compared
+    /// unrelated numbers and never tracked.
+    pub(crate) fn node_absolute_frame(&self, id: u64) -> Option<(f32, f32, f32, f32)> {
+        let (_, _, w, h) = self.node_frame(id)?;
+        let (mut x, mut y) = (0.0, 0.0);
+        let mut cur = id;
+        loop {
+            let st = self.nodes.get(&cur)?;
+            x += st.frame.0;
+            y += st.frame.1;
+            // A scroll container's children are displaced by however far
+            // it's scrolled.
+            if let Some(sw) = st.widget.downcast_ref::<gtk4::ScrolledWindow>() {
+                x -= sw.hadjustment().value() as f32;
+                y -= sw.vadjustment().value() as f32;
+            }
+            match self.parent_of.get(&cur) {
+                Some(parent) => cur = *parent,
+                None => return Some((x, y, w, h)),
+            }
+        }
+    }
+
     /// Run the Taffy layout pass against `width` × `height` and write
     /// every node's size + child transform into GTK. Called from the
     /// root widget's `size_allocate` (see [`view::IdealystView`]'s
@@ -566,7 +653,17 @@ impl LinuxBackend {
             if let Some(st) = self.nodes.get_mut(id) {
                 st.frame = (frame.x, frame.y, frame.width, frame.height);
             }
-            let (w, h) = (frame.width.round() as i32, frame.height.round() as i32);
+            // Clamp at 0: Taffy can hand back a negative box when padding
+            // or borders exceed a definite size, and GTK rejects negative
+            // sizes outright. A negative size has no meaning as a widget
+            // allocation; zero is the honest floor. (Note: this is NOT
+            // the source of GTK's startup "GtkGizmo (slider) reported min
+            // width -2" notices — those persist with this clamp in place,
+            // so they come from inside GTK's own scrollbar parts.)
+            let (w, h) = (
+                (frame.width.round() as i32).max(0),
+                (frame.height.round() as i32).max(0),
+            );
             // IdealystView containers report their size via `layout_size`
             // (read directly by the parent's `size_allocate`); leaf
             // widgets (Label/Button/…) have their frame recorded on the
@@ -638,7 +735,10 @@ impl LinuxBackend {
             if let Some(st) = self.nodes.get_mut(nid) {
                 st.frame = (frame.x, frame.y, frame.width, frame.height);
             }
-            let (w, h) = (frame.width.round() as i32, frame.height.round() as i32);
+            let (w, h) = (
+                (frame.width.round() as i32).max(0),
+                (frame.height.round() as i32).max(0),
+            );
             // Same frame-vs-intrinsic rule as `run_layout` — see there.
             // Portal/virtualizer content is real app content (wrapping
             // text included), so it needs the identical treatment.
@@ -766,26 +866,45 @@ impl LinuxBackend {
     /// layout pass (the allocation that follows consumes it), loud from a
     /// scroll callback, where nothing else will re-allocate.
     pub fn update_sticky(&mut self, only: Option<u64>, quiet: bool) {
-        let entries: Vec<(u64, StickyEntry)> = self
+        // Resolve any entry still waiting for its scroll ancestor. By the
+        // time this runs (end of a layout pass, or a scroll event) the
+        // node is inserted, so the walk succeeds. An entry with no
+        // enclosing scroll_view stays unresolved forever and is simply
+        // never pinned — CSS falls back to `relative` the same way.
+        let pending: Vec<u64> = self
             .sticky_nodes
             .iter()
-            .filter(|(_, e)| only.is_none_or(|s| e.scroll == s))
-            .map(|(id, e)| (*id, *e))
+            .filter(|(_, e)| e.scroll.is_none())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in pending {
+            if let Some(scroll) = self.enclosing_scroll(id) {
+                if let Some(e) = self.sticky_nodes.get_mut(&id) {
+                    e.scroll = Some(scroll);
+                }
+            }
+        }
+
+        let entries: Vec<(u64, u64, f32)> = self
+            .sticky_nodes
+            .iter()
+            .filter_map(|(id, e)| e.scroll.map(|s| (*id, s, e.top)))
+            .filter(|(_, scroll, _)| only.is_none_or(|want| *scroll == want))
             .collect();
 
-        for (id, entry) in entries {
+        for (id, scroll, top) in entries {
             let Some(offset) = self
                 .nodes
-                .get(&entry.scroll)
+                .get(&scroll)
                 .and_then(|s| s.widget.downcast_ref::<gtk4::ScrolledWindow>())
                 .map(|sw| sw.vadjustment().value() as f32)
             else {
                 continue;
             };
-            let Some(content_y) = self.content_y_within(id, entry.scroll) else {
+            let Some(content_y) = self.content_y_within(id, scroll) else {
                 continue;
             };
-            let dy = sticky::pin_offset(content_y, offset, entry.top);
+            let dy = sticky::pin_offset(content_y, offset, top);
             let changed = match self.nodes.get_mut(&id) {
                 Some(st) if st.transform.sticky_dy != dy => {
                     st.transform.sticky_dy = dy;
@@ -1044,6 +1163,32 @@ impl Backend for LinuxBackend {
         // 1. Layout — push flex/size/position/padding/margin into Taffy.
         self.layout.set_style(layout, style);
 
+        // 1a. Padding on a LEAF widget → GTK margins.
+        //
+        // Taffy sizes a node's box to INCLUDE its padding and insets any
+        // children accordingly — which is the whole story for an
+        // `IdealystView`, since its children are separate widgets we
+        // position ourselves. A leaf paints its own content across its
+        // entire allocation instead, so a `GtkLabel` (plain text, and the
+        // `codeblock` SDK's rendered source) ignored padding completely
+        // and sat flush against its background edge, unlike every other
+        // backend.
+        //
+        // GTK margins are the right target: `gtk_widget_allocate` takes
+        // the full box and the widget subtracts its margins to get the
+        // content area, so allocating the Taffy frame (padding included)
+        // and setting margins equal to the padding insets the content by
+        // exactly the padding — no double-counting.
+        if let Some(st) = self.nodes.get(&id) {
+            if !st.widget.is::<IdealystView>() {
+                let w = st.widget.clone();
+                w.set_margin_top(len_px(&style.padding_top).round().max(0.0) as i32);
+                w.set_margin_bottom(len_px(&style.padding_bottom).round().max(0.0) as i32);
+                w.set_margin_start(len_px(&style.padding_left).round().max(0.0) as i32);
+                w.set_margin_end(len_px(&style.padding_right).round().max(0.0) as i32);
+            }
+        }
+
         // 1b. `position: sticky` — register (or drop) the pin. Taffy
         // treats sticky as relative and places the node normally; the pin
         // is a purely visual offset applied on scroll, so the flow around
@@ -1052,17 +1197,17 @@ impl Backend for LinuxBackend {
         // sticky.
         self.sticky_nodes.remove(&id);
         if matches!(style.position, Some(runtime_core::Position::Sticky)) {
-            if let Some(scroll) = self.enclosing_scroll(id) {
-                self.sticky_nodes.insert(
-                    id,
-                    StickyEntry {
-                        scroll,
-                        top: len_px(&style.top),
-                    },
-                );
-            }
-            // No enclosing scroll container ⇒ stays Relative, matching
-            // CSS (and every other backend's fallback).
+            // Record the intent only — the scroll container is resolved
+            // lazily (see `StickyEntry::scroll`). Re-inserting on every
+            // restyle keeps the threshold live and re-resolves the
+            // ancestor in case the node was reparented.
+            self.sticky_nodes.insert(
+                id,
+                StickyEntry {
+                    scroll: None,
+                    top: len_px(&style.top),
+                },
+            );
         }
 
         // 2. Opacity (all kinds) + static transform (all kinds).
@@ -1203,6 +1348,13 @@ impl Backend for LinuxBackend {
 
     fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
         handles::make_view_handle(self, node)
+    }
+
+    fn make_scroll_view_handle(
+        &self,
+        node: &Self::Node,
+    ) -> runtime_core::primitives::scroll_view::ScrollViewHandle {
+        handles::make_scroll_view_handle(self, node)
     }
 
     fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
@@ -1431,18 +1583,33 @@ impl Backend for LinuxBackend {
         scrolled.set_child(Some(&inner));
 
         if let Some(cb) = on_scroll {
-            let cb_for_h = cb.clone();
+            // Deferred to an idle, NOT called inline. Author `on_scroll`
+            // handlers write signals (the website's scroll-spy does
+            // `scroll_y.set(y)`), and a signal write runs its dependent
+            // effects synchronously. GTK emits `value-changed` from
+            // inside allocation too — `upper`/`page_size` shift whenever
+            // the viewport resizes — so an inline call re-enters the
+            // reactive runtime mid-update and aborts with "RefCell
+            // already borrowed" (`reactive.rs`). Verified by crashing the
+            // app on exactly this once the TOC's scroll-spy started
+            // reading real frames. Same deferral as the viewport publish
+            // in `run_layout`.
+            let fire = move |x: f32, y: f32| {
+                let cb = cb.clone();
+                gtk4::glib::source::idle_add_local_once(move || cb(x, y));
+            };
+            let fire_for_h = fire.clone();
             let scrolled_for_h = scrolled.clone();
             scrolled.hadjustment().connect_value_changed(move |adj| {
                 let x = adj.value() as f32;
                 let y = scrolled_for_h.vadjustment().value() as f32;
-                cb_for_h(x, y);
+                fire_for_h(x, y);
             });
             let scrolled_for_v = scrolled.clone();
             scrolled.vadjustment().connect_value_changed(move |adj| {
                 let x = scrolled_for_v.hadjustment().value() as f32;
                 let y = adj.value() as f32;
-                cb(x, y);
+                fire(x, y);
             });
         }
 
@@ -1843,23 +2010,222 @@ mod layout_tests {
             .sticky_nodes
             .get(&toc.id)
             .copied()
-            .expect("sticky node must register against its scroll container");
-        assert_eq!(entry.scroll, scroll.id, "must find the scroll ancestor, not the direct parent");
+            .expect("a sticky node must register");
         assert_eq!(entry.top, 16.0, "must carry the `top` threshold");
+        // Resolution is deliberately deferred: the walker styles a node
+        // BEFORE inserting it, so at apply_style time it has no ancestry
+        // (this is why the TOC never pinned — it registered against
+        // nothing and was dropped).
+        assert_eq!(entry.scroll, None, "ancestor is resolved lazily, not at apply_style");
+
+        backend.update_sticky(None, true);
+        assert_eq!(
+            backend.sticky_nodes.get(&toc.id).unwrap().scroll,
+            Some(scroll.id),
+            "must resolve to the scroll ANCESTOR, not the direct parent",
+        );
 
         // Ceasing to be sticky must drop the entry, or a stale pin keeps
         // dragging the node around on every scroll.
         backend.apply_style(&toc, &std::rc::Rc::new(StyleRules::default()));
         assert!(!backend.sticky_nodes.contains_key(&toc.id), "unregister on restyle");
 
+        // Re-register (the unregister check above dropped it) and give
+        // the nodes real frames.
+        //
+        // End-to-end: a pinned node's transform must actually move once
+        // the container scrolls past it. Frames are set directly here
+        // because a real Taffy pass needs a mapped window; everything
+        // downstream of the frame (ancestor resolution, content-space y,
+        // pin math, transform write) is the production path.
+        backend.apply_style(&toc, &sticky_style);
+        backend.nodes.get_mut(&row.id).unwrap().frame = (0.0, 100.0, 200.0, 400.0);
+        backend.nodes.get_mut(&toc.id).unwrap().frame = (0.0, 50.0, 200.0, 300.0);
+        let adj = backend
+            .nodes
+            .get(&scroll.id)
+            .unwrap()
+            .widget
+            .downcast_ref::<gtk4::ScrolledWindow>()
+            .unwrap()
+            .vadjustment();
+
+        // content_y = 50 (toc) + 100 (row) = 150. Not scrolled → no pin.
+        adj.set_upper(5000.0);
+        adj.set_value(0.0);
+        backend.update_sticky(None, true);
+        assert_eq!(
+            backend.nodes.get(&toc.id).unwrap().transform.sticky_dy,
+            0.0,
+            "unscrolled: the node must ride the content",
+        );
+
+        // Scrolled 400px: the node is 250px above the pin line (150 - 400
+        // = -250), plus a 16px threshold → pushed back down 266px.
+        adj.set_value(400.0);
+        backend.update_sticky(None, true);
+        assert_eq!(
+            backend.nodes.get(&toc.id).unwrap().transform.sticky_dy,
+            266.0,
+            "scrolled past: the node must pin, not scroll away",
+        );
+
+        // --- 6b. Padding on a LEAF must inset its content. Taffy puts
+        // padding in the node's box, but a GtkLabel paints across its
+        // whole allocation — so the `codeblock` SDK's source text sat
+        // flush against its background edge with no padding at all,
+        // unlike every other backend. Mapped to GTK margins.
+        let leaf = backend.create_text("fn main() {}", &a11y);
+        let padded = std::rc::Rc::new(StyleRules {
+            padding_top: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(16.0))),
+            padding_bottom: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(16.0))),
+            padding_left: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(12.0))),
+            padding_right: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(12.0))),
+            ..StyleRules::default()
+        });
+        backend.apply_style(&leaf, &padded);
+        assert_eq!(leaf.widget.margin_top(), 16, "top padding must inset the text");
+        assert_eq!(leaf.widget.margin_bottom(), 16);
+        assert_eq!(leaf.widget.margin_start(), 12, "left padding → start margin");
+        assert_eq!(leaf.widget.margin_end(), 12);
+
+        // GTK's own `measure()` INCLUDES the widget's margins. So once
+        // padding became margins, the Taffy measure fn started reporting
+        // content+padding, and Taffy — which adds padding to a leaf's
+        // measured content size itself — added it a second time. Result:
+        // every padded leaf on Linux was inset by twice its padding.
+        // `text::measure` must report the CONTENT size.
+        let raw = leaf.widget.measure(gtk4::Orientation::Horizontal, -1).1;
+        let label = leaf.widget.clone().downcast::<gtk4::Label>().unwrap();
+        let measured = crate::text::measure(
+            &label,
+            runtime_layout::Size { width: None, height: None },
+            runtime_layout::Size {
+                width: runtime_layout::AvailableSpace::MaxContent,
+                height: runtime_layout::AvailableSpace::MaxContent,
+            },
+        );
+        assert_eq!(
+            measured.width.round() as i32,
+            raw - 24,
+            "measure must subtract the 12+12 horizontal margins — GTK includes \
+             them, and Taffy re-adds padding on top of whatever we report",
+        );
+
+        // Removing the padding must remove the inset (same unset-reverts
+        // rule as the text-style props).
+        backend.apply_style(&leaf, &std::rc::Rc::new(StyleRules::default()));
+        assert_eq!(leaf.widget.margin_top(), 0, "dropping padding must un-inset");
+
+        // --- 6c. End-to-end: a padded leaf's Taffy FRAME must be
+        // content + padding ONCE. This is the shape the website's TOC
+        // links use (`TocLink`: padding_vertical 6, padding_left 12 on
+        // the `text` itself), and it is what the measure fix above
+        // exists to protect: with GTK's margin-inclusive measure feeding
+        // Taffy, the frame came out content + 2x padding and every OTP
+        // entry looked twice as padded on Linux as on web.
+        let mut toc_root = backend.create_view(&a11y);
+        let toc_text = backend.create_text("Getting started", &a11y);
+        backend.insert(&mut toc_root, toc_text.clone());
+        let toc_style = std::rc::Rc::new(StyleRules {
+            padding_top: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(6.0))),
+            padding_bottom: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(6.0))),
+            padding_left: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(12.0))),
+            ..StyleRules::default()
+        });
+        backend.apply_style(&toc_text, &toc_style);
+
+        // Content size the label reports with the padding applied.
+        let toc_label = toc_text.widget.clone().downcast::<gtk4::Label>().unwrap();
+        let content = crate::text::measure(
+            &toc_label,
+            runtime_layout::Size { width: None, height: None },
+            runtime_layout::Size {
+                width: runtime_layout::AvailableSpace::MaxContent,
+                height: runtime_layout::AvailableSpace::MaxContent,
+            },
+        );
+
+        let toc_root_layout = backend.nodes.get(&toc_root.id).unwrap().layout;
+        backend.layout.compute(toc_root_layout, 220.0, 400.0);
+        let frame = backend
+            .layout
+            .frame_of(backend.nodes.get(&toc_text.id).unwrap().layout);
+        assert_eq!(
+            frame.height.round(),
+            (content.height + 12.0).round(),
+            "leaf frame height must be content + padding ONCE (content \
+             {:.0} + 6 + 6), got {:.0}",
+            content.height,
+            frame.height,
+        );
+        // Width is NOT asserted against content: a column flex parent
+        // stretches its children cross-axis, so the frame is the
+        // container's 220 regardless of the text. That's correct (web
+        // does the same); height is where the double-count showed.
+        assert!(
+            frame.width >= content.width,
+            "stretched frame must still fit its content",
+        );
+
+        // A container's padding stays Taffy's job — margins there would
+        // double-count against the child frames Taffy already inset.
+        let container = backend.create_view(&a11y);
+        backend.apply_style(&container, &padded);
+        assert_eq!(
+            container.widget.margin_top(),
+            0,
+            "IdealystView padding is handled by Taffy, not GTK margins",
+        );
+
+        // --- 7. `absolute_frame` must be WINDOW-relative, accumulating
+        // ancestor offsets and subtracting scroll offsets. It used to
+        // return the parent-relative frame, so the website's TOC
+        // scroll-spy compared a section's offset-within-its-column
+        // against the viewport and never tracked the scroll position.
+        // (`row` is at y=100 inside `scroll`, `toc` at y=50 inside
+        // `row`; the container is scrolled 400.)
+        let abs = backend
+            .node_absolute_frame(toc.id)
+            .expect("absolute frame must resolve");
+        assert_eq!(
+            abs.1, -250.0,
+            "absolute y = 50 + 100 - 400 scrolled; parent-relative (50) is the bug",
+        );
+        let parent_rel = backend.node_frame(toc.id).unwrap();
+        assert_ne!(
+            abs.1, parent_rel.1,
+            "absolute_frame must not just echo the parent-relative frame",
+        );
+
+        // --- 8. `scroll_to` must actually move the container. The
+        // framework installs `NoopScrollViewOps` unless the backend
+        // provides a handle, so clicking a TOC entry silently did
+        // nothing.
+        use runtime_core::primitives::scroll_view::ScrollViewOps;
+        let sv_handle = backend.make_scroll_view_handle(&scroll);
+        let _ = &sv_handle;
+        let ops = crate::handles::scroll_view_ops_for_test();
+        let state = crate::handles::handle_state_for_test(&backend, &scroll);
+        ops.scroll_to(&state, 0.0, 250.0);
+        assert_eq!(adj.value(), 250.0, "scroll_to must move the adjustment");
+
+        // Beyond the end clamps to the last scrollable offset rather
+        // than leaving the adjustment in an impossible state.
+        adj.set_page_size(500.0);
+        ops.scroll_to(&state, 0.0, 99_999.0);
+        assert_eq!(adj.value(), 4500.0, "clamped to upper - page_size");
+
         // Sticky OUTSIDE any scroll container falls back to relative
         // (what CSS does) rather than registering a pin that can never
         // resolve.
         let orphan = backend.create_view(&a11y);
         backend.apply_style(&orphan, &sticky_style);
-        assert!(
-            !backend.sticky_nodes.contains_key(&orphan.id),
-            "no enclosing scroll_view - must stay relative",
+        backend.update_sticky(None, true);
+        assert_eq!(
+            backend.sticky_nodes.get(&orphan.id).unwrap().scroll,
+            None,
+            "no enclosing scroll_view - stays unresolved and is never pinned",
         );
     }
 }

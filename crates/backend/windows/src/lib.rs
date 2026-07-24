@@ -77,6 +77,7 @@ mod handles;
 mod icon;
 mod image;
 mod scene;
+mod wrap;
 
 // =========================================================================
 // Win32 control constants
@@ -324,6 +325,36 @@ pub(crate) struct TextVisual {
     pub anim_color: Option<[f32; 4]>,
     /// Resolved typography; `None` = the shell font.
     pub font_key: Option<font::FontKey>,
+    /// Measured word/space runs for (content, font) — the shared input
+    /// both the Taffy measure fn and the painter break lines from.
+    /// Rebuilt by `set_text_measure` whenever content or font changes.
+    pub plan: Option<Rc<wrap::WrapPlan>>,
+    /// Line breaks at the node's current frame width; filled by
+    /// `layout_pass` (paint only reads). `None` until first layout or
+    /// after a plan rebuild.
+    pub lines: Option<wrap::WrappedLines>,
+    /// Per-line alignment inside the node's box. Matters once frames
+    /// can be wider than their longest line (wrapping); `Justify`
+    /// draws as `Left`.
+    pub align: runtime_core::TextAlign,
+    /// Style `line-height` in px (the css crate emits it as px). Line
+    /// advance + CSS half-leading; `None` = the font's natural height.
+    pub line_height: Option<f32>,
+}
+
+impl TextVisual {
+    pub(crate) fn new(content: &str) -> Self {
+        Self {
+            content: content.to_string(),
+            color: Rgba::BLACK,
+            anim_color: None,
+            font_key: None,
+            plan: None,
+            lines: None,
+            align: runtime_core::TextAlign::Left,
+            line_height: None,
+        }
+    }
 }
 
 /// What a node *is* — painted visual or native control.
@@ -366,7 +397,7 @@ pub(crate) struct NodeMeta {
 }
 
 impl NodeMeta {
-    fn new(kind: NodeKind) -> Self {
+    pub(crate) fn new(kind: NodeKind) -> Self {
         NodeMeta {
             kind,
             frame: (0.0, 0.0, 0.0, 0.0),
@@ -384,6 +415,17 @@ impl NodeMeta {
 
     pub(crate) fn effective_opacity(&self) -> f32 {
         self.anim_opacity.unwrap_or(self.style_opacity).clamp(0.0, 1.0)
+    }
+
+    /// Whether this node bounds its children to its own box — for the
+    /// painter's clip AND for hit testing (content outside the box must
+    /// be neither visible nor clickable). `overflow: hidden` by style;
+    /// scroll views ALWAYS, regardless of style: a scroll container that
+    /// doesn't clip paints its scrolled-out content over the rest of the
+    /// scene (the sidebar-links-over-the-header bug).
+    pub(crate) fn clips_children(&self) -> bool {
+        self.overflow_hidden
+            || matches!(&self.kind, NodeKind::View(v) if v.scroll.is_some())
     }
 
     fn hwnd(&self) -> Option<HWND> {
@@ -738,14 +780,8 @@ impl WindowsBackend {
     /// Painted-text placeholder for unimplemented primitives — visible
     /// at runtime rather than a silent gap (backend-cpu posture).
     fn placeholder(&mut self, message: &str) -> WindowsNode {
-        let node = self.add_node(NodeKind::Text(TextVisual {
-            content: message.to_string(),
-            color: Rgba::BLACK,
-            anim_color: None,
-            font_key: None,
-        }));
-        let (w, h) = self.measure_with_key(message, None);
-        self.set_intrinsic(&node, w, h);
+        let node = self.add_node(NodeKind::Text(TextVisual::new(message)));
+        self.set_text_measure(node.id);
         node
     }
 
@@ -763,7 +799,48 @@ impl WindowsBackend {
         measure_text_gdi(text, hfont, self.line_height)
     }
 
+    /// (Re)build a painted text node's wrap plan and install its Taffy
+    /// measure fn. This is the text-sizing path — `set_intrinsic` is
+    /// wrong for text because it writes `min_size`, which pins the box
+    /// to its single-line extent and makes wrapping impossible (the
+    /// "paragraphs run off the window edge" website bug). Call after
+    /// any content, font, or line-height change.
+    fn set_text_measure(&mut self, node_id: u64) {
+        let Some(meta) = self.nodes.get(&node_id) else {
+            return;
+        };
+        let NodeKind::Text(t) = &meta.kind else {
+            return;
+        };
+        let content = t.content.clone();
+        let key = t.font_key.clone();
+        let style_advance = t.line_height;
+        let hfont = match &key {
+            Some(k) => font::entry_for(&mut self.font_cache, k)
+                .map(|e| e.hfont)
+                .unwrap_or(self.ui_font),
+            None => self.ui_font,
+        };
+        let plan = Rc::new(wrap::build_gdi(&content, hfont, self.line_height as f32));
+        if let Some(meta) = self.nodes.get_mut(&node_id) {
+            if let NodeKind::Text(t) = &mut meta.kind {
+                t.plan = Some(plan.clone());
+                t.lines = None;
+            }
+        }
+        if let Some(layout) = self.layout_for_id.get(&node_id).copied() {
+            let advance = style_advance.unwrap_or(plan.font_height).max(1.0);
+            self.layout.set_measure_fn(
+                layout,
+                Rc::new(move |known, avail| wrap::measure_size(&plan, advance, known, avail)),
+            );
+        }
+        self.layout_dirty = true;
+    }
+
     /// Record a leaf's intrinsic pixel size on its layout node.
+    /// Controls only (button/edit/…) — text nodes use
+    /// `set_text_measure` (this writes `min_size`, which forbids wrap).
     fn set_intrinsic(&mut self, node: &WindowsNode, width: i32, height: i32) {
         if let Some(layout) = self.layout_for_id.get(&node.id).copied() {
             self.layout
@@ -852,6 +929,25 @@ impl WindowsBackend {
             let frame = self.layout.frame_of(layout);
             if let Some(meta) = self.nodes.get_mut(&id) {
                 meta.frame = (frame.x, frame.y, frame.width, frame.height);
+                // Break text lines at the final frame width so paint
+                // (read-only) never re-wraps. Same pure `lines_at` the
+                // measure fn used → breaks can't disagree with the
+                // height Taffy was told.
+                if let NodeKind::Text(t) = &mut meta.kind {
+                    if let Some(plan) = t.plan.clone() {
+                        let stale = t
+                            .lines
+                            .as_ref()
+                            .map(|l| (l.width - frame.width).abs() > 0.25)
+                            .unwrap_or(true);
+                        if stale {
+                            t.lines = Some(wrap::WrappedLines {
+                                width: frame.width,
+                                lines: plan.lines_at(frame.width),
+                            });
+                        }
+                    }
+                }
             }
         }
 
@@ -1203,15 +1299,27 @@ impl Backend for WindowsBackend {
         }))
     }
 
+    fn create_link(
+        &mut self,
+        config: runtime_core::primitives::link::LinkConfig,
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        // A Link is "a Pressable that navigates". The trait default
+        // collapses to `create_view` and DROPS `on_activate`, so every
+        // link renders as inert text and nothing can be navigated to —
+        // the same bug the Linux + terminal backends fixed.
+        // `config.url` is deliberately ignored (documented web-only);
+        // `on_activate` already wraps in-app push/replace dispatch, and
+        // `open_url` for `external` links.
+        self.add_node(NodeKind::View(ViewVisual {
+            on_click: Some(config.on_activate.clone()),
+            ..Default::default()
+        }))
+    }
+
     fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> Self::Node {
-        let node = self.add_node(NodeKind::Text(TextVisual {
-            content: content.to_string(),
-            color: Rgba::BLACK,
-            anim_color: None,
-            font_key: None,
-        }));
-        let (w, h) = self.measure_with_key(content, None);
-        self.set_intrinsic(&node, w, h);
+        let node = self.add_node(NodeKind::Text(TextVisual::new(content)));
+        self.set_text_measure(node.id);
         node
     }
 
@@ -1268,18 +1376,12 @@ impl Backend for WindowsBackend {
     }
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {
-        let key = if let Some(meta) = self.nodes.get_mut(&node.id) {
+        if let Some(meta) = self.nodes.get_mut(&node.id) {
             if let NodeKind::Text(t) = &mut meta.kind {
                 t.content = content.to_string();
-                t.font_key.clone()
-            } else {
-                None
             }
-        } else {
-            None
-        };
-        let (w, h) = self.measure_with_key(content, key.as_ref());
-        self.set_intrinsic(node, w, h);
+        }
+        self.set_text_measure(node.id);
         self.invalidate();
     }
 
@@ -1425,14 +1527,8 @@ impl Backend for WindowsBackend {
         // Read-only painted text for now (parity with the previous
         // STATIC-based placeholder; a real multi-line EDIT is a later
         // control refinement).
-        let node = self.add_node(NodeKind::Text(TextVisual {
-            content: initial_value.to_string(),
-            color: Rgba::BLACK,
-            anim_color: None,
-            font_key: None,
-        }));
-        let (w, h) = self.measure_with_key(initial_value, None);
-        self.set_intrinsic(&node, w, h);
+        let node = self.add_node(NodeKind::Text(TextVisual::new(initial_value)));
+        self.set_text_measure(node.id);
         node
     }
 
@@ -1800,7 +1896,7 @@ impl Backend for WindowsBackend {
         // before borrowing the node meta.
         let font_key = self.font_key_for_style(style);
 
-        let mut remeasure: Option<(String, Option<font::FontKey>)> = None;
+        let mut remeasure = false;
         if let Some(meta) = self.nodes.get_mut(&node.id) {
             // Node-level visuals shared by every kind.
             meta.style_opacity = style
@@ -1844,9 +1940,20 @@ impl Backend for WindowsBackend {
                     if let Some(rgba) = resolve_color(&style.color) {
                         t.color = rgba;
                     }
+                    if let Some(a) = style.text_align {
+                        t.align = a;
+                    }
+                    // Paint-only: alignment needs no re-measure. Font and
+                    // line-height feed the wrap plan / line advance, so
+                    // either changing rebuilds the measure fn.
+                    let lh = style.line_height.as_ref().map(|v| v.resolve());
+                    if lh.is_some() && t.line_height != lh {
+                        t.line_height = lh;
+                        remeasure = true;
+                    }
                     if font_key.is_some() && t.font_key != font_key {
                         t.font_key = font_key.clone();
-                        remeasure = Some((t.content.clone(), t.font_key.clone()));
+                        remeasure = true;
                     }
                 }
                 NodeKind::Image(p) => {
@@ -1857,11 +1964,10 @@ impl Backend for WindowsBackend {
                 NodeKind::Icon(_) | NodeKind::Control { .. } | NodeKind::External { .. } => {}
             }
         }
-        // Re-measure text in its resolved font so layout matches what's
-        // drawn.
-        if let Some((content, key)) = remeasure {
-            let (w, h) = self.measure_with_key(&content, key.as_ref());
-            self.set_intrinsic(node, w, h);
+        // Rebuild the wrap plan + measure fn in the resolved font so
+        // layout matches what's drawn.
+        if remeasure {
+            self.set_text_measure(node.id);
         }
         self.invalidate();
     }
@@ -1972,6 +2078,30 @@ mod tests {
 
     /// The welcome scene's whole choreography is driven through the
     /// animated slots; pin that each write lands on the right field.
+    /// Scroll views must bound children to their box even without an
+    /// author `overflow: hidden` — unclipped, scrolled-out sidebar
+    /// links painted over the header (and stayed clickable there).
+    #[test]
+    fn regression_scroll_views_always_clip_children() {
+        let plain = NodeMeta::new(NodeKind::View(ViewVisual::default()));
+        assert!(!plain.clips_children());
+
+        let mut hidden = NodeMeta::new(NodeKind::View(ViewVisual::default()));
+        hidden.overflow_hidden = true;
+        assert!(hidden.clips_children());
+
+        let scroll = NodeMeta::new(NodeKind::View(ViewVisual {
+            scroll: Some(ScrollInfo {
+                offset_x: 0.0,
+                offset_y: 0.0,
+                horizontal: false,
+                on_scroll: None,
+            }),
+            ..Default::default()
+        }));
+        assert!(scroll.clips_children(), "scroll views clip regardless of style");
+    }
+
     #[test]
     fn effective_opacity_prefers_animated_over_style() {
         let mut m = NodeMeta::new(NodeKind::View(ViewVisual::default()));

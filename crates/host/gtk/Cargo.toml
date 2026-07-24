@@ -20,7 +20,11 @@ license.workspace = true
 crate-type = ["rlib"]
 
 [dependencies]
-runtime-core = { workspace = true }
+# `async-driver` brings in `runtime_core::driver` — the per-frame
+# render-loop hook an embedded GPU host (`host-linux-desktop`) rides,
+# and the `spawn_async` executor its async `mount` needs. Same feature
+# `host-macos-desktop` turns on for the AppKit equivalent.
+runtime-core = { workspace = true, features = ["async-driver"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk4 = { version = "0.9", features = ["v4_12"] }

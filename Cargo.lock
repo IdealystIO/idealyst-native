@@ -1442,8 +1442,12 @@ dependencies = [
  "gtk4",
  "libc",
  "pango",
+ "pollster 0.4.0",
  "runtime-core",
  "runtime-layout",
+ "wgpu",
+ "wgpu-hal",
+ "wgpu-types",
 ]
 
 [[package]]
@@ -5197,6 +5201,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "host-linux-desktop"
+version = "0.4.0"
+dependencies = [
+ "log",
+ "render-api",
+ "render-wgpu",
+ "runtime-core",
+ "wgpu",
+ "wgpu-hal",
+ "wgpu-types",
+]
+
+[[package]]
 name = "host-macos-desktop"
 version = "0.4.0"
 dependencies = [
@@ -5243,6 +5260,7 @@ version = "0.4.0"
 dependencies = [
  "host-android-mobile",
  "host-ios-mobile",
+ "host-linux-desktop",
  "host-macos-desktop",
  "host-web",
  "render-api",

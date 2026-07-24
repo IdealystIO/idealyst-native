@@ -279,10 +279,11 @@ fn repaint(render_fn: &Rc<RefCell<Option<RenderFn>>>, scene_cell: &Rc<RefCell<Ca
 /// canvas has no texture layers, else canvas-native's Canvas2D rasterizer on the
 /// same (still-unclaimed) element.
 async fn build_render_fn(ev: OnReadyEvent, props: Rc<CanvasProps>) -> RenderFn {
-    let canvas = match canvas_from_surface(&ev.surface) {
+    let canvas = match ev.surface().and_then(canvas_from_surface) {
         Some(c) => c,
-        // Should never happen on web (the graphics surface IS a canvas); degrade
-        // to a no-op rather than panic in an async task.
+        // Should never happen on web: the web backend always yields a
+        // `RawWindow` target and its surface IS a canvas. Degrade to a
+        // no-op rather than panic in an async task.
         None => return Box::new(|_| {}),
     };
 
@@ -482,7 +483,11 @@ impl GpuState {
         let image_renderer = None;
 
         // --- Commit: this is the only step that binds the canvas to webgpu. ---
-        let surface = match instance.create_surface(ev.surface) {
+        let Some(surface_target) = ev.into_surface() else {
+            marker("canvas-vello: WebGPU probe — backend supplied no window handle");
+            return None;
+        };
+        let surface = match instance.create_surface(surface_target) {
             Ok(s) => s,
             Err(e) => {
                 marker(&format!("canvas-vello: WebGPU probe — create_surface failed ({e:?})"));

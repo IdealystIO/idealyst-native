@@ -2338,11 +2338,15 @@ fn emit_slider(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
 /// `Graphics(on_ready = ..., on_resize = ..., on_lost = ...)`.
 /// `on_ready` is required; the others default to no-ops.
 ///
-/// The framework provides a platform-native drawable surface via
-/// `OnReadyEvent.surface`, which implements `raw_window_handle`'s
-/// `HasWindowHandle + HasDisplayHandle`. The author plugs in their
-/// GPU library of choice (`wgpu::Instance::create_surface(&surface)`,
-/// or any other lib that takes those traits).
+/// The framework provides a platform-native render target via
+/// `OnReadyEvent.target`. On most backends that's a
+/// `GraphicsTarget::RawWindow` implementing `raw_window_handle`'s
+/// `HasWindowHandle + HasDisplayHandle` — take it with
+/// `event.into_surface()` and plug in the GPU library of choice
+/// (`wgpu::Instance::create_surface(&surface)`, or anything else that
+/// accepts those traits). Backends whose toolkit composites every
+/// widget into one native surface (GTK4) instead lend a live GL
+/// context as `GraphicsTarget::Gl`, where `into_surface()` is `None`.
 fn emit_graphics(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
     let on_ready = props
         .iter()

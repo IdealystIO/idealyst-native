@@ -11,7 +11,7 @@
 //! color and rebuild the `AttrList` without re-reading `StyleRules`.
 
 use gtk4::pango;
-use gtk4::prelude::WidgetExt;
+use gtk4::prelude::{Cast, WidgetExt};
 use runtime_core::{FontFamily, FontStyle, FontWeight, Length, StyleRules, TextAlign};
 use runtime_layout::{AvailableSpace, Size};
 
@@ -65,35 +65,58 @@ fn map_weight(w: FontWeight) -> pango::Weight {
     }
 }
 
-/// Read the text-relevant fields out of a node's [`StyleRules`],
-/// layering them over `prev` so a partial restyle (a stylesheet that
-/// only sets `color`) keeps the previously-resolved font. `None` for a
-/// field leaves the prior value untouched.
+/// Read the text-relevant fields out of a node's [`StyleRules`] into a
+/// fresh paint.
+///
+/// `prev` is carried ONLY for the properties this style says nothing
+/// about at all (see the typography group below) — a `None` field is
+/// otherwise "not set", i.e. the default, never "keep the old value".
+/// Getting that backwards makes every text property one-way: settable
+/// but never unsettable.
 pub fn resolve(style: &StyleRules, prev: &TextPaint) -> TextPaint {
     let mut tp = prev.clone();
-    if let Some(fam) = &style.font_family {
-        tp.family = family_name(fam);
+
+    // Typography (family / size / weight / italic) resolves as a GROUP,
+    // exactly like the macOS backend's `apply_text_style`: if the
+    // incoming style mentions ANY of the four, all four are rebuilt from
+    // it, with defaults for the ones it omits.
+    //
+    // Layering each field independently over the previous paint — what
+    // this used to do — means a property can only ever be turned ON. The
+    // website's table of contents bolds its active entry; when that
+    // entry went inactive the new style simply had no `font_weight`, the
+    // old Bold survived, and every entry the user had visited stayed
+    // permanently bold. Same trap for italic, size and family.
+    //
+    // The group gate is what keeps a colour-only restyle from wiping an
+    // author's font: a style that says nothing about typography is
+    // asking to leave typography alone, not to reset it.
+    let has_typography = style.font_family.is_some()
+        || style.font_size.is_some()
+        || style.font_weight.is_some()
+        || style.font_style.is_some();
+    if has_typography {
+        let d = TextPaint::default();
+        tp.family = style.font_family.as_ref().and_then(family_name);
+        tp.size_px = match style.font_size.as_ref().map(|t| t.resolve()) {
+            Some(Length::Px(v)) => v,
+            _ => d.size_px,
+        };
+        tp.weight = style.font_weight.unwrap_or(d.weight);
+        tp.italic = matches!(style.font_style, Some(FontStyle::Italic));
     }
-    if let Some(size) = &style.font_size {
-        if let Length::Px(v) = size.resolve() {
-            tp.size_px = v;
-        }
-    }
-    if let Some(w) = style.font_weight {
-        tp.weight = w;
-    }
-    if let Some(s) = style.font_style {
-        tp.italic = matches!(s, FontStyle::Italic);
-    }
-    if let Some(ls) = &style.letter_spacing {
-        tp.letter_spacing_px = ls.resolve();
-    }
+
+    // These are independent, and each reverts to its default when
+    // absent, for the same reason: absent means "not set".
+    tp.letter_spacing_px = style
+        .letter_spacing
+        .as_ref()
+        .map(|ls| ls.resolve())
+        .unwrap_or(0.0);
     if let Some(c) = &style.color {
         tp.color = color::to_srgb(&c.resolve());
     }
-    if let Some(a) = style.text_align {
-        tp.align = a;
-    }
+    tp.align = style.text_align.unwrap_or(TextAlign::Left);
     tp
 }
 
@@ -140,9 +163,19 @@ pub fn measure(
     known: Size<Option<f32>>,
     available: Size<AvailableSpace>,
 ) -> Size<f32> {
+    // Padding reaches a leaf as GTK margins (see `apply_style` step 1a),
+    // and `gtk_widget_measure` INCLUDES margins in what it reports. Taffy
+    // asks for — and adds padding back onto — the CONTENT size, so the
+    // margins have to come back off here. Skipping this double-counted
+    // every padded leaf: Taffy sized the box to content+2×padding, so a
+    // codeblock's padding rendered twice as large on Linux as everywhere
+    // else.
+    let (mx, my) = crate::widget_margins(label.upcast_ref());
+
     // Minimum (longest unbreakable word — the label's min-content width)
     // and natural (whole text on one line) widths, both unconstrained.
     let (wmin, wnat, _, _) = label.measure(gtk4::Orientation::Horizontal, -1);
+    let (wmin, wnat) = ((wmin - mx).max(0), (wnat - mx).max(0));
     let width = known.width.unwrap_or_else(|| match available.width {
         AvailableSpace::Definite(aw) => (wnat as f32).min(aw),
         _ => wnat as f32,
@@ -158,15 +191,18 @@ pub fn measure(
     // height when wrapped as tight as possible) instead of an impossible
     // one; `-1` for a non-positive result keeps "unconstrained" meaning
     // unconstrained rather than "zero".
+    //
+    // `for_size` goes back INTO GTK, so it must be margin-inclusive
+    // again — the `+ mx` undoes the subtraction above for this one call.
     let for_size = if width >= 1.0 {
-        (width.round() as i32).max(wmin)
+        (width.round() as i32).max(wmin) + mx
     } else {
         -1
     };
     let (_hmin, hnat, _, _) = label.measure(gtk4::Orientation::Vertical, for_size);
     Size {
         width,
-        height: known.height.unwrap_or(hnat as f32),
+        height: known.height.unwrap_or((hnat - my).max(0) as f32),
     }
 }
 
@@ -189,8 +225,47 @@ mod tests {
     use super::*;
     use runtime_core::{Color, Tokenized};
 
+    // Reported live: the website's TOC bolds its active entry, and every
+    // entry stayed bold forever after. `resolve` layered each field over
+    // the previous paint, so dropping `font_weight` left the old Bold in
+    // place — a property could be turned on but never off.
     #[test]
-    fn resolve_layers_over_prev_keeping_font_when_only_color_changes() {
+    fn regression_unsetting_a_font_prop_reverts_it_to_default() {
+        let bolded = TextPaint {
+            family: Some("Inter".into()),
+            size_px: 20.0,
+            weight: FontWeight::Bold,
+            italic: true,
+            ..Default::default()
+        };
+        // The "inactive" style still specifies a size (so typography IS
+        // being set) but no weight or italic — those must revert.
+        let mut style = StyleRules::default();
+        style.font_size = Some(Tokenized::Literal(Length::Px(20.0)));
+        let out = resolve(&style, &bolded);
+        assert!(
+            matches!(out.weight, FontWeight::Normal),
+            "dropping font_weight must un-bold, not keep Bold",
+        );
+        assert!(!out.italic, "dropping font_style must un-italicize");
+        assert_eq!(out.size_px, 20.0);
+        assert_eq!(out.family, None, "dropping font_family reverts to system");
+    }
+
+    #[test]
+    fn regression_unsetting_letter_spacing_and_align_reverts_them() {
+        let prev = TextPaint {
+            letter_spacing_px: 4.0,
+            align: TextAlign::Center,
+            ..Default::default()
+        };
+        let out = resolve(&StyleRules::default(), &prev);
+        assert_eq!(out.letter_spacing_px, 0.0, "letter spacing must reset");
+        assert!(matches!(out.align, TextAlign::Left), "alignment must reset");
+    }
+
+    #[test]
+    fn resolve_keeps_font_when_style_mentions_no_typography() {
         let base = TextPaint {
             family: Some("Inter".into()),
             size_px: 56.0,
@@ -200,9 +275,9 @@ mod tests {
         let mut style = StyleRules::default();
         style.color = Some(Tokenized::Literal(Color("#ff0000".into())));
         let out = resolve(&style, &base);
-        // Color changed…
+        // Colour changed…
         assert!((out.color[0] - 1.0).abs() < 1e-3);
-        // …font preserved from prev.
+        // …and a colour-only restyle leaves the font alone.
         assert_eq!(out.family.as_deref(), Some("Inter"));
         assert_eq!(out.size_px, 56.0);
         assert!(matches!(out.weight, FontWeight::Bold));

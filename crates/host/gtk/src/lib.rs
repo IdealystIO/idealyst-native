@@ -76,6 +76,7 @@ where
     // `after_ms` / `raf_loop` during mount, and without a scheduler
     // those fall into the inert fallbacks and every animation freezes.
     scheduler::install();
+    scheduler::install_render_loop();
 
     // `NON_UNIQUE`: don't fold a second launch into a running instance
     // (GtkApplication's default single-instance behavior). A framework

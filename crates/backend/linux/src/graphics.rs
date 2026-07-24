@@ -5,11 +5,8 @@
 //! Every other backend implements `graphics` by handing the author a
 //! `raw_window_handle::HasWindowHandle` (macOS: NSView+CAMetalLayer, iOS:
 //! UIView+CAMetalLayer, Android: SurfaceView, web: `<canvas>`). The author's
-//! GPU library (`canvas`/`pdf` via wgpu) then calls
-//! `wgpu::Instance::create_surface(&handle)` and drives a real swapchain —
-//! see `crates/sdk/client/canvas/vello/src/render.rs::RenderState::new`, which
-//! does exactly `instance.create_surface(surface_target)` +
-//! `surface.configure(..)` + `surface.get_current_texture()`.
+//! GPU library then calls `wgpu::Instance::create_surface(&handle)` and drives
+//! a real swapchain.
 //!
 //! **GTK4 cannot supply such a handle for a sub-widget.** Unlike GTK3, GTK4
 //! removed per-widget native windows: the entire toplevel is one native
@@ -20,123 +17,146 @@
 //! surface (via `gdk4-wayland`/`gdk4-x11`), which (a) is the whole window, not
 //! the graphics widget's rect, and (b) is already owned and continuously
 //! presented by GTK's own renderer — a second wgpu swapchain configured on it
-//! fights GTK for the buffer. So the raw-window-handle contract is a dead end
-//! for embedded GPU content on GTK4.
+//! fights GTK for the buffer.
 //!
-//! GTK4's *sanctioned* ways to embed externally-rendered GPU content are:
+//! So this backend takes GTK's sanctioned escape hatch, `GtkGLArea`: GTK hands
+//! the widget a live `GdkGLContext` plus a framebuffer, and we lend both to the
+//! author as a [`GlTarget`]. That variant of `GraphicsTarget` exists precisely
+//! because the raw-window-handle model is unrepresentable here — see the
+//! "Why the target is an enum" section on
+//! `runtime_core::primitives::graphics`.
 //!
-//! 1. **`GtkGLArea`** — GTK hands the widget a live `GdkGLContext` + a
-//!    framebuffer (FBO) bound during the `render` signal. This is a GL
-//!    *context*, not a window handle. wgpu can drive it only via its GLES HAL
-//!    (`wgpu::hal::gles::Adapter` built from a `glow`/`epoxy` proc-address
-//!    loader, rendering into the bound FBO) — NOT via `create_surface`.
-//! 2. **`GtkGraphicsOffload` + `GdkDmabufTexture`** (GTK ≥ 4.14) — render
-//!    offscreen (headless wgpu → texture), export the texture as a dma-buf,
-//!    import it as a `GdkDmabufTexture`, and display it in a `GtkPicture`
-//!    inside a `GtkGraphicsOffload` so the compositor can promote it to a
-//!    hardware overlay. This is the *most correct* sub-widget path, but again
-//!    wgpu renders headless — no swapchain surface.
+//! # Rendering model
 //!
-//! **Both idiomatic GTK4 paths produce a GL context / render target, not a
-//! `create_surface`-compatible `HasWindowHandle`.** So `create_graphics`'
-//! current contract — "call `on_ready` with a `GraphicsSurface` the author
-//! turns into a wgpu `Surface`" — cannot be honored on GTK4 as written. See
-//! the module tail for the framework change that unblocks it.
+//! GTK's `render` signal is the only moment GTK itself guarantees the context
+//! is current and the area's framebuffer bound. But an author's render loop is
+//! driven by *their* scheduler (a reactive effect, a `raf_loop`), which fires
+//! at arbitrary points in the GLib main loop. Rather than force authors into a
+//! draw-on-demand callback — which every other backend's contract does not have
+//! — [`GlTarget::make_current`] lets them re-establish both at will:
+//! `gtk_gl_area_make_current` + `gtk_gl_area_attach_buffers`, which GTK
+//! documents for exactly this ("drawing into the GLArea outside the render
+//! signal").
 //!
-//! # What this module ships
+//! After drawing, the author calls [`GlTarget::present`], which is
+//! `queue_render` — GTK re-composites the area's framebuffer into the widget
+//! tree on the next frame. The framebuffer's contents persist between frames
+//! (GTK does not clear it; the `render` handler is expected to), so a frame
+//! drawn outside the signal survives until the author draws the next one.
+//! Our own `render` handler is what keeps it that way: before `on_ready` it
+//! clears to [`CLEAR_RGBA`] so an un-adopted area isn't showing garbage, and
+//! once the author has taken over it does nothing at all.
 //!
-//! Path 1's foundation, proven end-to-end: a real `GtkGLArea` mounted in the
-//! layout tree that acquires a GL context and **clears its FBO to a color**
-//! from the `render` signal — concrete evidence the widget + GL context + FBO
-//! wiring is live on this host (Wayland, RADV). `on_resize`/`on_lost` are wired
-//! to the GLArea's `resize`/`unrealize` signals. `on_ready` is deliberately
-//! *not* fired: it demands a `GraphicsSurface` (raw-window-handle) this backend
-//! provably cannot construct (above). Firing it with a fabricated or toplevel
-//! handle would either error in `create_surface` or hijack the whole window —
-//! neither is honest embedded rendering, so we don't. The callback is retained
-//! at the exact call site the framework fix plugs into.
+//! Concretely: `make_current()` → draw with any GL/wgpu code → `present()`.
 
 use gtk4::glib;
 use gtk4::prelude::*;
-use runtime_core::primitives::graphics::{OnLost, OnReady, OnResize, OnResizeEvent};
-use std::cell::RefCell;
+use runtime_core::primitives::graphics::{
+    FramebufferOrigin, GlContextProvider, GlTarget, GraphicsTarget, OnLost, OnReady, OnReadyEvent,
+    OnResize, OnResizeEvent,
+};
+use std::cell::{Cell, RefCell};
+use std::ffi::c_void;
 use std::rc::Rc;
-use std::sync::OnceLock;
 
 /// `GL_COLOR_BUFFER_BIT` — the framebuffer bit `glClear` clears.
 const GL_COLOR_BUFFER_BIT: u32 = 0x0000_4000;
+/// `glGetIntegerv` pname for the currently bound draw framebuffer.
+const GL_FRAMEBUFFER_BINDING: u32 = 0x8CA6;
 
 /// The color the GLArea clears its framebuffer to (idealyst indigo, sRGB
-/// 0..1). Visible proof the FBO is real and we own the render pass.
+/// 0..1) *until* an author adopts it via `on_ready`. Visible proof the FBO is
+/// real and we own the render pass; replaced wholesale once the author draws.
 const CLEAR_RGBA: [f32; 4] = [0.106, 0.118, 0.216, 1.0];
 
-/// GL entry points read from the already-in-process libepoxy. GTK links
-/// libepoxy for its own GL renderer, so `dlopen("libepoxy.so.0", RTLD_LAZY)`
-/// just bumps the refcount on the loaded image. libepoxy does NOT export
-/// `glClearColor` as a function symbol — it exports `epoxy_glClearColor`, a
-/// DATA symbol holding a lazily-resolved dispatch pointer (initially a
-/// resolver thunk that, on first call, looks up the real GL entry via the
-/// *current* `GdkGLContext` and rewrites itself). So we `dlsym` the variable's
-/// address and read the stored function pointer out of it. Calling it is sound
-/// only while a GL context is current — which GTK guarantees before it emits
-/// the `render` signal.
-struct GlFns {
-    clear_color: unsafe extern "C" fn(f32, f32, f32, f32),
-    clear: unsafe extern "C" fn(u32),
+/// Call a resolved GL entry point. `None` when the symbol is unavailable, in
+/// which case the caller degrades rather than crashing.
+fn gl_fn<T: Copy>(symbol: &str) -> Option<T> {
+    let p = crate::gl_loader::proc_address(symbol);
+    if p.is_null() {
+        return None;
+    }
+    // SAFETY: the loader returns a GL entry point for `symbol`; `T` is the
+    // matching `extern "C" fn` signature at each (single) call site below.
+    debug_assert_eq!(std::mem::size_of::<T>(), std::mem::size_of::<*const c_void>());
+    Some(unsafe { *(&p as *const *const c_void as *const T) })
 }
 
-// GTK is single-threaded, but `OnceLock` requires `Sync`; raw `fn` pointers are
-// `Send + Sync`, so this is sound.
-unsafe impl Sync for GlFns {}
-unsafe impl Send for GlFns {}
+/// Clear the currently bound framebuffer to `rgba`. No-op if the entry points
+/// can't be resolved (GTK still shows the widget, just uncleared).
+fn clear_to(rgba: [f32; 4]) {
+    let (Some(clear_color), Some(clear)) = (
+        gl_fn::<unsafe extern "C" fn(f32, f32, f32, f32)>("glClearColor"),
+        gl_fn::<unsafe extern "C" fn(u32)>("glClear"),
+    ) else {
+        return;
+    };
+    let [r, g, b, a] = rgba;
+    // SAFETY: only reached from the `render` signal / with the area's context
+    // made current, which is what makes these calls legal.
+    unsafe {
+        clear_color(r, g, b, a);
+        clear(GL_COLOR_BUFFER_BIT);
+    }
+}
 
-static GL_FNS: OnceLock<Option<GlFns>> = OnceLock::new();
+/// The GL context + framebuffer of one `GtkGLArea`, lent to the author.
+///
+/// Holds the widget itself rather than a snapshotted context/FBO id: GTK
+/// reallocates both across a resize or a re-realize, so every question has to
+/// be re-asked of the live widget. Caching either would hand the author a
+/// destroyed context after the first resize.
+struct GtkGlProvider {
+    area: gtk4::GLArea,
+}
 
-/// Read `epoxy_glClearColor` / `epoxy_glClear`'s dispatch pointers from
-/// libepoxy once. `None` if the library or a symbol can't be found (then
-/// `render` no-ops rather than crashing — GTK still shows the widget, just
-/// uncleared).
-fn gl_fns() -> Option<&'static GlFns> {
-    GL_FNS
-        .get_or_init(|| unsafe {
-            // RTLD_LAZY, no NOLOAD: GTK has already mapped libepoxy, so this
-            // reuses it (dlopen refcounts by soname). We never dlclose — the
-            // handle lives for the process, keeping the dispatch pointers valid.
-            let mut handle = libc::dlopen(c"libepoxy.so.0".as_ptr(), libc::RTLD_LAZY);
-            if handle.is_null() {
-                handle = libc::dlopen(c"libepoxy.so".as_ptr(), libc::RTLD_LAZY);
-            }
-            if handle.is_null() {
-                return None;
-            }
-            // `dlsym` on a data symbol returns the ADDRESS OF the
-            // `epoxy_glClearColor` variable; the fn pointer is the value stored
-            // there, so we deref once.
-            let read = |name: &std::ffi::CStr| -> *const std::ffi::c_void {
-                let addr = libc::dlsym(handle, name.as_ptr());
-                if addr.is_null() {
-                    std::ptr::null()
-                } else {
-                    *(addr as *const *const std::ffi::c_void)
-                }
-            };
-            let cc = read(c"epoxy_glClearColor");
-            let cl = read(c"epoxy_glClear");
-            if cc.is_null() || cl.is_null() {
-                return None;
-            }
-            Some(GlFns {
-                clear_color: std::mem::transmute::<
-                    *const std::ffi::c_void,
-                    unsafe extern "C" fn(f32, f32, f32, f32),
-                >(cc),
-                clear: std::mem::transmute::<
-                    *const std::ffi::c_void,
-                    unsafe extern "C" fn(u32),
-                >(cl),
-            })
-        })
-        .as_ref()
+impl GlContextProvider for GtkGlProvider {
+    fn get_proc_address(&self, symbol: &str) -> *const c_void {
+        crate::gl_loader::proc_address(symbol)
+    }
+
+    fn make_current(&self) {
+        // `make_current` alone binds the context but leaves the DEFAULT
+        // framebuffer bound — drawing then goes to GTK's own toplevel buffer
+        // (or nowhere), not into the area. `attach_buffers` is the documented
+        // pairing for drawing outside the `render` signal: it makes the
+        // context current AND binds the area's FBO + its buffers, allocating
+        // them if a resize invalidated the old ones.
+        self.area.make_current();
+        self.area.attach_buffers();
+    }
+
+    fn framebuffer(&self) -> u32 {
+        // Ask GL what `attach_buffers` just bound rather than reaching into
+        // GTK's private `GtkGLArea` struct for its FBO id. `attach_buffers`
+        // is the only public API that surfaces it, and it does so only via
+        // the binding — so this must be read AFTER `make_current`.
+        let Some(get_integerv) = gl_fn::<unsafe extern "C" fn(u32, *mut i32)>("glGetIntegerv")
+        else {
+            return 0;
+        };
+        let mut fbo: i32 = 0;
+        // SAFETY: `make_current` precedes this per the `GlTarget` contract.
+        unsafe { get_integerv(GL_FRAMEBUFFER_BINDING, &mut fbo) };
+        fbo.max(0) as u32
+    }
+
+    fn origin(&self) -> FramebufferOrigin {
+        // GL's framebuffer origin. Measured, not assumed: wrapping this
+        // FBO's colour attachment through wgpu's `texture_from_raw`
+        // maps wgpu row N to GL row N (no index flip), and GDK then
+        // composites the GL texture bottom-up — so a top-left-origin
+        // renderer lands on screen upside down unless it flips.
+        // `tests/gl_target_adoption.rs` measures both halves of that.
+        FramebufferOrigin::BottomLeft
+    }
+
+    fn present(&self) {
+        // GTK composites the area's framebuffer into the widget tree on its
+        // next frame. Without this a frame drawn outside the `render` signal
+        // sits in the FBO unseen until something else dirties the widget.
+        self.area.queue_render();
+    }
 }
 
 /// Whether a `resize` signal reports a usable, changed size. Mirrors the
@@ -150,57 +170,104 @@ fn resize_decision(last: (u32, u32), new: (u32, u32)) -> Option<(u32, u32)> {
     Some(new)
 }
 
-/// Build a `GtkGLArea` that clears to [`CLEAR_RGBA`] every frame and wires the
-/// graphics lifecycle callbacks to the GLArea's GL signals. Returned as a
-/// `gtk4::Widget` for the backend to wrap into a layout node.
+/// Whether the first `render` tick can fire `on_ready` yet: only once the
+/// framebuffer has a real size. GTK emits `render` during realize with a
+/// degenerate 1×N / N×1 area, and an author that sized a swapchain or a
+/// vello target off that would allocate a garbage-sized buffer and never be
+/// told otherwise (`on_resize` only reports *changes*).
+fn ready_decision(fired: bool, size: (u32, u32)) -> Option<(u32, u32)> {
+    if fired || size.0 <= 1 || size.1 <= 1 {
+        return None;
+    }
+    Some(size)
+}
+
+/// Build a `GtkGLArea` and wire the graphics lifecycle callbacks to its GL
+/// signals. Returned as a `gtk4::Widget` for the backend to wrap into a layout
+/// node.
 pub(crate) fn build_gl_area(
     on_ready: OnReady,
     on_resize: OnResize,
     on_lost: OnLost,
 ) -> gtk4::Widget {
     let area = gtk4::GLArea::new();
-    // Drive rendering ourselves from the `render` signal every frame.
     area.set_auto_render(true);
     area.set_has_depth_buffer(false);
     area.set_has_stencil_buffer(false);
     // Prefer desktop GL; fall back to GLES if that's all the driver offers.
     area.set_required_version(3, 0);
 
-    // --- render: clear the FBO to a color (proves context + FBO are live) ---
-    area.connect_render(|_area, _ctx| {
-        // GTK has bound the GLArea's framebuffer and made its context current
-        // before emitting `render`, so these calls land on the widget's FBO.
-        if let Some(f) = gl_fns() {
-            let [r, g, b, a] = CLEAR_RGBA;
-            unsafe {
-                (f.clear_color)(r, g, b, a);
-                (f.clear)(GL_COLOR_BUFFER_BIT);
+    // --- render: fire on_ready once, then get out of the author's way ------
+    let on_ready_cell: Rc<RefCell<Option<OnReady>>> = Rc::new(RefCell::new(Some(on_ready)));
+    let adopted = Rc::new(Cell::new(false));
+    {
+        let on_ready_cell = on_ready_cell.clone();
+        let adopted = adopted.clone();
+        area.connect_render(move |area, _ctx| {
+            // GTK has made the context current and bound the area's FBO
+            // before emitting `render`.
+            if adopted.get() {
+                // The author owns the framebuffer now. Clearing here would
+                // erase the frame they drew from their own scheduler between
+                // our `render` ticks — the whole point of `present()` is that
+                // GTK re-composites what's already in the FBO.
+                return glib::Propagation::Stop;
             }
-        }
-        // Stop emission: we are the renderer for this area.
-        glib::Propagation::Stop
-    });
+
+            let size = (
+                area.width().max(0) as u32 * area.scale_factor().max(1) as u32,
+                area.height().max(0) as u32 * area.scale_factor().max(1) as u32,
+            );
+            clear_to(CLEAR_RGBA);
+
+            let fired = on_ready_cell.borrow().is_none();
+            if let Some(size) = ready_decision(fired, size) {
+                // Take the callback out before invoking: author code can
+                // re-enter GTK (queue_render → render), and a live
+                // `borrow_mut` across that would panic.
+                let cb = on_ready_cell.borrow_mut().take();
+                if let Some(mut cb) = cb {
+                    adopted.set(true);
+                    let target = GlTarget::new(Rc::new(GtkGlProvider { area: area.clone() }));
+                    cb(OnReadyEvent {
+                        target: GraphicsTarget::Gl(target),
+                        size,
+                        // `size` is already physical (logical × scale factor),
+                        // matching the web backend's "size is physical, no
+                        // separate scale" contract.
+                        scale: 1.0,
+                    });
+                    // Keep the callback: `on_lost` (unrealize) can be followed
+                    // by a fresh realize, and the contract promises a new
+                    // `on_ready` when the context comes back.
+                    *on_ready_cell.borrow_mut() = Some(cb);
+                }
+            }
+            glib::Propagation::Stop
+        });
+    }
 
     // --- resize: report real, changed physical sizes to on_resize ----------
     // GLArea's `resize` passes the framebuffer size in physical pixels
     // (logical × scale-factor) — exactly what the graphics contract wants.
     let on_resize_cell: Rc<RefCell<OnResize>> = Rc::new(RefCell::new(on_resize));
-    let last_size = Rc::new(std::cell::Cell::new((0u32, 0u32)));
+    let last_size = Rc::new(Cell::new((0u32, 0u32)));
     {
         let on_resize_cell = on_resize_cell.clone();
         let last_size = last_size.clone();
+        let adopted = adopted.clone();
         area.connect_resize(move |area, w, h| {
             let new = (w.max(0) as u32, h.max(0) as u32);
             let Some(new) = resize_decision(last_size.get(), new) else {
                 return;
             };
             last_size.set(new);
-            let scale = area.scale_factor().max(1) as f32;
             // Per the graphics contract, `on_resize` fires only AFTER
-            // `on_ready` has seeded the surface. Since `on_ready` cannot fire
-            // on GTK4 (see module docs), this is currently inert — but it is
-            // wired to the correct signal so it works the moment the framework
-            // exposes a GL-context render target and `on_ready` can fire.
+            // `on_ready` has seeded the target.
+            if !adopted.get() {
+                return;
+            }
+            let scale = area.scale_factor().max(1) as f32;
             (on_resize_cell.borrow_mut())(OnResizeEvent { size: new, scale });
         });
     }
@@ -209,30 +276,26 @@ pub(crate) fn build_gl_area(
     let on_lost_cell: Rc<RefCell<Option<OnLost>>> = Rc::new(RefCell::new(Some(on_lost)));
     {
         let on_lost_cell = on_lost_cell.clone();
+        let adopted = adopted.clone();
         area.connect_unrealize(move |_area| {
+            if !adopted.replace(false) {
+                return;
+            }
+            // Re-arm: a realize after this must fire `on_ready` again with the
+            // new context. `on_ready_cell` still holds the callback.
+            last_size.set((0, 0));
             if let Some(cb) = on_lost_cell.borrow_mut().as_mut() {
                 cb();
             }
         });
     }
 
-    // --- on_ready: BLOCKED on the raw-window-handle contract ----------------
-    // We cannot construct a `GraphicsSurface` (HasWindowHandle) for a
-    // `GtkGLArea` — it exposes a `GdkGLContext` + FBO, not a window handle
-    // wgpu's `create_surface` accepts (see module docs). Retained here, at the
-    // exact seam the framework fix plugs into: once `OnReadyEvent` can carry a
-    // GL-context render target instead of only a raw-window-handle, this fires
-    // from `connect_render`'s first invocation with the live context + FBO id +
-    // physical size. Until then it stays un-fired rather than handing back a
-    // fabricated or whole-window handle.
-    let _on_ready_blocked: Rc<RefCell<Option<OnReady>>> = Rc::new(RefCell::new(Some(on_ready)));
-
     area.upcast::<gtk4::Widget>()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::resize_decision;
+    use super::{ready_decision, resize_decision};
 
     #[test]
     fn resize_decision_reports_real_change() {
@@ -250,5 +313,22 @@ mod tests {
         // on_resize never sees a bogus 1×N surface.
         assert_eq!(resize_decision((800, 600), (1, 600)), None);
         assert_eq!(resize_decision((800, 600), (800, 0)), None);
+    }
+
+    #[test]
+    fn ready_decision_fires_once_on_a_real_size() {
+        assert_eq!(ready_decision(false, (800, 600)), Some((800, 600)));
+        // Already fired — the author gets exactly one on_ready per context.
+        assert_eq!(ready_decision(true, (800, 600)), None);
+    }
+
+    /// GTK emits `render` during realize with a degenerate area. Firing
+    /// `on_ready` there hands the author a 1×N size to allocate against, and
+    /// since `on_resize` only reports *changes* they'd never be corrected.
+    #[test]
+    fn ready_decision_waits_for_a_real_framebuffer_size() {
+        assert_eq!(ready_decision(false, (0, 0)), None);
+        assert_eq!(ready_decision(false, (1, 600)), None);
+        assert_eq!(ready_decision(false, (800, 1)), None);
     }
 }

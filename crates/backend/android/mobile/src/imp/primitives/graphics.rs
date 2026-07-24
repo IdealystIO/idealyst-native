@@ -34,7 +34,8 @@ use crate::imp::callbacks::leak;
 use backend_android_core::helpers::apply_default_layout_params;
 use crate::imp::{with_env, AndroidBackend};
 use runtime_core::primitives::graphics::{
-    GraphicsHandle, GraphicsOps, GraphicsSurface, OnLost, OnReady, OnReadyEvent, OnResize,
+    GraphicsHandle, GraphicsOps, GraphicsSurface, GraphicsTarget, OnLost, OnReady, OnReadyEvent,
+    OnResize,
     OnResizeEvent, SurfaceProvider,
 };
 use jni::objects::{GlobalRef, JValue};
@@ -437,7 +438,7 @@ unsafe fn fire_on_ready(
 
     cb.ready_fired = true;
     let event = OnReadyEvent {
-        surface: surface_handle,
+        target: GraphicsTarget::RawWindow(surface_handle),
         size: cb.last_size,
         scale: 1.0,
     };

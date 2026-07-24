@@ -28,7 +28,8 @@
 //!
 //! graphics(move |event: OnReadyEvent| {
 //!     spawn_async(async move {
-//!         let renderer = build_my_renderer(event.surface, event.size).await;
+//!         let Some(surface) = event.into_surface() else { return };
+//!         let renderer = build_my_renderer(surface, event.size).await;
 //!         let _loop = render_loop(move |elapsed| {
 //!             renderer.paint_frame(elapsed);
 //!         });

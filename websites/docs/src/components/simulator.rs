@@ -173,8 +173,12 @@ pub fn Simulator(props: SimulatorProps) -> Element {
             let build_ui = build_ui.clone();
             let skin = skin.clone();
             let profile = profile.clone();
-            let surface = _event.surface;
             let size = _event.size;
+            let Some(surface) = _event.into_surface() else {
+                // Web always yields a raw-window target; a GL-lending
+                // backend (GTK) has no swapchain for host_web to drive.
+                return;
+            };
             spawn_async(async move {
                 // `host_web::mount` does the entire init: wgpu
                 // surface, adapter, device, queue, host, renderer,

@@ -102,3 +102,55 @@ impl Scheduler for GtkScheduler {
         Box::new(SourceHandle { id: Some(id), done })
     }
 }
+
+// ---------------------------------------------------------------------------
+// Render loop
+// ---------------------------------------------------------------------------
+
+/// Install the GTK per-frame render-loop driver.
+///
+/// Separate from [`install`] because it answers a different question:
+/// the [`Scheduler`] serves author-facing timing (`after_ms`,
+/// `raf_loop`), while [`runtime_core::driver::render_loop`] is what an
+/// embedded GPU host (`host-linux-desktop`) uses to drive its paint.
+/// Without this, `render_loop` hands back an inert handle and the
+/// closure NEVER fires — an embedded wgpu preview mounts cleanly, logs
+/// nothing wrong, and simply stays blank. macOS has the equivalent in
+/// `backend_macos::install_render_loop`.
+pub fn install_render_loop() {
+    runtime_core::driver::install_render_loop_driver(Box::new(GtkRenderLoopDriver));
+}
+
+struct GtkRenderLoopDriver;
+// SAFETY: same rationale as `GtkScheduler` — no shared state, and every
+// source is created and run on the single GTK main thread.
+unsafe impl Send for GtkRenderLoopDriver {}
+unsafe impl Sync for GtkRenderLoopDriver {}
+
+impl runtime_core::driver::RenderLoopDriver for GtkRenderLoopDriver {
+    fn start(
+        &self,
+        mut closure: Box<dyn FnMut(f32) + 'static>,
+    ) -> Box<dyn runtime_core::driver::RenderLoopHandle> {
+        // ~60 Hz, matching `raf_loop` above. GLib has no vsync-locked
+        // frame clock that isn't tied to a specific widget, and the
+        // driver trait is widget-agnostic, so a timeout is the honest
+        // mapping. The host it drives calls `GlTarget::present()`
+        // (`queue_render`), and GTK still composites on ITS frame clock
+        // — so this rate sets how often we produce frames, not how
+        // often they reach the screen.
+        let started = std::time::Instant::now();
+        let done = Rc::new(Cell::new(false));
+        let id = glib::source::timeout_add_local(Duration::from_millis(16), move || {
+            closure(started.elapsed().as_secs_f32());
+            glib::ControlFlow::Continue
+        });
+        Box::new(SourceHandle { id: Some(id), done })
+    }
+}
+
+impl runtime_core::driver::RenderLoopHandle for SourceHandle {
+    fn cancel(&mut self) {
+        ScheduleHandle::cancel(self)
+    }
+}

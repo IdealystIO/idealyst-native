@@ -97,7 +97,14 @@ mod sim_mode {
                     color_scheme: ColorScheme::Light,
                 };
                 let skin: Rc<dyn Painter> = Rc::new(ios_sim::IosSim::new());
-                match host_web::mount(event.surface, event.size, profile, skin, || {
+                let size = event.size;
+                let Some(surface) = event.into_surface() else {
+                    web_sys::console::warn_1(
+                        &"[fiddle-snippet] no window handle on the graphics target".into(),
+                    );
+                    return;
+                };
+                match host_web::mount(surface, size, profile, skin, || {
                     super::snippet::app()
                 })
                 .await

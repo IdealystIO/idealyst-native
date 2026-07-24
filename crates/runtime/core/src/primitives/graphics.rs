@@ -3,9 +3,11 @@
 //!
 //! The framework's job is narrow on purpose: stand up a drawable
 //! surface in the layout (`<canvas>` on web, `SurfaceView` on
-//! Android, `UIView` + `CAMetalLayer` on iOS), expose it as a
-//! standard [`raw_window_handle`] handle, and notify the author when
-//! it's ready / resized / lost. Everything past that — picking a GPU
+//! Android, `UIView` + `CAMetalLayer` on iOS, `GtkGLArea` on Linux),
+//! expose it as a [`GraphicsTarget`] — usually a standard
+//! [`raw_window_handle`] handle, a lent GL context where the toolkit
+//! can't provide one — and notify the author when it's ready /
+//! resized / lost. Everything past that — picking a GPU
 //! backend, building a render loop, allocating resources — is the
 //! author's call. Most authors will pair this with `wgpu`, which
 //! takes any `HasWindowHandle + HasDisplayHandle` and dispatches to
@@ -39,6 +41,29 @@
 //!   which fire `on_ready` / `on_resize` / `on_lost` respectively.
 //! - **iOS**: not yet implemented — would expose the view's
 //!   `CAMetalLayer` as `AppKitWindowHandle`/`UiKitWindowHandle`.
+//! - **Linux (GTK4)**: a `GtkGLArea`, exposed as a [`GlTarget`] rather
+//!   than a window handle — see below.
+//!
+//! # Why the target is an enum
+//!
+//! The strategy above assumes each graphics widget owns a native
+//! window/layer to wrap in a `raw_window_handle`. GTK4 breaks that
+//! assumption: it removed GTK3's per-widget native windows, so the
+//! entire toplevel is one native surface that GTK renders every widget
+//! into with its own GSK renderer. There is no per-widget
+//! `wl_surface`/XID, and the toplevel's handle is both the wrong rect
+//! and already owned by GTK's renderer — a second wgpu swapchain on it
+//! fights GTK for the buffer. GTK's sanctioned escape hatch
+//! (`GtkGLArea`) yields a GL *context* + framebuffer, which
+//! [`GraphicsSurface`] structurally cannot represent.
+//!
+//! So [`OnReadyEvent::target`] is a [`GraphicsTarget`] — `RawWindow`
+//! on every backend that has a real handle, `Gl` where the toolkit only
+//! lends a context. Making it an enum rather than "surface, sometimes
+//! fabricated" keeps the impossibility *visible* at the type level:
+//! an author that only supports swapchains gets `None` from
+//! [`OnReadyEvent::into_surface`] and degrades, instead of a handle
+//! that errors inside `create_surface` or hijacks the whole window.
 //!
 //! # Lifecycle
 //!
@@ -118,11 +143,152 @@ impl HasDisplayHandle for GraphicsSurface {
 pub trait SurfaceProvider: HasWindowHandle + HasDisplayHandle + 'static {}
 impl<T: HasWindowHandle + HasDisplayHandle + 'static> SurfaceProvider for T {}
 
+/// A live OpenGL context the backend owns and lends to the author,
+/// for toolkits that composite every widget into one native surface
+/// and therefore cannot hand out a per-widget window handle.
+///
+/// GTK4 is the motivating case: it removed GTK3's per-widget native
+/// windows, so the only raw handle obtainable is the *toplevel's* —
+/// already owned and continuously presented by GTK's own renderer, so
+/// a second swapchain configured on it fights GTK for the buffer.
+/// GTK's sanctioned escape hatch is `GtkGLArea`, which hands out a
+/// `GdkGLContext` + a framebuffer. That's a GL *context*, not a window
+/// handle, so [`GraphicsSurface`] cannot express it.
+///
+/// # Thread affinity — why `Rc`, not `Arc`
+///
+/// A GL context is current on *one* thread at a time and is invalid to
+/// touch from any other, so unlike [`GraphicsSurface`] (which wgpu
+/// requires be `Send + Sync`) this type is deliberately neither. The
+/// refcount matches the constraint the API already has rather than
+/// papering over it with an `unsafe impl Send`.
+///
+/// # Contract for the author
+///
+/// Every call into a GPU library built on this context — creation,
+/// rendering, *and drop* — must happen between [`make_current`] and
+/// the return to the backend's event loop. wgpu's GLES HAL states this
+/// explicitly for externally-adopted contexts
+/// (`gles::Adapter::new_external`): it holds no EGL handle of its own
+/// and never makes the context current for you.
+///
+/// [`make_current`]: GlTarget::make_current
+#[derive(Clone)]
+pub struct GlTarget {
+    inner: Rc<dyn GlContextProvider>,
+}
+
+impl GlTarget {
+    pub fn new(inner: Rc<dyn GlContextProvider>) -> Self {
+        Self { inner }
+    }
+
+    /// Resolve a GL entry point by name, for a loader-function-based
+    /// GPU library (`glow::Context::from_loader_function`,
+    /// `wgpu_hal::gles::Adapter::new_external`, `epoxy`, `gl::load_with`).
+    /// Returns null for an unavailable symbol, as GL loaders expect.
+    pub fn get_proc_address(&self, symbol: &str) -> *const std::ffi::c_void {
+        self.inner.get_proc_address(symbol)
+    }
+
+    /// Make the context current on the calling thread AND bind the
+    /// framebuffer named by [`framebuffer`](Self::framebuffer). Must be
+    /// called before any GL work; cheap enough to call per frame, and
+    /// the backend may have swapped the framebuffer out from under a
+    /// resize since the last frame.
+    pub fn make_current(&self) {
+        self.inner.make_current();
+    }
+
+    /// The GL framebuffer object the author must render into — NOT the
+    /// default framebuffer (`0`). The backend composites this into the
+    /// rest of its widget tree.
+    ///
+    /// Re-read after every [`make_current`](Self::make_current): the id
+    /// changes when the backend reallocates its buffers on resize, and
+    /// rendering into the stale one draws into a freed attachment.
+    pub fn framebuffer(&self) -> u32 {
+        self.inner.framebuffer()
+    }
+
+    /// Row order of the lent framebuffer — which edge of the image row
+    /// 0 sits on. See [`FramebufferOrigin`]; on GL this is
+    /// [`BottomLeft`](FramebufferOrigin::BottomLeft) and a renderer
+    /// working in top-left coordinates MUST flip vertically.
+    pub fn origin(&self) -> FramebufferOrigin {
+        self.inner.origin()
+    }
+
+    /// Tell the backend a frame is finished, so it composites the
+    /// framebuffer into the rest of its widget tree.
+    ///
+    /// The raw-window path has no equivalent because there the author
+    /// owns a swapchain and calls `present()` on the frame itself. Here
+    /// the backend owns presentation, so a frame drawn between its
+    /// repaints sits in the framebuffer unseen until this is called.
+    pub fn present(&self) {
+        self.inner.present();
+    }
+}
+
+/// Which edge of the image row 0 of a framebuffer sits on.
+///
+/// Renderers overwhelmingly work in `TopLeft` coordinates (wgpu, Metal,
+/// D3D, every 2D scene graph in this repo). GL is the odd one out: its
+/// framebuffer origin is the bottom-left, so a top-left-origin image
+/// written into a GL framebuffer is displayed upside down unless the
+/// renderer flips.
+///
+/// This is reported as *data on the target* rather than left for
+/// consumers to infer from the platform, so that folding the flip in
+/// costs a sign in an existing projection matrix and never a
+/// `if cfg!(linux)` at a call site. It's the same shape as
+/// [`OnReadyEvent::scale`]: something about this particular drawable
+/// that the renderer's base transform has to account for.
+///
+/// Verified rather than assumed — `texture_from_raw` does NOT flip
+/// indices, and GDK's compositing of the GL texture does. See
+/// `backend-linux/tests/gl_target_adoption.rs`, which measures both the
+/// raw framebuffer layout and what GTK actually puts on screen.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FramebufferOrigin {
+    TopLeft,
+    BottomLeft,
+}
+
+/// Trait the per-backend GL context object implements. See
+/// [`GlTarget`] for the calling contract — the wrapper's methods are
+/// one-to-one with these.
+pub trait GlContextProvider: 'static {
+    fn get_proc_address(&self, symbol: &str) -> *const std::ffi::c_void;
+    fn make_current(&self);
+    fn framebuffer(&self) -> u32;
+    fn origin(&self) -> FramebufferOrigin;
+    fn present(&self);
+}
+
+/// What the backend hands the author to render into.
+///
+/// Most backends own a native window/layer per graphics widget and
+/// yield [`RawWindow`](Self::RawWindow) — the author calls
+/// `wgpu::Instance::create_surface(&surface)` and drives a swapchain.
+/// Toolkits that composite every widget into a single native surface
+/// (GTK4) cannot do that and yield [`Gl`](Self::Gl) instead.
+///
+/// Authors that only support the swapchain model should
+/// [`into_surface`](OnReadyEvent::into_surface) and degrade gracefully
+/// on `None` rather than assume a surface is always there — that's the
+/// whole reason this is an enum and not a struct field.
+pub enum GraphicsTarget {
+    RawWindow(GraphicsSurface),
+    Gl(GlTarget),
+}
+
 /// Event delivered to `on_ready`. The surface is in the layout tree
-/// and has a real size; the author can call
-/// `wgpu::Instance::create_surface(&event.surface)` synchronously.
+/// and has a real size; the author can build their GPU state
+/// synchronously.
 pub struct OnReadyEvent {
-    pub surface: GraphicsSurface,
+    pub target: GraphicsTarget,
     /// Drawable size in physical pixels. On web this already
     /// accounts for `devicePixelRatio`; native backends report the
     /// pixel-buffer size directly. Authors should size their
@@ -137,6 +303,34 @@ pub struct OnReadyEvent {
     /// `1.0` from a backend means "not yet reported" (renders at
     /// physical scale, the historical behavior).
     pub scale: f32,
+}
+
+impl OnReadyEvent {
+    /// Borrow the raw-window handle, or `None` on a GL-context backend.
+    pub fn surface(&self) -> Option<&GraphicsSurface> {
+        match &self.target {
+            GraphicsTarget::RawWindow(s) => Some(s),
+            GraphicsTarget::Gl(_) => None,
+        }
+    }
+
+    /// Take the raw-window handle, or `None` on a GL-context backend.
+    /// `wgpu::Instance::create_surface` wants it by value (it yields a
+    /// `Surface<'static>`), so this is the usual accessor.
+    pub fn into_surface(self) -> Option<GraphicsSurface> {
+        match self.target {
+            GraphicsTarget::RawWindow(s) => Some(s),
+            GraphicsTarget::Gl(_) => None,
+        }
+    }
+
+    /// Borrow the lent GL context, or `None` on a raw-window backend.
+    pub fn gl(&self) -> Option<&GlTarget> {
+        match &self.target {
+            GraphicsTarget::Gl(g) => Some(g),
+            GraphicsTarget::RawWindow(_) => None,
+        }
+    }
 }
 
 /// Event delivered to `on_resize`. Fires whenever the drawable
@@ -248,5 +442,120 @@ impl Bound<GraphicsHandle> {
             *ref_fill = Some(RefFill::Graphics(Box::new(move |h| r.fill(h))));
         }
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FakeGl {
+        presented: std::cell::Cell<u32>,
+    }
+
+    impl GlContextProvider for FakeGl {
+        fn get_proc_address(&self, symbol: &str) -> *const std::ffi::c_void {
+            // Mimics a real loader: known symbol resolves, unknown is null.
+            if symbol == "glClear" {
+                1 as *const std::ffi::c_void
+            } else {
+                std::ptr::null()
+            }
+        }
+        fn make_current(&self) {}
+        fn framebuffer(&self) -> u32 {
+            7
+        }
+        fn origin(&self) -> FramebufferOrigin {
+            FramebufferOrigin::BottomLeft
+        }
+        fn present(&self) {
+            self.presented.set(self.presented.get() + 1);
+        }
+    }
+
+    struct FakeWindow;
+
+    impl HasWindowHandle for FakeWindow {
+        fn window_handle(
+            &self,
+        ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+            Err(raw_window_handle::HandleError::NotSupported)
+        }
+    }
+
+    impl HasDisplayHandle for FakeWindow {
+        fn display_handle(
+            &self,
+        ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+            Err(raw_window_handle::HandleError::NotSupported)
+        }
+    }
+
+    fn gl_event() -> OnReadyEvent {
+        OnReadyEvent {
+            target: GraphicsTarget::Gl(GlTarget::new(Rc::new(FakeGl {
+                presented: std::cell::Cell::new(0),
+            }))),
+            size: (800, 600),
+            scale: 1.0,
+        }
+    }
+
+    fn window_event() -> OnReadyEvent {
+        OnReadyEvent {
+            target: GraphicsTarget::RawWindow(GraphicsSurface::new(Arc::new(FakeWindow))),
+            size: (800, 600),
+            scale: 2.0,
+        }
+    }
+
+    /// The whole reason `target` is an enum: a renderer that only knows
+    /// how to drive a swapchain must be able to detect that there ISN'T
+    /// one and step aside. If these ever returned a fabricated surface,
+    /// such a renderer would fail deep inside `create_surface` (or worse,
+    /// hijack the toolkit's own window) instead of degrading.
+    #[test]
+    fn gl_target_yields_no_raw_window_surface() {
+        assert!(gl_event().surface().is_none());
+        assert!(gl_event().into_surface().is_none());
+        assert!(gl_event().gl().is_some());
+    }
+
+    #[test]
+    fn raw_window_target_yields_a_surface_and_no_gl_context() {
+        assert!(window_event().surface().is_some());
+        assert!(window_event().into_surface().is_some());
+        assert!(window_event().gl().is_none());
+    }
+
+    /// Every accessor on the wrapper must reach the backend's provider.
+    /// A defaulted or swallowed method here is invisible at the call
+    /// site and shows up as a blank or upside-down GPU surface.
+    #[test]
+    fn gl_target_forwards_every_accessor_to_the_provider() {
+        let provider = Rc::new(FakeGl { presented: std::cell::Cell::new(0) });
+        let target = GlTarget::new(provider.clone());
+
+        assert!(!target.get_proc_address("glClear").is_null());
+        assert!(target.get_proc_address("glNope").is_null());
+        assert_eq!(target.framebuffer(), 7);
+        assert_eq!(target.origin(), FramebufferOrigin::BottomLeft);
+
+        target.present();
+        target.present();
+        assert_eq!(provider.presented.get(), 2, "present() must reach the backend");
+    }
+
+    /// `GlTarget` is `Clone` so a renderer can stash it in its own
+    /// state; clones must address the SAME context, not a detached copy.
+    #[test]
+    fn cloning_a_gl_target_shares_one_context() {
+        let provider = Rc::new(FakeGl { presented: std::cell::Cell::new(0) });
+        let target = GlTarget::new(provider.clone());
+        let clone = target.clone();
+        clone.present();
+        target.present();
+        assert_eq!(provider.presented.get(), 2);
     }
 }

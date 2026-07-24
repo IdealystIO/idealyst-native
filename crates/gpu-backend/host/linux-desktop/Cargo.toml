@@ -1,0 +1,41 @@
+[package]
+name = "host-linux-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# GTK4/Linux native shell for the wgpu render backend.
+#
+# The GTK sibling of `host-macos-desktop`. Everything above the GPU
+# boundary is identical — `render_wgpu::Host` + `Renderer`, the
+# `session::REGISTRY` scope, per-frame paint through
+# `runtime_core::driver::render_loop`. What differs is *where the pixels
+# go*, and that difference is forced by GTK4:
+#
+# Every other host receives a `raw_window_handle` and drives a wgpu
+# swapchain. GTK4 removed per-widget native windows, so there is no
+# per-widget surface to wrap — the backend lends a live GL context
+# (`GraphicsTarget::Gl`) from a `GtkGLArea` instead. This host therefore
+# adopts that context through wgpu's GLES HAL rather than creating a
+# surface, and presents by handing GTK its own framebuffer back.
+#
+# Used to embed a live preview of an idealyst app inside another
+# idealyst app on Linux — the website's home-page Simulator.
+#
+# Note on inputs: like the macOS and iOS hosts, this does NOT install
+# pointer handlers — the embedded preview is read-only.
+
+[dependencies]
+render-api = { workspace = true }
+render-wgpu = { workspace = true }
+runtime-core = { workspace = true, features = ["async-driver"] }
+log = "0.4"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Same wgpu major (29) every other GPU consumer in the workspace pins.
+# `gles` is the only backend that can adopt an existing GL context;
+# `wgpu-hal` is a direct dep because `wgpu::hal` re-exports the generic
+# API but not the `gles::Adapter::new_external` constructor.
+wgpu = { version = "29", default-features = false, features = ["gles", "wgsl"] }
+wgpu-hal = { version = "29", features = ["gles"] }
+wgpu-types = "29"

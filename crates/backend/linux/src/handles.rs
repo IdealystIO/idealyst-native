@@ -17,6 +17,8 @@
 //! holds the backend borrow; skipping then is safe since the animation
 //! clock re-applies within a frame.
 
+use gtk4::prelude::*;
+
 use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Weak;
@@ -77,10 +79,16 @@ impl ViewOps for LinuxViewOps {
     }
 
     fn absolute_frame(&self, node: &dyn Any) -> Option<ViewportRect> {
-        // The welcome scene reads this only on the root (page) node,
-        // whose parent-relative frame IS window-relative; good enough
-        // for the viewport size the orbit math needs.
-        self.frame(node)
+        let state = node.downcast_ref::<HandleState>()?;
+        let b = state.backend.upgrade()?;
+        let b = b.try_borrow().ok()?;
+        b.node_absolute_frame(state.node.id)
+            .map(|(x, y, w, h)| ViewportRect {
+                x,
+                y,
+                width: w,
+                height: h,
+            })
     }
 }
 
@@ -117,4 +125,65 @@ pub(crate) fn make_text_handle(backend: &LinuxBackend, node: &LinuxNode) -> Text
         }) as std::rc::Rc<dyn Any>,
         &LINUX_TEXT_OPS,
     )
+}
+
+// =========================================================================
+// Scroll-view handle
+// =========================================================================
+
+/// Imperative ops for a `scroll_view` ref. Without these the framework
+/// installs `NoopScrollViewOps` and every `scroll_to` silently does
+/// nothing — which is why clicking a table-of-contents entry didn't jump
+/// to its section.
+struct LinuxScrollViewOps;
+
+impl runtime_core::primitives::scroll_view::ScrollViewOps for LinuxScrollViewOps {
+    fn scroll_to(&self, node: &dyn Any, x: f32, y: f32) {
+        let Some(state) = node.downcast_ref::<HandleState>() else {
+            return;
+        };
+        let Some(sw) = state.node.widget().downcast_ref::<gtk4::ScrolledWindow>() else {
+            return;
+        };
+        // Clamp into the adjustment's scrollable range. GTK clamps on its
+        // own, but doing it here keeps the value we set and the value the
+        // adjustment reports in agreement for any follow-up read.
+        let hadj = sw.hadjustment();
+        let vadj = sw.vadjustment();
+        hadj.set_value(
+            (x as f64).clamp(hadj.lower(), (hadj.upper() - hadj.page_size()).max(hadj.lower())),
+        );
+        vadj.set_value(
+            (y as f64).clamp(vadj.lower(), (vadj.upper() - vadj.page_size()).max(vadj.lower())),
+        );
+    }
+}
+
+static LINUX_SCROLL_VIEW_OPS: LinuxScrollViewOps = LinuxScrollViewOps;
+
+pub(crate) fn make_scroll_view_handle(
+    backend: &LinuxBackend,
+    node: &LinuxNode,
+) -> runtime_core::primitives::scroll_view::ScrollViewHandle {
+    runtime_core::primitives::scroll_view::ScrollViewHandle::new(
+        std::rc::Rc::new(HandleState {
+            backend: backend.self_ref(),
+            node: node.clone(),
+        }) as std::rc::Rc<dyn Any>,
+        &LINUX_SCROLL_VIEW_OPS,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn scroll_view_ops_for_test() -> &'static dyn runtime_core::primitives::scroll_view::ScrollViewOps
+{
+    &LINUX_SCROLL_VIEW_OPS
+}
+
+#[cfg(test)]
+pub(crate) fn handle_state_for_test(backend: &LinuxBackend, node: &LinuxNode) -> HandleState {
+    HandleState {
+        backend: backend.self_ref(),
+        node: node.clone(),
+    }
 }
