@@ -1,6 +1,6 @@
 //! Font resolution for the Win32 backend.
 //!
-//! Two jobs:
+//! Three jobs:
 //!
 //! 1. **Typeface installation** — the framework's declarative `typeface!`
 //!    / `face!` assets arrive through
@@ -11,19 +11,25 @@
 //!    embedded bytes (process-private, no filesystem round trip) and
 //!    `AddFontResourceExW(FR_PRIVATE)` for a bundled path.
 //!
-//! 2. **`HFONT` construction** — [`create_hfont`] maps the framework's
-//!    `font_size` / `font_weight` / `font_family` onto a `LOGFONTW`. The
-//!    backend caches these by [`FontKey`]: a text node re-applies its
-//!    style on every reactive pass, and `CreateFontIndirectW` on each one
-//!    would leak GDI handles fast (the 10 k per-process handle cap is
-//!    reachable in an animation loop).
+//! 2. **`HFONT` construction** for GDI text *measurement* — the layout
+//!    pass measures strings with `GetTextExtentPoint32W`, which needs a
+//!    selected `HFONT`.
+//!
+//! 3. **`GpFont` construction** for GDI+ text *drawing* — the scene
+//!    painter draws strings with `GdipDrawString`, which takes a GDI+
+//!    font object. Both are built from the same `LOGFONTW` so measurement
+//!    and rendering agree glyph-for-glyph.
+//!
+//! Entries are cached by [`FontKey`]: a text node re-applies its style on
+//! every reactive pass, and creating GDI objects per apply would leak
+//! toward the 10 k per-process GDI handle cap fast in an animation loop.
 //!
 //! ## Why `lfHeight` is negative
 //!
 //! A positive `lfHeight` is the font's *cell* height (ascent + descent +
 //! leading); a negative one is the *character* (em) height, which is what
 //! CSS `font-size` means. Passing `font_size` positive renders visibly
-//! smaller than every other backend — so [`create_hfont`] negates.
+//! smaller than every other backend — so [`build_logfont`] negates.
 
 use std::collections::HashMap;
 
@@ -32,11 +38,12 @@ use runtime_core::FontWeight;
 
 use windows::core::PCWSTR;
 use windows::Win32::Graphics::Gdi::{
-    AddFontMemResourceEx, AddFontResourceExW, CreateFontIndirectW, CLEARTYPE_QUALITY,
+    AddFontMemResourceEx, AddFontResourceExW, CreateFontIndirectW, HDC, CLEARTYPE_QUALITY,
     CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, FR_PRIVATE, HFONT, LOGFONTW, OUT_TT_PRECIS,
 };
+use windows::Win32::Graphics::GdiPlus::{GdipCreateFontFromLogfontW, GpFont};
 
-/// Cache key for a resolved `HFONT`. Family is owned (the style's family
+/// Cache key for a resolved font. Family is owned (the style's family
 /// name), size is in whole pixels, weight is the GDI 100–900 scale.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct FontKey {
@@ -46,11 +53,20 @@ pub(crate) struct FontKey {
     pub italic: bool,
 }
 
-/// Process-lifetime cache of `HFONT`s keyed by [`FontKey`]. Handles are
-/// intentionally never deleted: they're shared by every text node using
-/// that style and live until the process exits (which, on this backend,
-/// is a `TerminateProcess`).
-pub(crate) type FontCache = HashMap<FontKey, HFONT>;
+/// One cached font: the `LOGFONTW` recipe, the GDI `HFONT` (measurement)
+/// and the lazily-built GDI+ `GpFont` (drawing). Handles are intentionally
+/// never deleted — they're shared across text nodes and live until the
+/// process exits (which, on this backend, is a `TerminateProcess`).
+pub(crate) struct FontEntry {
+    pub logfont: LOGFONTW,
+    pub hfont: HFONT,
+    /// Null until the first paint that needs it (GDI+ font creation
+    /// wants an HDC, which the scene painter has at paint time).
+    pub gpfont: *mut GpFont,
+}
+
+/// Process-lifetime cache of fonts keyed by [`FontKey`].
+pub(crate) type FontCache = HashMap<FontKey, FontEntry>;
 
 /// Map the framework's [`FontWeight`] onto the GDI 100–900 numeric scale
 /// (`FW_THIN`..`FW_HEAVY`), the same numbers CSS uses.
@@ -68,10 +84,10 @@ pub(crate) fn weight_to_gdi(w: FontWeight) -> i32 {
     }
 }
 
-/// Build an `HFONT` for `key`. An empty `family` leaves `lfFaceName`
-/// blank, which makes GDI pick the default face for the requested
-/// characteristics.
-pub(crate) fn create_hfont(key: &FontKey) -> HFONT {
+/// Build the `LOGFONTW` recipe for `key`. An empty `family` leaves
+/// `lfFaceName` blank, which makes GDI pick the default face for the
+/// requested characteristics.
+pub(crate) fn build_logfont(key: &FontKey) -> LOGFONTW {
     let mut lf = LOGFONTW {
         // Negative = em height, matching CSS `font-size`. See module docs.
         lfHeight: -key.size_px,
@@ -87,7 +103,38 @@ pub(crate) fn create_hfont(key: &FontKey) -> HFONT {
     // so copy at most 31 code units.
     let wide: Vec<u16> = key.family.encode_utf16().take(31).collect();
     lf.lfFaceName[..wide.len()].copy_from_slice(&wide);
-    unsafe { CreateFontIndirectW(&lf) }
+    lf
+}
+
+/// Get-or-create the cache entry for `key`. The `HFONT` is built
+/// eagerly (measurement can happen before any paint); the `GpFont` is
+/// deferred to [`gpfont_for`].
+pub(crate) fn entry_for<'a>(cache: &'a mut FontCache, key: &FontKey) -> Option<&'a mut FontEntry> {
+    if !cache.contains_key(key) {
+        let logfont = build_logfont(key);
+        let hfont = unsafe { CreateFontIndirectW(&logfont) };
+        if hfont.is_invalid() {
+            return None;
+        }
+        cache.insert(
+            key.clone(),
+            FontEntry { logfont, hfont, gpfont: std::ptr::null_mut() },
+        );
+    }
+    cache.get_mut(key)
+}
+
+/// The entry's GDI+ font, created on first use against `hdc` (any DC
+/// works — the LOGFONT carries the size in device pixels).
+pub(crate) fn gpfont_for(entry: &mut FontEntry, hdc: HDC) -> *mut GpFont {
+    if entry.gpfont.is_null() {
+        let mut f: *mut GpFont = std::ptr::null_mut();
+        let status = unsafe { GdipCreateFontFromLogfontW(hdc, &entry.logfont, &mut f) };
+        if status.0 == 0 && !f.is_null() {
+            entry.gpfont = f;
+        }
+    }
+    entry.gpfont
 }
 
 /// Install one typeface face into the process font table so
@@ -136,25 +183,31 @@ mod tests {
     #[test]
     fn regression_lfheight_is_negative_em_height() {
         let key = FontKey { family: "Segoe UI".into(), size_px: 56, weight: 700, italic: false };
-        // Build the LOGFONTW the same way `create_hfont` does and assert
-        // the sign convention (constructing the HFONT itself needs no GDI
-        // context, but the sign is the part that regressed).
-        assert_eq!(-key.size_px, -56);
-        let f = create_hfont(&key);
-        assert!(!f.is_invalid(), "CreateFontIndirectW should succeed for a system face");
+        let lf = build_logfont(&key);
+        assert_eq!(lf.lfHeight, -56);
+        assert_eq!(lf.lfWeight, 700);
     }
 
     /// A long family name must not overflow the fixed 32-wchar
     /// `lfFaceName` buffer (and must stay NUL-terminated).
     #[test]
     fn overlong_family_name_is_truncated_safely() {
-        let key = FontKey {
-            family: "A".repeat(100),
-            size_px: 12,
-            weight: 400,
-            italic: false,
-        };
-        let f = create_hfont(&key);
-        assert!(!f.is_invalid());
+        let key = FontKey { family: "A".repeat(100), size_px: 12, weight: 400, italic: false };
+        let lf = build_logfont(&key);
+        // 31 chars + the NUL terminator the Default zeroed in.
+        assert_eq!(lf.lfFaceName[31], 0);
+        assert_eq!(lf.lfFaceName[30], 'A' as u16);
+    }
+
+    /// The same key must reuse one cache entry (GDI handle dedup).
+    #[test]
+    fn cache_returns_same_entry_for_same_key() {
+        let mut cache = FontCache::new();
+        let key = FontKey { family: String::new(), size_px: 14, weight: 400, italic: false };
+        let a = entry_for(&mut cache, &key).map(|e| e.hfont.0 as usize);
+        let b = entry_for(&mut cache, &key).map(|e| e.hfont.0 as usize);
+        assert!(a.is_some());
+        assert_eq!(a, b);
+        assert_eq!(cache.len(), 1);
     }
 }

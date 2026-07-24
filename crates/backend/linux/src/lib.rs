@@ -49,6 +49,19 @@
 //! rather than panicking); fleshing those out is follow-on work for a
 //! general-purpose GTK backend, not needed by the welcome scene.
 //!
+//! ## Debugging layout
+//!
+//! Set `IDEALYST_GTK_DUMP_LAYOUT=1` to have every
+//! [`LinuxBackend::run_layout`] pass print one line per node: the Taffy
+//! frame, GTK's *actual* allocation, whether the widget is mapped, and
+//! its GTK parent. The Taffy frame and the GTK allocation are separate
+//! facts, and nearly every rendering bug found so far has been a
+//! disagreement between them — a node laid out at 1024x2886 but showing
+//! `ALLOC=0x0 map=false par_gtk=None` was never parented; one showing a
+//! correct frame with `ALLOC=0x0` was allocated from a stale cached
+//! measure or a zero minimum. That single view is what turned "the page
+//! is blank" into a specific line of code, twice.
+//!
 //! ## Threading
 //!
 //! GTK4 is single-threaded — every method here runs on the GTK main
@@ -80,7 +93,8 @@ use runtime_core::assets::{
 use runtime_core::primitives::navigator::{NavigatorHandler, NavigatorHost, RegisterNavigator};
 use runtime_core::{Length, Overflow, Tokenized};
 use runtime_core::{
-    Action, Backend, Color, ColorScheme, NavigatorRegistry, Platform, RegisterExternal, StyleRules,
+    Action, Backend, Color, ColorScheme, NavigatorRegistry, Platform, PointerEvents,
+    RegisterExternal, StyleRules,
 };
 use runtime_layout::{AvailableSpace, LayoutNode, LayoutTree, Size};
 
@@ -95,6 +109,7 @@ mod gradient;
 mod handles;
 mod image;
 mod portal;
+mod sticky;
 mod virtualizer;
 mod icon;
 mod text;
@@ -214,6 +229,87 @@ fn build_border(s: &StyleRules) -> Option<BorderPaint> {
     })
 }
 
+/// Give the app window a deterministic canvas instead of letting the
+/// user's desktop GTK theme show through.
+///
+/// A `GtkWindow` paints the *system theme's* background by default, so
+/// on a dark desktop every region the app doesn't paint itself came out
+/// dark — under a light-themed app that meant dark text on a dark band
+/// (the website's mid-page sections). The same author tree looked
+/// different on two Linux machines purely because their GTK themes
+/// differed, which is exactly what the framework's one-tree/every-
+/// backend thesis rules out.
+///
+/// White matches the canvas every other backend effectively provides for
+/// an app that sets no root background: the browser's default `<body>`
+/// on web and SSR. An app wanting a different base sets a background on
+/// its own root view, exactly as it must on web — this is only the
+/// fallback beneath it.
+///
+/// Deliberately NOT keyed to [`Backend::color_scheme`]: that reports the
+/// *system* preference, apps are free to ignore it (the website hard-
+/// codes its light theme), and keying the canvas to the desktop would
+/// reintroduce the very "same app, different machine" divergence this
+/// removes. Scoped to a CSS class on the window so the provider can't
+/// leak into unrelated widgets.
+fn install_canvas_background(window: &gtk4::Window) {
+    const CANVAS_CLASS: &str = "idealyst-canvas";
+    if window.has_css_class(CANVAS_CLASS) {
+        return;
+    }
+    let provider = gtk4::CssProvider::new();
+    provider.load_from_data(".idealyst-canvas { background-color: #ffffff; }");
+    gtk4::style_context_add_provider_for_display(
+        &gtk4::prelude::WidgetExt::display(window),
+        &provider,
+        gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+    window.add_css_class(CANVAS_CLASS);
+}
+
+/// The `GtkFixed` document inside a `scroll_view`'s `GtkScrolledWindow`
+/// — where its framework children are parented.
+///
+/// **Not** simply `scrolled.child()`: `GtkScrolledWindow` auto-wraps a
+/// child that doesn't implement `GtkScrollable` (a `GtkFixed` doesn't)
+/// in a `GtkViewport`, so `child()` hands back the viewport and a direct
+/// `downcast::<GtkFixed>()` fails. That failure used to be silent — the
+/// `if let` simply didn't fire — so every child inserted into a
+/// `scroll_view` was **dropped from the widget tree**: laid out
+/// correctly by Taffy, never parented, never allocated (0×0), never
+/// mapped. The website's entire page was invisible for exactly this
+/// reason. Handles both shapes so it can't regress if GTK stops
+/// wrapping (or we later use a scrollable document widget).
+fn scroll_document(scrolled: &gtk4::ScrolledWindow) -> Option<gtk4::Fixed> {
+    let child = scrolled.child()?;
+    if let Ok(fixed) = child.clone().downcast::<gtk4::Fixed>() {
+        return Some(fixed);
+    }
+    child
+        .downcast::<gtk4::Viewport>()
+        .ok()?
+        .child()?
+        .downcast::<gtk4::Fixed>()
+        .ok()
+}
+
+/// Size to allocate a leaf child: the Taffy frame the layout pass
+/// recorded for it, else the widget's own intrinsic measure.
+///
+/// Exists because a leaf's *natural* measure is the wrong answer once
+/// Taffy has framed it. A wrapping `GtkLabel` reports its whole paragraph
+/// on one line as its natural width, so allocating that ignores the width
+/// Taffy assigned and defeats wrapping entirely. `None` means Taffy never
+/// framed this widget (e.g. it hangs off a `ScrolledWindow` rather than
+/// an [`IdealystView`]) — then its own measure is the best available
+/// answer.
+pub(crate) fn leaf_alloc_size(
+    framed: Option<(i32, i32)>,
+    intrinsic: impl FnOnce() -> (i32, i32),
+) -> (i32, i32) {
+    framed.unwrap_or_else(intrinsic)
+}
+
 /// Taffy measure function for an arbitrary wrapped GTK widget — the
 /// intrinsic size an `Element::External` leaf reports to layout. Same
 /// shape as [`text::measure`] but for any `gtk::Widget` (Picture, Video,
@@ -256,6 +352,16 @@ fn build_paint_model(s: &StyleRules) -> PaintModel {
 // Backend
 // =========================================================================
 
+/// A registered `position: sticky` node.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct StickyEntry {
+    /// The enclosing `scroll_view` node it pins inside.
+    scroll: u64,
+    /// `top` threshold in px — how far below the container's top edge it
+    /// parks once engaged.
+    top: f32,
+}
+
 pub struct LinuxBackend {
     pub(crate) host_window: gtk4::Window,
     next_id: u64,
@@ -285,6 +391,14 @@ pub struct LinuxBackend {
     /// `Rc<RefCell<..>>`. Node handles (see [`handles`]) carry a clone so
     /// per-frame animation writes can reach back into the backend.
     self_ref: std::rc::Weak<std::cell::RefCell<LinuxBackend>>,
+    /// `position: sticky` nodes → the scroll node they pin inside and
+    /// their `top` threshold. Populated by `apply_style`; consumed by
+    /// [`LinuxBackend::update_sticky`] on scroll and after each layout.
+    sticky_nodes: HashMap<u64, StickyEntry>,
+    /// Last window size handed to `runtime_core::set_viewport_size`, so
+    /// [`run_layout`](Self::run_layout) only schedules a publish when the
+    /// size actually changed. See there for why it's deferred.
+    published_viewport: (f32, f32),
 }
 
 impl LinuxBackend {
@@ -308,6 +422,8 @@ impl LinuxBackend {
             _font_files: Vec::new(),
             root_id: None,
             self_ref: std::rc::Weak::new(),
+            sticky_nodes: HashMap::new(),
+            published_viewport: (0.0, 0.0),
         }
     }
 
@@ -366,7 +482,76 @@ impl LinuxBackend {
         else {
             return;
         };
+        // Publish the window size to the framework's reactive viewport
+        // signal so responsive author code (breakpoints, `viewport_size()`
+        // derivations) sees the size it's laying out against. Without it
+        // the signal stays at `ViewportSize::ZERO` and every breakpoint
+        // resolves to its smallest bucket — the website rendered its
+        // MOBILE layout in a 1024px window, sidebar collapsed away.
+        //
+        // Deferred to an idle, NOT called inline: signal writes run their
+        // dependent effects SYNCHRONOUSLY, and those re-enter the walker
+        // to restyle/rebuild the tree. `run_layout` is called from inside
+        // the root's `size_allocate` with the backend already mutably
+        // borrowed, so an inline publish panics with "RefCell already
+        // borrowed" (`walker/style.rs`) — verified by crashing the app on
+        // exactly this. At idle the allocation cycle is over and the
+        // borrow is released. Gated on an actual change so a steady
+        // window schedules nothing.
+        if self.published_viewport != (width, height) {
+            self.published_viewport = (width, height);
+            gtk4::glib::source::idle_add_local_once(move || {
+                runtime_core::set_viewport_size(runtime_core::ViewportSize { width, height });
+            });
+        }
+
         self.layout.compute(root_layout, width, height);
+
+        if std::env::var_os("IDEALYST_GTK_DUMP_LAYOUT").is_some() {
+            eprintln!(
+                "[layout] === run_layout {width}x{height} root={:?} sticky={}",
+                self.root_id,
+                self.sticky_nodes.len(),
+            );
+            for (id, st) in self.nodes.iter() {
+                if let Some(sw) = st.widget.downcast_ref::<gtk4::ScrolledWindow>() {
+                    let v = sw.vadjustment();
+                    eprintln!(
+                        "[layout]   scroll id={id}: vadj value={:.0} page={:.0} upper={:.0} (scrollable={})",
+                        v.value(),
+                        v.page_size(),
+                        v.upper(),
+                        v.upper() > v.page_size(),
+                    );
+                }
+            }
+            let mut dump: Vec<u64> = self.nodes.keys().copied().collect();
+            dump.sort();
+            for id in dump {
+                if let Some(st) = self.nodes.get(&id) {
+                    let f = self.layout.frame_of(st.layout);
+                    eprintln!(
+                        "[layout] id={id:<4} {:<20} frame=({:>7.1},{:>7.1}) {:>7.1}x{:<7.1} parent={:?} ALLOC={}x{} map={} vis={} target={} bg={:?} par_gtk={:?}",
+                        st.widget.type_().name(),
+                        f.x,
+                        f.y,
+                        f.width,
+                        f.height,
+                        self.parent_of.get(&id),
+                        st.widget.allocated_width(),
+                        st.widget.allocated_height(),
+                        st.widget.is_mapped(),
+                        st.widget.is_visible(),
+                        st.widget.can_target(),
+                        st.widget
+                            .downcast_ref::<IdealystView>()
+                            .and_then(|v| v.paint_background())
+                            .map(|c| [(c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8, (c[3] * 255.0) as u8]),
+                        st.widget.parent().map(|p| p.type_().name().to_string()),
+                    );
+                }
+            }
+        }
 
         // Write each node's Taffy frame into GTK: pin the size, then
         // recompose the child transform (position ∘ author ∘ animated).
@@ -384,17 +569,32 @@ impl LinuxBackend {
             let (w, h) = (frame.width.round() as i32, frame.height.round() as i32);
             // IdealystView containers report their size via `layout_size`
             // (read directly by the parent's `size_allocate`); leaf
-            // widgets (Label/Button/…) size via the normal min-size
-            // request, which can't propagate past the nearest IdealystView.
+            // widgets (Label/Button/…) have their frame recorded on the
+            // parent's child record. `set_size_request` is the fallback
+            // ONLY for a leaf whose parent isn't an IdealystView (e.g.
+            // under a ScrolledWindow) — it's a *minimum*, so using it on
+            // a wrapping label would floor the label's height and stop it
+            // shrinking when the window widens and it needs fewer lines.
             if let Some(v) = widget.downcast_ref::<IdealystView>() {
                 v.set_layout_size(w, h);
             } else {
-                widget.set_size_request(w, h);
+                let recorded = widget
+                    .parent()
+                    .and_then(|p| p.downcast::<IdealystView>().ok())
+                    .is_some_and(|p| p.set_child_layout_size(&widget, w, h));
+                if !recorded {
+                    widget.set_size_request(w, h);
+                }
             }
         }
         for id in &ids {
             self.rebuild_transform(*id, true);
         }
+
+        // Reflow moved every node's natural position, so the pins are
+        // stale — recompute them against the new geometry. Quiet: the
+        // allocation this pass is part of consumes the transforms.
+        self.update_sticky(None, true);
     }
 
     /// Lay out a DETACHED subtree rooted at `id` against `width` ×
@@ -439,10 +639,19 @@ impl LinuxBackend {
                 st.frame = (frame.x, frame.y, frame.width, frame.height);
             }
             let (w, h) = (frame.width.round() as i32, frame.height.round() as i32);
+            // Same frame-vs-intrinsic rule as `run_layout` — see there.
+            // Portal/virtualizer content is real app content (wrapping
+            // text included), so it needs the identical treatment.
             if let Some(v) = widget.downcast_ref::<IdealystView>() {
                 v.set_layout_size(w, h);
             } else {
-                widget.set_size_request(w, h);
+                let recorded = widget
+                    .parent()
+                    .and_then(|p| p.downcast::<IdealystView>().ok())
+                    .is_some_and(|p| p.set_child_layout_size(&widget, w, h));
+                if !recorded {
+                    widget.set_size_request(w, h);
+                }
             }
         }
         for nid in &ids {
@@ -519,6 +728,77 @@ impl LinuxBackend {
     /// re-allocation — set it when called from within the layout pass
     /// (already inside `size_allocate`); leave it off for animation
     /// writes, which must queue a fresh allocation.
+    /// Nearest ancestor of `id` that is a `scroll_view`, or `None` when
+    /// the node isn't inside one (a sticky node then stays relative).
+    fn enclosing_scroll(&self, id: u64) -> Option<u64> {
+        let mut cur = *self.parent_of.get(&id)?;
+        loop {
+            let st = self.nodes.get(&cur)?;
+            if st.widget.is::<gtk4::ScrolledWindow>() {
+                return Some(cur);
+            }
+            cur = *self.parent_of.get(&cur)?;
+        }
+    }
+
+    /// A node's Y in its scroll container's *content* coordinate space —
+    /// the sum of the Taffy frame offsets from the node up to (but not
+    /// including) `scroll`. This is the position the pin is measured
+    /// against, and it's why the pin has to be recomputed after every
+    /// layout pass as well as on scroll: reflow moves it.
+    fn content_y_within(&self, id: u64, scroll: u64) -> Option<f32> {
+        let mut y = 0.0;
+        let mut cur = id;
+        loop {
+            let st = self.nodes.get(&cur)?;
+            y += st.frame.1;
+            cur = *self.parent_of.get(&cur)?;
+            if cur == scroll {
+                return Some(y);
+            }
+        }
+    }
+
+    /// Recompute every sticky pin (optionally only those inside `only`)
+    /// and push the resulting offsets into the nodes' transforms.
+    ///
+    /// `quiet` mirrors [`Self::rebuild_transform`]: quiet from inside the
+    /// layout pass (the allocation that follows consumes it), loud from a
+    /// scroll callback, where nothing else will re-allocate.
+    pub fn update_sticky(&mut self, only: Option<u64>, quiet: bool) {
+        let entries: Vec<(u64, StickyEntry)> = self
+            .sticky_nodes
+            .iter()
+            .filter(|(_, e)| only.is_none_or(|s| e.scroll == s))
+            .map(|(id, e)| (*id, *e))
+            .collect();
+
+        for (id, entry) in entries {
+            let Some(offset) = self
+                .nodes
+                .get(&entry.scroll)
+                .and_then(|s| s.widget.downcast_ref::<gtk4::ScrolledWindow>())
+                .map(|sw| sw.vadjustment().value() as f32)
+            else {
+                continue;
+            };
+            let Some(content_y) = self.content_y_within(id, entry.scroll) else {
+                continue;
+            };
+            let dy = sticky::pin_offset(content_y, offset, entry.top);
+            let changed = match self.nodes.get_mut(&id) {
+                Some(st) if st.transform.sticky_dy != dy => {
+                    st.transform.sticky_dy = dy;
+                    true
+                }
+                _ => false,
+            };
+            if changed {
+                self.rebuild_transform(id, quiet);
+            }
+        }
+    }
+
     fn rebuild_transform(&self, id: u64, quiet: bool) {
         let Some(st) = self.nodes.get(&id) else {
             return;
@@ -694,11 +974,17 @@ impl Backend for LinuxBackend {
         if let Some(iv) = parent.widget.downcast_ref::<IdealystView>() {
             iv.add_child(&child.widget);
         } else if let Some(scrolled) = parent.widget.downcast_ref::<gtk4::ScrolledWindow>() {
-            if let Some(inner) = scrolled
-                .child()
-                .and_then(|c| c.downcast::<gtk4::Fixed>().ok())
-            {
+            if let Some(inner) = scroll_document(scrolled) {
                 inner.put(&child.widget, 0.0, 0.0);
+            } else {
+                // Never silently drop a child: an unparented widget is
+                // laid out but invisible, which reads as "the backend
+                // rendered nothing" and is near-impossible to spot.
+                eprintln!(
+                    "[backend-linux] scroll_view has no Fixed document; \
+                     dropping child {} (this is a bug)",
+                    child.id,
+                );
             }
         }
     }
@@ -707,10 +993,7 @@ impl Backend for LinuxBackend {
         if let Some(iv) = node.widget.downcast_ref::<IdealystView>() {
             iv.remove_all_children();
         } else if let Some(scrolled) = node.widget.downcast_ref::<gtk4::ScrolledWindow>() {
-            if let Some(inner) = scrolled
-                .child()
-                .and_then(|c| c.downcast::<gtk4::Fixed>().ok())
-            {
+            if let Some(inner) = scroll_document(scrolled) {
                 let mut child = inner.first_child();
                 while let Some(c) = child {
                     let next = c.next_sibling();
@@ -719,10 +1002,23 @@ impl Backend for LinuxBackend {
                 }
             }
         }
-        // Drop tracked children so stale ids don't linger in reorder.
+        // Detach from the LAYOUT tree too, not just GTK and the tracking
+        // maps. Taffy is a separate tree: unparenting a widget doesn't
+        // remove its layout node, so a cleared subtree keeps reserving
+        // its old space forever. The website's `lazy!`-loaded Simulator
+        // showed this exactly — its pre-load placeholder was cleared and
+        // unparented, but its 681px-tall layout node stayed a child, so
+        // the real phone rendered pushed 681px down the column from where
+        // every other backend puts it.
+        let parent_layout = self.nodes.get(&node.id).map(|s| s.layout);
         if let Some(ids) = self.children.remove(&node.id) {
             for id in ids {
                 self.parent_of.remove(&id);
+                if let (Some(parent_layout), Some(child_layout)) =
+                    (parent_layout, self.nodes.get(&id).map(|s| s.layout))
+                {
+                    self.layout.remove_child(parent_layout, child_layout);
+                }
             }
         }
     }
@@ -748,11 +1044,55 @@ impl Backend for LinuxBackend {
         // 1. Layout — push flex/size/position/padding/margin into Taffy.
         self.layout.set_style(layout, style);
 
+        // 1b. `position: sticky` — register (or drop) the pin. Taffy
+        // treats sticky as relative and places the node normally; the pin
+        // is a purely visual offset applied on scroll, so the flow around
+        // it never reflows. Re-registering on every restyle keeps the
+        // threshold live and drops the entry when a node stops being
+        // sticky.
+        self.sticky_nodes.remove(&id);
+        if matches!(style.position, Some(runtime_core::Position::Sticky)) {
+            if let Some(scroll) = self.enclosing_scroll(id) {
+                self.sticky_nodes.insert(
+                    id,
+                    StickyEntry {
+                        scroll,
+                        top: len_px(&style.top),
+                    },
+                );
+            }
+            // No enclosing scroll container ⇒ stays Relative, matching
+            // CSS (and every other backend's fallback).
+        }
+
         // 2. Opacity (all kinds) + static transform (all kinds).
         if let Some(st) = self.nodes.get_mut(&id) {
             st.static_opacity = style.opacity.as_ref().map(|t| t.resolve()).unwrap_or(1.0);
             let eff = st.anim_opacity.unwrap_or(st.static_opacity);
             st.widget.set_opacity(eff as f64);
+
+            // `pointer_events: None` → the widget must be transparent to
+            // input. GTK hit-tests purely on geometry; opacity 0 still
+            // swallows events, so an "invisible" overlay stays a wall.
+            // `AppShell`'s scrim is exactly this: a full-window Pressable
+            // painted OVER the content and marked `PointerEvents::None`
+            // while the sidebar is pinned (see its
+            // `pinned_overlay_shows_panel_and_inerts_scrim` test). Until
+            // this was honored the scrim ate every scroll and click over
+            // the main content — the page couldn't scroll and no link in
+            // it could be followed, while the sidebar (painted ABOVE the
+            // scrim) worked fine and made it look like a scroll bug.
+            //
+            // Divergence from CSS, deliberate and narrow: `pointer-events`
+            // inherits, and a child can opt back in with `Auto`. GTK's
+            // `can-target` is per-widget and picking skips a
+            // non-targetable widget's subtree, so a re-enabling child
+            // inside a `None` parent stays inert here. No framework
+            // surface builds that shape today (the Apple backends model
+            // the full chain in `backend-apple-core`'s
+            // `pointer_events_policy`); revisit if one does.
+            st.widget
+                .set_can_target(!matches!(style.pointer_events, Some(PointerEvents::None)));
             st.transform.statik = style
                 .transform
                 .as_ref()
@@ -879,6 +1219,7 @@ impl Backend for LinuxBackend {
         // every resize). This is what keeps the external layout engine in
         // step with GTK allocation without fighting the frame clock.
         if root.widget.parent().is_none() {
+            install_canvas_background(&self.host_window);
             self.host_window.set_child(Some(&root.widget));
             if let Some(iv) = root.widget.downcast_ref::<IdealystView>() {
                 let me = self.self_ref();
@@ -1105,7 +1446,63 @@ impl Backend for LinuxBackend {
             });
         }
 
-        self.wrap(scrolled.upcast::<gtk4::Widget>(), NodeKind::Other)
+        let node = self.wrap(scrolled.clone().upcast::<gtk4::Widget>(), NodeKind::Other);
+
+        // Drive `position: sticky` from this container's own scroll
+        // offset. Separate from the `on_scroll` prop wiring above because
+        // sticky must work whether or not the author asked for scroll
+        // callbacks. `value-changed` fires only when the offset actually
+        // moves, so this costs nothing while the view is still — the same
+        // event-driven model as the macOS/Android backends (no vsync
+        // polling).
+        {
+            let me = self.self_ref();
+            let sticky_id = node.id;
+            scrolled.vadjustment().connect_value_changed(move |_| {
+                if let Some(b) = me.upgrade() {
+                    if let Ok(mut b) = b.try_borrow_mut() {
+                        b.update_sticky(Some(sticky_id), false);
+                    }
+                }
+            });
+        }
+
+        // Mark the node `overflow: scroll` in Taffy so it's sized by its
+        // PARENT, not by its content. The content is parented under this
+        // node, so its size feeds the scroll node's automatic minimum —
+        // without this the scroll view grows to its full content height
+        // and has nothing left to scroll. The website's page was a
+        // 3437px-tall `GtkScrolledWindow` inside a 712px slot: clipped,
+        // and completely unscrollable. iOS/Android/macOS/terminal all
+        // call this (see `LayoutTree::set_overflow_scroll`); GTK was the
+        // odd one out. `set_style` clones the existing Taffy style and
+        // never touches `overflow`, so later restyles preserve it.
+        if let Some(l) = self.nodes.get(&node.id).map(|s| s.layout) {
+            self.layout.set_overflow_scroll(l, horizontal);
+        }
+        node
+    }
+
+    fn create_link(
+        &mut self,
+        config: runtime_core::primitives::link::LinkConfig,
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        // A Link is "a Pressable that navigates". The trait default
+        // collapses to `create_view` and DROPS `on_activate`, so every
+        // link rendered as inert text and nothing in the app could be
+        // navigated to — the same bug the terminal backend fixed (see
+        // its `create_link`). `config.url` is deliberately ignored
+        // (documented as web-only); `on_activate` already wraps in-app
+        // push/replace dispatch, and `open_url` for `external` links.
+        // Identical gesture wiring to `create_pressable` so both behave
+        // the same under hit-testing.
+        let widget = IdealystView::new();
+        let gesture = gtk4::GestureClick::new();
+        let fire = config.on_activate.clone();
+        gesture.connect_released(move |_, _, _, _| (fire)());
+        widget.add_controller(gesture);
+        self.wrap(widget.upcast::<gtk4::Widget>(), NodeKind::Pressable)
     }
 
     fn create_activity_indicator(
@@ -1290,5 +1687,179 @@ impl Backend for LinuxBackend {
         if let Some(handler) = self.nav_handlers.get(&node.id).cloned() {
             handler.borrow_mut().apply_slot_style(self, slot, style);
         }
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::{leaf_alloc_size, scroll_document};
+    use gtk4::prelude::*;
+
+    // The website's entire page was invisible: every child inserted into
+    // a `scroll_view` was silently dropped from the widget tree. GTK
+    // auto-wraps a non-scrollable child (our `GtkFixed` document) in a
+    // `GtkViewport`, so `scrolled.child()` returns the VIEWPORT and the
+    // old `downcast::<GtkFixed>()` failed — the `if let` just didn't
+    // fire. Symptom was maximally confusing: Taffy framed the content
+    // correctly (1024x2886) while GTK reported ALLOC=0x0, map=false,
+    // parent=None for it.
+    //
+    // Needs a display (GObject construction requires an initialized
+    // GTK); headless CI skips rather than fails.
+    // ===================================================================
+    // GTK-dependent regressions — ONE test on purpose.
+    //
+    // GTK4 requires every call to happen on the thread that ran
+    // `gtk::init`, and cargo runs each `#[test]` on its own thread. Split
+    // across several tests these segfault (verified). So all the checks
+    // that need a live GTK live in this single function; headless CI
+    // skips the lot. Each section names the bug it guards.
+    // ===================================================================
+    #[test]
+    fn regression_gtk_layout_behaviors() {
+        if gtk4::init().is_err() {
+            eprintln!("skipping: no display available to initialize GTK");
+            return;
+        }
+        use runtime_core::accessibility::AccessibilityProps;
+        use runtime_core::{Backend, PointerEvents, StyleRules};
+
+        // --- 1. Non-root nodes must report their Taffy size as the
+        // MINIMUM. `GtkFixedLayout` (the GtkFixed document inside a
+        // scroll_view) allocates children at their minimum, so the old
+        // blanket `min = 0` allocated the whole scrollable page 0x0 and
+        // nothing painted. Only the root needs 0, so the WINDOW can still
+        // be resized smaller than its content.
+        let child = crate::IdealystView::new();
+        child.set_layout_size(1024, 2886);
+        assert_eq!(
+            child.measure(gtk4::Orientation::Horizontal, -1),
+            (1024, 1024, -1, -1),
+            "non-root must report Taffy width as min AND natural",
+        );
+        let root = crate::IdealystView::new();
+        root.set_layout_callback(std::rc::Rc::new(|_, _| {}));
+        root.set_layout_size(1024, 768);
+        let (min_w, nat_w, _, _) = root.measure(gtk4::Orientation::Horizontal, -1);
+        assert_eq!((min_w, nat_w), (0, 1024), "root keeps min 0 so the window can shrink");
+
+        // --- 2. A changed layout size must invalidate GTK's cached
+        // `measure()`. Parents we implement read `layout_size` directly,
+        // but GTK-managed ones (GtkFixed/GtkViewport/GtkOverlay) allocate
+        // from the cache, which only `queue_resize` clears.
+        let cached = crate::IdealystView::new();
+        cached.set_layout_size(100, 50);
+        assert_eq!(cached.measure(gtk4::Orientation::Horizontal, -1).1, 100);
+        cached.set_layout_size(200, 50);
+        assert_eq!(
+            cached.measure(gtk4::Orientation::Horizontal, -1).1,
+            200,
+            "stale cached measure - queue_resize missing from set_layout_size",
+        );
+
+        // --- 3. `scroll_document` must find the GtkFixed THROUGH the
+        // GtkViewport GTK wraps it in. The old direct downcast failed
+        // silently, so every child inserted into a scroll_view was never
+        // parented: laid out correctly, allocated 0x0, never mapped. The
+        // website's entire page was invisible.
+        let scrolled = gtk4::ScrolledWindow::new();
+        let fixed = gtk4::Fixed::new();
+        scrolled.set_child(Some(&fixed));
+        assert!(
+            scrolled.child().unwrap().downcast_ref::<gtk4::Fixed>().is_none(),
+            "GTK stopped wrapping the child - re-check scroll_document",
+        );
+        assert_eq!(
+            scroll_document(&scrolled).expect("must find the Fixed through the viewport"),
+            fixed,
+        );
+
+        // --- 4. `clear_children` must detach LAYOUT nodes, not just
+        // widgets. Taffy is a separate tree: leaving the layout node
+        // attached kept a cleared subtree reserving its old space. The
+        // website's lazy-loaded Simulator placeholder did exactly that
+        // and pushed the phone 681px down its column.
+        let mut backend = crate::LinuxBackend::new(gtk4::Window::new());
+        let a11y = AccessibilityProps::default();
+        let mut parent = backend.create_view(&a11y);
+        let kid = backend.create_view(&a11y);
+        let parent_layout = backend.nodes.get(&parent.id).unwrap().layout;
+        backend.insert(&mut parent, kid.clone());
+        assert_eq!(backend.layout.children_of(parent_layout).len(), 1);
+        backend.clear_children(&parent);
+        assert!(
+            backend.layout.children_of(parent_layout).is_empty(),
+            "cleared subtree still reserves layout space and displaces siblings",
+        );
+        assert!(kid.widget.parent().is_none(), "and must still unparent the widget");
+
+        // --- 5. `pointer_events: None` must make a widget transparent to
+        // input. GTK hit-tests on geometry alone, so `AppShell`'s scrim —
+        // a full-window Pressable painted over the content and inerted
+        // while the sidebar is pinned — swallowed every scroll and click
+        // over the main content until this was honored.
+        let scrim = backend.create_pressable(std::rc::Rc::new(|| {}), &a11y);
+        let inert = std::rc::Rc::new(StyleRules {
+            pointer_events: Some(PointerEvents::None),
+            ..StyleRules::default()
+        });
+        backend.apply_style(&scrim, &inert);
+        assert!(
+            !scrim.widget.can_target(),
+            "pointer_events:None must clear can-target, or an invisible \
+             overlay keeps eating input meant for the content beneath it",
+        );
+
+        let interactive = std::rc::Rc::new(StyleRules {
+            pointer_events: Some(PointerEvents::Auto),
+            ..StyleRules::default()
+        });
+        backend.apply_style(&scrim, &interactive);
+        assert!(scrim.widget.can_target(), "Auto must restore hit-testing");
+
+        // Unset is Auto: the overwhelmingly common case must stay
+        // clickable, so this can't regress into "nothing is interactive".
+        let plain = backend.create_pressable(std::rc::Rc::new(|| {}), &a11y);
+        backend.apply_style(&plain, &std::rc::Rc::new(StyleRules::default()));
+        assert!(plain.widget.can_target(), "unset pointer_events must hit-test");
+
+        // --- 6. `position: sticky` must find its enclosing scroll_view
+        // and register a pin. Nothing in the GTK backend handled
+        // `Position` at all, so a sticky table-of-contents just scrolled
+        // away with the content.
+        let mut scroll = backend.create_scroll_view(false, None, &a11y);
+        let mut row = backend.create_view(&a11y);
+        let toc = backend.create_view(&a11y);
+        backend.insert(&mut scroll, row.clone());
+        backend.insert(&mut row, toc.clone());
+
+        let sticky_style = std::rc::Rc::new(StyleRules {
+            position: Some(runtime_core::Position::Sticky),
+            top: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(16.0))),
+            ..StyleRules::default()
+        });
+        backend.apply_style(&toc, &sticky_style);
+        let entry = backend
+            .sticky_nodes
+            .get(&toc.id)
+            .copied()
+            .expect("sticky node must register against its scroll container");
+        assert_eq!(entry.scroll, scroll.id, "must find the scroll ancestor, not the direct parent");
+        assert_eq!(entry.top, 16.0, "must carry the `top` threshold");
+
+        // Ceasing to be sticky must drop the entry, or a stale pin keeps
+        // dragging the node around on every scroll.
+        backend.apply_style(&toc, &std::rc::Rc::new(StyleRules::default()));
+        assert!(!backend.sticky_nodes.contains_key(&toc.id), "unregister on restyle");
+
+        // Sticky OUTSIDE any scroll container falls back to relative
+        // (what CSS does) rather than registering a pin that can never
+        // resolve.
+        let orphan = backend.create_view(&a11y);
+        backend.apply_style(&orphan, &sticky_style);
+        assert!(
+            !backend.sticky_nodes.contains_key(&orphan.id),
+            "no enclosing scroll_view - must stay relative",
+        );
     }
 }

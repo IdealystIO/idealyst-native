@@ -14,14 +14,17 @@ use backend_windows::WindowsBackend;
 use runtime_core::{Element, Owner};
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::HBRUSH;
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+// `ScreenToClient` ships under Graphics::Gdi in windows 0.58, not
+// WindowsAndMessaging where the C headers put it.
+use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, ScreenToClient, HBRUSH, PAINTSTRUCT};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW,
-    GetWindowLongPtrW, LoadCursorW, RegisterClassExW, SetWindowLongPtrW, ShowWindow,
-    TranslateMessage, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, IDC_ARROW, MSG, SW_SHOW,
-    WINDOW_EX_STYLE, WM_APP, WM_COMMAND, WM_DESTROY, WM_HSCROLL, WM_SIZE, WNDCLASSEXW,
+    AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect,
+    GetMessageW, GetWindowLongPtrW, LoadCursorW, RegisterClassExW,
+    SetWindowLongPtrW, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA,
+    IDC_ARROW, MSG, SW_SHOW, WINDOW_EX_STYLE, WM_APP, WM_COMMAND, WM_DESTROY, WM_ERASEBKGND,
+    WM_HSCROLL, WM_LBUTTONUP, WM_MOUSEWHEEL, WM_PAINT, WM_SIZE, WNDCLASSEXW, WS_CLIPCHILDREN,
     WS_OVERLAPPEDWINDOW,
 };
 
@@ -99,6 +102,10 @@ where
     let mut backend = WindowsBackend::new(hwnd);
     register(&mut backend);
     let backend = Rc::new(RefCell::new(backend));
+    // Node handles (animation writes, frame reads) reach the backend
+    // through a weak self-reference — install it before mount so
+    // handles built during the first walk are live.
+    backend.borrow_mut().set_self_ref(Rc::downgrade(&backend));
 
     // Publish per-window state to the WndProc before anything can
     // dispatch a message to this window.
@@ -120,8 +127,20 @@ where
     // (nothing mounted yet) and is a harmless no-op.
     let _ = ShowWindow(hwnd, SW_SHOW);
 
-    // Mount: the walker builds the child-HWND tree and calls
-    // `finish(root)`, laying it out against the shown window.
+    // Seed the reactive viewport signal with the initial client size so
+    // breakpoint-driven layout (responsive sidebars etc.) resolves
+    // correctly on the FIRST build, not only after the first resize.
+    {
+        let mut rc = RECT::default();
+        let _ = GetClientRect(hwnd, &mut rc);
+        runtime_core::set_viewport_size(runtime_core::ViewportSize {
+            width: (rc.right - rc.left).max(0) as f32,
+            height: (rc.bottom - rc.top).max(0) as f32,
+        });
+    }
+
+    // Mount: the walker builds the scene tree and calls `finish(root)`,
+    // laying it out against the shown window.
     let owner = runtime_core::mount(backend.clone(), build_ui);
     (*state_ptr).owner.borrow_mut().replace(owner);
 
@@ -166,9 +185,9 @@ unsafe fn register_host_class(hinstance: HINSTANCE) -> Result<(), String> {
         hInstance: hinstance,
         hIcon: Default::default(),
         hCursor: cursor,
-        // No class background brush: the framework's root View paints
-        // its own background once styling lands, and a system brush
-        // here would flash the wrong color behind it.
+        // No class background brush: the scene painter owns the whole
+        // client area (WM_ERASEBKGND returns handled), and a system
+        // brush here would flash the wrong color behind it.
         hbrBackground: HBRUSH::default(),
         lpszMenuName: PCWSTR::null(),
         lpszClassName: HOST_CLASS_NAME,
@@ -191,7 +210,10 @@ unsafe fn register_host_class(hinstance: HINSTANCE) -> Result<(), String> {
 /// for the frame + title bar).
 unsafe fn create_host_window(hinstance: HINSTANCE, opts: &RunOptions) -> Result<HWND, String> {
     let ex_style = WINDOW_EX_STYLE(0);
-    let style = WS_OVERLAPPEDWINDOW;
+    // WS_CLIPCHILDREN: the scene painter blits the whole client area;
+    // clipping children keeps the blit off the native control HWNDs
+    // (button / edit / trackbar) positioned on top of it.
+    let style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
 
     let mut rect = RECT {
         left: 0,
@@ -278,9 +300,8 @@ unsafe fn host_state<'a>(hwnd: HWND) -> Option<&'a HostState> {
     }
 }
 
-/// Host window procedure. Routes the four messages the backend needs
-/// (resize → relayout, command → button dispatch, sched-tick → drain,
-/// destroy → quit + teardown) and forwards everything else to
+/// Host window procedure. Routes paint, input, resize, command,
+/// sched-tick, and destroy; forwards everything else to
 /// `DefWindowProcW`.
 unsafe extern "system" fn wnd_proc(
     hwnd: HWND,
@@ -289,12 +310,80 @@ unsafe extern "system" fn wnd_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
+        WM_PAINT => {
+            // The whole scene renders here: the backend paints the
+            // view/text/icon/image tree into its double-buffered memory
+            // DC and blits. Native controls paint themselves (they're
+            // child HWNDs clipped out of the blit).
+            let mut ps = PAINTSTRUCT::default();
+            let hdc = BeginPaint(hwnd, &mut ps);
+            let mut rc = RECT::default();
+            let _ = GetClientRect(hwnd, &mut rc);
+            if let Some(state) = host_state(hwnd) {
+                state
+                    .backend
+                    .borrow_mut()
+                    .paint(hdc, rc.right - rc.left, rc.bottom - rc.top);
+            }
+            let _ = EndPaint(hwnd, &ps);
+            LRESULT(0)
+        }
+        WM_ERASEBKGND => {
+            // The scene blit covers the entire client area every frame —
+            // default erasing would just flash white under animations.
+            LRESULT(1)
+        }
+        WM_LBUTTONUP => {
+            // Painted pressables have no HWNDs; hit-test the scene tree.
+            // Clone the handler out before firing so the backend borrow
+            // is released (the handler writes signals whose effects
+            // re-borrow the backend).
+            let x = (lparam.0 & 0xffff) as i16 as f32;
+            let y = ((lparam.0 >> 16) & 0xffff) as i16 as f32;
+            let action =
+                host_state(hwnd).and_then(|state| state.backend.borrow().pressable_action(x, y));
+            if let Some(action) = action {
+                action();
+            }
+            LRESULT(0)
+        }
+        WM_MOUSEWHEEL => {
+            // Wheel coordinates arrive in SCREEN space — convert before
+            // hit-testing. Delta > 0 = wheel up (scroll content up), so
+            // negate into content-scroll pixels (120 units per detent →
+            // 40 px, the OS's 3-lines default).
+            let mut pt = POINT {
+                x: (lparam.0 & 0xffff) as i16 as i32,
+                y: ((lparam.0 >> 16) & 0xffff) as i16 as i32,
+            };
+            let _ = ScreenToClient(hwnd, &mut pt);
+            let delta = ((wparam.0 >> 16) & 0xffff) as u16 as i16 as f32;
+            let scroll_px = -delta * (40.0 / 120.0);
+            if let Some(state) = host_state(hwnd) {
+                state
+                    .backend
+                    .borrow_mut()
+                    .wheel_scroll(pt.x as f32, pt.y as f32, scroll_px);
+            }
+            LRESULT(0)
+        }
         WM_SIZE => {
             // A resize changes the viewport with no tree change, so the
             // framework never re-`finish`es on its own — re-run layout.
             if let Some(state) = host_state(hwnd) {
                 state.backend.borrow_mut().relayout();
             }
+            // Push the new client size into the framework's reactive
+            // viewport signal (breakpoint / responsive styling reads
+            // it — the web host's resize observer equivalent). AFTER
+            // the backend borrow is released: the write re-runs author
+            // effects that may re-borrow the backend.
+            let w = (lparam.0 & 0xffff) as u16 as f32;
+            let h = ((lparam.0 >> 16) & 0xffff) as u16 as f32;
+            runtime_core::set_viewport_size(runtime_core::ViewportSize {
+                width: w,
+                height: h,
+            });
             LRESULT(0)
         }
         WM_COMMAND => {
@@ -316,11 +405,10 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_HSCROLL => {
-            // Trackbar (Slider) drags arrive here (forwarded up from the
-            // containing view). `lParam` is the source control's HWND.
-            // Clone the action out before firing — same borrow
-            // discipline as WM_COMMAND. Non-slider WM_HSCROLL (scroll
-            // bars) return None and no-op.
+            // Trackbar (Slider) drags arrive here. `lParam` is the
+            // source control's HWND. Clone the action out before firing
+            // — same borrow discipline as WM_COMMAND. Non-slider
+            // WM_HSCROLL (scroll bars) return None and no-op.
             let ctl = HWND(lparam.0 as *mut std::ffi::c_void);
             let action =
                 host_state(hwnd).and_then(|state| state.backend.borrow().slider_action(ctl));
@@ -344,12 +432,9 @@ unsafe extern "system" fn wnd_proc(
             // locals, and one of those drops touches an already-being-
             // destroyed TLS slot — aborting with "cannot access a
             // Thread Local Storage value during or after destruction".
-            // `_exit` terminates immediately, skipping every
-            // destructor; the OS reclaims memory, threads, and the
-            // window's HWNDs. See `hard_exit` for why this is
-            // `TerminateProcess` rather than the CRT's `_exit`. This
-            // mirrors the winit host, which force-exits on window
-            // close for the same class of reason
+            // See `hard_exit` for why this is `TerminateProcess` rather
+            // than the CRT's `_exit`. This mirrors the winit host, which
+            // force-exits on window close for the same class of reason
             // (`host-winit/src/app.rs`). Single-window only —
             // multi-window would decrement a live-window count and
             // exit on the last close.

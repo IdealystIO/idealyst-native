@@ -113,6 +113,17 @@ mod imp {
     pub struct Child {
         pub widget: gtk4::Widget,
         pub transform: RefCell<Option<gsk::Transform>>,
+        /// This child's Taffy frame size, pushed by the layout pass for
+        /// **leaf** children (Label/Button/Picture/…). `None` until the
+        /// layout pass frames it, or for a widget Taffy never frames.
+        ///
+        /// Kept here rather than as a `set_size_request` on the child
+        /// because a size request is a *minimum*: it becomes a floor the
+        /// widget can never measure below, so a text block that needs
+        /// fewer lines after the window widens would stay stuck at its
+        /// old taller height. `IdealystView` children don't need this —
+        /// they carry their own [`IdealystView::layout_size`].
+        pub layout_size: std::cell::Cell<Option<(i32, i32)>>,
     }
 
     #[derive(Default)]
@@ -160,14 +171,30 @@ mod imp {
             // (min, natural, min_baseline, natural_baseline). Natural is
             // the node's own Taffy size (what a parent uses to allocate
             // this child) — never the union of children, which would
-            // grow the window. Minimum is 0, though: pinning min to the
-            // Taffy size would make the ROOT view's min-size the window's
-            // minimum, freezing the window at its current content size so
-            // it can't be resized smaller. The window fills the root to
-            // its content area regardless of min, and every other node is
-            // allocated explicitly from `natural` in `size_allocate`, so
-            // a 0 minimum costs nothing and lets the window resize freely.
-            (0, size, -1, -1)
+            // grow the window.
+            //
+            // Minimum depends on whether this is the framework ROOT (the
+            // only node given a `layout_cb`, in `LinuxBackend::finish`):
+            //
+            // - **Root → 0.** Reporting the Taffy size as the minimum
+            //   makes it the WINDOW's minimum, freezing the window at its
+            //   current content size so it can't be resized smaller. The
+            //   window fills the root to its content area regardless.
+            // - **Everything else → the Taffy size.** `GtkFixedLayout`
+            //   (the `GtkFixed` document inside a `scroll_view`, reached
+            //   via `crate::scroll_document`) allocates each child at its
+            //   MINIMUM, not its natural size. With a 0 minimum the whole
+            //   scrollable page was allocated 0×0 and painted nothing —
+            //   its `snapshot` skips children when its own box is empty.
+            //   Parents we implement allocate from `layout_size` directly
+            //   (see `size_allocate`), so a non-zero min costs them
+            //   nothing; it only teaches GTK-managed parents the truth.
+            let min = if self.layout_cb.borrow().is_some() {
+                0
+            } else {
+                size
+            };
+            (min, size, -1, -1)
         }
 
         fn size_allocate(&self, width: i32, height: i32, _baseline: i32) {
@@ -185,15 +212,25 @@ mod imp {
             // on `queue_resize`; the layout pass sets sizes quietly (it
             // runs inside this very `size_allocate`), so a cached measure
             // would hand back the pre-resize size and freeze that subtree.
-            // Leaf widgets (Label/…) size from their real intrinsic
-            // measure (kept fresh by their own `queue_resize` paths).
+            // Leaf widgets (Label/Button/…) take the Taffy frame the
+            // layout pass recorded in `Child::layout_size`, falling back
+            // to their intrinsic measure only when unframed. Allocating a
+            // leaf its *natural* measure instead is what broke the
+            // website's text: a wrapping `GtkLabel`'s natural width is
+            // the whole paragraph on ONE line, so a label allocated
+            // ~3000px wide inside a 1024px parent pushed its text far
+            // off-frame and only a fragment stayed visible. Taffy's frame
+            // is authoritative — `measure()` is an input to the layout
+            // pass (via the measure fn), never its output.
             for child in self.children.borrow().iter() {
                 let (w, h) = if let Some(iv) = child.widget.downcast_ref::<super::IdealystView>() {
                     iv.layout_size()
                 } else {
-                    let w = child.widget.measure(gtk4::Orientation::Horizontal, -1).1;
-                    let h = child.widget.measure(gtk4::Orientation::Vertical, w).1;
-                    (w, h)
+                    crate::leaf_alloc_size(child.layout_size.get(), || {
+                        let w = child.widget.measure(gtk4::Orientation::Horizontal, -1).1;
+                        let h = child.widget.measure(gtk4::Orientation::Vertical, w).1;
+                        (w, h)
+                    })
                 };
                 let transform = child.transform.borrow().clone();
                 child.widget.allocate(w.max(0), h.max(0), -1, transform);
@@ -272,7 +309,26 @@ impl IdealystView {
         self.imp().children.borrow_mut().push(imp::Child {
             widget: child,
             transform: RefCell::new(None),
+            layout_size: std::cell::Cell::new(None),
         });
+    }
+
+    /// Record a **leaf** child's Taffy frame size, read back by
+    /// [`size_allocate`](imp::IdealystView::size_allocate). Returns
+    /// `false` if `child` isn't ours (caller then falls back to
+    /// `set_size_request`).
+    ///
+    /// Quiet by design: the layout pass runs inside the root's
+    /// `size_allocate`, which allocates children immediately afterward,
+    /// so there's nothing to queue.
+    pub fn set_child_layout_size(&self, child: &gtk4::Widget, w: i32, h: i32) -> bool {
+        for c in self.imp().children.borrow().iter() {
+            if c.widget == *child {
+                c.layout_size.set(Some((w, h)));
+                return true;
+            }
+        }
+        false
     }
 
     /// Remove + unparent every child (framework `clear_children`).
@@ -349,13 +405,36 @@ impl IdealystView {
         self.queue_draw();
     }
 
-    /// Set this node's own layout size (from the Taffy pass). Quiet: no
-    /// `queue_resize`, because the layout pass runs inside the root's
-    /// `size_allocate` and the value is consumed by the same cycle (read
-    /// back via [`layout_size`](Self::layout_size), bypassing GTK's
-    /// cached `measure`).
+    /// Set this node's own layout size (from the Taffy pass).
+    ///
+    /// Invalidates GTK's cached `measure()` **only when the size actually
+    /// changes**. Parents we implement ([`size_allocate`](imp::
+    /// IdealystView::size_allocate)) read [`layout_size`](Self::
+    /// layout_size) directly and don't need this, but a GTK-managed
+    /// parent does: the `GtkFixed` document inside a `scroll_view`, a
+    /// `GtkViewport`, the `GtkOverlay` a portal mounts into. Those
+    /// allocate from the cached measure, which nothing but `queue_resize`
+    /// clears — so without this the whole scrollable page was allocated
+    /// at its stale 0×0 and every descendant collapsed (labels measured
+    /// at width 0, paddings producing negative content boxes).
+    ///
+    /// The change-gate is what makes this safe to call from inside the
+    /// root's `size_allocate`: at steady state the sizes are identical,
+    /// nothing is queued, and the 60 Hz pump doesn't turn into an endless
+    /// relayout loop. Only a genuine size change costs one extra pass.
     pub fn set_layout_size(&self, w: i32, h: i32) {
+        if self.imp().layout_size.get() == (w, h) {
+            return;
+        }
         self.imp().layout_size.set((w, h));
+        self.queue_resize();
+    }
+
+    /// The resolved background colour this view paints, if any. Used by
+    /// the `IDEALYST_GTK_DUMP_LAYOUT` dump to tell "the framework never
+    /// set a background" apart from "it set one and we didn't paint it".
+    pub fn paint_background(&self) -> Option<[f32; 4]> {
+        self.imp().model.borrow().background
     }
 
     /// This node's Taffy layout size — the authoritative size a parent
@@ -364,3 +443,4 @@ impl IdealystView {
         self.imp().layout_size.get()
     }
 }
+

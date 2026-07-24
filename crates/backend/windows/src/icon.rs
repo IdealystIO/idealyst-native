@@ -1,11 +1,11 @@
 //! `Element::Icon` — vector icon rendering on the Win32 backend.
 //!
 //! The framework's icon data is a set of SVG path `d` strings in a
-//! view-box coordinate space (Lucide-style, 24×24). Win32 has no "stroke
-//! these path strings" control, so `IdealystIcon` is a custom WNDCLASS
-//! whose `WM_PAINT` parses the paths into a GDI+ `GpPath` and strokes or
-//! fills it — the same approach as the macOS `CAShapeLayer` and Linux GSK
-//! backends. Mechanism diverges, output converges (repo rule §7).
+//! view-box coordinate space (Lucide-style, 24×24). The scene painter
+//! (`crate::scene`) calls [`paint_into`] to parse the paths into a GDI+
+//! `GpPath` and stroke or fill it into the node's box — the same approach
+//! as the macOS `CAShapeLayer` and Linux GSK backends. Mechanism
+//! diverges, output converges (repo rule §7).
 //!
 //! ## Parser provenance
 //!
@@ -28,22 +28,12 @@
 use runtime_core::color::Rgba;
 use runtime_core::primitives::icon::{FillRule, IconData};
 
-use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, HBRUSH, HGDIOBJ, PAINTSTRUCT,
-};
 use windows::Win32::Graphics::GdiPlus::{
-    GdipAddPathBezier, GdipAddPathLine, GdipClosePathFigure, GdipCreateFromHDC, GdipCreatePath,
-    GdipCreatePen1, GdipCreateSolidFill, GdipDeleteBrush, GdipDeleteGraphics, GdipDeletePath,
-    GdipDeletePen, GdipDrawPath, GdipFillPath, GdipSetPenEndCap,
-    GdipSetPenLineJoin, GdipSetPenStartCap, GdipSetSmoothingMode, GdipStartPathFigure,
-    FillModeAlternate, FillModeWinding, GpBrush, GpGraphics, GpPath, GpPen, GpSolidFill, LineCapRound,
-    LineJoinRound, SmoothingModeAntiAlias, UnitPixel,
-};
-use windows::Win32::UI::WindowsAndMessaging::{
-    DefWindowProcW, GetClientRect, GetWindowLongPtrW, RegisterClassExW, SetWindowLongPtrW,
-    CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, WM_ERASEBKGND, WM_NCDESTROY, WM_PAINT, WNDCLASSEXW,
+    GdipAddPathBezier, GdipAddPathLine, GdipClosePathFigure, GdipCreatePath, GdipCreatePen1,
+    GdipCreateSolidFill, GdipDeleteBrush, GdipDeletePath, GdipDeletePen, GdipDrawPath,
+    GdipFillPath, GdipSetPenEndCap, GdipSetPenLineJoin, GdipSetPenStartCap, GdipStartPathFigure,
+    FillModeAlternate, FillModeWinding, GpBrush, GpGraphics, GpPath, GpPen, GpSolidFill,
+    LineCapRound, LineJoinRound, UnitPixel,
 };
 
 // =========================================================================
@@ -517,20 +507,18 @@ impl PathEmitter for GdiPlusEmitter {
 }
 
 // =========================================================================
-// IdealystIcon window — paints the glyph via GDI+.
+// Scene-paint entry point.
 // =========================================================================
 
-pub(crate) const ICON_CLASS_NAME: PCWSTR = PCWSTR(windows::core::w!("IdealystIcon").as_ptr());
-
-/// Lucide authors strokes at width 2 in a 24-unit view box; the widget
+/// Lucide authors strokes at width 2 in a 24-unit view box; the painter
 /// scales that by the glyph's fit-scale so a `size(N)` icon keeps the same
 /// relative stroke weight at any size.
 const BASE_STROKE_WIDTH: f32 = 2.0;
 
-/// Paint state for one `IdealystIcon`, held behind its `GWLP_USERDATA`.
+/// Paint state for one icon node, held on its `NodeMeta`.
 pub(crate) struct IconPaint {
     /// SVG path `d` strings (owned so `update_icon_data` can swap the glyph
-    /// without rebuilding the window).
+    /// without rebuilding the node).
     pub paths: Vec<String>,
     /// Icon view-box `(w, h)` — the coordinate space `paths` live in.
     pub view_box: (u16, u16),
@@ -562,126 +550,51 @@ impl IconPaint {
     }
 }
 
-/// Register the `IdealystIcon` WNDCLASS once per process.
-pub(crate) fn ensure_icon_class_registered() {
-    use std::sync::Once;
-    static REGISTER: Once = Once::new();
-    REGISTER.call_once(|| unsafe {
-        let wcex = WNDCLASSEXW {
-            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-            style: CS_HREDRAW | CS_VREDRAW,
-            lpfnWndProc: Some(icon_wnd_proc),
-            cbClsExtra: 0,
-            cbWndExtra: 0,
-            hInstance: Default::default(),
-            hIcon: Default::default(),
-            hCursor: Default::default(),
-            hbrBackground: HBRUSH::default(),
-            lpszMenuName: PCWSTR::null(),
-            lpszClassName: ICON_CLASS_NAME,
-            hIconSm: Default::default(),
-        };
-        let _ = RegisterClassExW(&wcex);
-    });
-}
+/// Paint the glyph into the current graphics at `(0, 0)`..`(w, h)` —
+/// world transform already positions the node's box. The view-box is
+/// fitted with a uniform centered scale. `alpha` is the cumulative scene
+/// opacity multiplied into the icon color.
+pub(crate) unsafe fn paint_into(g: *mut GpGraphics, p: &IconPaint, w: f32, h: f32, alpha: f32) {
+    let (w, h) = (w as f64, h as f64);
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+    let (vw, vh) = p.view_box;
+    let (vw, vh) = (vw.max(1) as f64, vh.max(1) as f64);
+    // Uniform fit-scale (square glyph: smaller side wins), centered.
+    let scale = (w / vw).min(h / vh);
+    let ox = (w - vw * scale) / 2.0;
+    let oy = (h - vh * scale) / 2.0;
 
-/// Paint the glyph for `hwnd` from `p`, fitting the view-box into the
-/// client rect with a uniform centered scale.
-unsafe fn paint_icon(hwnd: HWND, p: &IconPaint) {
-    let mut ps = PAINTSTRUCT::default();
-    let hdc = BeginPaint(hwnd, &mut ps);
-    let mut rc = RECT::default();
-    let _ = GetClientRect(hwnd, &mut rc);
-    let w = (rc.right - rc.left) as f64;
-    let h = (rc.bottom - rc.top) as f64;
-    if w > 0.0 && h > 0.0 {
-        let (vw, vh) = p.view_box;
-        let (vw, vh) = (vw.max(1) as f64, vh.max(1) as f64);
-        // Uniform fit-scale (square glyph: smaller side wins), centered.
-        let scale = (w / vw).min(h / vh);
-        let ox = (w - vw * scale) / 2.0;
-        let oy = (h - vh * scale) / 2.0;
-
-        let mut g: *mut GpGraphics = std::ptr::null_mut();
-        if GdipCreateFromHDC(hdc, &mut g).0 == 0 && !g.is_null() {
-            let _ = GdipSetSmoothingMode(g, SmoothingModeAntiAlias);
-
-            let mut path: *mut GpPath = std::ptr::null_mut();
-            let fill_mode = if p.even_odd { FillModeAlternate } else { FillModeWinding };
-            if GdipCreatePath(fill_mode, &mut path).0 == 0 && !path.is_null() {
-                let mut emitter = GdiPlusEmitter { path, cur: (0.0, 0.0) };
-                for d in &p.paths {
-                    parse_svg_path(d, scale, scale, ox, oy, &mut emitter);
-                }
-                let argb = p.color.to_argb_u32();
-                if p.filled {
-                    let mut brush: *mut GpSolidFill = std::ptr::null_mut();
-                    if GdipCreateSolidFill(argb, &mut brush).0 == 0 {
-                        let _ = GdipFillPath(g, brush as *mut GpBrush, path);
-                        let _ = GdipDeleteBrush(brush as *mut GpBrush);
-                    }
-                } else {
-                    // Rounded caps + joins at the scaled Lucide weight.
-                    let width = (BASE_STROKE_WIDTH as f64 * scale) as f32;
-                    let mut pen: *mut GpPen = std::ptr::null_mut();
-                    if GdipCreatePen1(argb, width, UnitPixel, &mut pen).0 == 0 {
-                        let _ = GdipSetPenStartCap(pen, LineCapRound);
-                        let _ = GdipSetPenEndCap(pen, LineCapRound);
-                        let _ = GdipSetPenLineJoin(pen, LineJoinRound);
-                        let _ = GdipDrawPath(g, pen, path);
-                        let _ = GdipDeletePen(pen);
-                    }
-                }
-                let _ = GdipDeletePath(path);
-            }
-            let _ = GdipDeleteGraphics(g);
+    let mut path: *mut GpPath = std::ptr::null_mut();
+    let fill_mode = if p.even_odd { FillModeAlternate } else { FillModeWinding };
+    if GdipCreatePath(fill_mode, &mut path).0 != 0 || path.is_null() {
+        return;
+    }
+    let mut emitter = GdiPlusEmitter { path, cur: (0.0, 0.0) };
+    for d in &p.paths {
+        parse_svg_path(d, scale, scale, ox, oy, &mut emitter);
+    }
+    let argb = crate::scene::argb_with_alpha(p.color.to_argb_u32(), alpha);
+    if p.filled {
+        let mut brush: *mut GpSolidFill = std::ptr::null_mut();
+        if GdipCreateSolidFill(argb, &mut brush).0 == 0 {
+            let _ = GdipFillPath(g, brush as *mut GpBrush, path);
+            let _ = GdipDeleteBrush(brush as *mut GpBrush);
+        }
+    } else {
+        // Rounded caps + joins at the scaled Lucide weight.
+        let width = (BASE_STROKE_WIDTH as f64 * scale) as f32;
+        let mut pen: *mut GpPen = std::ptr::null_mut();
+        if GdipCreatePen1(argb, width, UnitPixel, &mut pen).0 == 0 {
+            let _ = GdipSetPenStartCap(pen, LineCapRound);
+            let _ = GdipSetPenEndCap(pen, LineCapRound);
+            let _ = GdipSetPenLineJoin(pen, LineJoinRound);
+            let _ = GdipDrawPath(g, pen, path);
+            let _ = GdipDeletePen(pen);
         }
     }
-    let _ = EndPaint(hwnd, &ps);
-}
-
-unsafe extern "system" fn icon_wnd_proc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    match msg {
-        WM_ERASEBKGND => {
-            // Erase to the parent view's background so the icon reads as
-            // transparent over a solid-colored card (the common case).
-            // True transparency over a gradient isn't possible with opaque
-            // child HWNDs — same limitation as Text.
-            let hdc = windows::Win32::Graphics::Gdi::HDC(wparam.0 as *mut std::ffi::c_void);
-            let mut rc = RECT::default();
-            let _ = GetClientRect(hwnd, &mut rc);
-            let bk = crate::parent_view_bk_color(hwnd);
-            let brush = CreateSolidBrush(bk);
-            FillRect(hdc, &rc, brush);
-            let _ = DeleteObject(HGDIOBJ(brush.0));
-            LRESULT(1)
-        }
-        WM_PAINT => {
-            let ud = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-            if ud != 0 {
-                paint_icon(hwnd, &*(ud as *const IconPaint));
-            } else {
-                let mut ps = PAINTSTRUCT::default();
-                let _ = BeginPaint(hwnd, &mut ps);
-                let _ = EndPaint(hwnd, &ps);
-            }
-            LRESULT(0)
-        }
-        WM_NCDESTROY => {
-            let ud = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-            if ud != 0 {
-                drop(Box::from_raw(ud as *mut IconPaint));
-                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-            }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
-        }
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
-    }
+    let _ = GdipDeletePath(path);
 }
 
 #[cfg(test)]

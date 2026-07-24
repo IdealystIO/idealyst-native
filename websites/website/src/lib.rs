@@ -279,6 +279,20 @@ pub fn register_extensions(backend: &mut backend_linux::LinuxBackend) {
     codeblock::register(backend);
 }
 
+// Native Windows (Win32). Same `not(feature = "terminal")` guard as
+// macOS / Linux (the terminal target builds for the host triple).
+// Registers the swap navigator's backend-neutral handler — the Windows
+// backend implements `RegisterNavigator`, and the handler's chrome is
+// built from primitives the GDI+ scene painter draws natively.
+// `codeblock::register` resolves to the SDK's generic fallback on
+// Windows (no Win32 leaf yet), so fenced code renders the standard
+// external-not-registered placeholder rather than styled tokens.
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32"), not(feature = "terminal")))]
+pub fn register_extensions(backend: &mut backend_windows::WindowsBackend) {
+    swap_navigator::register_generic(backend);
+    codeblock::register(backend);
+}
+
 // Terminal — selected by the `terminal` feature (the CLI's terminal
 // wrapper enables it), not a `target_os` cfg, because the terminal target
 // builds for the host triple and would otherwise be shadowed by the host's

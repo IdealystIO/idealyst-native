@@ -140,14 +140,30 @@ pub fn measure(
     known: Size<Option<f32>>,
     available: Size<AvailableSpace>,
 ) -> Size<f32> {
-    // Natural (single-line) width, unconstrained.
-    let (_wmin, wnat, _, _) = label.measure(gtk4::Orientation::Horizontal, -1);
+    // Minimum (longest unbreakable word — the label's min-content width)
+    // and natural (whole text on one line) widths, both unconstrained.
+    let (wmin, wnat, _, _) = label.measure(gtk4::Orientation::Horizontal, -1);
     let width = known.width.unwrap_or_else(|| match available.width {
         AvailableSpace::Definite(aw) => (wnat as f32).min(aw),
         _ => wnat as f32,
     });
-    // Height the label needs at that width (wraps if narrower than natural).
-    let (_hmin, hnat, _, _) = label.measure(gtk4::Orientation::Vertical, width.round().max(-1.0) as i32);
+    // Height at that width — but height MUST be measured at a width the
+    // label can actually take. A `GtkLabel` cannot render narrower than
+    // its longest word, and GTK loudly refuses to try:
+    //   "Trying to measure GtkLabel for width of 0, but it needs at
+    //    least 81"
+    // Taffy legitimately probes with a 0/near-0 available width while
+    // resolving flex minimums, so this fired constantly and flooded the
+    // log. Clamping to `wmin` asks the question GTK can answer (the
+    // height when wrapped as tight as possible) instead of an impossible
+    // one; `-1` for a non-positive result keeps "unconstrained" meaning
+    // unconstrained rather than "zero".
+    let for_size = if width >= 1.0 {
+        (width.round() as i32).max(wmin)
+    } else {
+        -1
+    };
+    let (_hmin, hnat, _, _) = label.measure(gtk4::Orientation::Vertical, for_size);
     Size {
         width,
         height: known.height.unwrap_or(hnat as f32),

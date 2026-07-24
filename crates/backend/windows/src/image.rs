@@ -1,11 +1,10 @@
 //! `Element::Image` — bitmap rendering on the Win32 backend.
 //!
-//! Win32's `STATIC` + `STM_SETIMAGE` only takes a pre-loaded `HBITMAP`
-//! and gives no control over aspect-fit, so `IdealystImage` is a custom
-//! WNDCLASS whose `WM_PAINT` draws a GDI+ `GpImage` into the client rect
-//! honoring the `object_fit` style (`Fill` / `Contain` / `Cover`). GDI+
-//! decodes PNG / JPEG / GIF / BMP / TIFF, so the backend supports every
-//! raster format the OS ships a codec for.
+//! The scene painter (`crate::scene`) calls [`paint_into`] to draw a
+//! decoded GDI+ `GpImage` into the node's box honoring the `object_fit`
+//! style (`Fill` / `Contain` / `Cover`). GDI+ decodes PNG / JPEG / GIF /
+//! BMP / TIFF, so the backend supports every raster format the OS ships
+//! a codec for.
 //!
 //! ## Source support
 //!
@@ -32,20 +31,11 @@ use std::path::PathBuf;
 use runtime_core::ObjectFit;
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, HBRUSH, HGDIOBJ, PAINTSTRUCT,
-};
 use windows::Win32::Graphics::GdiPlus::{
-    GdipCreateFromHDC, GdipDeleteGraphics, GdipDisposeImage, GdipDrawImageRectI, GdipGetImageHeight,
-    GdipGetImageWidth, GdipLoadImageFromFile, GpGraphics, GpImage,
+    CombineModeIntersect, GdipDisposeImage, GdipDrawImageRectI, GdipGetImageHeight,
+    GdipGetImageWidth, GdipLoadImageFromFile, GdipRestoreGraphics, GdipSaveGraphics,
+    GdipSetClipRect, GpGraphics, GpImage,
 };
-use windows::Win32::UI::WindowsAndMessaging::{
-    DefWindowProcW, GetClientRect, GetWindowLongPtrW, RegisterClassExW, SetWindowLongPtrW,
-    CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, WM_ERASEBKGND, WM_NCDESTROY, WM_PAINT, WNDCLASSEXW,
-};
-
-pub(crate) const IMAGE_CLASS_NAME: PCWSTR = PCWSTR(windows::core::w!("IdealystImage").as_ptr());
 
 /// A decoded GDI+ image plus its natural pixel size. Wraps the raw
 /// `*mut GpImage` so the paint state can own it and dispose on drop.
@@ -212,35 +202,12 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 }
 
 // =========================================================================
-// Window
+// Scene-paint entry point
 // =========================================================================
 
-/// Register the `IdealystImage` WNDCLASS once per process.
-pub(crate) fn ensure_image_class_registered() {
-    use std::sync::Once;
-    static REGISTER: Once = Once::new();
-    REGISTER.call_once(|| unsafe {
-        let wcex = WNDCLASSEXW {
-            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-            style: CS_HREDRAW | CS_VREDRAW,
-            lpfnWndProc: Some(image_wnd_proc),
-            cbClsExtra: 0,
-            cbWndExtra: 0,
-            hInstance: Default::default(),
-            hIcon: Default::default(),
-            hCursor: Default::default(),
-            hbrBackground: HBRUSH::default(),
-            lpszMenuName: PCWSTR::null(),
-            lpszClassName: IMAGE_CLASS_NAME,
-            hIconSm: Default::default(),
-        };
-        let _ = RegisterClassExW(&wcex);
-    });
-}
-
 /// Compute the destination rect `(x, y, w, h)` for `natural` in a
-/// `cw × ch` client box under `fit`. `Cover` returns a rect larger than
-/// the client (negative offsets); the window clips the overflow.
+/// `cw × ch` box under `fit`. `Cover` returns a rect larger than the box
+/// (negative offsets); the painter clips the overflow to the node rect.
 fn dest_rect(natural: (u32, u32), cw: i32, ch: i32, fit: ObjectFit) -> (i32, i32, i32, i32) {
     let (nw, nh) = (natural.0.max(1) as f32, natural.1.max(1) as f32);
     let (cwf, chf) = (cw as f32, ch as f32);
@@ -259,68 +226,28 @@ fn dest_rect(natural: (u32, u32), cw: i32, ch: i32, fit: ObjectFit) -> (i32, i32
     }
 }
 
-unsafe fn paint_image(hwnd: HWND, p: &ImagePaint) {
-    let mut ps = PAINTSTRUCT::default();
-    let hdc = BeginPaint(hwnd, &mut ps);
-    let mut rc = RECT::default();
-    let _ = GetClientRect(hwnd, &mut rc);
-    let cw = rc.right - rc.left;
-    let ch = rc.bottom - rc.top;
-
-    if let Some(img) = &p.image {
-        if cw > 0 && ch > 0 && !img.image.is_null() {
-            let mut g: *mut GpGraphics = std::ptr::null_mut();
-            if GdipCreateFromHDC(hdc, &mut g).0 == 0 && !g.is_null() {
-                let (dx, dy, dw, dh) = dest_rect(img.natural, cw, ch, p.object_fit);
-                let _ = GdipDrawImageRectI(g, img.image, dx, dy, dw.max(1), dh.max(1));
-                let _ = GdipDeleteGraphics(g);
-            }
-        }
+/// Draw the image into the current graphics at `(0, 0)`..`(w, h)` —
+/// world transform already positions the node's box. `Cover` overflow is
+/// clipped to the box. (Cumulative opacity is not yet applied to bitmaps
+/// — that needs a per-draw `ImageAttributes` color matrix; images render
+/// at full alpha under a faded ancestor. Documented gap, not a silent
+/// wrong-path: no current example animates opacity over an image.)
+pub(crate) unsafe fn paint_into(g: *mut GpGraphics, p: &ImagePaint, w: f32, h: f32) {
+    let Some(img) = &p.image else {
+        return;
+    };
+    let (cw, ch) = (w.round() as i32, h.round() as i32);
+    if cw <= 0 || ch <= 0 || img.image.is_null() {
+        return;
     }
-    let _ = EndPaint(hwnd, &ps);
-}
-
-unsafe extern "system" fn image_wnd_proc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    match msg {
-        WM_ERASEBKGND => {
-            // Erase to the parent view's background — the letterbox area
-            // (Contain) and any unfilled space read as the card color, and
-            // a failed/remote image degrades to a clean blank box.
-            let hdc = windows::Win32::Graphics::Gdi::HDC(wparam.0 as *mut std::ffi::c_void);
-            let mut rc = RECT::default();
-            let _ = GetClientRect(hwnd, &mut rc);
-            let bk = crate::parent_view_bk_color(hwnd);
-            let brush = CreateSolidBrush(bk);
-            FillRect(hdc, &rc, brush);
-            let _ = DeleteObject(HGDIOBJ(brush.0));
-            LRESULT(1)
-        }
-        WM_PAINT => {
-            let ud = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-            if ud != 0 {
-                paint_image(hwnd, &*(ud as *const ImagePaint));
-            } else {
-                let mut ps = PAINTSTRUCT::default();
-                let _ = BeginPaint(hwnd, &mut ps);
-                let _ = EndPaint(hwnd, &ps);
-            }
-            LRESULT(0)
-        }
-        WM_NCDESTROY => {
-            let ud = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-            if ud != 0 {
-                drop(Box::from_raw(ud as *mut ImagePaint));
-                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-            }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
-        }
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
-    }
+    let (dx, dy, dw, dh) = dest_rect(img.natural, cw, ch, p.object_fit);
+    // `Cover` deliberately overflows the box; clip so the crop matches
+    // the other backends.
+    let mut state: u32 = 0;
+    let _ = GdipSaveGraphics(g, &mut state);
+    let _ = GdipSetClipRect(g, 0.0, 0.0, w, h, CombineModeIntersect);
+    let _ = GdipDrawImageRectI(g, img.image, dx, dy, dw.max(1), dh.max(1));
+    let _ = GdipRestoreGraphics(g, state);
 }
 
 #[cfg(test)]

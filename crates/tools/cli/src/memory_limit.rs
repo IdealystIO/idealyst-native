@@ -10,27 +10,52 @@
 //!
 //! ## Enforcement strategy
 //!
-//! Differs by platform because macOS doesn't enforce `setrlimit`
-//! for memory at all (any `setrlimit(RLIMIT_AS|RLIMIT_DATA, ...)`
-//! returns `EINVAL` on darwin even though the constants are
-//! defined). Verified by direct experiment — the symbols accept
-//! the call but the kernel doesn't constrain the process.
+//! A background poll thread reads this process's RSS every few
+//! seconds and `process::abort()`s when it crosses the cap. Polling
+//! latency is fine for our purpose — runaway leaks grow at MB/s,
+//! not GB/ms, and the goal is catching multi-GB drift before the
+//! editor host buckles.
 //!
-//! - **Linux**: `setrlimit(RLIMIT_AS, …)`. Kernel-enforced; any
-//!   `mmap` / `sbrk` over the limit returns `ENOMEM` and the Rust
-//!   allocator panics at the call site. No background overhead.
-//! - **macOS**: a background poll thread reads RSS via
-//!   `proc_pidinfo(PROC_PIDTASKINFO)` every few seconds and
-//!   `process::abort()`s when RSS crosses the cap. Polling
-//!   latency is fine for our purpose — runaway leaks grow at
-//!   MB/s, not GB/ms, and the goal is catching multi-GB drift
-//!   before the editor host buckles.
+//! - **Linux**: RSS from `/proc/self/statm` (resident pages ×
+//!   page size).
+//! - **macOS**: RSS via `proc_pidinfo(PROC_PIDTASKINFO)`. macOS
+//!   cannot enforce `setrlimit` for memory at all (any
+//!   `setrlimit(RLIMIT_AS|RLIMIT_DATA, ...)` returns `EINVAL` on
+//!   darwin even though the constants are defined) — verified by
+//!   direct experiment, the symbols accept the call but the kernel
+//!   doesn't constrain the process.
 //! - **Other**: silent no-op.
 //!
-//! Children inherit `setrlimit` (Linux) but not the monitor thread
-//! (macOS — it's per-process). Either way, the cap is per-process,
-//! so `cargo`/`rustc` children get their own budget, not a shared
-//! one. This does NOT constrain compilation memory.
+//! **The cap must never reach a child process.** It bounds THIS
+//! process only; `cargo` / `rustc` / `wasm-bindgen` / `wasm-opt`
+//! run unconstrained. That is the whole contract of this module —
+//! it does NOT constrain compilation memory.
+//!
+//! ### Why not `setrlimit(RLIMIT_AS)` on Linux
+//!
+//! It was the original Linux strategy, and it silently broke that
+//! contract: `RLIMIT_AS` is **inherited across fork/exec**, so every
+//! build subprocess the CLI spawns ran under the CLI's 4 GB cap.
+//! `idealyst dev --web` on this repo's website died with
+//! `memory allocation of 160 bytes failed` + SIGABRT — wasm-bindgen
+//! needs ~6.4 GB of address space for the website's 419 MB debug
+//! wasm, hit the inherited 4 GB ceiling, and aborted on the next
+//! (tiny) allocation. The same latent failure sat behind all ~30
+//! `Command::new("cargo")` sites across the build tools.
+//!
+//! Root-caused 2026-07-23. The fix is deliberately here rather than
+//! at the call sites: sprinkling [`unlimit_child`] over 30 spawns
+//! leaves every *future* spawn re-broken, and it kept Linux
+//! observably different from macOS (where the cap never touched
+//! children because the poll thread isn't inherited). One mechanism,
+//! same observable behavior on both platforms.
+//!
+//! Trade-off accepted: RSS polling loses `RLIMIT_AS`'s exact
+//! abort-at-the-allocation-site precision, and measures resident
+//! rather than reserved memory. Both are fine here — RSS is the
+//! better proxy for "will this OOM the host" anyway (address-space
+//! reservations aren't what crater the machine), and macOS has run
+//! on exactly these semantics since the cap was introduced.
 //!
 //! ## Override
 //!
@@ -50,11 +75,11 @@ pub const DEFAULT_LIMIT_MB: u64 = 4096;
 /// Env var name for override. `0` disables.
 pub const ENV_OVERRIDE: &str = "IDEALYST_MEMORY_LIMIT_MB";
 
-/// macOS RSS poll cadence. Long enough that overhead is invisible,
-/// short enough that we abort well before a leak that's growing at
-/// MB/s exhausts the host.
-#[cfg(target_os = "macos")]
-const MACOS_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
+/// RSS poll cadence. Long enough that overhead is invisible, short
+/// enough that we abort well before a leak that's growing at MB/s
+/// exhausts the host.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Apply the cap. Silent on default activation so short-lived
 /// commands don't gain a startup banner; logs only when the user
@@ -71,42 +96,20 @@ pub fn apply(default_mb: u64) {
     let bytes = mb.saturating_mul(1024 * 1024);
     let log = user_override.is_some();
 
-    #[cfg(target_os = "linux")]
-    apply_rlimit_as(bytes, mb, log);
-    #[cfg(target_os = "macos")]
-    spawn_macos_monitor(bytes, mb, log);
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    spawn_rss_monitor(bytes, mb, log);
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (bytes, mb, log);
     }
 }
 
-#[cfg(target_os = "linux")]
-fn apply_rlimit_as(bytes: u64, mb: u64, log: bool) {
-    // SAFETY: getrlimit/setrlimit are thread-safe POD calls. We
-    // preserve rlim_max so the hard limit stays where the parent
-    // set it — lowering it would be permanent for this process
-    // tree and impossible to raise back.
-    unsafe {
-        let mut current: libc::rlimit = std::mem::zeroed();
-        if libc::getrlimit(libc::RLIMIT_AS, &mut current) != 0 {
-            return;
-        }
-        let new = libc::rlimit {
-            rlim_cur: bytes as libc::rlim_t,
-            rlim_max: current.rlim_max,
-        };
-        if libc::setrlimit(libc::RLIMIT_AS, &new) == 0 && log {
-            eprintln!(
-                "[idealyst] memory cap: {mb} MB address space (via {ENV_OVERRIDE}; \
-                 0 disables)",
-            );
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn spawn_macos_monitor(limit_bytes: u64, mb: u64, log: bool) {
+/// Poll this process's RSS and abort if it crosses the cap.
+///
+/// Deliberately NOT `setrlimit` — see the module docs: an rlimit is
+/// inherited by every build subprocess and would cap compilation.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn spawn_rss_monitor(limit_bytes: u64, mb: u64, log: bool) {
     if log {
         eprintln!(
             "[idealyst] memory cap: {mb} MB RSS via poll thread (via {ENV_OVERRIDE}; \
@@ -116,8 +119,8 @@ fn spawn_macos_monitor(limit_bytes: u64, mb: u64, log: bool) {
     let _ = std::thread::Builder::new()
         .name("idealyst-mem-monitor".to_string())
         .spawn(move || loop {
-            std::thread::sleep(MACOS_POLL_INTERVAL);
-            if let Some(rss) = macos_current_rss_bytes() {
+            std::thread::sleep(POLL_INTERVAL);
+            if let Some(rss) = current_rss_bytes() {
                 if rss > limit_bytes {
                     eprintln!(
                         "[idealyst] memory cap exceeded: RSS {} MB > cap {mb} MB; \
@@ -130,8 +133,25 @@ fn spawn_macos_monitor(limit_bytes: u64, mb: u64, log: bool) {
         });
 }
 
+/// Current resident set size in bytes, or `None` if it can't be read.
+///
+/// Linux: `/proc/self/statm` field 2 is the resident page count
+/// (`statm` is the cheap one — `/proc/self/status` formats a dozen
+/// fields we don't need on every poll).
+#[cfg(target_os = "linux")]
+fn current_rss_bytes() -> Option<u64> {
+    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let resident_pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+    // SAFETY: sysconf is a thread-safe read of a static system value.
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if page_size <= 0 {
+        return None;
+    }
+    Some(resident_pages.saturating_mul(page_size as u64))
+}
+
 #[cfg(target_os = "macos")]
-fn macos_current_rss_bytes() -> Option<u64> {
+fn current_rss_bytes() -> Option<u64> {
     let pid = std::process::id() as libc::c_int;
     let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
@@ -159,10 +179,15 @@ fn macos_current_rss_bytes() -> Option<u64> {
 /// Lift the address-space cap for a child that legitimately reserves huge
 /// address space. Headless Chromium is the motivating case: V8 reserves
 /// multi-GB virtual regions (pointer-compression cage) at startup, so under
-/// the CLI's inherited `RLIMIT_AS` it dies INSTANTLY and silently — dev's
-/// headless web client spawned and vanished with no output (root-caused live
-/// 2026-07-20). [`apply`] preserves `rlim_max`, so the child may raise its
-/// soft cap back to the hard limit between fork and exec. No-op off Linux.
+/// an inherited `RLIMIT_AS` it dies INSTANTLY and silently — dev's headless
+/// web client spawned and vanished with no output (root-caused live
+/// 2026-07-20). The child raises its soft cap back to the hard limit between
+/// fork and exec. No-op off Linux.
+///
+/// Since [`apply`] no longer sets `RLIMIT_AS` (see module docs), this is now
+/// belt-and-braces: it only matters when something *outside* the CLI — the
+/// user's shell, a CI runner, a systemd unit — imposed a soft cap that a
+/// memory-hungry child can't live within.
 pub fn unlimit_child(cmd: &mut std::process::Command) {
     #[cfg(target_os = "linux")]
     {
@@ -188,6 +213,23 @@ pub fn unlimit_child(cmd: &mut std::process::Command) {
 mod tests {
     use super::*;
 
+    /// `RLIMIT_AS` is process-global state and cargo runs tests in
+    /// parallel threads, so the two rlimit tests below MUST NOT overlap:
+    /// `regression_unlimit_child_lifts_inherited_rlimit_as` temporarily
+    /// lowers the soft cap, which lands inside the other test's
+    /// before/after window and fails it spuriously. Observed flaking
+    /// live — serialize them.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    static RLIMIT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Take [`RLIMIT_LOCK`], ignoring poisoning — a panicking rlimit test
+    /// restores the limit before asserting, so the next test is still
+    /// safe to run and shouldn't cascade into a second failure.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn rlimit_guard() -> std::sync::MutexGuard<'static, ()> {
+        RLIMIT_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     // Sanity-check the macOS RSS binding. This is the load-bearing
     // platform syscall — if `proc_pidinfo` ever stops returning
     // PROC_PIDTASKINFO, the monitor thread silently never aborts
@@ -204,6 +246,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn regression_unlimit_child_lifts_inherited_rlimit_as() {
+        let _serialized = rlimit_guard();
         unsafe {
             let mut orig: libc::rlimit = std::mem::zeroed();
             assert_eq!(libc::getrlimit(libc::RLIMIT_AS, &mut orig), 0);
@@ -232,10 +275,54 @@ mod tests {
         }
     }
 
+    // The bug this module was re-engineered for: `apply` used to
+    // `setrlimit(RLIMIT_AS, 4GB)`, which fork/exec inherits, so every build
+    // subprocess ran under the CLI's leak cap. `idealyst dev --web` aborted
+    // in wasm-bindgen ("memory allocation of 160 bytes failed", SIGABRT) —
+    // it needs ~6.4 GB for the website's 419 MB debug wasm. Asserts the cap
+    // never touches the rlimit that children inherit.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn regression_cap_does_not_lower_rlimit_as_inherited_by_build_children() {
+        let _serialized = rlimit_guard();
+        unsafe {
+            let mut before: libc::rlimit = std::mem::zeroed();
+            assert_eq!(libc::getrlimit(libc::RLIMIT_AS, &mut before), 0);
+
+            // A cap so high the monitor thread can never trip during tests,
+            // while still exercising the real `apply` path.
+            apply(1_000_000);
+
+            let mut after: libc::rlimit = std::mem::zeroed();
+            assert_eq!(libc::getrlimit(libc::RLIMIT_AS, &mut after), 0);
+            assert_eq!(
+                before.rlim_cur, after.rlim_cur,
+                "apply() must not lower the soft RLIMIT_AS — build children inherit it \
+                 and cargo/rustc/wasm-bindgen would die under the CLI's leak cap",
+            );
+            assert_eq!(
+                before.rlim_max, after.rlim_max,
+                "apply() must not touch the hard RLIMIT_AS",
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_rss_returns_plausible_value() {
+        let rss = current_rss_bytes().expect("/proc/self/statm should be readable on Linux");
+        // A test process is at least a few MB and well under 100GB.
+        assert!(rss > 1024 * 1024, "RSS {rss} bytes too small");
+        assert!(
+            rss < 100 * 1024 * 1024 * 1024,
+            "RSS {rss} bytes implausibly large",
+        );
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_rss_returns_plausible_value() {
-        let rss = macos_current_rss_bytes()
+        let rss = current_rss_bytes()
             .expect("proc_pidinfo(PROC_PIDTASKINFO) returned an unexpected size");
         // A test process is at least a few MB and well under 100GB.
         assert!(rss > 1024 * 1024, "RSS {rss} bytes too small");

@@ -94,6 +94,12 @@ impl Default for AnimatedTransform {
 pub struct NodeTransform {
     pub statik: StaticTransform,
     pub animated: AnimatedTransform,
+    /// `position: sticky` pin offset along Y, in px (see
+    /// [`crate::sticky`]). Kept apart from `statik`/`animated` because
+    /// it's derived from scroll state, not authored: a restyle or an
+    /// in-flight animation must not clobber the pin, and the pin must
+    /// not survive into either of theirs.
+    pub sticky_dy: f32,
 }
 
 /// Fold a `transform: [...]` list into a single [`StaticTransform`].
@@ -194,7 +200,10 @@ pub fn build_child_transform(
 
     // Outermost: place the box at layout position + author/animated
     // translate. Then pivot to center, scale + rotate, pivot back.
-    let mut xf = gsk::Transform::new().translate(&graphene::Point::new(pos.0 + tx, pos.1 + ty));
+    let mut xf = gsk::Transform::new().translate(&graphene::Point::new(
+        pos.0 + tx,
+        pos.1 + ty + nt.sticky_dy,
+    ));
 
     let has_scale = (sx - 1.0).abs() > f32::EPSILON || (sy - 1.0).abs() > f32::EPSILON;
     let has_rot = rot.abs() > f32::EPSILON;
@@ -249,6 +258,7 @@ mod tests {
         let nt = NodeTransform {
             statik: folded,
             animated: AnimatedTransform::default(),
+            ..Default::default()
         };
         // On a 200×200 box: +50% X = +100px, −50% Y = −100px.
         let (tx, ty) = effective_translate(&nt, (200.0, 200.0));
@@ -268,6 +278,7 @@ mod tests {
                 scale: 1.5,
                 ..Default::default()
             },
+            ..Default::default()
         };
         let (sx, sy) = effective_scale(&nt);
         assert!((sx - 3.0).abs() < 1e-4);
@@ -285,6 +296,7 @@ mod tests {
                 translate_x: 12.0,
                 ..Default::default()
             },
+            ..Default::default()
         };
         let (tx, _) = effective_translate(&nt, (100.0, 100.0));
         assert!((tx - 62.0).abs() < 1e-4); // 50% of 100 + 12

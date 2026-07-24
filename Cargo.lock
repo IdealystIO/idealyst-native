@@ -12873,6 +12873,7 @@ dependencies = [
  "backend-ssr",
  "backend-terminal",
  "backend-web",
+ "backend-windows",
  "codeblock",
  "dev-server",
  "host-web",
