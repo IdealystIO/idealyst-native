@@ -64,6 +64,14 @@ objc2-foundation = { version = "0.2", features = ["NSString", "NSArray", "NSDict
 jni = "0.21"
 ndk-context = "0.1"
 
+# Linux desktop: the session-bus `org.freedesktop.Notifications` service via
+# pure-Rust `zbus`. Version matched to the tree's existing lock entry (pulled
+# in transitively by `ashpd`) so no new version is introduced. Default
+# features keep zbus's runtime-agnostic `async-io` executor, so the async
+# surface awaits cleanly under whatever runtime the caller drives.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = "4"
+
 [features]
 # Compile the `recipe!` usage examples (feeds MCP / autodocs). Off in
 # production builds, so recipes cost nothing there. Forwards `async-driver`

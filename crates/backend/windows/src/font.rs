@@ -41,7 +41,10 @@ use windows::Win32::Graphics::Gdi::{
     AddFontMemResourceEx, AddFontResourceExW, CreateFontIndirectW, HDC, CLEARTYPE_QUALITY,
     CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, FR_PRIVATE, HFONT, LOGFONTW, OUT_TT_PRECIS,
 };
-use windows::Win32::Graphics::GdiPlus::{GdipCreateFontFromLogfontW, GpFont};
+use windows::Win32::Graphics::GdiPlus::{
+    GdipCreateFontFamilyFromName, GdipCreateFontFromLogfontW, GdipDeleteFontFamily, GpFont,
+    GpFontFamily,
+};
 
 /// Cache key for a resolved font. Family is owned (the style's family
 /// name), size is in whole pixels, weight is the GDI 100–900 scale.
@@ -137,6 +140,61 @@ pub(crate) fn gpfont_for(entry: &mut FontEntry, hdc: HDC) -> *mut GpFont {
     entry.gpfont
 }
 
+/// Resolve a CSS `font-family` value — possibly a comma-separated
+/// fallback STACK (`system-ui, -apple-system, "Segoe UI", Roboto, …`)
+/// — to the first concrete family GDI+ can draw, else `shell`.
+///
+/// Styles carry the stack verbatim (the web backend hands it to CSS
+/// untouched). Passing it through as a `LOGFONTW` face name is a trap:
+/// GDI's font MAPPER accepts any garbage face name and silently
+/// substitutes (so `CreateFontIndirectW` + measurement "work"), but
+/// GDI+'s `GdipCreateFontFromLogfontW` needs a real family and fails —
+/// null `GpFont`, painter skips the run, and the text is INVISIBLE
+/// while still occupying layout space (the website's sidebar section
+/// labels and the "Dark mode" switch label).
+///
+/// CSS generic/system keywords map to their Windows equivalents;
+/// concrete names are probed with `GdipCreateFontFamilyFromName` so
+/// the returned family is one GDI+ provably has.
+pub(crate) fn resolve_family_stack(stack: &str, shell: &str) -> String {
+    for raw in stack.split(',') {
+        let name = raw.trim().trim_matches('"').trim_matches('\'').trim();
+        if name.is_empty() {
+            continue;
+        }
+        let candidate = match name.to_ascii_lowercase().as_str() {
+            // The platform UI font — exactly what the shell font is.
+            "system-ui" | "-apple-system" | "blinkmacsystemfont" | "ui-sans-serif"
+            | "sans-serif" => shell,
+            "serif" | "ui-serif" => "Times New Roman",
+            "monospace" | "ui-monospace" => "Consolas",
+            _ => name,
+        };
+        if gdiplus_family_exists(candidate) {
+            return candidate.to_string();
+        }
+    }
+    shell.to_string()
+}
+
+/// True iff GDI+ can resolve `name` as a font family (its default
+/// system collection — the same lookup `GdipCreateFontFromLogfontW`
+/// ultimately needs to succeed).
+fn gdiplus_family_exists(name: &str) -> bool {
+    let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut family: *mut GpFontFamily = std::ptr::null_mut();
+    unsafe {
+        let status =
+            GdipCreateFontFamilyFromName(PCWSTR(wide.as_ptr()), std::ptr::null_mut(), &mut family);
+        if status.0 == 0 && !family.is_null() {
+            let _ = GdipDeleteFontFamily(family);
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// Install one typeface face into the process font table so
 /// `CreateFontIndirectW` can resolve it by family name.
 ///
@@ -175,6 +233,72 @@ mod tests {
         assert_eq!(weight_to_gdi(FontWeight::Normal), 400);
         assert_eq!(weight_to_gdi(FontWeight::Bold), 700);
         assert_eq!(weight_to_gdi(FontWeight::Black), 900);
+    }
+
+    /// The website theme's real font-family stack must land on a
+    /// family GDI+ can draw. Passed through raw, GDI measurement
+    /// "works" (mapper substitution) but `GdipCreateFontFromLogfontW`
+    /// fails and the painter skips the run — sidebar section labels
+    /// and the "Dark mode" switch label rendered invisible.
+    #[test]
+    fn regression_css_font_stack_resolves_to_drawable_family() {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::Graphics::Gdi::{GetDC, ReleaseDC};
+        crate::ensure_gdiplus();
+        let stack = r#"system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif"#;
+        let family = resolve_family_stack(stack, "Segoe UI");
+        assert!(!family.contains(','), "a single concrete family, got {family:?}");
+        let key = FontKey { family, size_px: 11, weight: 600, italic: false };
+        let dc = unsafe { GetDC(HWND(std::ptr::null_mut())) };
+        let mut cache = FontCache::new();
+        let entry = entry_for(&mut cache, &key).expect("hfont");
+        let gp = gpfont_for(entry, dc);
+        unsafe {
+            ReleaseDC(HWND(std::ptr::null_mut()), dc);
+        }
+        assert!(!gp.is_null(), "resolved family must be drawable by GDI+");
+        // Unknown-first stacks fall through; garbage-only falls back.
+        assert_eq!(resolve_family_stack("NoSuchFont, Arial", "Segoe UI"), "Arial");
+        assert_eq!(resolve_family_stack("NoSuchFont, AlsoMissing", "Segoe UI"), "Segoe UI");
+        assert_eq!(resolve_family_stack("monospace", "Segoe UI"), "Consolas");
+    }
+
+    /// Every CSS weight must yield a drawable GDI+ font — the painter
+    /// silently skips text whose `gpfont` is null, so a weight that
+    /// fails `GdipCreateFontFromLogfontW` renders as INVISIBLE text
+    /// (the website's SemiBold sidebar section labels and the Medium
+    /// "Dark mode" switch label).
+    #[test]
+    fn regression_all_css_weights_yield_drawable_gpfont() {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::Graphics::Gdi::{GetDC, ReleaseDC};
+        crate::ensure_gdiplus();
+        let dc = unsafe { GetDC(HWND(std::ptr::null_mut())) };
+        assert!(!dc.is_invalid());
+        let mut cache = FontCache::new();
+        let mut failures = Vec::new();
+        for weight in [100, 200, 300, 400, 500, 600, 700, 800, 900] {
+            for size in [11, 13, 16, 56] {
+                let key = FontKey {
+                    family: "Segoe UI".into(),
+                    size_px: size,
+                    weight,
+                    italic: false,
+                };
+                match entry_for(&mut cache, &key) {
+                    Some(entry) => {
+                        if gpfont_for(entry, dc).is_null() {
+                            failures.push(format!("weight {weight} size {size}: gpfont null"));
+                        }
+                    }
+                    None => failures.push(format!("weight {weight} size {size}: no HFONT")),
+                }
+            }
+        }
+        unsafe {
+            ReleaseDC(HWND(std::ptr::null_mut()), dc);
+        }
+        assert!(failures.is_empty(), "undrawable fonts:\n{}", failures.join("\n"));
     }
 
     /// `lfHeight` must be NEGATIVE so GDI treats the value as the em

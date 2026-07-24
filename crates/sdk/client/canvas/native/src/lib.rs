@@ -57,11 +57,17 @@ mod android;
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 pub use android::register;
 
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+mod linux;
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+pub use linux::register;
+
 #[cfg(not(any(
     target_arch = "wasm32",
     target_os = "ios",
     target_os = "android",
-    target_os = "macos"
+    target_os = "macos",
+    target_os = "linux"
 )))]
 mod fallback {
     use runtime_core::Backend;
@@ -78,7 +84,8 @@ mod fallback {
     target_arch = "wasm32",
     target_os = "ios",
     target_os = "android",
-    target_os = "macos"
+    target_os = "macos",
+    target_os = "linux"
 )))]
 pub use fallback::register;
 

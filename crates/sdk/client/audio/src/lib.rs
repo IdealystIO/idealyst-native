@@ -51,8 +51,14 @@
 //! - **iOS / macOS / tvOS** — `AVAudioPlayer` (objc2). Compile-checked
 //!   only — not device-verified from this repo.
 //! - **Android** — `MediaPlayer` (JNI). Compile-checked only.
-//! - **Windows / Linux / other native** — no pure-Rust player is pulled in
-//!   (kept dependency-light on purpose), so [`load`] returns
+//! - **Linux / desktop ALSA·PipeWire** — **GStreamer** (the native Linux
+//!   media stack). A small `decodebin`-based pipeline decodes
+//!   wav/mp3/flac/ogg/aac and drives `volume` / pause / resume / stop /
+//!   looping. Remote `http(s)` URLs are **progressively streamed** via
+//!   `souphttpsrc`, matching the mobile players and the browser. Verified on
+//!   Linux (headless preroll tests + real remote-URL streaming).
+//! - **Windows / other native** — no pure-Rust player is pulled in (kept
+//!   dependency-light on purpose), so [`load`] returns
 //!   [`AudioError::NotSupported`]. Honest fallback rather than a silent
 //!   no-op.
 //!
@@ -86,10 +92,18 @@ mod imp;
 #[path = "android.rs"]
 mod imp;
 
+// Linux (and other desktop ALSA/PipeWire hosts): real playback via GStreamer,
+// the native Linux media stack — streams remote http(s) URLs like the mobile
+// players (Android/Apple) and the browser.
+#[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
+#[path = "linux.rs"]
+mod imp;
+
 #[cfg(all(
     not(target_arch = "wasm32"),
     not(any(target_os = "ios", target_os = "macos", target_os = "tvos")),
-    not(target_os = "android")
+    not(target_os = "android"),
+    not(target_os = "linux")
 ))]
 #[path = "unsupported.rs"]
 mod imp;
@@ -171,7 +185,7 @@ impl std::error::Error for AudioError {}
 /// Returns [`AudioError::Decode`] if the audio can't be decoded,
 /// [`AudioError::Backend`] for a player/IO failure, and
 /// [`AudioError::NotSupported`] on platforms without a player (desktop
-/// Windows / Linux).
+/// Windows / other native without an audio backend).
 pub async fn load(source: AudioSource) -> Result<Sound, AudioError> {
     let prepared = imp::prepare(source).await?;
     Ok(Sound { inner: prepared })
@@ -300,9 +314,10 @@ mod tests {
 
     /// On the hosts that run these tests (macOS / Linux / Windows), `load`
     /// is reachable and returns a typed result — exercising the public
-    /// async surface end-to-end without a real audio device. On macOS this
-    /// hits the real `AVAudioPlayer` decode path; on Linux/Windows it's the
-    /// honest `NotSupported` fallback. Either way `load` must not panic.
+    /// async surface end-to-end. On macOS this hits the real `AVAudioPlayer`
+    /// decode path; on Linux the real GStreamer `decodebin` path (garbage →
+    /// `Decode`); on Windows the honest `NotSupported` fallback. Either way
+    /// `load` must not panic.
     #[tokio::test]
     async fn load_bad_bytes_is_typed_error_not_panic() {
         // Not valid encoded audio — every backend should reject it as a

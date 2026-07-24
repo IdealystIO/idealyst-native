@@ -22,7 +22,8 @@ license.workspace = true
 #   - web (wasm32):                HTMLAudioElement (`new Audio()` + src)
 #   - iOS / macOS / tvOS:          AVAudioPlayer (objc2)
 #   - Android:                     MediaPlayer (JNI)
-#   - Windows / Linux / other:     NotSupported fallback (no heavy dep pulled in)
+#   - Linux / desktop ALSA·PipeWire: GStreamer (streams remote URLs, like mobile)
+#   - Windows / other native:      NotSupported fallback (no heavy dep pulled in)
 #
 # No permissions required for foreground playback. Background audio (keeping
 # sound going when the app is backgrounded) needs app config and is out of
@@ -56,6 +57,26 @@ objc2-foundation = { version = "0.2", features = ["NSString", "NSData", "NSURL"]
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
 ndk-context = "0.1"
+
+# Linux / desktop native: GStreamer (the native Linux media stack). Unlike the
+# previous `rodio` backend it PROGRESSIVELY STREAMS remote http(s) URLs via
+# `souphttpsrc` — restoring parity with Android/Apple/web, which all stream
+# remote URLs. We drive a small hand-built pipeline (decodebin → audioconvert →
+# audioresample → volume → autoaudiosink) for volume/pause/resume/stop/looping.
+# In-memory `Bytes` are fed via `giostreamsrc` + a `gio::MemoryInputStream` (no
+# temp file). gstreamer-rs 0.23.x targets the GStreamer 1.x C API and works
+# against the system's 1.28 at runtime (no `v1_24`-style feature gates needed —
+# only base 1.0 APIs are used). glib/gio 0.20 match gstreamer-rs 0.23.
+#
+# This is the pattern-setter for the upcoming GStreamer "media cluster"
+# (camera / media-writer / video-decode / screen-recorder): the idempotent
+# `gst::init` guard, the dedicated bus-message thread (no GLib main loop
+# assumed), and the StreamError→Decode / else→Backend error split are meant to
+# be reused there.
+[target.'cfg(target_os = "linux")'.dependencies]
+gstreamer = "0.23"
+glib = "0.20"
+gio = "0.20"
 
 # Recipes (compile-checked usage examples) compile only under `catalog`.
 # Forwards `async-driver` so the recipe can use the real

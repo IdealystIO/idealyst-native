@@ -70,6 +70,16 @@ backend-linux = { workspace = true }
 gtk4 = { version = "0.9", features = ["v4_12"] }
 runtime-core = { workspace = true }
 
+# Windows handler: one painted colored-runs leaf via the Windows
+# backend's `create_colored_code_leaf` extension point (the painted-
+# scene analogue of an attributed-string label — the backend measures
+# the runs in the platform monospace font and its GDI+ scene painter
+# draws them). Wrapped in a `create_view` node so the author's
+# `.with_style` box styling (background, radius, padding) lands like
+# every other backend.
+[target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dependencies]
+backend-windows = { workspace = true }
+
 # macOS handler: one `NSScrollView` (horizontal) wrapping an `NSTextField`
 # label whose `attributedStringValue` carries per-run `NSColor` ranges. Mirrors
 # the iOS handler. objc2 versions match `backend-macos` so the `NSView` type in

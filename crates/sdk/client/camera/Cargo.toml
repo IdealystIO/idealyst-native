@@ -16,7 +16,8 @@ license.workspace = true
 #   - web (wasm32):     getUserMedia + a <video>/<canvas> frame pump
 #   - iOS / macOS:      AVCaptureSession + AVCaptureVideoDataOutput
 #   - Android:          Camera2 + ImageReader via JNI on a worker thread
-#   - desktop Linux/Win: not yet implemented (returns Unsupported)
+#   - desktop Linux:    GStreamer V4L2 (v4l2src ! videoconvert ! appsink)
+#   - desktop Windows:  not yet implemented (returns Unsupported)
 #
 # The platform-agnostic shell (Camera / CameraStream / VideoFrame,
 # CameraConfig / CameraFacing, CameraError, the FrameCallback bound) lives
@@ -104,6 +105,22 @@ futures-channel = "0.3"
 # android.rs. `idealyst run android` discovers and compiles it from here.
 [package.metadata.idealyst.android]
 runtime_kotlin = ["runtime/kotlin/io/idealyst/camera/RustCamera2Helper.kt"]
+
+# Desktop Linux: GStreamer V4L2 capture — the video sibling of the `audio`
+# SDK's GStreamer backend, reusing its "media cluster" pattern (idempotent
+# `gst::init` guard, a dedicated bus-message thread with no GLib main loop
+# assumed). A `GstDeviceMonitor` (`Video/Source` filter) enumerates cameras;
+# `v4l2src ! videoconvert ! video/x-raw,format=RGBA ! appsink` captures, and
+# each `appsink` sample is mapped and pushed into the `FrameWriter` as
+# tightly-packed RGBA8. `gstreamer-app` supplies the `AppSink`. Versions match
+# the `audio` backend (gstreamer-rs 0.23 targets the GStreamer 1.x C API and
+# works against the system's 1.28 — no `v1_XX` feature gates). The
+# PipeWire/xdg-desktop-portal path (`pipewiresrc`) is a documented follow-on
+# (needs `gst-plugin-pipewire`).
+[target.'cfg(target_os = "linux")'.dependencies]
+gstreamer = "0.23"
+gstreamer-app = "0.23"
+glib = "0.20"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

@@ -111,6 +111,7 @@ mod handles;
 mod image;
 mod portal;
 mod sticky;
+mod touch;
 mod virtualizer;
 mod icon;
 mod text;
@@ -152,6 +153,7 @@ pub struct LinuxNode {
     pub(crate) id: u64,
     pub(crate) widget: gtk4::Widget,
 }
+
 
 impl std::fmt::Debug for LinuxNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -455,14 +457,35 @@ pub struct LinuxBackend {
     published_viewport: (f32, f32),
 }
 
+/// An SDK submits one of these so its `Element::External` handler is
+/// installed without the app naming the concrete backend — the Linux
+/// analogue of `MacosExternalRegistrar`. See
+/// [[project_inventory_self_registration]].
+///
+/// Without this, an SDK that self-registers everywhere else (the
+/// `canvas` renderers do) silently has NO handler on GTK, and
+/// `create_external` falls through to the "not registered" placeholder.
+/// That is exactly how the whiteboard demo shipped a dead canvas here.
+pub struct LinuxExternalRegistrar(pub fn(&mut LinuxBackend));
+inventory::collect!(LinuxExternalRegistrar);
+
 impl LinuxBackend {
+    /// Install every SDK-submitted external handler. Native-only, so
+    /// inventory's link-time ctors have populated the slice before
+    /// construction.
+    fn drain_self_registrars(&mut self) {
+        for r in inventory::iter::<LinuxExternalRegistrar> {
+            (r.0)(self);
+        }
+    }
+
     /// Construct a backend rooted at `host_window`. The window must be
     /// realized by the host before widget operations happen.
     pub fn new(host_window: gtk4::Window) -> Self {
         // The framework root becomes the window's child in `finish`;
         // GtkWindow then stretches it to fill the content area (unlike a
         // GtkFixed, which would give it only its natural size).
-        Self {
+        let mut me = Self {
             host_window,
             next_id: 1,
             next_order: 0,
@@ -478,7 +501,9 @@ impl LinuxBackend {
             self_ref: std::rc::Weak::new(),
             sticky_nodes: HashMap::new(),
             published_viewport: (0.0, 0.0),
-        }
+        };
+        me.drain_self_registrars();
+        me
     }
 
     pub fn host_window(&self) -> &gtk4::Window {
@@ -1069,6 +1094,17 @@ impl Backend for LinuxBackend {
         self.wrap(widget.upcast::<gtk4::Widget>(), NodeKind::Pressable)
     }
 
+    fn install_touch_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: runtime_core::TouchHandler,
+    ) {
+        // The trait's default body is a NO-OP, so leaving this
+        // unimplemented is invisible: `.on_touch()` views render fine
+        // and simply never fire. See `touch.rs`.
+        touch::install(&node.widget, handler);
+    }
+
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
         let (Some(parent_layout), Some(child_layout)) = (
             self.nodes.get(&parent.id).map(|s| s.layout),
@@ -1465,7 +1501,31 @@ impl Backend for LinuxBackend {
             .map(color::to_srgb)
             .unwrap_or(icon::DEFAULT_ICON_COLOR);
         let widget = icon::IdealystIcon::new_from_data(data, rgba);
-        self.wrap(widget.upcast::<gtk4::Widget>(), NodeKind::Other)
+        let node = self.wrap(widget.upcast::<gtk4::Widget>(), NodeKind::Other);
+
+        // Pin a 24x24 default intrinsic size, matching iOS/macOS
+        // (`backend-macos`'s `create_icon` sets the same constant).
+        //
+        // Without a measure fn an icon's Taffy node has NO size source at
+        // all — `IdealystIcon` is a bare GTK widget with no natural size,
+        // and the icon primitive carries its dimensions in a viewBox
+        // rather than in style. So every icon laid out at 0x0 and simply
+        // did not appear: the whiteboard demo's entire toolbar rendered
+        // as blank buttons.
+        //
+        // Style-driven `width`/`height` still win, because Taffy passes
+        // them as `known` and the closure short-circuits to them.
+        const ICON_SIZE: f32 = 24.0;
+        if let Some(layout) = self.nodes.get(&node.id).map(|s| s.layout) {
+            self.layout.set_measure_fn(
+                layout,
+                Rc::new(move |known: Size<Option<f32>>, _available| Size {
+                    width: known.width.unwrap_or(ICON_SIZE),
+                    height: known.height.unwrap_or(ICON_SIZE),
+                }),
+            );
+        }
+        node
     }
 
     fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
@@ -2176,6 +2236,59 @@ mod layout_tests {
             container.widget.margin_top(),
             0,
             "IdealystView padding is handled by Taffy, not GTK margins",
+        );
+
+        // --- 6d. An icon must have a default intrinsic size. `IdealystIcon`
+        // is a bare GTK widget with no natural size, and the icon
+        // primitive carries its dimensions in a viewBox rather than in
+        // style — so with no measure fn Taffy laid EVERY icon out at
+        // 0x0 and none of them appeared (the whiteboard demo's toolbar
+        // was a row of blank buttons). 24x24 matches iOS/macOS.
+        // Minimal valid glyph: a single closed path in a 24-unit viewBox.
+        const ICON_FIXTURE: runtime_core::primitives::icon::IconData =
+            runtime_core::primitives::icon::IconData {
+                view_box: (24, 24),
+                paths: &["M4 4 L20 4 L20 20 L4 20 Z"],
+                fill_rule: runtime_core::primitives::icon::FillRule::NonZero,
+                filled: false,
+            };
+        let mut icon_root = backend.create_view(&a11y);
+        let plain_icon = backend.create_icon(&ICON_FIXTURE, None, &a11y);
+        backend.insert(&mut icon_root, plain_icon.clone());
+        let icon_root_layout = backend.nodes.get(&icon_root.id).unwrap().layout;
+        backend.layout.compute(icon_root_layout, 200.0, 200.0);
+        let icon_frame = backend
+            .layout
+            .frame_of(backend.nodes.get(&plain_icon.id).unwrap().layout);
+        // Height only: the column-flex parent stretches children on the
+        // cross axis, so width is the container's, exactly as on web.
+        // Height is where the 0x0 collapse showed.
+        assert_eq!(
+            icon_frame.height, 24.0,
+            "an unstyled icon must fall back to a 24px intrinsic height, \
+             not collapse to 0",
+        );
+
+        // An explicit size still wins — Taffy passes it as `known` and the
+        // measure fn short-circuits to it.
+        let sized_icon = backend.create_icon(&ICON_FIXTURE, None, &a11y);
+        backend.insert(&mut icon_root, sized_icon.clone());
+        backend.apply_style(
+            &sized_icon,
+            &std::rc::Rc::new(StyleRules {
+                width: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(16.0))),
+                height: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(16.0))),
+                ..StyleRules::default()
+            }),
+        );
+        backend.layout.compute(icon_root_layout, 200.0, 200.0);
+        let sized_frame = backend
+            .layout
+            .frame_of(backend.nodes.get(&sized_icon.id).unwrap().layout);
+        assert_eq!(
+            (sized_frame.width, sized_frame.height),
+            (16.0, 16.0),
+            "an explicit width/height must override the 24x24 default",
         );
 
         // --- 7. `absolute_frame` must be WINDOW-relative, accumulating

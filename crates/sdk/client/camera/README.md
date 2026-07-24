@@ -50,7 +50,8 @@ everywhere:
 | **iOS Simulator** | **synthetic test-pattern stream** (no camera hardware exists) | `RGBA8` |
 | Android | `Camera2` + `ImageReader` (via a Kotlin shim) | `YUV_420_888` → `RGBA8` |
 | Web (wasm32) | `getUserMedia` + a `<video>`/`<canvas>` frame pump | canvas `RGBA8` |
-| desktop Linux / Windows | *not yet implemented* — returns `Unsupported` | — |
+| desktop Linux | GStreamer **V4L2** (`v4l2src ! videoconvert ! appsink`) | device layout → `RGBA8` |
+| desktop Windows | *not yet implemented* — returns `Unsupported` | — |
 
 **iOS Simulator note:** the iOS Simulator has no camera hardware
 (`AVCaptureSession` finds no device), so on the simulator `Camera::open` returns
@@ -185,6 +186,21 @@ constraint.
   compile-checked for `aarch64-linux-android` but, like the `biometrics`
   SDK's Android path, is **not yet device-verified**.
 
+  **Desktop Linux (GStreamer V4L2):** enumeration (`GstDeviceMonitor`,
+  `Video/Source`) and the appsink map/deliver path are **synthetic-frame
+  verified** headless — the `videotestsrc_delivers_mapped_rgba_frame` unit
+  test drives the real `videoconvert ! appsink(RGBA)` pipeline and asserts a
+  mapped, tightly-packed RGBA8 frame arrives (substituting `videotestsrc` for
+  `v4l2src`, so no hardware is needed). An `#[ignore]`d
+  `live_v4l2_delivers_a_real_frame` test opens a real `/dev/videoN`; run it on
+  a host with a camera. V4L2 access is filesystem-permission-based (the user
+  must read `/dev/videoN`, usually via the `video` group) — there is no OS
+  prompt. V4L2 exposes no front/back facing metadata, so every `CameraFacing`
+  resolves to the primary video source. The PipeWire/xdg-desktop-portal path
+  (`pipewiresrc`) is a **documented follow-on** — it needs the
+  `gst-plugin-pipewire` GStreamer plugin and slots in as an alternate source
+  behind the same pipeline contract.
+
 ## Testing checklist
 
 Manual verification per backend — an unchecked **native** box means the code
@@ -201,6 +217,7 @@ verification note above). Tick each item as you exercise it.
 - [ ] **iOS** — on a **device**, permission prompt with the app's reason; preview shows live frames at the requested resolution + correct orientation; front/back switch works; deny → `PermissionDenied`. On the **Simulator** the synthetic gradient/bouncing-ball stream renders (no hardware). ⚠️ device path not yet re-confirmed since permission moved to the `permissions` SDK — verify the prompt still appears.
 - [ ] **Android** — ⚠️ compile-checked only, not yet device-confirmed: permission prompt fires (delegated to `permissions`; host must forward `onRequestPermissionsResult`); `open()` yields RGBA8 frames after grant; deny → `PermissionDenied`.
 - [ ] **macOS** — hardware-verified against the built-in camera (`host_capture`); confirm the prompt still appears now that the grant routes through the `permissions` SDK.
+- [ ] **desktop Linux** — synthetic-frame verified headless (`videotestsrc_delivers_mapped_rgba_frame`); on a host with a webcam run `cargo test -p camera imp::tests::live_v4l2 -- --ignored --nocapture` (needs read access to `/dev/videoN`) and confirm real RGBA8 frames arrive.
 
 **Permissions**
 - [ ] Permission prompt still surfaces (grant flow now delegated to the `permissions` SDK); the build-injected `NSCameraUsageDescription` / `CAMERA` carries the app's configured reason.

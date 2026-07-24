@@ -13,8 +13,24 @@ pub const DEFAULT_FPS: u32 = 30;
 pub enum Container {
     /// `.mp4` — H.264 video + AAC audio. The portable default; plays on every
     /// target's native player.
+    ///
+    /// On **Linux** H.264 *encoding* requires an extra GStreamer plugin
+    /// (`x264enc` from `gstreamer1.0-plugins-ugly`, or `openh264enc` from
+    /// `-plugins-bad`) that a base install omits. Where no H.264 encoder is
+    /// present the Linux backend returns an honest error rather than writing a
+    /// broken file — request [`Container::WebM`] there. Apple / Android / web
+    /// always have a hardware/system H.264 encoder, so `Mp4` is their default.
     #[default]
     Mp4,
+    /// `.webm` — VP8 video + Opus audio. A royalty-free container built from a
+    /// patent-unencumbered codec set that a base media stack can always encode.
+    ///
+    /// This is the **recommended container on Linux**: a stock GStreamer ships
+    /// `vp8enc` + `webmmux` + `opusenc`, so it records out of the box with no
+    /// extra plugins. Currently honored by the Linux backend; the Apple /
+    /// Android / web backends still emit their native H.264/MP4 container and
+    /// ignore this hint (they lack a first-class VP8 muxer path).
+    WebM,
 }
 
 impl Container {
@@ -22,6 +38,7 @@ impl Container {
     pub fn extension(self) -> &'static str {
         match self {
             Container::Mp4 => "mp4",
+            Container::WebM => "webm",
         }
     }
 }

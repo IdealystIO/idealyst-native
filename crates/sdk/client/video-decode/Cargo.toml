@@ -93,6 +93,22 @@ jni = "0.21"
 ndk-context = "0.1"
 futures-channel = "0.3"
 
+# Linux / desktop native: GStreamer (the native Linux media stack). We drive a
+# hand-built pipeline (decodebin → videoconvert → appsink) that pulls decoded
+# RGBA8 frames, plus a Transport over the pipeline (play/pause/seek/rate). This
+# is the same GStreamer "media cluster" posture as `audio`'s Linux backend —
+# idempotent `gst::init` guard, dedicated bus/pull threads (no GLib main loop
+# assumed), and the same dep versions (gstreamer-rs 0.23 targets the GStreamer
+# 1.x C API and works against the system's 1.28; glib/gio 0.20 match it; no
+# `v1_XX` feature gates — only base 1.0 APIs are used). In-memory `Bytes` are
+# fed via `giostreamsrc` + a `gio::MemoryInputStream`; remote http(s) URLs
+# stream via `souphttpsrc`. The appsink is driven through its action signals
+# (`try-pull-sample`/`pull-preroll`), so no `gstreamer-app` crate is needed.
+[target.'cfg(target_os = "linux")'.dependencies]
+gstreamer = "0.23"
+glib = "0.20"
+gio = "0.20"
+
 [package.metadata.idealyst.android]
 runtime_kotlin = ["runtime/kotlin/io/idealyst/videodecode/RustVideoDecoder.kt"]
 

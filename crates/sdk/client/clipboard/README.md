@@ -29,7 +29,8 @@ Failures surface as `ClipboardError`:
 - `Backend(String)` — the platform clipboard API failed (a web
   `clipboard-read` permission denial, a missing window, an Obj-C / JNI
   error). The string carries the platform detail.
-- `NotSupported` — no backend on this target (desktop Windows / Linux).
+- `NotSupported` — no backend on this target (desktop Windows / other
+  native). Linux has a real backend and reports live failures as `Backend`.
 
 The functions are `async` for a uniform surface: the web backend
 (`navigator.clipboard`) is genuinely Promise-based, while the native
@@ -45,7 +46,8 @@ not in the functions you call.
 | iOS / tvOS | `UIPasteboard.generalPasteboard` `setString:` / `string` (objc2) — compile-checked only |
 | macOS | `NSPasteboard.generalPasteboard` `clearContents` + `setString:forType:` / `stringForType:` with `public.utf8-plain-text` (objc2) — compile-checked only |
 | Android | `ClipboardManager` (`Context.CLIPBOARD_SERVICE`) `setPrimaryClip(ClipData.newPlainText(...))` / `getPrimaryClip().getItemAt(0).coerceToText(context)` via JNI — compile-checked only |
-| Windows / Linux / other native | `NotSupported` (a desktop clipboard crate is out of scope) |
+| Linux (desktop) | `arboard` — plain-text `set_text` / `get_text`; covers X11 and Wayland (`wlr-data-control` / GTK) with one crate — runnable under a desktop session |
+| Windows / other native | `NotSupported` (a desktop clipboard crate for these is out of scope) |
 
 The **web** path is the genuinely-runnable backend. The Apple (iOS / tvOS
 / macOS) and Android backends are **compile-checked only** — not yet
@@ -53,6 +55,22 @@ verified on a device/emulator. Note the Apple backend's `NSPasteboard` /
 `UIPasteboard` classes live in AppKit / UIKit, which a bare `cargo test`
 binary doesn't link, so the round-trip can't run there; it runs in a real
 app build where the framework links those.
+
+The **Linux** backend (`arboard`) is runnable under a real desktop session
+(X11 or a Wayland compositor). A headless process — no `DISPLAY` /
+`WAYLAND_DISPLAY` — can't open a clipboard connection, so `Clipboard::new()`
+fails there and surfaces as `Backend`.
+
+On X11/Wayland the clipboard has no independent store — its contents are
+served on demand by whichever client owns the selection. Since these are
+stateless free functions, `set_text` releases ownership as soon as it
+returns, so persistence relies on a running **clipboard manager**
+(GNOME/KDE's built-in one, `klipper`, `wl-clip-persist`, …) taking
+ownership of the offered text — the standard desktop mechanism. On a bare
+session with no manager, the text is gone the instant `set_text` returns
+and a later `text()` reads `None`. (We intentionally don't use arboard's
+`SetExtLinux::wait()`, which would block the call until another client
+claims the clipboard.)
 
 On **macOS**, a write must `clearContents` first (this bumps the change
 count and drops the prior owner's representations) or `setString:forType:`
@@ -76,8 +94,12 @@ concern, not a build-time manifest entry.
 Plain text only. Images, rich text, and multiple simultaneous
 representations are deliberately left to a later, higher-level SDK rather
 than baked in here. The extension seam is clean: "more representations
-alongside text", not a different shape. The desktop (Windows / Linux)
-clipboard is also out of scope — those targets return `NotSupported`.
+alongside text", not a different shape.
+
+**Linux desktop is in scope** (this reverses an earlier exclusion): copy /
+paste is fundamental on desktop, so Linux gets a real `arboard` backend
+covering X11 and Wayland. The remaining desktop targets (Windows / other
+native) are still out of scope and return `NotSupported`.
 
 ## Testing checklist
 
@@ -95,3 +117,4 @@ verification note above). Tick each item as you exercise it.
 - [ ] **iOS** — copy in-app, paste into Notes/another app — matches; `text()` reads back what another app copied.
 - [ ] **Android** — copy in-app, paste into another app — matches; `text()` round-trips (empty clipboard → `None`).
 - [ ] **macOS** — copy in-app, ⌘V into TextEdit — matches; a second `set_text` after `clearContents` overwrites (not a no-op).
+- [ ] **Linux** — under a desktop session, `cargo test -p clipboard --test portable -- --ignored` (the `linux_round_trip` test); or copy in-app and Ctrl-V into another app — matches. Headless (no `DISPLAY`/`WAYLAND_DISPLAY`) surfaces as `Backend`.

@@ -18,8 +18,9 @@ license.workspace = true
 #   - web (wasm32):              navigator.clipboard.writeText / readText (JsFuture)
 #   - iOS / macOS / tvOS:        UIPasteboard / NSPasteboard general pasteboard (objc2)
 #   - Android:                   ClipboardManager via JNI on the Activity context
-#   - Windows / Linux / other:   NotSupported fallback (a desktop clipboard
-#                                crate is out of scope — see README)
+#   - Linux (desktop):           arboard get_text / set_text (X11 + Wayland)
+#   - Windows / other native:    NotSupported fallback (a desktop clipboard
+#                                crate for these is out of scope — see README)
 #
 # Plain text only by design. Images / rich content / multiple
 # representations are deliberately left to a later SDK (see ## Scope).
@@ -53,6 +54,12 @@ objc2-foundation = { version = "0.2", features = ["NSString"] }
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
 ndk-context = "0.1"
+
+# Linux (desktop): the cross-platform `arboard` clipboard crate. It speaks
+# X11 and Wayland, so one dependency covers both display servers; we use
+# only its plain-text get_text / set_text surface.
+[target.'cfg(target_os = "linux")'.dependencies]
+arboard = "3"
 
 [features]
 # Compile + register the `recipe!` usage examples (off in production builds).

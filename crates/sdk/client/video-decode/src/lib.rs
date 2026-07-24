@@ -44,7 +44,9 @@
 //! - **iOS / macOS** — `AVPlayer` + `AVPlayerItemVideoOutput` (frames) + an
 //!   `MTAudioProcessingTap` on the item's audio mix (PCM).
 //! - **Android** — `MediaExtractor` + `MediaCodec` via a Kotlin shim.
-//! - **other (desktop Linux/Windows)** — not implemented; returns
+//! - **Linux (desktop)** — a GStreamer pipeline (`decodebin ! videoconvert !
+//!   appsink`) pulling `RGBA8` frames; play/pause/seek/rate via the pipeline.
+//! - **other (desktop Windows / …)** — not implemented; returns
 //!   [`VideoDecodeError::Unsupported`].
 
 #![deny(missing_docs)]
@@ -76,6 +78,10 @@ mod imp;
 #[path = "apple.rs"]
 mod imp;
 
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+#[path = "linux.rs"]
+mod imp;
+
 /// TEST/DEBUG hook: reproduce the macOS frame-pump path on the host (see
 /// [`imp::debug_pull_first_frame`]). Not part of the public API.
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
@@ -86,7 +92,8 @@ pub use imp::debug_pull_first_frame;
     target_arch = "wasm32",
     target_os = "android",
     target_os = "ios",
-    target_os = "macos"
+    target_os = "macos",
+    target_os = "linux"
 )))]
 #[path = "stub.rs"]
 mod imp;

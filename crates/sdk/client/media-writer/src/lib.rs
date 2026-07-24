@@ -38,6 +38,11 @@
 //! - **web (wasm32)** — `MediaRecorder` over the streams' native
 //!   `web_sys::MediaStream`; the recorded `Blob` is written through the
 //!   `files` store.
+//! - **Linux / desktop** — GStreamer, encoding an `appsrc ! videoconvert !
+//!   vp8enc ! webmmux ! filesink` pipeline (plus an `opusenc` audio branch).
+//!   VP8/WebM ([`Container::WebM`]) is the default because a base GStreamer
+//!   always provides it; [`Container::Mp4`] (H.264) is honored only when an
+//!   H.264 encoder plugin is installed, else it errors honestly.
 //! - **other** — returns [`MediaWriterError::Unsupported`].
 //!
 //! Recording requires no permission of its own: the `camera` / `microphone` /
@@ -74,11 +79,16 @@ mod imp;
 #[path = "web.rs"]
 mod imp;
 
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+#[path = "linux.rs"]
+mod imp;
+
 #[cfg(not(any(
     target_arch = "wasm32",
     target_os = "android",
     target_os = "ios",
-    target_os = "macos"
+    target_os = "macos",
+    target_os = "linux"
 )))]
 #[path = "stub.rs"]
 mod imp;

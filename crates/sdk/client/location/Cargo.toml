@@ -67,6 +67,18 @@ objc2-foundation = { version = "0.2", features = ["NSString", "NSArray"] }
 jni = "0.21"
 ndk-context = "0.1"
 
+# Linux (desktop): GeoClue2 over the D-Bus SYSTEM bus, via the pure-Rust async
+# `zbus` (same 4.x already in the tree through `credentials`). `async-io`
+# (zbus's default reactor) gives us `block_on` for the watch worker thread and
+# `Timer` for the one-shot fix timeout; `futures-util` drives the signal
+# stream + shutdown select; `futures-channel` is the watch's Drop→worker
+# shutdown signal. No C `libdbus` — builds without `libdbus-dev`.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "4", default-features = false, features = ["async-io"] }
+async-io = "2"
+futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+futures-channel = "0.3"
+
 [features]
 # Compile the `recipe!` usage examples (feeds MCP / autodocs). Off in
 # production builds, so recipes cost nothing there. The `Position` recipe

@@ -46,6 +46,9 @@ pub type MountError = host_android_mobile::MountError;
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
 pub type MountError = host_macos_desktop::MountError;
 
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+pub type MountError = host_windows_desktop::MountError;
+
 #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
 pub type MountError = host_linux_desktop::MountError;
 
@@ -54,6 +57,7 @@ pub type MountError = host_linux_desktop::MountError;
     all(target_os = "ios", not(target_arch = "wasm32")),
     all(target_os = "android", not(target_arch = "wasm32")),
     all(target_os = "macos", not(target_arch = "wasm32")),
+    all(target_os = "windows", not(target_arch = "wasm32")),
     all(target_os = "linux", not(target_arch = "wasm32"))
 )))]
 #[derive(Debug)]
@@ -71,6 +75,7 @@ pub enum MountError {
     all(target_os = "ios", not(target_arch = "wasm32")),
     all(target_os = "android", not(target_arch = "wasm32")),
     all(target_os = "macos", not(target_arch = "wasm32")),
+    all(target_os = "windows", not(target_arch = "wasm32")),
     all(target_os = "linux", not(target_arch = "wasm32"))
 )))]
 impl std::fmt::Display for MountError {
@@ -84,6 +89,7 @@ impl std::fmt::Display for MountError {
     all(target_os = "ios", not(target_arch = "wasm32")),
     all(target_os = "android", not(target_arch = "wasm32")),
     all(target_os = "macos", not(target_arch = "wasm32")),
+    all(target_os = "windows", not(target_arch = "wasm32")),
     all(target_os = "linux", not(target_arch = "wasm32"))
 )))]
 impl std::error::Error for MountError {}
@@ -106,6 +112,9 @@ pub type HostHandle = host_android_mobile::AndroidHostHandle;
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
 pub type HostHandle = host_macos_desktop::MacosHostHandle;
 
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+pub type HostHandle = host_windows_desktop::WindowsHostHandle;
+
 #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
 pub type HostHandle = host_linux_desktop::LinuxHostHandle;
 
@@ -114,6 +123,7 @@ pub type HostHandle = host_linux_desktop::LinuxHostHandle;
     all(target_os = "ios", not(target_arch = "wasm32")),
     all(target_os = "android", not(target_arch = "wasm32")),
     all(target_os = "macos", not(target_arch = "wasm32")),
+    all(target_os = "windows", not(target_arch = "wasm32")),
     all(target_os = "linux", not(target_arch = "wasm32"))
 )))]
 pub struct HostHandle {
@@ -125,6 +135,7 @@ pub struct HostHandle {
     all(target_os = "ios", not(target_arch = "wasm32")),
     all(target_os = "android", not(target_arch = "wasm32")),
     all(target_os = "macos", not(target_arch = "wasm32")),
+    all(target_os = "windows", not(target_arch = "wasm32")),
     all(target_os = "linux", not(target_arch = "wasm32"))
 )))]
 impl HostHandle {
@@ -170,6 +181,11 @@ fn unsupported_target() -> MountError {
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
 fn unsupported_target() -> MountError {
     host_macos_desktop::MountError::NoAppKitHandle
+}
+
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+fn unsupported_target() -> MountError {
+    host_windows_desktop::MountError::NoWin32Handle
 }
 
 #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
@@ -242,6 +258,13 @@ pub async fn mount(
         };
         host_macos_desktop::mount(surface, size, profile, painter, build_ui).await
     }
+    #[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+    {
+        let GraphicsTarget::RawWindow(surface) = target else {
+            return Err(unsupported_target());
+        };
+        host_windows_desktop::mount(surface, size, profile, painter, build_ui).await
+    }
     #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
     {
         // The GTK backend lends a GL context; there is no swapchain
@@ -256,6 +279,7 @@ pub async fn mount(
         all(target_os = "ios", not(target_arch = "wasm32")),
         all(target_os = "android", not(target_arch = "wasm32")),
         all(target_os = "macos", not(target_arch = "wasm32")),
+        all(target_os = "windows", not(target_arch = "wasm32")),
         all(target_os = "linux", not(target_arch = "wasm32"))
     )))]
     {

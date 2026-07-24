@@ -56,6 +56,10 @@ pango = { version = "0.20", features = ["v1_56"] }
 # of the variable. `libc` is already in the workspace lock (a transitive dep),
 # so this adds no new external crate. See `src/gl_loader.rs`.
 libc = "0.2"
+# Link-time self-registration of SDK `Element::External` handlers
+# (`LinuxExternalRegistrar`), matching the macOS/iOS/Android backends. An
+# SDK submits a registrar; `LinuxBackend::new` drains them.
+inventory = "0.3"
 
 # Proof that the `GlTarget` this backend hands out is actually adoptable by a
 # real GPU library — `tests/gl_target_adoption.rs` stands up a live GtkGLArea,

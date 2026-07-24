@@ -40,7 +40,10 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use runtime_core::scheduling::{install_scheduler, ScheduleHandle, Scheduler};
+use runtime_core::driver::{
+    install_render_loop_driver, RenderLoopDriver, RenderLoopHandle,
+};
+use runtime_core::scheduling::{install_scheduler, raf_loop, RafLoop, ScheduleHandle, Scheduler};
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
@@ -132,6 +135,100 @@ pub(crate) fn install(hwnd: HWND) {
             .expect("spawn scheduler worker");
     }
     install_scheduler(Box::new(Win32Scheduler));
+    // Embedded wgpu hosts (host-windows-desktop behind the website's
+    // Simulator) tick via `runtime_core::driver::render_loop`; without
+    // an installed driver the returned handle is inert and the canvas
+    // never presents a frame. Ride the same 60 Hz raf pulse the
+    // scheduler already delivers.
+    install_render_loop_driver(Box::new(Win32RenderLoopDriver));
+}
+
+/// [`RenderLoopDriver`] on top of [`raf_loop`] — one `elapsed_seconds`
+/// clock per started loop, ticked by the scheduler's 60 Hz pulse on
+/// the UI thread (the same wake that drives `AnimatedValue`s).
+struct Win32RenderLoopDriver;
+
+struct Win32RenderLoopHandle(RafLoop);
+
+impl RenderLoopHandle for Win32RenderLoopHandle {
+    fn cancel(&mut self) {
+        self.0.cancel();
+    }
+}
+
+impl RenderLoopDriver for Win32RenderLoopDriver {
+    fn start(&self, mut closure: Box<dyn FnMut(f32) + 'static>) -> Box<dyn RenderLoopHandle> {
+        let start = Instant::now();
+        Box::new(Win32RenderLoopHandle(raf_loop(move || {
+            closure(start.elapsed().as_secs_f32());
+        })))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Drop-cascade regressions: cancelling a queue entry whose closure
+    //! OWNS other schedule handles must not drop it while the queue is
+    //! borrowed — the inner handles' `cancel` re-enters
+    //! `MAIN_QUEUE.borrow_mut()`. Real-world chain: the website
+    //! Simulator's `on_lost` drops its wgpu `WindowsHostHandle` →
+    //! `RenderLoop` raf cancel → dropping the raf closure drops
+    //! `HostInner` → its session scope drops scope-anchored timers →
+    //! "RefCell already borrowed" panic, crashing the app on every
+    //! navigation away from the home page.
+    //!
+    //! No worker thread is running in tests (`CMD_TX` is `None`), so
+    //! entries just sit in the thread-local queue — exactly what the
+    //! cascade needs.
+
+    use super::*;
+
+    #[test]
+    fn regression_timer_cancel_drop_cascade_does_not_reenter_queue() {
+        let sched = Win32Scheduler;
+        let inner = sched.after_ms(600_000, Box::new(|| {}));
+        // Outer pending timer whose CLOSURE owns the inner handle.
+        let mut outer = sched.after_ms(
+            600_000,
+            Box::new(move || {
+                let _keep = &inner;
+            }),
+        );
+        // Pre-fix: cancel removed the entry and dropped its closure
+        // (and thus `inner`) inside the queue borrow → panic.
+        outer.cancel();
+    }
+
+    #[test]
+    fn regression_raf_cancel_drop_cascade_does_not_reenter_queue() {
+        let sched = Win32Scheduler;
+        let timer = sched.after_ms(600_000, Box::new(|| {}));
+        let mut raf = sched.raf_loop(Box::new(move || {
+            let _keep = &timer;
+        }));
+        raf.cancel();
+    }
+
+    #[test]
+    fn regression_drain_drops_mid_tick_cancelled_raf_outside_borrow() {
+        let sched = Win32Scheduler;
+        // Raf B's closure owns a pending timer handle.
+        let timer = sched.after_ms(600_000, Box::new(|| {}));
+        let raf_b = Rc::new(RefCell::new(Some(sched.raf_loop(Box::new(move || {
+            let _keep = &timer;
+        })))));
+        // Raf A cancels B mid-tick: B is in the drained `taken` Vec at
+        // that point (its own cancel finds `q.rafs` empty), so the
+        // DRAIN's merge step is what drops B's closure. Pre-fix that
+        // drop ran inside the merge borrow → panic.
+        let raf_b_for_a = raf_b.clone();
+        let _raf_a = sched.raf_loop(Box::new(move || {
+            if let Some(mut b) = raf_b_for_a.borrow_mut().take() {
+                b.cancel();
+            }
+        }));
+        drain_due();
+    }
 }
 
 /// Worker thread. Keeps a sorted deadline list + a raf-active flag,
@@ -256,9 +353,15 @@ pub(crate) fn drain_due() {
             (entry.f)();
         }
     }
+    // Drop mid-tick-cancelled entries BEFORE re-borrowing the queue:
+    // a dead raf closure's captures can cascade into further handle
+    // drops (render-loop closure → wgpu HostInner → session scope →
+    // scope-anchored timers), each re-entering `MAIN_QUEUE` — dropping
+    // them under the merge borrow is the "RefCell already borrowed"
+    // crash the Simulator unmount hit.
+    taken.retain(|e| e.alive.get());
     MAIN_QUEUE.with(|q| {
         let mut q = q.borrow_mut();
-        taken.retain(|e| e.alive.get());
         let mut merged = taken;
         merged.append(&mut q.rafs);
         q.rafs = merged;
@@ -336,9 +439,15 @@ impl ScheduleHandle for TimerHandle {
         // a no-op rather than a panic. (The host normally exits via
         // `TerminateProcess`, skipping teardown entirely — this keeps
         // the handle correct even if a drop path ever runs under it.)
-        let _ = MAIN_QUEUE.try_with(|q| {
-            q.borrow_mut().timers.remove(&self.id);
-        });
+        //
+        // The removed entry is dropped AFTER the borrow ends: its
+        // pending closure's captures can cascade into MORE handle
+        // drops (a render-loop closure owns a wgpu HostInner whose
+        // session scope anchors timers), and each of those re-enters
+        // `MAIN_QUEUE.borrow_mut()` — a drop inside this borrow is the
+        // "RefCell already borrowed" crash the Simulator unmount hit.
+        let removed = MAIN_QUEUE.try_with(|q| q.borrow_mut().timers.remove(&self.id));
+        drop(removed);
     }
 }
 
@@ -367,10 +476,23 @@ impl ScheduleHandle for RafHandle {
         }
         let id = self.id;
         // `try_with` for the same teardown-safety reason as
-        // `TimerHandle::cancel`.
-        let _ = MAIN_QUEUE.try_with(|q| {
-            q.borrow_mut().rafs.retain(|e| e.id != id);
+        // `TimerHandle::cancel` — and, like there, the removed entry
+        // must drop AFTER the borrow: the raf closure's captures can
+        // cascade into further handle drops that re-enter the queue.
+        let removed = MAIN_QUEUE.try_with(|q| {
+            let mut queue = q.borrow_mut();
+            let mut out: Vec<RafEntry> = Vec::new();
+            let mut i = 0;
+            while i < queue.rafs.len() {
+                if queue.rafs[i].id == id {
+                    out.push(queue.rafs.remove(i));
+                } else {
+                    i += 1;
+                }
+            }
+            out
         });
+        drop(removed);
     }
 }
 

@@ -1,0 +1,43 @@
+[package]
+name = "host-windows-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Windows native shell for the wgpu render backend.
+#
+# The Win32 sibling of `host-macos-desktop`: takes the framework's
+# `Graphics`-allocated child-HWND surface (via the Windows backend's
+# `Win32SurfaceProvider`), runs the wgpu init against the DX12
+# backend, constructs the `render_wgpu::Host` + `Renderer`, mounts the
+# caller's UI, and drives per-frame paint through
+# `runtime_core::driver::render_loop` — the raf-backed driver
+# `host-win32` installs at boot alongside its scheduler.
+#
+# Used to embed a live preview of an idealyst app (the welcome
+# scaffold, a third-party SDK component) inside another idealyst
+# app's UI on Windows — e.g. the website's home-page Simulator.
+#
+# Note on inputs: like the macOS/iOS hosts, this does NOT install
+# pointer handlers — the embedded preview is read-only (the outer
+# Windows backend owns hit testing for the surrounding HWND tree).
+
+[dependencies]
+render-api = { workspace = true }
+render-wgpu = { workspace = true }
+runtime-core = { workspace = true, features = ["async-driver"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Match host-macos-desktop's wgpu major (29); DX12 is the native
+# first-class backend on Windows, `wgsl` for the engine's shaders.
+wgpu = { version = "29", default-features = false, features = ["dx12", "wgsl"] }
+raw-window-handle = "0.6"
+log = "0.4"
+# Per-frame visibility check (`IsWindow` + `IsWindowVisible` walks the
+# parent chain's WS_VISIBLE bits) so the render loop stops submitting
+# frames for an HWND hidden behind a navigator's persistent-but-not-
+# visible screen.
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }

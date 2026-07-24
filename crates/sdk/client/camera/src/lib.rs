@@ -45,7 +45,11 @@
 //!   display / GPU consumer.
 //! - **iOS / macOS** — `AVCaptureSession` + `AVCaptureVideoDataOutput`.
 //! - **Android** — `Camera2` + `ImageReader` via a Kotlin shim.
-//! - **other (desktop Linux/Windows)** — not yet implemented; returns
+//! - **desktop Linux** — GStreamer **V4L2** (`v4l2src ! videoconvert !
+//!   appsink`), pushing CPU `RGBA8` frames. The PipeWire/xdg-desktop-portal
+//!   path (`pipewiresrc`) is a documented follow-on (needs
+//!   `gst-plugin-pipewire`).
+//! - **other desktop (Windows)** — not yet implemented; returns
 //!   [`CameraError::Unsupported`].
 //!
 //! # Permissions
@@ -107,11 +111,19 @@ mod imp;
 #[path = "apple.rs"]
 mod imp;
 
+// Desktop Linux: real V4L2 capture via GStreamer (the working desktop path;
+// the PipeWire/xdg-desktop-portal path is a documented follow-on inside
+// `linux.rs`). Mirrors the `audio` SDK's GStreamer Linux backend.
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+#[path = "linux.rs"]
+mod imp;
+
 #[cfg(not(any(
     target_arch = "wasm32",
     target_os = "android",
     target_os = "ios",
-    target_os = "macos"
+    target_os = "macos",
+    target_os = "linux"
 )))]
 #[path = "stub.rs"]
 mod imp;

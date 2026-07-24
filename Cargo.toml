@@ -41,6 +41,7 @@ members = [
     "crates/gpu-backend/host/ios-mobile",
     "crates/gpu-backend/host/android-mobile",
     "crates/gpu-backend/host/macos-desktop",
+    "crates/gpu-backend/host/windows-desktop",
     "crates/gpu-backend/host/linux-desktop",
     "crates/gpu-backend/host/wgpu",
     "crates/gpu-backend/host/appkit",
@@ -415,6 +416,7 @@ host-web = { path = "crates/gpu-backend/host/web" }
 host-ios-mobile = { path = "crates/gpu-backend/host/ios-mobile" }
 host-android-mobile = { path = "crates/gpu-backend/host/android-mobile" }
 host-macos-desktop = { path = "crates/gpu-backend/host/macos-desktop" }
+host-windows-desktop = { path = "crates/gpu-backend/host/windows-desktop" }
 host-wgpu = { path = "crates/gpu-backend/host/wgpu" }
 host-linux-desktop = { path = "crates/gpu-backend/host/linux-desktop" }
 host-appkit = { path = "crates/gpu-backend/host/appkit" }

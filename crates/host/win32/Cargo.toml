@@ -20,7 +20,11 @@ license.workspace = true
 crate-type = ["rlib"]
 
 [dependencies]
-runtime-core = { workspace = true }
+# `async-driver` exposes `runtime_core::driver` — the host installs a
+# raf-backed `RenderLoopDriver` so embedded wgpu hosts
+# (host-windows-desktop behind the website's Simulator) get per-frame
+# ticks through the same 60 Hz scheduler pulse that drives animations.
+runtime-core = { workspace = true, features = ["async-driver"] }
 
 # The `welcome` example app backs the `smoke` example — a manual
 # end-to-end check that the host opens a window and mounts a real app.

@@ -45,4 +45,9 @@ windows = { version = "0.58", features = [
     "Win32_Graphics_GdiPlus",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Controls",
+    # GetModuleHandleW for the graphics-surface window class + the
+    # Win32WindowHandle hinstance wgpu reads.
+    "Win32_System_LibraryLoader",
 ] }
+# `Element::Graphics` hands wgpu a `Win32WindowHandle` through this.
+raw-window-handle = "0.6"

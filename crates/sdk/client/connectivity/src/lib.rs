@@ -53,7 +53,17 @@
 //!   `registerDefaultNetworkCallback`, but the `NetworkCallback` requires a
 //!   Java/Kotlin subclass that pure JNI can't synthesize — see
 //!   [`watch`]'s notes for the host-shim seam. *Compile-checked only.*
-//! - **other native (Windows / Linux / tests)** — no platform monitor;
+//! - **Linux (desktop / GTK4)** — **NetworkManager** over the system D-Bus
+//!   (`zbus`, pure-Rust async backend). [`current`] reads NM's `State`
+//!   property (online iff `CONNECTED_GLOBAL` — verified reachability, the same
+//!   bar as Android's `VALIDATED` and Apple's `satisfied`) and maps
+//!   `PrimaryConnectionType` to the transport. [`watch`] spawns one thread that
+//!   blocks on NM's `State` / `PrimaryConnectionType` property-change streams
+//!   and delivers a fresh snapshot on each; the subscription's `Drop` shuts the
+//!   thread down. Needs a running system bus + NetworkManager; if absent,
+//!   [`current`] degrades to the best-effort `ASSUME_ONLINE` and [`watch`] is
+//!   inert. See `src/linux.rs`.
+//! - **other native (Windows / other Unix / tests)** — no platform monitor;
 //!   [`current`] returns the best-effort `{ online: true, transport: Other }`
 //!   fallback and [`watch`] never fires (the guard is inert).
 //!
@@ -85,10 +95,21 @@ mod imp;
 #[path = "android.rs"]
 mod imp;
 
+// Linux (desktop / GTK4): real reachability via NetworkManager over D-Bus
+// (`zbus`). Unlike the inert `fallback`, this reports actual online/offline and
+// fires `watch` on network changes.
+#[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
+#[path = "linux.rs"]
+mod imp;
+
+// Everything else with no native monitor (Windows / other Unix / CI hosts):
+// the inert best-effort fallback. Note the added `not(target_os = "linux")` —
+// Linux now selects the NetworkManager backend above, not this one.
 #[cfg(all(
     not(target_arch = "wasm32"),
     not(any(target_os = "ios", target_os = "macos", target_os = "tvos")),
-    not(target_os = "android")
+    not(target_os = "android"),
+    not(target_os = "linux")
 ))]
 #[path = "fallback.rs"]
 mod imp;
@@ -268,7 +289,8 @@ mod tests {
     #[cfg(all(
         not(target_arch = "wasm32"),
         not(any(target_os = "ios", target_os = "macos", target_os = "tvos")),
-        not(target_os = "android")
+        not(target_os = "android"),
+        not(target_os = "linux")
     ))]
     #[test]
     fn fallback_assumes_online() {

@@ -49,3 +49,6 @@ host-linux-desktop = { workspace = true }
 
 [target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
 host-macos-desktop = { workspace = true }
+
+[target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dependencies]
+host-windows-desktop = { workspace = true }

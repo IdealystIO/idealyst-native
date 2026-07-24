@@ -487,6 +487,7 @@ pub(crate) unsafe fn paint_scene(b: &mut WindowsBackend, target: HDC, w: i32, h:
             NodeKind::Text(t) => {
                 Some(t.font_key.clone().unwrap_or_else(|| b.default_font_key.clone()))
             }
+            NodeKind::Code(c) => Some(c.font_key.clone()),
             _ => None,
         })
         .collect();
@@ -675,6 +676,37 @@ unsafe fn paint_node(b: &WindowsBackend, g: *mut GpGraphics, id: u64, alpha: f32
                                 }
                             }
                             let _ = GdipDeleteBrush(brush as *mut GpBrush);
+                        }
+                    }
+                }
+            }
+        }
+        NodeKind::Code(c) => {
+            if let Some(entry) = b.font_cache.get(&c.font_key) {
+                if !entry.gpfont.is_null() {
+                    for (i, line) in c.lines.iter().enumerate() {
+                        let y = i as f32 * c.line_height;
+                        let mut x = 0.0_f32;
+                        for run in line {
+                            if !run.text16.is_empty() {
+                                let color = argb_with_alpha(run.color.to_argb_u32(), alpha);
+                                let mut brush: *mut GpSolidFill = std::ptr::null_mut();
+                                if GdipCreateSolidFill(color, &mut brush).0 == 0 {
+                                    let layout =
+                                        RectF { X: x, Y: y, Width: 0.0, Height: 0.0 };
+                                    let _ = GdipDrawString(
+                                        g,
+                                        PCWSTR(run.text16.as_ptr()),
+                                        run.text16.len() as i32,
+                                        entry.gpfont,
+                                        &layout,
+                                        typographic_format(),
+                                        brush as *mut GpBrush,
+                                    );
+                                    let _ = GdipDeleteBrush(brush as *mut GpBrush);
+                                }
+                            }
+                            x += run.width;
                         }
                     }
                 }
@@ -1118,6 +1150,25 @@ mod tests {
             scroll_at(&mut b, 50.0, 150.0, -120.0);
         }
         assert_eq!(offset_y(&b), 0.0, "and at zero on the way back");
+    }
+
+    /// Native child HWNDs (wgpu canvas, controls) are positioned by
+    /// `SetWindowPos`, not the painter's scroll translate — a scroll
+    /// offset change must re-run the origin walk or they stay pinned
+    /// while painted content scrolls past (the "canvas doesn't move
+    /// with the scroll" bug). The walk's written-back `abs` origins
+    /// are the observable the test pins.
+    #[test]
+    fn regression_scroll_offset_moves_native_child_origins() {
+        let mut b = scroll_fixture();
+        b.position_native_children();
+        assert_eq!(b.nodes[&3].abs, (0.0, 100.0), "content starts at the box top");
+        if let NodeKind::View(v) = &mut b.nodes.get_mut(&2).unwrap().kind {
+            v.scroll.as_mut().unwrap().offset_y = 50.0;
+        }
+        b.position_native_children();
+        assert_eq!(b.nodes[&3].abs, (0.0, 50.0), "children ride the offset");
+        assert_eq!(b.nodes[&4].abs, (0.0, 400.0), "grandchildren too");
     }
 
     /// Unclipped scroll content wasn't just painted outside the box —

@@ -59,7 +59,8 @@ mechanism, not in the API you call.
 | web (wasm32) | `HTMLAudioElement` (`new Audio()` + blob/URL `src`) | runnable |
 | iOS / macOS / tvOS | `AVAudioPlayer` (objc2) | compile-checked only ⚠️ |
 | Android | `MediaPlayer` (JNI) | compile-checked only ⚠️ |
-| Windows / Linux / other native | none — `load` returns `NotSupported` | honest fallback |
+| Linux / desktop ALSA·PipeWire | **GStreamer** (`decodebin` pipeline) — streams remote URLs | verified on Linux |
+| Windows / other native | none — `load` returns `NotSupported` | honest fallback |
 
 ⚠️ *Compile-checked only*: the Apple and Android backends are typed against
 their native player APIs and compile for those targets, but the playback
@@ -68,10 +69,17 @@ non-obvious platform invariants (AVFoundation copies/retains init data;
 `MediaPlayer` is bound to its creating thread; init failure → `Decode`) are
 documented inline so a device bring-up has the expectations written down.
 
-The **desktop fallback** is deliberate: no pure-Rust player (e.g.
-`rodio`/`cpal`) is pulled in, to keep the crate dependency-light. A
-half-working desktop path would be worse than an honest `NotSupported`;
-adding a real one later is a drop-in behind the same API.
+The **Linux backend** uses GStreamer (the native Linux media stack), so
+remote `http(s)` URLs are **progressively streamed** via `souphttpsrc` —
+parity with Android/Apple/web, which all stream remote URLs. In-memory
+`Bytes` are fed via `giostreamsrc` + a `gio::MemoryInputStream` (no temp
+file). Verified on Linux: headless preroll/decode + looping tests, plus real
+remote-URL streaming against a public MP3.
+
+The remaining **Windows / other-native fallback** is deliberate: no player is
+pulled in there, to keep the crate dependency-light. A half-working path
+would be worse than an honest `NotSupported`; adding a real one later is a
+drop-in behind the same API.
 
 `load` is `async` for a uniform surface across the genuinely-async web/URL
 paths and the synchronous native decode. A `Bytes` source is staged as
@@ -124,4 +132,5 @@ verification note above). Tick each item as you exercise it.
 - [ ] **iOS** — `load(bytes/path/url)` then `play()` produces sound via `AVAudioPlayer`; the control surface behaves; overlapping `play()` calls mix; dropping `Playback` stops and releases the player.
 - [ ] **macOS** — same `AVAudioPlayer` flow (incl. `load(Url)` fetch path).
 - [ ] **Android** — `load()` + `play()` produces sound via `MediaPlayer`; a second `play()` *restarts* (one player per `Sound`, no layering); controls + drop-stops behave.
-- [ ] **Windows / Linux** — `load()` returns `NotSupported` (honest fallback, no player pulled in).
+- [x] **Linux** — `load(bytes/path/url)` + `play()` produces sound via GStreamer; a **remote `http(s)` URL streams progressively** (`souphttpsrc`); a second `play()` layers an independent voice; controls + drop-stops behave. (Headless preroll/looping tests pass; remote-URL streaming verified against a public MP3.)
+- [ ] **Windows** — `load()` returns `NotSupported` (honest fallback, no player pulled in).

@@ -35,11 +35,27 @@ SDK only consumes the streams they hand out and writes to the app's own files.
 | iOS / macOS   | `AVAssetWriter` (H.264 + AAC) via AVFoundation   | `.mp4` |
 | Android       | `MediaCodec` + `MediaMuxer` via a Kotlin shim    | `.mp4` |
 | web (wasm32)  | `MediaRecorder` over the streams' `MediaStream`  | `.mp4`/`.webm` |
+| Linux / desktop | GStreamer `appsrc ! videoconvert ! vp8enc ! webmmux ! filesink` (+ `opusenc` audio branch) | `.webm` |
 | other         | `MediaWriterError::Unsupported`                  | —      |
 
 The mechanism diverges per platform; the *output* converges on a playable file
 addressed through a [`files`](../files) store + relative path, so the same call
 works everywhere.
+
+### Linux codec caveat (VP8/WebM default, no bundled H.264)
+
+The Linux backend uses **GStreamer**, and defaults to **VP8 video + Opus audio
+in WebM** — request it with `RecordConfig::new(store, "clip.webm").container(
+Container::WebM)`. That codec set ships in a *base* GStreamer install
+(`vp8enc` / `webmmux` / `opusenc`), so recording works out of the box.
+
+`Container::Mp4` (H.264) is honored **only when an H.264 encoder plugin is
+installed** — `x264enc` from `gstreamer1.0-plugins-ugly`, or `openh264enc` from
+`-plugins-bad`, neither of which is part of a minimal GStreamer. Where no H.264
+encoder is present, requesting `Container::Mp4` returns an honest
+`MediaWriterError::Backend` naming the missing plugin rather than writing a
+truncated/undecodable file. (Apple / Android / web have a system H.264 encoder
+and keep `.mp4` as their default.)
 
 ### How A/V sync works
 

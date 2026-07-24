@@ -89,6 +89,8 @@ mod ios;
 pub mod linux;
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
 mod macos;
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+mod windows;
 
 /// Type-erased payload for the CodeBlock external primitive. Lives
 /// here because the framework dispatches handlers by [`TypeId`], and
@@ -277,6 +279,20 @@ pub fn register(backend: &mut backend_linux::LinuxBackend) {
     linux::register(backend);
 }
 
+/// Windows — registers the [`windows::register`] handler. Produces an
+/// author-styled view wrapping ONE painted colored-runs leaf (the
+/// Windows backend's `create_colored_code_leaf` — its painted-scene
+/// analogue of an attributed-string label). See `windows.rs`.
+///
+/// Like Linux, `backend-windows` has no inventory registrar, so apps
+/// wire this explicitly in their `register_extensions`
+/// (`codeblock::register(backend);`).
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+pub fn register(backend: &mut backend_windows::WindowsBackend) {
+    ensure_wire_serde();
+    windows::register(backend);
+}
+
 /// Fallback for other targets (terminal / gpu). No-op generic
 /// over any `Backend`. Authors get the framework's standard
 /// external-not-registered placeholder until a per-backend handler
@@ -287,6 +303,7 @@ pub fn register(backend: &mut backend_linux::LinuxBackend) {
     not(target_os = "ios"),
     not(target_os = "linux"),
     not(target_os = "macos"),
+    not(target_os = "windows"),
 ))]
 pub fn register<B: runtime_core::Backend>(_backend: &mut B) {
     // No per-backend native handler here, but still register the wire

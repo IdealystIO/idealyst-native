@@ -116,3 +116,10 @@ jni = "0.21"
 # Unconditional in tests so the self-register gate tests can iterate the
 # registry even when the feature (and the optional runtime dep) is off.
 inventory = "0.3"
+
+# Linux/GTK renderer — Cairo (GTK's own 2D engine, already linked by the
+# toolkit). `backend-linux` re-exports `gtk4`, so cairo/graphene/glib all
+# come from the one gtk4 version the backend itself uses — two gtk4
+# majors in a process would be two incompatible GObject wrapper sets.
+[target.'cfg(all(target_os = "linux", not(target_arch = "wasm32")))'.dependencies]
+backend-linux = { workspace = true }

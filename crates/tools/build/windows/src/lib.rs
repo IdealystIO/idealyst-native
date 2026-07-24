@@ -167,47 +167,122 @@ dev = ["runtime-core/dev"]
     let main_rs = main_rs(&manifest.lib_name, &manifest.app.name, &bundle_id, &bin_name);
 
     write_shared_target_config(wrapper_dir, cargo_target_dir)?;
-    write_replacing(&wrapper_dir.join("Cargo.toml"), &cargo_toml)?;
-    write_replacing(&wrapper_dir.join("src/main.rs"), &main_rs)?;
+    write_replacing(&wrapper_dir.join("Cargo.toml"), &cargo_toml, "#")?;
+    write_replacing(&wrapper_dir.join("src/main.rs"), &main_rs, "//")?;
     Ok(())
 }
 
-/// Write via a uniquely-named temp sibling + rename, never in place.
+/// Byte size every generated file is padded to a multiple of.
+const PAD_BLOCK: usize = 4096;
+
+/// Pad `contents` with `comment`-prefixed filler lines to the next
+/// `PAD_BLOCK` multiple (with ≥128 bytes of slack). See
+/// [`write_replacing`] for why: it makes every regeneration of a file
+/// the same byte length, and makes any stale region a cache could
+/// resurface consist of old PADDING — inert comment bytes — never a
+/// dangling token.
+fn pad_to_block(contents: &str, comment: &str) -> String {
+    let mut s = String::from(contents);
+    if !s.ends_with('\n') {
+        s.push('\n');
+    }
+    s.push_str(comment);
+    s.push_str(
+        " ---- padding: keeps every regeneration of this file byte-stable so a \
+         stale-page cache on a VM-share filesystem can never resurface a \
+         non-comment tail (see build-windows::write_replacing). ----\n",
+    );
+    let target = ((s.len() + 128) / PAD_BLOCK + 1) * PAD_BLOCK;
+    while s.len() < target {
+        let remaining = target - s.len();
+        if remaining <= comment.len() + 1 {
+            // Too small for another comment line: finish the previous
+            // one exactly (replace its trailing newline with filler).
+            s.pop();
+            while s.len() < target - 1 {
+                s.push('~');
+            }
+            s.push('\n');
+            break;
+        }
+        let line = (remaining - 1).min(78).max(comment.len());
+        s.push_str(comment);
+        for _ in 0..(line - comment.len()) {
+            s.push('~');
+        }
+        s.push('\n');
+    }
+    s
+}
+
+/// Durable replace for a generated file on a hostile filesystem.
 ///
-/// On this project's `Z:` VM share (virtio-fs/9p), rewriting an
-/// existing file name can resurface stale tail bytes of a PREVIOUS
-/// same-name file — observed repeatedly as a regenerated wrapper
-/// Cargo.toml re-growing an old trailing `]` ("missing table open,
-/// expected `[`"), nondeterministically across builds, and even after
-/// an explicit `remove_file` + `fs::write` (so plain delete-first is
-/// NOT sufficient; the host appears to serve cached pages for the
-/// recreated path). A brand-new unique file name has no prior version
-/// to resurrect; `rename` then just swaps the directory entry
-/// (`MoveFileExW` + `MOVEFILE_REPLACE_EXISTING` — std replaces an
-/// existing target on Windows).
-fn write_replacing(path: &Path, contents: &str) -> Result<()> {
+/// This project's `Z:` VM share (virtio-fs/9p; server = the Linux
+/// host) nondeterministically resurfaces stale tail bytes of a
+/// PREVIOUS same-path file after a rewrite — observed repeatedly as a
+/// regenerated wrapper Cargo.toml re-growing an old trailing `]`
+/// ("missing table open, expected `[`"). It survived plain
+/// `fs::write`, `remove_file` + write, AND write-to-unique-temp +
+/// rename — the resurrection is on the PATH's cached pages, not the
+/// write strategy. So this layers three defenses:
+///
+/// 1. **Skip identical writes** — the wrapper regenerates identical
+///    bytes on almost every build; not rewriting means no rewrite to
+///    corrupt (and no mtime churn for cargo to chase).
+/// 2. **Fixed-size comment padding** (`pad_to_block`) — every version
+///    has the same padded length, so there is no "beyond new EOF"
+///    region; and if lengths ever differ across a block boundary, the
+///    resurrected region is the old version's padding: comments.
+/// 3. **Read-back verify + retry** — writes go through a unique temp
+///    name + rename, then are read back and compared; mismatch retries
+///    (fresh temp name), then fails loudly instead of letting cargo
+///    parse garbage.
+fn write_replacing(path: &Path, contents: &str, comment: &str) -> Result<()> {
+    let padded = pad_to_block(contents, comment);
+    if let Ok(existing) = fs::read_to_string(path) {
+        if existing == padded {
+            return Ok(());
+        }
+    }
     let file_name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "file".into());
-    let tmp = path.with_file_name(format!(
-        "{file_name}.tmp-{}-{}",
-        std::process::id(),
-        // Nanos make concurrent regenerations of the same wrapper (two
-        // `idealyst dev` targets) pick distinct temp names.
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0),
-    ));
-    fs::write(&tmp, contents).with_context(|| format!("write {}", tmp.display()))?;
-    match fs::remove_file(path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e).with_context(|| format!("remove stale {}", path.display())),
+    for attempt in 0u32..3 {
+        let tmp = path.with_file_name(format!(
+            "{file_name}.tmp-{}-{attempt}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0),
+        ));
+        fs::write(&tmp, &padded).with_context(|| format!("write {}", tmp.display()))?;
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(e).with_context(|| format!("remove stale {}", path.display()))
+            }
+        }
+        fs::rename(&tmp, path)
+            .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
+        match fs::read_to_string(path) {
+            Ok(back) if back == padded => return Ok(()),
+            _ => {
+                eprintln!(
+                    "[build-windows] {} read back corrupted after write (attempt {}) — retrying",
+                    path.display(),
+                    attempt + 1,
+                );
+            }
+        }
     }
-    fs::rename(&tmp, path)
-        .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))
+    anyhow::bail!(
+        "generated file {} keeps reading back corrupted — filesystem cache issue; \
+         delete the wrapper directory and rebuild",
+        path.display(),
+    )
 }
 
 fn main_rs(user_lib: &str, app_name: &str, bundle_id: &str, bin_name: &str) -> String {
@@ -265,7 +340,7 @@ fn write_shared_target_config(dir: &Path, target_dir: &Path) -> Result<()> {
         target_dir.display().to_string().replace('\\', "/"),
     );
     fs::create_dir_all(dir.join(".cargo"))?;
-    write_replacing(&dir.join(".cargo/config.toml"), &config)?;
+    write_replacing(&dir.join(".cargo/config.toml"), &config, "#")?;
     Ok(())
 }
 
@@ -317,22 +392,33 @@ mod tests {
         );
     }
 
-    /// A regenerated (shorter) wrapper file must contain EXACTLY the
-    /// new content — no tail of the previous, longer file. On a normal
-    /// filesystem `fs::write` truncates and this passes trivially; the
-    /// `Z:` VM share does not truncate reliably, which is why
-    /// `write_replacing` deletes first. The broken-fs behavior itself
-    /// can't be reproduced in a unit test — this pins the exact-content
-    /// contract and that the delete-first path stays in place.
+    /// A regenerated (shorter) wrapper file must parse as EXACTLY the
+    /// new content — no stale tail of a previous version. The broken
+    /// share behavior itself can't be reproduced in a unit test; this
+    /// pins the contract that survives it: content round-trips, every
+    /// version is padded to the same `PAD_BLOCK` multiple (so there is
+    /// no beyond-EOF region to resurrect), and the padding is pure
+    /// comment lines (so a resurrected padding region is inert).
     #[test]
     fn regression_shorter_rewrite_leaves_no_stale_tail() {
         let dir = std::env::temp_dir().join("idealyst-build-windows-test-rewrite");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let f = dir.join("Cargo.toml");
-        write_replacing(&f, "a much longer first version of the file\n]\n").unwrap();
-        write_replacing(&f, "short\n").unwrap();
-        assert_eq!(fs::read_to_string(&f).unwrap(), "short\n");
+        write_replacing(&f, "a much longer first version of the file\n", "#").unwrap();
+        let first_len = fs::read_to_string(&f).unwrap().len();
+        write_replacing(&f, "short\n", "#").unwrap();
+        let back = fs::read_to_string(&f).unwrap();
+        assert!(back.starts_with("short\n#"), "content then comment padding: {back:?}");
+        assert_eq!(back.len() % PAD_BLOCK, 0, "padded to a block multiple");
+        assert_eq!(back.len(), first_len, "same-block versions are byte-stable in length");
+        for line in back.lines().skip(1) {
+            assert!(line.starts_with('#'), "padding must be pure comments: {line:?}");
+        }
+        // Unchanged content skips the rewrite (mtime stays put).
+        let before = fs::metadata(&f).unwrap().modified().unwrap();
+        write_replacing(&f, "short\n", "#").unwrap();
+        assert_eq!(fs::metadata(&f).unwrap().modified().unwrap(), before, "identical write skipped");
         let _ = fs::remove_dir_all(&dir);
     }
 

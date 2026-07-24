@@ -56,7 +56,7 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CreateFontIndirectW, DeleteObject, GetDC, GetTextExtentPoint32W, HFONT, HGDIOBJ,
-    InvalidateRect, ReleaseDC, SelectObject, HDC,
+    InvalidateRect, ReleaseDC, SelectObject, SetWindowRgn, HDC,
 };
 use windows::Win32::Graphics::GdiPlus::{
     GdipDeleteFont, GdiplusStartup, GdiplusStartupInput, GdiplusStartupOutput,
@@ -72,7 +72,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_BORDER, WS_CHILD, WS_VISIBLE,
 };
 
+mod code;
 mod font;
+mod graphics;
 mod handles;
 mod icon;
 mod image;
@@ -361,6 +363,9 @@ impl TextVisual {
 pub(crate) enum NodeKind {
     View(ViewVisual),
     Text(TextVisual),
+    /// Painted colored-runs leaf (the `codeblock` SDK's single-node
+    /// realization) — see `code.rs`.
+    Code(code::CodeVisual),
     Icon(icon::IconPaint),
     Image(image::ImagePaint),
     /// Native child HWND control (button / edit / checkbox / trackbar /
@@ -481,6 +486,13 @@ pub struct WindowsBackend {
     command_handlers: HashMap<u16, CommandEntry>,
     /// parent node id → child node ids, in insertion order.
     pub(crate) children: HashMap<u64, Vec<u64>>,
+    /// Live `Element::Graphics` nodes: surface + author callbacks +
+    /// last reported size. See `graphics.rs` for the dispatch rules.
+    graphics: HashMap<u64, graphics::GraphicsState>,
+    /// Last window region applied per child HWND (key: hwnd as isize)
+    /// so `layout_pass` only calls `SetWindowRgn` on actual changes —
+    /// every set forces a repaint of the child.
+    hwnd_regions: HashMap<isize, Option<RegionSpec>>,
     /// trackbar HWND (as isize) → its `on_change` fire closure.
     slider_handlers: HashMap<isize, Rc<dyn Fn()>>,
     /// Registered image/font assets keyed by `AssetId`.
@@ -546,6 +558,8 @@ impl WindowsBackend {
             next_control_id: 100,
             command_handlers: HashMap::new(),
             children: HashMap::new(),
+            graphics: HashMap::new(),
+            hwnd_regions: HashMap::new(),
             slider_handlers: HashMap::new(),
             assets: HashMap::new(),
             external_handlers: runtime_core::ExternalRegistry::new(),
@@ -578,6 +592,36 @@ impl WindowsBackend {
         self.host_hwnd
     }
 
+    /// SDK extension point (the painted-scene analogue of Linux's
+    /// `register_external_view`): ONE painted leaf that draws
+    /// pre-tokenized `(text, css-color)` runs in the platform
+    /// monospace font, line structure preserved, no wrapping — the
+    /// `codeblock` SDK's single-node contract. The runs are measured
+    /// once here; the intrinsic size is (longest line, line count ×
+    /// line height). Box styling (background, radius, padding)
+    /// belongs on a wrapping view the caller styles.
+    pub fn create_colored_code_leaf(
+        &mut self,
+        spans: &[(String, runtime_core::Color)],
+    ) -> WindowsNode {
+        // Cascadia Mono ships on Win11, Consolas everywhere back to
+        // Vista; probe like any CSS stack so the key is drawable.
+        let family = font::resolve_family_stack(
+            "Cascadia Mono, Consolas, Courier New, monospace",
+            &self.default_font_key.family,
+        );
+        // 13px matches the sibling handlers' 13pt mono size.
+        let key = font::FontKey { family, size_px: 13, weight: 400, italic: false };
+        let hfont = font::entry_for(&mut self.font_cache, &key)
+            .map(|e| e.hfont)
+            .unwrap_or(self.ui_font);
+        let (visual, (w, h)) =
+            code::build_gdi(spans, hfont, key, self.line_height as f32);
+        let node = self.add_node(NodeKind::Code(visual));
+        self.set_intrinsic(&node, w, h);
+        node
+    }
+
     /// Request a repaint of the scene. Cheap — Windows coalesces
     /// invalidations into one `WM_PAINT` per message-loop pass.
     pub(crate) fn invalidate(&self) {
@@ -606,6 +650,11 @@ impl WindowsBackend {
     pub fn wheel_scroll(&mut self, x: f32, y: f32, delta_px: f32) -> bool {
         let handled = scene::scroll_at(self, x, y, delta_px);
         if handled {
+            // HWND children (wgpu canvas, native controls) don't ride
+            // the painter's scroll translate — reposition them to the
+            // new offsets or they stay pinned while everything painted
+            // scrolls past.
+            self.position_native_children();
             self.invalidate();
         }
         handled
@@ -838,6 +887,34 @@ impl WindowsBackend {
         self.layout_dirty = true;
     }
 
+    /// Apply (or clear) a child HWND's window region, diffed against
+    /// the last applied spec — `SetWindowRgn` forces a child repaint,
+    /// so identical re-applies on every layout pass would flicker.
+    /// The system takes ownership of a set region (never delete it).
+    fn apply_hwnd_region(&mut self, hwnd: HWND, region: Option<RegionSpec>) {
+        use windows::Win32::Graphics::Gdi::{CreateRectRgn, CreateRoundRectRgn};
+        let key = hwnd.0 as isize;
+        if self.hwnd_regions.get(&key) == Some(&region) {
+            return;
+        }
+        self.hwnd_regions.insert(key, region);
+        unsafe {
+            match region {
+                Some((x0, y0, x1, y1, ellipse)) => {
+                    let rgn = if ellipse > 0 {
+                        CreateRoundRectRgn(x0, y0, x1, y1, ellipse, ellipse)
+                    } else {
+                        CreateRectRgn(x0, y0, x1, y1)
+                    };
+                    let _ = SetWindowRgn(hwnd, rgn, true);
+                }
+                None => {
+                    let _ = SetWindowRgn(hwnd, windows::Win32::Graphics::Gdi::HRGN::default(), true);
+                }
+            }
+        }
+    }
+
     /// Record a leaf's intrinsic pixel size on its layout node.
     /// Controls only (button/edit/…) — text nodes use
     /// `set_text_measure` (this writes `min_size`, which forbids wrap).
@@ -862,7 +939,15 @@ impl WindowsBackend {
         };
         let weight = font::weight_to_gdi(style.font_weight.unwrap_or_default());
         let family = match &style.font_family {
-            Some(runtime_core::FontFamily::System(name)) => name.clone(),
+            // May be a CSS fallback STACK — resolve to a family GDI+
+            // can actually draw, or text paints as invisible (see
+            // `resolve_family_stack`).
+            Some(runtime_core::FontFamily::System(name)) => {
+                font::resolve_family_stack(name, &self.default_font_key.family)
+            }
+            // Registered typefaces are process-private (AddFontMemResourceEx)
+            // and invisible to GDI+'s system collection — do NOT probe
+            // them, trust the registered name.
             Some(runtime_core::FontFamily::Typeface(tf)) => tf.family_name.to_string(),
             None => self.default_font_key.family.clone(),
         };
@@ -879,12 +964,24 @@ impl WindowsBackend {
         }
         // A navigator node in the removed subtree drops its live handler.
         self.nav_handlers.remove(&id);
+        // A graphics node fires `on_lost` (deferred — remove can run
+        // inside author effects that already borrow the backend) so
+        // the author drops every wgpu object built on the HWND before
+        // it's reused. The HWND itself is destroyed below with the
+        // node; wgpu tolerates presenting to a dead window (the
+        // swapchain reports Lost and the host's draw skips).
+        if let Some(mut st) = self.graphics.remove(&id) {
+            if let Some(mut lost) = st.on_lost.take() {
+                runtime_core::scheduling::after_ms_detached(0, move || lost());
+            }
+        }
         if let Some(meta) = self.nodes.remove(&id) {
             if let Some(cid) = meta.control_id {
                 self.command_handlers.remove(&cid);
             }
             if let Some(hwnd) = meta.hwnd() {
                 self.slider_handlers.remove(&(hwnd.0 as isize));
+                self.hwnd_regions.remove(&(hwnd.0 as isize));
                 if !hwnd.is_invalid() {
                     unsafe {
                         let _ = DestroyWindow(hwnd);
@@ -951,11 +1048,56 @@ impl WindowsBackend {
             }
         }
 
-        // Window-relative origins, walking from the root (scroll offsets
-        // shift children).
-        let mut stack: Vec<(u64, f32, f32)> = vec![(root_id, 0.0, 0.0)];
-        let mut control_moves: Vec<(HWND, i32, i32, i32, i32)> = Vec::new();
-        while let Some((id, ox, oy)) = stack.pop() {
+        self.position_native_children();
+
+        // Graphics surfaces: decide which nodes owe an `on_ready` /
+        // `on_resize` now that frames are current, and dispatch on a
+        // fresh scheduler turn. Author callbacks must NOT run here —
+        // `layout_pass` executes while the host holds the backend's
+        // RefCell borrow (paint / resize), and `on_ready` runs
+        // arbitrary author code (the Simulator blocks on the whole
+        // wgpu mount) that may re-enter backend methods.
+        let mut gfx_events: Vec<(u64, graphics::GfxEvent)> = Vec::new();
+        for (id, st) in self.graphics.iter() {
+            let Some(meta) = self.nodes.get(id) else {
+                continue;
+            };
+            if meta.hidden {
+                continue;
+            }
+            let ev = graphics::layout_event(
+                st.on_ready.is_none(),
+                st.last_size,
+                (meta.frame.2, meta.frame.3),
+            );
+            if let Some(ev) = ev {
+                gfx_events.push((*id, ev));
+            }
+        }
+        if !gfx_events.is_empty() {
+            let weak = self.self_ref.clone();
+            runtime_core::scheduling::after_ms_detached(0, move || {
+                dispatch_graphics_events(&weak, &gfx_events);
+            });
+        }
+    }
+
+    /// Recompute window-relative origins and reposition + re-clip every
+    /// native child HWND. Called from `layout_pass`, and on EVERY
+    /// scroll-offset change: painted children shift via the painter's
+    /// scroll translate, but HWND children (the wgpu canvas, buttons,
+    /// edits) only move when someone calls `SetWindowPos` — without
+    /// this, scrolling left them pinned in place. Each stack entry
+    /// carries the accumulated clip from clipping ancestors
+    /// (`(abs rect, corner radius)`), realized as window regions.
+    pub(crate) fn position_native_children(&mut self) {
+        let Some(root_id) = self.root_id else {
+            return;
+        };
+        type Clip = Option<((f32, f32, f32, f32), f32)>;
+        let mut stack: Vec<(u64, f32, f32, Clip)> = vec![(root_id, 0.0, 0.0, None)];
+        let mut control_moves: Vec<(HWND, i32, i32, i32, i32, Option<RegionSpec>)> = Vec::new();
+        while let Some((id, ox, oy, clip)) = stack.pop() {
             let Some(meta) = self.nodes.get_mut(&id) else {
                 continue;
             };
@@ -963,12 +1105,20 @@ impl WindowsBackend {
             let (ax, ay) = (ox + fx, oy + fy);
             meta.abs = (ax, ay);
             if let Some(hwnd) = meta.hwnd() {
+                // Painted-scene clips (`overflow: hidden`, scroll
+                // boxes, rounded wrappers) can't touch a native child
+                // HWND — express the nearest clipping ancestor as a
+                // WINDOW REGION instead, so a wgpu canvas follows its
+                // rounded wrapper and a control inside a scroll view
+                // stops at the viewport edge.
+                let region = hwnd_clip_region((ax, ay, w, h), clip);
                 control_moves.push((
                     hwnd,
                     ax.round() as i32,
                     ay.round() as i32,
                     w.round() as i32,
                     h.round() as i32,
+                    region,
                 ));
             }
             let (mut cox, mut coy) = (ax, ay);
@@ -978,19 +1128,63 @@ impl WindowsBackend {
                     coy -= s.offset_y;
                 }
             }
+            // A clipping node bounds its subtree: rects intersect with
+            // any outer clip; the NEAREST clipper's (max) radius wins —
+            // the uniform-radius case is exact, mixed nested radii are
+            // approximated by the innermost.
+            let child_clip = if meta.clips_children() {
+                let radius = match &meta.kind {
+                    NodeKind::View(v) => v.radii.iter().cloned().fold(0.0_f32, f32::max),
+                    _ => 0.0,
+                };
+                let own = (ax, ay, w, h);
+                let rect = match clip {
+                    Some((c, _)) => intersect_rects(own, c),
+                    None => own,
+                };
+                Some((rect, radius))
+            } else {
+                clip
+            };
             if let Some(kids) = self.children.get(&id) {
                 for k in kids {
-                    stack.push((*k, cox, coy));
+                    stack.push((*k, cox, coy, child_clip));
                 }
             }
         }
-        for (hwnd, x, y, w, h) in control_moves {
+        for (hwnd, x, y, w, h, region) in control_moves {
             if hwnd.is_invalid() {
                 continue;
             }
             let _ = unsafe {
                 SetWindowPos(hwnd, None, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE)
             };
+            self.apply_hwnd_region(hwnd, region);
+        }
+    }
+
+    /// The graphics-event dispatcher's phase 1: under a short borrow,
+    /// re-read the node's CURRENT frame (layout may have moved on since
+    /// the event was queued), record it as the dedupe baseline, and
+    /// take the callback box out of the state. Returns what phase 2
+    /// should call with the backend released.
+    fn take_graphics_callback(&mut self, id: u64, ev: graphics::GfxEvent) -> Option<TakenGfx> {
+        let meta = self.nodes.get(&id)?;
+        let w = meta.frame.2.round().max(0.0) as u32;
+        let h = meta.frame.3.round().max(0.0) as u32;
+        if w <= 1 || h <= 1 {
+            return None;
+        }
+        let st = self.graphics.get_mut(&id)?;
+        st.last_size = Some((w, h));
+        match ev {
+            graphics::GfxEvent::Ready => st
+                .on_ready
+                .take()
+                .map(|cb| TakenGfx::Ready(cb, st.surface.clone(), (w, h))),
+            graphics::GfxEvent::Resize => {
+                st.on_resize.take().map(|cb| TakenGfx::Resize(cb, (w, h)))
+            }
         }
     }
 
@@ -1020,6 +1214,104 @@ impl WindowsBackend {
             return None;
         }
         image::load_image_file(src)
+    }
+}
+
+/// Window-region recipe for a child HWND, in the child's LOCAL
+/// coordinates: `(left, top, right, bottom, corner-ellipse-diameter)`.
+/// `(0,0,0,0,0)` = fully clipped (empty region hides the child's
+/// pixels); ellipse `0` = plain rectangle.
+type RegionSpec = (i32, i32, i32, i32, i32);
+
+/// Rect ∩ rect, both `(x, y, w, h)`; empty results collapse to zero
+/// size at the intersection origin.
+fn intersect_rects(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> (f32, f32, f32, f32) {
+    let x0 = a.0.max(b.0);
+    let y0 = a.1.max(b.1);
+    let x1 = (a.0 + a.2).min(b.0 + b.2);
+    let y1 = (a.1 + a.3).min(b.1 + b.3);
+    (x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
+}
+
+/// The window region a native child HWND needs so its nearest
+/// clipping ancestor's bounds — and rounded corners — apply to it.
+/// `None` = no region needed (no clipping ancestor, or the child sits
+/// fully inside a square-cornered clip). The rounded case always gets
+/// a region even at full coverage: the corners themselves are what
+/// need cutting (the Simulator's wgpu canvas poking past its rounded
+/// wrapper was the reported bug).
+fn hwnd_clip_region(
+    child: (f32, f32, f32, f32),
+    clip: Option<((f32, f32, f32, f32), f32)>,
+) -> Option<RegionSpec> {
+    let (rect, radius) = clip?;
+    let (ix, iy, iw, ih) = intersect_rects(child, rect);
+    if iw <= 0.0 || ih <= 0.0 {
+        return Some((0, 0, 0, 0, 0));
+    }
+    let full = ix <= child.0 + 0.5
+        && iy <= child.1 + 0.5
+        && ix + iw >= child.0 + child.2 - 0.5
+        && iy + ih >= child.1 + child.3 - 0.5;
+    if full && radius < 0.5 {
+        return None;
+    }
+    Some((
+        (ix - child.0).round() as i32,
+        (iy - child.1).round() as i32,
+        (ix + iw - child.0).round() as i32,
+        (iy + ih - child.1).round() as i32,
+        (radius * 2.0).round() as i32,
+    ))
+}
+
+/// A graphics callback pulled out of the backend for a borrow-free call.
+enum TakenGfx {
+    Ready(
+        runtime_core::primitives::graphics::OnReady,
+        runtime_core::primitives::graphics::GraphicsSurface,
+        (u32, u32),
+    ),
+    Resize(runtime_core::primitives::graphics::OnResize, (u32, u32)),
+}
+
+/// Deliver deferred graphics events (queued by `layout_pass`). Runs on
+/// its own scheduler turn with NO outstanding backend borrow; each
+/// author callback executes with the backend fully released — the
+/// Simulator's `on_ready` blocks on the entire wgpu mount and its
+/// embedded app's effects may re-enter backend methods. `on_resize`'s
+/// `FnMut` box is restored afterward; `on_ready` is once-only (the
+/// HWND is stable for the node's lifetime — no Android-style surface
+/// recreation on this backend).
+///
+/// `scale` is 1.0 — the Win32 host is DPI-unaware today; `1.0` is the
+/// documented "not yet reported" value.
+fn dispatch_graphics_events(
+    weak: &Weak<RefCell<WindowsBackend>>,
+    events: &[(u64, graphics::GfxEvent)],
+) {
+    use runtime_core::primitives::graphics::{GraphicsTarget, OnReadyEvent, OnResizeEvent};
+    for &(id, ev) in events {
+        let Some(backend) = weak.upgrade() else {
+            return;
+        };
+        let taken = backend.borrow_mut().take_graphics_callback(id, ev);
+        match taken {
+            Some(TakenGfx::Ready(mut cb, surface, size)) => {
+                cb(OnReadyEvent {
+                    target: GraphicsTarget::RawWindow(surface),
+                    size,
+                    scale: 1.0,
+                });
+            }
+            Some(TakenGfx::Resize(mut cb, size)) => {
+                cb(OnResizeEvent { size, scale: 1.0 });
+                if let Some(st) = backend.borrow_mut().graphics.get_mut(&id) {
+                    st.on_resize = Some(cb);
+                }
+            }
+            None => {}
+        }
     }
 }
 
@@ -1611,7 +1903,7 @@ impl Backend for WindowsBackend {
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        self.add_node(NodeKind::View(ViewVisual {
+        let node = self.add_node(NodeKind::View(ViewVisual {
             scroll: Some(ScrollInfo {
                 horizontal,
                 offset_x: 0.0,
@@ -1619,7 +1911,18 @@ impl Backend for WindowsBackend {
                 on_scroll,
             }),
             ..Default::default()
-        }))
+        }));
+        // Taffy MUST know this node scrolls (`overflow: scroll` on the
+        // axis): the content is a Taffy child, so without it the
+        // viewport node sizes to its content — the website's page
+        // scroll node laid out 2376px tall in an 860px window, leaving
+        // `content − viewport = 0` to scroll. See
+        // `LayoutTree::set_overflow_scroll`'s docs; iOS/Android/macOS
+        // make the same call for the same reason.
+        if let Some(layout) = self.layout_for_id.get(&node.id).copied() {
+            self.layout.set_overflow_scroll(layout, horizontal);
+        }
+        node
     }
 
     fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {
@@ -1631,6 +1934,8 @@ impl Backend for WindowsBackend {
                 }
             }
         }
+        // Same as `wheel_scroll`: HWND children must follow the offset.
+        self.position_native_children();
         self.invalidate();
     }
 
@@ -1664,12 +1969,28 @@ impl Backend for WindowsBackend {
 
     fn create_graphics(
         &mut self,
-        _on_ready: runtime_core::primitives::graphics::OnReady,
-        _on_resize: runtime_core::primitives::graphics::OnResize,
-        _on_lost: runtime_core::primitives::graphics::OnLost,
+        on_ready: runtime_core::primitives::graphics::OnReady,
+        on_resize: runtime_core::primitives::graphics::OnResize,
+        on_lost: runtime_core::primitives::graphics::OnLost,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        self.placeholder("Graphics not yet implemented on Windows backend")
+        let hwnd = graphics::create_surface_hwnd(self.host_hwnd);
+        if hwnd.is_invalid() {
+            return self.placeholder("Graphics surface creation failed");
+        }
+        let node = self.add_node(NodeKind::External { hwnd });
+        let surface = graphics::make_surface(hwnd);
+        self.graphics.insert(
+            node.id,
+            graphics::GraphicsState {
+                surface,
+                on_ready: Some(on_ready),
+                on_resize: Some(on_resize),
+                on_lost: Some(on_lost),
+                last_size: None,
+            },
+        );
+        node
     }
 
     fn create_external(
@@ -1961,7 +2282,12 @@ impl Backend for WindowsBackend {
                         p.object_fit = fit;
                     }
                 }
-                NodeKind::Icon(_) | NodeKind::Control { .. } | NodeKind::External { .. } => {}
+                // Code runs carry their own tokenizer colors + mono
+                // font; author style contributes box/layout only.
+                NodeKind::Code(_)
+                | NodeKind::Icon(_)
+                | NodeKind::Control { .. }
+                | NodeKind::External { .. } => {}
             }
         }
         // Rebuild the wrap plan + measure fn in the resolved font so
@@ -2078,6 +2404,81 @@ mod tests {
 
     /// The welcome scene's whole choreography is driven through the
     /// animated slots; pin that each write lands on the right field.
+    /// The Simulator's wgpu canvas HWND poked square corners past its
+    /// rounded wrapper: painted-scene clips can't touch a native child
+    /// window, so the nearest clipping ancestor must become a window
+    /// REGION on the child.
+    #[test]
+    fn regression_native_child_clips_to_rounded_ancestor() {
+        // Canvas exactly filling a 300×649 wrapper with 32px radii →
+        // full-cover but ROUNDED: a round-rect region over the whole
+        // child (ellipse = 2r).
+        let r = hwnd_clip_region(
+            (100.0, 50.0, 300.0, 649.0),
+            Some(((100.0, 50.0, 300.0, 649.0), 32.0)),
+        );
+        assert_eq!(r, Some((0, 0, 300, 649, 64)));
+
+        // No clipping ancestor → no region.
+        assert_eq!(hwnd_clip_region((0.0, 0.0, 10.0, 10.0), None), None);
+
+        // Fully inside a square-cornered clip → no region needed.
+        let r = hwnd_clip_region(
+            (10.0, 10.0, 50.0, 20.0),
+            Some(((0.0, 0.0, 200.0, 200.0), 0.0)),
+        );
+        assert_eq!(r, None);
+    }
+
+    /// A control half-scrolled out of its scroll viewport keeps only
+    /// the visible part (rect region in child-local coords); fully
+    /// scrolled out = empty region (nothing shows).
+    #[test]
+    fn native_child_partial_and_full_scroll_clip() {
+        // Viewport y 0..200; control at abs y 150, 60 tall → bottom 10
+        // visible rows clipped off.
+        let r = hwnd_clip_region(
+            (0.0, 150.0, 100.0, 60.0),
+            Some(((0.0, 0.0, 100.0, 200.0), 0.0)),
+        );
+        assert_eq!(r, Some((0, 0, 100, 50, 0)));
+
+        // Fully outside → empty region.
+        let r = hwnd_clip_region(
+            (0.0, 300.0, 100.0, 60.0),
+            Some(((0.0, 0.0, 100.0, 200.0), 0.0)),
+        );
+        assert_eq!(r, Some((0, 0, 0, 0, 0)));
+    }
+
+    /// A scroll viewport must be sized by its PARENT, not its content.
+    /// `create_scroll_view` didn't call `set_overflow_scroll`, so Taffy
+    /// laid the website's page scroll node out 2376px tall in an 860px
+    /// window — `content − viewport = 0`, nothing to clamp against, and
+    /// clipping to the (content-sized) box was meaningless.
+    #[test]
+    fn regression_scroll_view_sizes_to_parent_not_content() {
+        let mut b = WindowsBackend::new(HWND(std::ptr::null_mut()));
+        let a11y = AccessibilityProps::default();
+        let mut root = b.create_view(&a11y);
+        let mut sv = b.create_scroll_view(false, None, &a11y);
+        let sv_id = sv.id;
+        let content = b.create_view(&a11y);
+        let mut tall = StyleRules::default();
+        tall.height = Some(Length::Px(2000.0).into());
+        b.apply_style(&content, &Rc::new(tall));
+        b.insert(&mut sv, content);
+        b.insert(&mut root, sv);
+        let root_layout = b.layout_for_id[&root.id];
+        b.layout.compute(root_layout, 800.0, 600.0);
+        let f = b.layout.frame_of(b.layout_for_id[&sv_id]);
+        assert!(
+            f.height <= 600.5,
+            "scroll viewport bounded by its parent (600), got {}",
+            f.height
+        );
+    }
+
     /// Scroll views must bound children to their box even without an
     /// author `overflow: hidden` — unclipped, scrolled-out sidebar
     /// links painted over the header (and stayed clickable there).

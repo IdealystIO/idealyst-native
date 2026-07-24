@@ -81,6 +81,21 @@ web-sys = { version = "0.3", features = [
     "MediaStreamAudioDestinationNode",
 ] }
 
+# Linux / desktop native: GStreamer (the native Linux media stack — the same
+# engine the `audio` playback backend drives). We build a small encode pipeline
+# `appsrc ! videoconvert ! vp8enc ! webmmux ! filesink` (+ an `audioconvert !
+# opusenc` branch) and push the streams' RGBA / f32-PCM frames in through
+# `gstreamer-app`'s `AppSrc`. VP8/WebM is the default because a base GStreamer
+# always ships it (`vp8enc`/`webmmux`/`opusenc`), whereas H.264/MP4 needs an
+# extra encoder plugin (`x264enc`/`openh264enc`) that base installs omit — see
+# `linux.rs`. Versions match the `audio` crate's GStreamer cluster (gstreamer-rs
+# 0.23 → GStreamer 1.x C API; glib 0.20). No `v1_XX` feature gates: only base
+# 1.0 APIs are used, so it works against the system's 1.28 at runtime.
+[target.'cfg(target_os = "linux")'.dependencies]
+gstreamer = "0.23"
+gstreamer-app = "0.23"
+glib = "0.20"
+
 # Android target: MediaCodec + MediaMuxer, driven by a Kotlin shim that
 # trampolines lifecycle back through JNI. `ndk-context` exposes the host
 # JavaVM + Activity, mirroring `camera`.

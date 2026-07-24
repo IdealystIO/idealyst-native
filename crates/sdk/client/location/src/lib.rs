@@ -41,9 +41,12 @@
 //! - **Android** — the framework `LocationManager` via JNI
 //!   (`getLastKnownLocation`; `requestLocationUpdates` needs a Java
 //!   `LocationListener` shim — see [`watch`]).
+//! - **Linux (desktop)** — GeoClue2 over D-Bus (`org.freedesktop.GeoClue2`)
+//!   via `zbus`: `Manager.GetClient` → set `DesktopId` → `Start` → the
+//!   client's `LocationUpdated` signal.
 //!
-//! Every other target (the host running `cargo test`, desktop Windows/Linux)
-//! gets a stub that reports [`LocationError::NotSupported`].
+//! Every other target (the host running `cargo test` on non-Linux, desktop
+//! Windows) gets a stub that reports [`LocationError::NotSupported`].
 //!
 //! # Permissions
 //!
@@ -162,7 +165,8 @@ pub(crate) type BoxedCallback = Box<dyn Fn(Position) + 'static>;
 // ---------------------------------------------------------------------------
 // Backend selector. Exactly one `imp` compiles per target; each supplies
 // `current_fix()`, `start_watch()`, and a `WatchHandle` whose `Drop` stops
-// updates. The fallback stub reports `NotSupported`.
+// updates. The fallback stub (non-Linux desktop / test host) reports
+// `NotSupported`.
 // ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "wasm32")]
@@ -180,12 +184,18 @@ mod imp;
 #[path = "android.rs"]
 mod imp;
 
-// Fallback for every target with no geolocation backend (desktop
-// Windows/Linux, the host running `cargo test`).
+// Linux desktop: GeoClue2 over D-Bus (the standard desktop location provider).
+#[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
+#[path = "linux.rs"]
+mod imp;
+
+// Fallback for every remaining target with no geolocation backend (desktop
+// Windows, the host running `cargo test` on a non-Linux host).
 #[cfg(all(
     not(target_arch = "wasm32"),
     not(any(target_os = "ios", target_os = "macos", target_os = "tvos")),
-    not(target_os = "android")
+    not(target_os = "android"),
+    not(target_os = "linux")
 ))]
 mod imp {
     use super::{BoxedCallback, LocationError, Position};
@@ -222,10 +232,22 @@ mod imp {
 pub async fn current() -> Result<Position, LocationError> {
     // The grant flow is owned by the `permissions` SDK — we never call the OS
     // location-permission API ourselves, only the position-data API below.
-    // `is_granted()` is the strict gate: `Unsupported` (a platform with no
-    // grant model, e.g. the desktop host) is NOT granted here, and `current`
-    // then resolves `NotSupported` from the stub backend — honest, not faked.
-    if !request(Permission::LocationWhenInUse).await.is_granted() {
+    //
+    // Gate on `is_usable()` (Granted *or* Unsupported), not `is_granted()`.
+    // Platforms with a real grant model (iOS/macOS/Android/web) are unaffected:
+    // there `LocationWhenInUse` is Granted or Denied, so `is_usable()` and
+    // `is_granted()` agree — a denial still short-circuits to `NotAuthorized`.
+    // The difference is a target where `permissions` reports `Unsupported`
+    // (no OS-level grant model): the backend-less test host, and **Linux
+    // desktop**, where GeoClue2 owns authorization itself (its own agent /
+    // system location toggle) rather than a `permissions`-visible prompt.
+    // `is_granted()` would wrongly reject those before the backend runs; with
+    // `is_usable()` we delegate to the backend, which then reports honestly —
+    // `NotSupported` from the stub host, or GeoClue2's real result on Linux
+    // (a denied/disabled fix mapping to `NotAuthorized` there). This also
+    // aligns the code with this fn's own doc contract that a backend-less
+    // target resolves `NotSupported`, not `NotAuthorized`.
+    if !request(Permission::LocationWhenInUse).await.is_usable() {
         return Err(LocationError::NotAuthorized);
     }
     imp::current_fix().await

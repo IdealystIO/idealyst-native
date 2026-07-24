@@ -12,9 +12,10 @@
 //! test is meaningful where hardware exists without being a false negative
 //! where it doesn't.
 //!
-//! Currently the only host with a real backend is Apple (macOS); the
-//! desktop Linux/Windows stub returns `Unsupported`, which the test treats
-//! as a skip.
+//! Hosts with a real backend are Apple (macOS) and desktop **Linux**
+//! (GStreamer V4L2). On Linux with no camera this returns `NoCamera` (a
+//! skip); the remaining desktop-Windows stub returns `Unsupported` (also a
+//! skip). All non-hardware outcomes are skips, not failures.
 #![cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
