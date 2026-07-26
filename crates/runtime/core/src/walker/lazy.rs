@@ -79,6 +79,12 @@ impl Drop for LazyCancelGuard {
 #[cfg(any(feature = "async-driver", test))]
 struct ScopedLoad {
     scope: Rc<RefCell<Option<Box<reactive::Scope>>>>,
+    /// Ambient navigator context captured at mount (see [`build`]).
+    /// Re-entered around every poll: the chunk fn constructs its
+    /// `Element` inside this future, so any `link` it builds reads
+    /// `ambient_navigator()` here — with the screen build long
+    /// returned and its guards off the stack.
+    nav_ctx: crate::primitives::navigator::shared::AmbientNavContext,
     inner: crate::primitives::lazy::LazyFuture,
 }
 
@@ -106,6 +112,9 @@ impl std::future::Future for ScopedLoad {
         // The borrow is held only for this synchronous poll — released when it
         // returns, so a teardown that races an in-flight fetch can take the
         // scope between polls (next poll then sees `None` and bails).
+        // Re-establish the ambient nav context for the poll so links the
+        // chunk constructs capture the screen's navigator, not `None`.
+        let _nav_restore = this.nav_ctx.enter();
         reactive::with_scope(scope.as_mut(), || match this.inner.as_mut().poll(cx) {
             Poll::Ready(result) => Poll::Ready(Some(result)),
             Poll::Pending => Poll::Pending,
@@ -210,6 +219,17 @@ pub(super) fn build<B: Backend + 'static>(
     // that resolved after the parent unmounted.
     let cancelled: Rc<Cell<bool>> = Rc::new(Cell::new(false));
 
+    // Capture the ambient navigator context ONCE, synchronously, while the
+    // screen's `AmbientNavGuard`/`ScreenStateGuard`/`ScreenRouteGuard` are
+    // still on the stack. The chunk's `Element` is constructed AND built
+    // inside an async task after the chunk fetch — long after the screen
+    // build returned and its guards dropped — so without re-establishing
+    // this context every `link` inside the chunk captures `None` and
+    // silently no-ops on activation (the href still renders; clicks do
+    // nothing). Same pattern as `when_switch`/`each`/`dynamic`. Weak nav
+    // ref inside — see `AmbientNavContext`.
+    let nav_ctx = crate::primitives::navigator::shared::capture_ambient_nav_context();
+
     // `retry_holder` owns the `retry` closure for the element's lifetime (the
     // `_cleanup_effect` below adopts it). The error UI is handed a `retry`
     // handle that reaches this slot through a *weak* ref, so the cycle
@@ -262,6 +282,7 @@ pub(super) fn build<B: Backend + 'static>(
             let error = error.clone();
             let loader = loader.clone();
             let retry_weak = retry_weak.clone();
+            let nav_ctx = nav_ctx.clone();
             Rc::new(move || {
                 if cancelled.get() {
                     return;
@@ -274,13 +295,20 @@ pub(super) fn build<B: Backend + 'static>(
                 let on_state = on_state.clone();
                 let error = error.clone();
                 let retry_weak = retry_weak.clone();
+                let nav_ctx = nav_ctx.clone();
                 let fut = (loader)();
                 crate::driver::spawn_async(async move {
                     // Poll the loader inside the chunk scope so state the chunk
                     // constructs eagerly (External-extension signals, a
                     // component's `signal()` at construction) is owned by the
                     // chunk, not leaked. `None` = torn down mid-load; abandon.
-                    let result = match (ScopedLoad { scope: chunk_scope.clone(), inner: fut }).await {
+                    let result = match (ScopedLoad {
+                        scope: chunk_scope.clone(),
+                        nav_ctx: nav_ctx.clone(),
+                        inner: fut,
+                    })
+                    .await
+                    {
                         Some(r) => r,
                         None => return,
                     };
@@ -293,10 +321,14 @@ pub(super) fn build<B: Backend + 'static>(
                     match result {
                         Ok(chunk_primitive) => {
                             // Build the chunk's content under the chunk scope so
-                            // its reactive state (and cleanups) are owned there.
+                            // its reactive state (and cleanups) are owned there,
+                            // with the ambient nav context restored so links
+                            // built here (and captured by nested `when`/`switch`
+                            // snapshots) keep the screen's navigator.
                             let child_node = {
                                 let mut sb = chunk_scope.borrow_mut();
                                 let Some(scope) = sb.as_mut() else { return };
+                                let _nav_restore = nav_ctx.enter();
                                 reactive::with_scope(scope.as_mut(), || {
                                     super::build_inner(&backend, chunk_primitive)
                                 })
@@ -360,7 +392,7 @@ pub(super) fn build<B: Backend + 'static>(
     {
         // Suppress unused warnings; the loader is dropped (chunk
         // never loads) and Rendered is never fired.
-        let _ = (&loader, &chunk_node, &chunk_scope, &cancelled, &error, &retry_holder);
+        let _ = (&loader, &chunk_node, &chunk_scope, &cancelled, &error, &retry_holder, &nav_ctx);
     }
 
     // Hold the chunk_node slot, the cancel guard, and the retry holder for
@@ -457,7 +489,7 @@ mod tests {
             Ok(crate::view(Vec::new()).into_element())
         });
 
-        let mut fut = ScopedLoad { scope: scope.clone(), inner };
+        let mut fut = ScopedLoad { scope: scope.clone(), nav_ctx: Default::default(), inner };
         let waker = std::task::Waker::noop();
         let mut cx = Context::from_waker(waker);
         match std::pin::Pin::new(&mut fut).poll(&mut cx) {
@@ -471,6 +503,66 @@ mod tests {
         assert!(
             dropped.get(),
             "chunk scope must own+free signals the loader created during construction"
+        );
+    }
+
+    /// Regression: a `link` constructed inside a lazy chunk must capture the
+    /// screen's navigator. The chunk fn runs inside the loader future, in an
+    /// async task that resolves AFTER the screen build returned (its
+    /// `AmbientNavGuard` long dropped) — so `ScopedLoad` must re-establish
+    /// the nav context captured at mount around every poll. Against the buggy
+    /// code the chunk saw `ambient_navigator() == None` and every link it
+    /// built silently no-op'd on activation (while still rendering its href).
+    #[cfg(feature = "prim-navigator")]
+    #[test]
+    fn scoped_load_restores_ambient_nav_for_chunk_construction() {
+        use crate::builder::IntoElement;
+        use crate::primitives::navigator::shared::{
+            ambient_navigator, capture_ambient_nav_context, AmbientNavGuard,
+        };
+        use crate::primitives::navigator::NavigatorControl;
+        use std::cell::Cell;
+        use std::future::Future;
+        use std::task::{Context, Poll};
+
+        // Capture with a navigator on the stack — what `build()` does at
+        // mount, while the screen's guards are still live.
+        let control = Rc::new(NavigatorControl::new());
+        let guard = AmbientNavGuard::push(control.clone());
+        let nav_ctx = capture_ambient_nav_context();
+        drop(guard);
+        assert!(
+            ambient_navigator().is_none(),
+            "precondition: the load resolves with no guard on the stack",
+        );
+
+        // The chunk fn observes the ambient navigator as it constructs its
+        // element — exactly where `link()` reads it.
+        let saw_nav = Rc::new(Cell::new(false));
+        let saw_nav_in_chunk = saw_nav.clone();
+        let inner: crate::primitives::lazy::LazyFuture = Box::pin(async move {
+            saw_nav_in_chunk.set(ambient_navigator().is_some());
+            Ok(crate::view(Vec::new()).into_element())
+        });
+
+        let scope: Rc<RefCell<Option<Box<reactive::Scope>>>> =
+            Rc::new(RefCell::new(Some(Box::new(reactive::Scope::new()))));
+        let mut fut = ScopedLoad { scope, nav_ctx, inner };
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        match std::pin::Pin::new(&mut fut).poll(&mut cx) {
+            Poll::Ready(Some(Ok(_))) => {}
+            _ => panic!("test loader resolves to an Element on first poll"),
+        }
+
+        assert!(
+            saw_nav.get(),
+            "chunk construction must see the mount-time ambient navigator",
+        );
+        // And the guard must have popped when the poll returned.
+        assert!(
+            ambient_navigator().is_none(),
+            "the restored context must not leak past the poll",
         );
     }
 
