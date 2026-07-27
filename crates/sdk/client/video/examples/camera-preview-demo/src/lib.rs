@@ -74,7 +74,8 @@ pub fn app() -> Element {
             match Camera::new().open(CameraConfig::default()).await {
                 Ok(stream) => {
                     status.set("Live — camera feed via Video(source = stream)".to_string());
-                    stream_sig.set(Some(stream));
+                    // `set_always`: `MediaStream` has no `PartialEq`.
+                    stream_sig.set_always(Some(stream));
                 }
                 Err(e) => {
                     started.set(false);

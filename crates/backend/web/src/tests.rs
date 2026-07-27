@@ -2209,6 +2209,51 @@ fn regression_web_pressable_swallows_ancestor_on_touch() {
     );
 }
 
+/// REGRESSION TEST.
+///
+/// A `mark_preserves_focus` region (a combobox's anchored option menu) must
+/// cancel the `pointerdown` default for presses ANYWHERE inside it — the
+/// browser's focus move is `mousedown`'s default action, so the canceled
+/// default is what keeps the anchoring input focused while a row is
+/// clicked. The press target being a Pressable row is the hard case: the
+/// row's own bubble-phase `stopPropagation` (the ancestor-touch swallow,
+/// asserted above) would starve a bubble-phase listener on the marked
+/// ancestor — the mark's listener must run in the CAPTURE phase to see the
+/// press at all.
+#[wasm_bindgen_test]
+fn regression_web_preserves_focus_cancels_pointerdown_through_pressable_swallow() {
+    use runtime_core::Backend;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+
+    // The marked ancestor stands in for the combobox menu panel.
+    let panel = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&panel).unwrap();
+    backend.mark_preserves_focus(&panel.clone().unchecked_into());
+
+    // A real Pressable row inside it — installs the pointerdown swallow.
+    let row: web_sys::Node = backend.create_pressable(Rc::new(|| {}), &Default::default());
+    panel.append_child(&row).unwrap();
+    let row_el: web_sys::Element = row.unchecked_into();
+
+    let init = web_sys::PointerEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    let ev = web_sys::PointerEvent::new_with_event_init_dict("pointerdown", &init)
+        .expect("construct bubbling pointerdown");
+    row_el.dispatch_event(&ev).expect("dispatch pointerdown");
+
+    assert!(
+        ev.default_prevented(),
+        "a press inside a preserves_focus region must cancel the pointerdown \
+         default (the focus steal), even when the press target is a Pressable \
+         whose swallow stops bubble-phase propagation",
+    );
+}
+
 /// Build a `keydown` for `key` that bubbles and is cancelable, dispatch it on
 /// `target`, and return whether its default action ended up prevented.
 fn dispatch_bubbling_keydown(target: &web_sys::Element, key: &str) -> bool {

@@ -2599,6 +2599,15 @@ impl Backend for IosBackend {
         touch_view.set_handler(handler);
     }
 
+    fn mark_preserves_focus(&mut self, node: &Self::Node) {
+        // Tag the view with the focus-preservation sentinel; the
+        // keyboard-dismiss tap recognizer's `shouldReceiveTouch:` walks the
+        // touched view's ancestors and skips `endEditing:` when it finds it
+        // (see `callbacks::PRESERVES_FOCUS_TAG` for why `tag`).
+        let view = node.as_view();
+        let _: () = unsafe { msg_send![view, setTag: callbacks::PRESERVES_FOCUS_TAG] };
+    }
+
     fn claim_touch(
         &mut self,
         node: &Self::Node,

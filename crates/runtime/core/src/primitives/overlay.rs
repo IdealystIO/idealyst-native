@@ -366,6 +366,7 @@ fn build_overlay_portal(
             style: backdrop_style,
             ref_fill: None,
             disabled: None,
+            preserves_focus: false,
             accessibility: crate::accessibility::AccessibilityProps::default(),
             #[cfg(feature = "robot")]
             test_id: None,

@@ -129,6 +129,14 @@ pub struct FlippedViewIvars {
     /// equivalent (`NSView` has no `userInteractionEnabled`), so the
     /// `hitTest:` override consults this directly.
     pointer_events: Cell<Option<runtime_core::PointerEvents>>,
+    /// `Backend::mark_preserves_focus` flag. When set on this view (or any
+    /// ancestor — `mouse_down` walks the superview chain via
+    /// [`subtree_preserves_focus`]), a press inside the subtree skips the
+    /// blur-on-outside-click first-responder resign, so e.g. clicking an
+    /// option row in a combobox's anchored menu doesn't blur the input the
+    /// menu belongs to. The macOS half of web's canceled-`pointerdown`
+    /// focus preservation.
+    preserves_focus: Cell<bool>,
 }
 
 declare_class!(
@@ -262,6 +270,14 @@ declare_class!(
                     let fr: *mut AnyObject = msg_send![window, firstResponder];
                     if !fr.is_null()
                         && msg_send![fr, isKindOfClass: objc2::class!(NSText)]
+                        // A press inside a focus-preserving subtree (a
+                        // combobox's anchored option menu, an input's
+                        // chevron/clear adornment) must leave the field
+                        // editor alone — resigning here would close-on-blur
+                        // the surface before its own click lands. The macOS
+                        // half of web's canceled-`pointerdown` focus
+                        // preservation (`Backend::mark_preserves_focus`).
+                        && !subtree_preserves_focus(self)
                     {
                         // `fr` is the shared field editor; its delegate is the
                         // NSTextField being edited. Consult that field's
@@ -589,8 +605,17 @@ impl FlippedView {
             file_drop_handler: RefCell::new(None),
             activate: RefCell::new(None),
             pointer_events: Cell::new(None),
+            preserves_focus: Cell::new(false),
         });
         unsafe { msg_send_id![super(this), init] }
+    }
+
+    /// Flag this view as a focus-preserving press region. Called by
+    /// `Backend::mark_preserves_focus`; consulted (self + ancestors) by
+    /// `mouse_down`'s blur-on-outside-click resign via
+    /// [`subtree_preserves_focus`].
+    pub(crate) fn set_preserves_focus(&self) {
+        self.ivars().preserves_focus.set(true);
     }
 
     /// Map `StyleRules::pointer_events` onto this host. Called by
@@ -1804,6 +1829,31 @@ pub(crate) fn text_field_blur_allows(field: &NSView) -> bool {
         Some(iv) => cell_blur_allows(iv),
         None => true,
     }
+}
+
+/// True when `view` or any superview is a [`FlippedView`] flagged by
+/// `Backend::mark_preserves_focus` — i.e. a press that landed here belongs
+/// to a focus-preserving region (a combobox's anchored menu, an input
+/// adornment) and must not resign the active field editor. Walked from the
+/// pressed view because AppKit delivers `mouseDown:` to the deepest
+/// hit-test view; the flag usually sits on a wrapping container.
+pub(crate) fn subtree_preserves_focus(view: &FlippedView) -> bool {
+    let cls = objc2::class!(IdealystFlippedView);
+    let mut cur: *const AnyObject = view as *const FlippedView as *const AnyObject;
+    unsafe {
+        while !cur.is_null() {
+            let is_flipped: bool = msg_send![&*cur, isKindOfClass: cls];
+            if is_flipped {
+                // SAFETY: dynamic class confirmed `IdealystFlippedView`.
+                let fv: &FlippedView = &*(cur as *const FlippedView);
+                if fv.ivars().preserves_focus.get() {
+                    return true;
+                }
+            }
+            cur = msg_send![&*cur, superview];
+        }
+    }
+    false
 }
 
 /// Borrow the shared [`CellIvars`] of `field`'s cell if it's one of the

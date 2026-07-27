@@ -55,7 +55,7 @@ pub enum FillRule {
 ///     filled: false,
 /// };
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IconData {
     /// viewBox dimensions `(width, height)`.
     pub view_box: (u16, u16),

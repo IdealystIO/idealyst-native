@@ -44,7 +44,8 @@ Under the hood, `cycle`/`batch` opens a `DirtyWindow` that records dirtied
 **signals** (not pre-collected subscribers); at the outermost close it
 resolves each signal's change decision once, collects subscribers, and
 fans out a single deduped effect pass. (This same window is what powers
-net-zero [`set_if_changed`](signal-set-change-detection.md) dedup.)
+the guarded `set`'s net-zero
+[change-detection](signal-set-change-detection.md).)
 
 ## Where the framework opens a cycle automatically
 
@@ -79,11 +80,12 @@ it.
 
 ## What is *not* batched by default
 
-`cycle` queues the fan-out; it does **not** dedup unchanged writes. A plain
-`set` still always notifies (monotonic counters / force-refresh rely on
-it). Net-zero elision is the separate, opt-in
-[`set_if_changed`](signal-set-change-detection.md) lever, which composes
-with the cycle window.
+`cycle` queues the fan-out; unchanged-write elision is a separate lever.
+The default `set` (`T: PartialEq`) is
+[equality-guarded](signal-set-change-detection.md) and composes with the
+cycle window (net-zero windows wake nobody); `set_always`, `touch`, and
+`update` notify unconditionally (monotonic counters / force-refresh use
+those).
 
 ## Escape hatch
 

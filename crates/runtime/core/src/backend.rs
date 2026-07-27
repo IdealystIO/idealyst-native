@@ -787,6 +787,36 @@ pub trait Backend {
         // default: no-op
     }
 
+    /// Mark `node` as focus-preserving: a press that begins inside its
+    /// subtree must NOT blur the currently focused text input / dismiss
+    /// the soft keyboard. Called once per `Element::View`/`Element::Pressable`
+    /// built with `.preserves_focus(true)` — the combobox capability (an
+    /// anchored option menu attached to a focused input must be clickable
+    /// without the click blurring the input out from under it).
+    ///
+    /// Each backend suppresses its own blur-on-outside-press source
+    /// (CLAUDE.md §7 — divergent mechanism, identical observable result):
+    /// - **web**: capture-phase `pointerdown` listener calling
+    ///   `preventDefault()` — the browser's focus move is `mousedown`'s
+    ///   default action, and canceling `pointerdown` suppresses it. Capture
+    ///   phase so a descendant pressable's bubble-phase `stopPropagation`
+    ///   (the ancestor-touch swallow) can't skip it.
+    /// - **macOS**: flags the `FlippedView`; the `mouseDown:` outside-click
+    ///   resign walks the pressed view's ancestor chain and skips resigning
+    ///   the field editor when a flagged view is found.
+    /// - **iOS**: tags the `UIView` (associated object); the
+    ///   keyboard-dismiss `UITapGestureRecognizer`'s `shouldReceiveTouch:`
+    ///   skips touches landing inside a tagged subtree.
+    ///
+    /// Default impl is a no-op — correct for backends with no
+    /// blur-on-outside-press behavior (terminal, SSR, CPU; Android and the
+    /// scaffold desktop backends currently have no outside-tap dismiss to
+    /// suppress).
+    #[allow(unused_variables)]
+    fn mark_preserves_focus(&mut self, node: &Self::Node) {
+        // default: no-op
+    }
+
     /// Install an OS file drag-and-drop handler. Called once per
     /// `Element::View { on_file_drop: Some(_), .. }`. The backend wires
     /// `handler` to its native file-drag machinery — web `DataTransfer`

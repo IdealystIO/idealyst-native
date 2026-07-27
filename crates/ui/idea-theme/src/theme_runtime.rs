@@ -102,7 +102,9 @@ pub fn install_theme<T: ThemeTokens + 'static>(theme: T) {
 fn store_active_theme(rc: Rc<dyn Any>) {
     ACTIVE_THEME.with(|t| {
         if let Some(sig) = t.borrow().as_ref() {
-            sig.set(rc);
+            // `set_always`: `Rc<dyn Any>` has no `PartialEq`, and a theme
+            // re-install must notify even if the same Rc is re-stored.
+            sig.set_always(rc);
             return;
         }
         let sig = runtime_core::unscope(|| Signal::new(rc));

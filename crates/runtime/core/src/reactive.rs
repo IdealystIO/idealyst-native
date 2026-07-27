@@ -79,7 +79,7 @@ thread_local! {
 
     /// When `Some`, signal writes record their *dirtied signal* in this
     /// window instead of fanning out to subscribers inline. The fan-out
-    /// (and, for `set_if_changed`, the change-detection decision) is
+    /// (and, for the guarded `set`, the change-detection decision) is
     /// deferred until the outermost `batch(..)` call returns. `None`
     /// outside any batch — writes fan out synchronously as before.
     ///
@@ -87,7 +87,7 @@ thread_local! {
     /// `EffectId`s so that net-zero windows can be elided: a signal set
     /// to `B` then back to `A` within one batch nets to no change, and
     /// its subscribers are never woken (see `DirtyWindow` /
-    /// `Signal::set_if_changed`). Collecting subscribers eagerly per
+    /// the guarded `Signal::set`). Collecting subscribers eagerly per
     /// write — the previous model — made that net comparison impossible
     /// because by flush time only a flattened effect list remained.
     ///
@@ -793,7 +793,10 @@ where
             // to them).
             let current = untrack(|| state.get());
             let next = f(&current, action);
-            state.set(next);
+            // `set_always`: `S` is deliberately unbounded (no `PartialEq`
+            // required to use a reducer), and every dispatch producing a
+            // notification is the historical contract.
+            state.set_always(next);
         });
     };
     (state, dispatch)
@@ -879,7 +882,11 @@ where
         let differs = !eq(&*last_for_effect.borrow(), &new);
         if differs {
             *last_for_effect.borrow_mut() = new.clone();
-            signal.set(new);
+            // `set_always`: the caller-supplied `eq` above IS the memo's
+            // change policy — re-guarding with `PartialEq` here would
+            // both require a bound `memo_with` exists to avoid and let a
+            // divergent `eq` (e.g. tolerance-based) be second-guessed.
+            signal.set_always(new);
         }
     });
 
@@ -1548,7 +1555,14 @@ impl<T: Clone + 'static> Signal<T> {
         value
     }
 
-    pub fn set(&self, value: T) {
+    /// Write `value` and **unconditionally** wake subscribers — no
+    /// equality check. This is the escape hatch from the guarded
+    /// [`set`](Signal::set): reach for it when `T` has no `PartialEq`
+    /// (closures, media handles), or when a same-value write must still
+    /// re-fire subscribers (retrigger semantics). To retrigger *without*
+    /// writing, use [`touch`](Signal::touch); to write without waking
+    /// anyone, use [`set_untracked`](Signal::set_untracked).
+    pub fn set_always(&self, value: T) {
         assert_not_in_memo_compute();
         // Stale write (slot freed/recycled since this handle was minted)
         // → no-op. Returning here is essential: skipping the subscriber
@@ -1561,10 +1575,10 @@ impl<T: Clone + 'static> Signal<T> {
         {
             return;
         }
-        // `set` is the always-notify primitive. Inside a batch, mark the
-        // signal dirty with `force` so the flush wakes its subscribers
-        // unconditionally (and taints any `set_if_changed` sharing the
-        // window). Outside a batch, fan out now.
+        // `set_always` is the always-notify primitive. Inside a batch,
+        // mark the signal dirty with `force` so the flush wakes its
+        // subscribers unconditionally (and taints any guarded `set`
+        // sharing the window). Outside a batch, fan out now.
         if is_batching() {
             window_record(self.id, true, None);
         } else {
@@ -1574,9 +1588,65 @@ impl<T: Clone + 'static> Signal<T> {
         }
     }
 
+    /// Write `value` **without waking any subscriber** — the write half
+    /// of the untracked pair ([`get_untracked`](Signal::get_untracked)
+    /// is the read half; Leptos parity, same name and semantics).
+    /// Dependents keep their stale view until something else notifies
+    /// (a later [`set`](Signal::set) / [`touch`](Signal::touch)), which
+    /// makes this an antipattern for ordinary state — it exists for the
+    /// rare bookkeeping value that effects read but must never react to.
+    pub fn set_untracked(&self, value: T) {
+        // No `assert_not_in_memo_compute`: the memo guard exists to stop
+        // a compute from fanning out (cascade → cycle); a silent write
+        // can't cascade. Purity is still on the author.
+        // Stale write → no-op, same rule as `set_always`.
+        let _ = with_signal_mut::<T, _>(self.id, self.gen, |inner| {
+            inner.value = value;
+        });
+        // Deliberately NOT recorded in an open batch window: this write
+        // must not cause a flush-time notification, and the guarded
+        // `set`'s window-initial comparison snapshots at its own first
+        // write, so an earlier untracked write is invisible to it — as
+        // intended for a value change-detection should not see.
+    }
+
+    /// Wake this signal's subscribers **now, without writing** — the
+    /// notification half of [`set_always`](Signal::set_always) (Leptos
+    /// calls this `notify`). Use it after mutating shared interior state
+    /// that the signal's value merely points to (an `Rc<RefCell<..>>`
+    /// payload, an arena the value indexes into), where there is no new
+    /// value to write but dependents must re-run.
+    pub fn touch(&self) {
+        assert_not_in_memo_compute();
+        // Stale guard: with no value write to piggyback on, we check the
+        // slot generation directly — firing a freed/recycled slot would
+        // wake the NEW occupant's subscribers (same hazard `set_always`
+        // avoids by bailing on the failed write).
+        let live = ARENA.with(|a| {
+            a.borrow().signal_gen.get(self.id.0 as usize).copied() == Some(self.gen)
+        });
+        if !live {
+            return;
+        }
+        if is_batching() {
+            // Force-taint, same as an always-notify write: the flush must
+            // wake subscribers even if guarded `set`s in this window net
+            // to "unchanged".
+            window_record(self.id, true, None);
+        } else {
+            fan_out_now(self.id);
+        }
+    }
+
+    /// Mutate the value in place and **unconditionally** wake subscribers.
+    /// Unlike [`set`](Signal::set), `update` is NOT equality-guarded:
+    /// detecting "no change" would require `Clone`-snapshotting the old
+    /// value on every call — the exact copy in-place mutation exists to
+    /// avoid. Use [`update_if_changed`](Signal::update_if_changed) to opt
+    /// into that trade when `T: Clone + PartialEq`.
     pub fn update<F: FnOnce(&mut T)>(&self, f: F) {
         assert_not_in_memo_compute();
-        // Stale update → no-op (see `set`).
+        // Stale update → no-op (see `set_always`).
         if with_signal_mut::<T, _>(self.id, self.gen, |inner| {
             f(&mut inner.value);
         })
@@ -1593,11 +1663,19 @@ impl<T: Clone + 'static> Signal<T> {
 }
 
 impl<T: PartialEq + 'static> Signal<T> {
-    /// Like [`set`](Signal::set), but skips the subscriber fan-out when
-    /// the write leaves the value **equal** to what it held — eliminating
-    /// needless effect re-runs / re-renders when app code re-sets a signal
-    /// to a value it already has (re-applying derived state, syncing
-    /// props, "set on every event" handlers).
+    /// Write `value`, waking subscribers **only if it differs** from the
+    /// current value (`PartialEq`). This is the default write: a same-value
+    /// set is a no-op fan-out-wise, eliminating needless effect re-runs /
+    /// re-renders when app code re-sets a signal to a value it already
+    /// has (re-applying derived state, syncing props, "set on every
+    /// event" handlers) — and starving the echo loops two-way-bound
+    /// signals can otherwise feed. Matches the Solid/Vue/React default;
+    /// note this diverges from Leptos, whose `set` never compares.
+    ///
+    /// For `T` without `PartialEq`, or to notify on a same-value write
+    /// (retrigger semantics), use [`set_always`](Signal::set_always).
+    /// [`touch`](Signal::touch) notifies without writing;
+    /// [`set_untracked`](Signal::set_untracked) writes without notifying.
     ///
     /// Inside a [`batch`], the comparison is against the **window-initial**
     /// value, not each intermediate: a signal set `A → B → A` within one
@@ -1608,7 +1686,7 @@ impl<T: PartialEq + 'static> Signal<T> {
     ///
     /// Compares in place — no `Clone` of the new value. `NaN` is never
     /// equal to itself, so a `NaN`-valued set always notifies (acceptable).
-    pub fn set_if_changed(&self, value: T) {
+    pub fn set(&self, value: T) {
         assert_not_in_memo_compute();
         if is_batching() {
             // Defer to the flush. Write the new value, capturing the OLD
@@ -1649,14 +1727,22 @@ impl<T: PartialEq + 'static> Signal<T> {
             fan_out_now(self.id);
         }
     }
+
+    /// Former name of the equality-guarded [`set`](Signal::set), kept as
+    /// an alias while call sites migrate.
+    #[deprecated(note = "equality-guarded writes are now the default `set()`; \
+                         for the old always-notify `set`, use `set_always()`")]
+    pub fn set_if_changed(&self, value: T) {
+        self.set(value);
+    }
 }
 
 impl<T: PartialEq + Clone + 'static> Signal<T> {
     /// Like [`update`](Signal::update), but skips the fan-out when `f`
     /// leaves the value unchanged. Needs `Clone` to snapshot the original
     /// for comparison (`update` mutates in place); use
-    /// [`set_if_changed`](Signal::set_if_changed) when you have the new
-    /// value directly. Batch semantics match `set_if_changed` — the
+    /// the guarded [`set`](Signal::set) when you have the new value
+    /// directly. Batch semantics match the guarded `set` — the
     /// comparison is against the window-initial value.
     pub fn update_if_changed<F: FnOnce(&mut T)>(&self, f: F) {
         assert_not_in_memo_compute();
@@ -1813,9 +1899,20 @@ impl<T> WriteSignal<T> {
 }
 
 impl<T: Clone + 'static> WriteSignal<T> {
-    /// Identical to [`Signal::set`] (including the stale-slot no-op).
-    pub fn set(&self, value: T) {
-        self.0.set(value);
+    /// Identical to [`Signal::set_always`] (including the stale-slot
+    /// no-op).
+    pub fn set_always(&self, value: T) {
+        self.0.set_always(value);
+    }
+
+    /// Identical to [`Signal::set_untracked`].
+    pub fn set_untracked(&self, value: T) {
+        self.0.set_untracked(value);
+    }
+
+    /// Identical to [`Signal::touch`].
+    pub fn touch(&self) {
+        self.0.touch();
     }
 
     /// Identical to [`Signal::update`].
@@ -1825,9 +1922,17 @@ impl<T: Clone + 'static> WriteSignal<T> {
 }
 
 impl<T: PartialEq + 'static> WriteSignal<T> {
-    /// Identical to [`Signal::set_if_changed`].
+    /// Identical to the equality-guarded [`Signal::set`].
+    pub fn set(&self, value: T) {
+        self.0.set(value);
+    }
+
+    /// Former name of the guarded [`set`](WriteSignal::set) — see
+    /// [`Signal::set_if_changed`].
+    #[deprecated(note = "equality-guarded writes are now the default `set()`; \
+                         for the old always-notify `set`, use `set_always()`")]
     pub fn set_if_changed(&self, value: T) {
-        self.0.set_if_changed(value);
+        self.0.set(value);
     }
 }
 
@@ -1939,21 +2044,21 @@ fn assert_not_in_memo_compute() {
 
 /// A signal dirtied during an open `batch(..)`. The fan-out decision is
 /// deferred to the flush: `force` short-circuits to "always notify"
-/// (a plain `set`/`update`, or a `set_if_changed` that ran in a window
-/// already tainted by a force-write); otherwise `check` — captured by
-/// the *first* `set_if_changed` of the window — compares the
+/// (a `set_always`/`update`/`touch`, or a guarded `set` that ran in a
+/// window already tainted by a force-write); otherwise `check` —
+/// captured by the *first* guarded `set` of the window — compares the
 /// window-initial value against the final one and notifies only on a
 /// real net change.
 struct DirtyEntry {
-    /// Any always-notify write (`set`/`update`) seen this window taints
-    /// the entry: at flush we notify regardless of `check`.
+    /// Any always-notify write (`set_always`/`update`/`touch`) seen this
+    /// window taints the entry: at flush we notify regardless of `check`.
     force: bool,
-    /// `Some` once the first `set_if_changed` of the window captured the
+    /// `Some` once the first guarded `set` of the window captured the
     /// pre-window value. Called once at flush with the signal's *current*
     /// `SignalInner<T>` (type-erased); returns `true` iff the value
     /// changed. Carries the typed original by move, so it needs no
     /// `PartialEq` bound at this erased call site — the bound lives on
-    /// `set_if_changed`, which built the closure.
+    /// the guarded `set`, which built the closure.
     check: Option<Box<dyn FnOnce(&dyn Any) -> bool>>,
 }
 
@@ -2075,7 +2180,7 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
         // Resolve each dirty signal's change decision in first-dirty
         // order, collecting the subscribers to wake (deduped, first-seen
         // order preserved) and the signals whose JS notifiers should
-        // fire. A net-zero `set_if_changed` window contributes neither.
+        // fire. A net-zero guarded-`set` window contributes neither.
         let mut ordered: Vec<EffectId> = Vec::new();
         let mut changed_sids: Vec<SignalId> = Vec::with_capacity(order.len());
         for sid in order {
@@ -2086,7 +2191,7 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
                     // not changed (no subscribers to wake regardless).
                     Some(check) => with_signal_any(sid, check).unwrap_or(false),
                     // No force and no snapshot can't happen (force-writes
-                    // set `force`, `set_if_changed` sets `check`); treat
+                    // set `force`, guarded `set`s install `check`); treat
                     // defensively as changed.
                     None => true,
                 };

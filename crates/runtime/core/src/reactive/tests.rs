@@ -438,7 +438,8 @@ fn read_during_own_mutation_reports_reentrancy_not_scope_drop() {
 }
 
 // -----------------------------------------------------------------
-// Change-detection (dedup) on set_if_changed / update_if_changed
+// Notify semantics: guarded set (default), set_always, touch,
+// set_untracked, update_if_changed
 // -----------------------------------------------------------------
 
 /// Build an effect that reads `sig` and counts its runs.
@@ -455,29 +456,85 @@ fn watch<T: Clone + 'static>(sig: Signal<T>) -> (Effect, std::rc::Rc<std::cell::
 }
 
 #[test]
-fn set_if_changed_skips_when_value_unchanged() {
+fn set_skips_when_value_unchanged() {
+    // THE default write is equality-guarded: a same-value set must not
+    // wake subscribers (regression for the always-notify → guarded
+    // default flip).
     let a = Signal::new(7i32);
     let (_e, runs) = watch(a);
     assert_eq!(runs.get(), 1, "initial effect run");
-    a.set_if_changed(7); // same value
+    a.set(7); // same value
     assert_eq!(runs.get(), 1, "no re-run on no-op set");
-    a.set_if_changed(8); // real change
+    a.set(8); // real change
     assert_eq!(runs.get(), 2, "re-run on real change");
 }
 
 #[test]
-fn set_still_notifies_when_value_unchanged() {
-    // The always-notify primitive must keep firing — monotonic
-    // counters etc. rely on it.
+fn set_always_notifies_when_value_unchanged() {
+    // The explicit always-notify spelling must keep firing —
+    // retrigger semantics rely on it.
     let a = Signal::new(7i32);
     let (_e, runs) = watch(a);
     assert_eq!(runs.get(), 1);
-    a.set(7); // same value, but `set` always notifies
+    a.set_always(7); // same value, but `set_always` always notifies
     assert_eq!(runs.get(), 2);
 }
 
 #[test]
-fn set_if_changed_net_zero_batch_skips_fanout() {
+fn touch_notifies_without_writing() {
+    let a = Signal::new(7i32);
+    let (_e, runs) = watch(a);
+    assert_eq!(runs.get(), 1);
+    a.touch();
+    assert_eq!(runs.get(), 2, "touch wakes subscribers");
+    assert_eq!(a.get_untracked(), 7, "touch writes nothing");
+}
+
+#[test]
+fn set_untracked_writes_without_notifying() {
+    let a = Signal::new(7i32);
+    let (_e, runs) = watch(a);
+    assert_eq!(runs.get(), 1);
+    a.set_untracked(9);
+    assert_eq!(runs.get(), 1, "silent write must not fan out");
+    assert_eq!(a.get_untracked(), 9, "value IS written");
+    // A later touch delivers the silently-written value.
+    a.touch();
+    assert_eq!(runs.get(), 2);
+}
+
+#[test]
+fn set_untracked_then_equal_set_skips_fanout() {
+    // The guarded set compares against the CURRENT value, including one
+    // put there by a silent write: set_untracked(9) then set(9) is a
+    // no-op fan-out-wise.
+    let a = Signal::new(7i32);
+    let (_e, runs) = watch(a);
+    assert_eq!(runs.get(), 1);
+    a.set_untracked(9);
+    a.set(9);
+    assert_eq!(runs.get(), 1, "equal to silently-written value → no fan-out");
+}
+
+#[test]
+fn touch_stale_handle_is_noop() {
+    // touch has no value write whose generation check can bail for it —
+    // it must generation-check itself, or it would wake the recycled
+    // slot's NEW occupant's subscribers.
+    let mut scope = Scope::new();
+    let stale: Signal<i32> = with_scope(&mut scope, || Signal::new(1));
+    drop(scope);
+
+    let fresh: Signal<u64> = Signal::new(7);
+    assert_eq!(fresh.id(), stale.id(), "fresh reuses the freed slot");
+    let (_e, runs) = watch(fresh);
+    assert_eq!(runs.get(), 1);
+    stale.touch();
+    assert_eq!(runs.get(), 1, "stale touch must not wake the new occupant");
+}
+
+#[test]
+fn set_net_zero_batch_skips_fanout() {
     // The headline case: A -> B -> A within one batch nets to no
     // change, so the subscriber must NOT wake — even though each
     // individual step was a real change a per-write compare would
@@ -486,47 +543,62 @@ fn set_if_changed_net_zero_batch_skips_fanout() {
     let (_e, runs) = watch(a);
     assert_eq!(runs.get(), 1);
     batch(|| {
-        a.set_if_changed(2);
-        a.set_if_changed(1); // back to the window-initial value
+        a.set(2);
+        a.set(1); // back to the window-initial value
     });
     assert_eq!(runs.get(), 1, "net-zero window must not fan out");
 }
 
 #[test]
-fn set_if_changed_net_change_batch_fires_once() {
+fn set_net_change_batch_fires_once() {
     let a = Signal::new(1i32);
     let (_e, runs) = watch(a);
     assert_eq!(runs.get(), 1);
     batch(|| {
-        a.set_if_changed(2);
-        a.set_if_changed(3); // net change 1 -> 3
+        a.set(2);
+        a.set(3); // net change 1 -> 3
     });
     assert_eq!(runs.get(), 2, "net change fans out exactly once");
 }
 
 #[test]
-fn plain_set_taints_batch_window_forcing_notify() {
-    // A plain `set` anywhere in the window forces notification even
-    // if the net value is unchanged and a `set_if_changed` also ran.
+fn set_always_taints_batch_window_forcing_notify() {
+    // A `set_always` anywhere in the window forces notification even
+    // if the net value is unchanged and a guarded `set` also ran.
     let a = Signal::new(1i32);
     let (_e, runs) = watch(a);
     assert_eq!(runs.get(), 1);
     batch(|| {
-        a.set_if_changed(1); // no-op on its own...
-        a.set(1); // ...but a force-write taints the window
+        a.set(1); // no-op on its own...
+        a.set_always(1); // ...but a force-write taints the window
     });
     assert_eq!(runs.get(), 2, "force-write notifies despite net-zero");
 }
 
 #[test]
-fn set_if_changed_nan_always_notifies() {
+fn touch_taints_batch_window_forcing_notify() {
+    // touch is an always-notify signal-op: it must force the flush to
+    // wake subscribers even when guarded sets in the window net to
+    // "unchanged".
+    let a = Signal::new(1i32);
+    let (_e, runs) = watch(a);
+    assert_eq!(runs.get(), 1);
+    batch(|| {
+        a.set(1); // net-zero on its own...
+        a.touch(); // ...but touch taints the window
+    });
+    assert_eq!(runs.get(), 2, "touch notifies despite net-zero window");
+}
+
+#[test]
+fn set_nan_always_notifies() {
     // NaN != NaN, so a NaN-valued set is never "unchanged".
     let a = Signal::new(0.0f64);
     let (_e, runs) = watch(a);
     assert_eq!(runs.get(), 1);
-    a.set_if_changed(f64::NAN);
+    a.set(f64::NAN);
     assert_eq!(runs.get(), 2, "0.0 -> NaN is a change");
-    a.set_if_changed(f64::NAN);
+    a.set(f64::NAN);
     assert_eq!(runs.get(), 3, "NaN -> NaN still notifies (NaN != NaN)");
 }
 
@@ -542,7 +614,7 @@ fn update_if_changed_dedups() {
 }
 
 #[test]
-fn set_if_changed_stale_handle_is_noop() {
+fn guarded_set_stale_handle_is_noop() {
     // A write through a handle whose slot was freed/recycled must
     // stay a no-op, not touch the new occupant — both inline and
     // when deferred inside a batch.
@@ -553,8 +625,9 @@ fn set_if_changed_stale_handle_is_noop() {
     let fresh: Signal<u64> = Signal::new(7);
     assert_eq!(fresh.id(), stale.id(), "fresh reuses the freed slot");
 
-    stale.set_if_changed(2); // must not panic / clobber
-    batch(|| stale.set_if_changed(3)); // deferred path: also a no-op
+    stale.set(2); // must not panic / clobber
+    batch(|| stale.set(3)); // deferred path: also a no-op
+    stale.set_untracked(4); // silent write: same generation no-op rule
     assert_eq!(fresh.get(), 7, "stale write must not touch the recycled signal");
 }
 

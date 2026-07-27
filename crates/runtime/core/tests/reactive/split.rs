@@ -127,15 +127,21 @@ fn halves_are_copy_and_default_constructible() {
 }
 
 #[test]
-fn write_half_set_if_changed_gates_notification() {
+fn write_half_set_gates_notification() {
     let s: Signal<i32> = signal(1);
     let write = s.write_only();
     let (counter, _e) = counted_effect(move || {
         let _ = s.get();
     });
     assert_eq!(counter.get(), 1);
-    write.set_if_changed(1); // equal — must not notify
-    assert_eq!(counter.get(), 1, "equal set_if_changed through the write half is silent");
-    write.set_if_changed(2);
+    write.set(1); // equal — must not notify (guarded default)
+    assert_eq!(counter.get(), 1, "equal set through the write half is silent");
+    write.set(2);
     assert_eq!(counter.get(), 2);
+    write.set_always(2); // same value, explicit always-notify
+    assert_eq!(counter.get(), 3, "set_always through the write half fires");
+    write.touch();
+    assert_eq!(counter.get(), 4, "touch through the write half fires");
+    write.set_untracked(9); // silent write
+    assert_eq!(counter.get(), 4, "set_untracked through the write half is silent");
 }

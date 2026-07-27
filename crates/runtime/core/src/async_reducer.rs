@@ -153,7 +153,10 @@ impl<I: 'static, E: Clone + 'static> AsyncReducer<I, E> {
     /// banner" UX.
     pub fn reset(&self) {
         self.sequence.set(self.sequence.get().wrapping_add(1));
-        self.status.set(AsyncStatus::Idle);
+        // `set_always` throughout this module: `E` is unbounded (no
+        // `PartialEq` on `AsyncStatus<E>`), and status transitions
+        // notifying unconditionally is the historical contract.
+        self.status.set_always(AsyncStatus::Idle);
     }
 
     /// The status signal. Subscribe via `.get()` from a reactive
@@ -223,7 +226,7 @@ where
             // hasn't been polled yet.
             let my_seq = sequence_outer.get().wrapping_add(1);
             sequence_outer.set(my_seq);
-            status.set(AsyncStatus::Loading);
+            status.set_always(AsyncStatus::Loading);
 
             let fut = perform_outer(input);
             let sequence_for_task = sequence_outer.clone();
@@ -264,12 +267,12 @@ where
                 crate::cycle(|| match result {
                     Ok(r) => {
                         state.update(|s| apply_for_task(s, r));
-                        status.set(AsyncStatus::Idle);
+                        status.set_always(AsyncStatus::Idle);
                         Ok(())
                     }
                     Err(e) => {
                         let e_clone = e.clone();
-                        status.set(AsyncStatus::Error(e));
+                        status.set_always(AsyncStatus::Error(e));
                         Err(e_clone)
                     }
                 })

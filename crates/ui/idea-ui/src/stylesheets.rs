@@ -971,9 +971,19 @@ stylesheet! {
             text_align: TextAlign::Left,
             cursor: Cursor::Pointer,
         }
+        // `on` = the COMMITTED selection (solid primary). `cursor` = the
+        // keyboard cursor resting on a row that is NOT the selection
+        // (Autocomplete's ArrowUp/ArrowDown position) — styled like the
+        // hover state, since pointer hover and keyboard cursor mean the
+        // same thing: "Enter/click commits this row". Two distinct looks so
+        // an open menu never shows two solid rows (the old shape rendered
+        // cursor and selection identically). Select uses only `on`/`off`.
         variant active {
             #[default]
             off(_t) {}
+            cursor(t) {
+                background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
+            }
             on(t) {
                 background: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())),
                 color: Tokenized::token("intent-primary-solid-text", Color("#ffffff".into())),

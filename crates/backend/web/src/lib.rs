@@ -2412,6 +2412,10 @@ impl Backend for WebBackend {
         primitives::file_drop::install(self, node, handler);
     }
 
+    fn mark_preserves_focus(&mut self, node: &Self::Node) {
+        primitives::focus_retention::mark(self, node);
+    }
+
     // `claim_touch` keeps the default no-op. On web, claims happen
     // inline in the pointer-event listener closure (where we have
     // the live `PointerEvent` to pass to `setPointerCapture`). The

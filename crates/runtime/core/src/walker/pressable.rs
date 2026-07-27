@@ -25,6 +25,7 @@ pub(super) fn build<B: Backend + 'static>(
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
     disabled: Option<Box<dyn Fn() -> bool>>,
+    preserves_focus: bool,
     a11y: AccessibilityProps,
 ) -> B::Node {
     // A bare pressable lowers to a non-form-control node (`<div>` on web,
@@ -60,6 +61,9 @@ pub(super) fn build<B: Backend + 'static>(
     }
     if let Some(d) = disabled {
         attach_disabled(backend, &n, d, state_setter, press_block_flag);
+    }
+    if preserves_focus {
+        backend.borrow_mut().mark_preserves_focus(&n);
     }
     n
 }

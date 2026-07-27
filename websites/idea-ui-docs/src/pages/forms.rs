@@ -1,5 +1,5 @@
 //! Forms — Checkbox, Radio, Switch, Slider, Field, Textarea, Select,
-//! SegmentedControl.
+//! Autocomplete, SegmentedControl.
 //!
 //! Each `pub fn name() -> Element` returns the page **body only** — a
 //! column of demo `Section`s wrapped by `crate::pages::body`. The central
@@ -12,9 +12,9 @@ use std::rc::Rc;
 use icons_lucide::{CHECK, EYE, EYE_OFF, HEART, SEARCH, STAR};
 use runtime_core::{pressable, rx, signal, ui, Element, IntoElement};
 use idea_ui::{
-    tone, Adornment, Checkbox, ControlSize, Field, FieldSize, Icon, RadioGroup, RadioOption,
-    SegmentOption, SegmentedControl, Select, SelectOption, Slider, Stack, StackGap, Switch,
-    Textarea, Typography,
+    tone, Adornment, Autocomplete, Checkbox, ControlSize, Field, FieldSize, Icon, RadioGroup,
+    RadioOption, SegmentOption, SegmentedControl, Select, SelectOption, Slider, Stack, StackGap,
+    Switch, Textarea, Typography,
 };
 
 use crate::pages::body;
@@ -668,6 +668,90 @@ pub fn select() -> Element {
         Callout(label = "For multi-select".to_string()) {
             P(content = "Select is single-select. For multiple values, compose Tag chips \
                 alongside a Field for fast adds.".to_string())
+        }
+    }])
+}
+
+// =============================================================================
+// Autocomplete
+// =============================================================================
+
+pub fn autocomplete() -> Element {
+    let value = signal("pear".to_string());
+    let on_change: Rc<dyn Fn(String)> = Rc::new(move |v| value.set(v));
+
+    let current = runtime_core::switch(
+        move || value.get(),
+        |v: &String| {
+            let label = format!("Current value: {}", v);
+            ui! { Typography(content = label, muted = true) }
+        },
+    );
+
+    let preview = ui! {
+        Autocomplete(
+            value = value,
+            on_change = on_change,
+            options = vec![
+                SelectOption::new("apple",      "Apple"),
+                SelectOption::new("apricot",    "Apricot"),
+                SelectOption::new("banana",     "Banana"),
+                SelectOption::new("blueberry",  "Blueberry"),
+                SelectOption::new("cherry",     "Cherry"),
+                SelectOption::new("grape",      "Grape"),
+                SelectOption::new("kiwi",       "Kiwi"),
+                SelectOption::new("mango",      "Mango"),
+                SelectOption::new("nectarine",  "Nectarine"),
+                SelectOption::new("orange",     "Orange"),
+                SelectOption::new("peach",      "Peach"),
+                SelectOption::new("pear",       "Pear"),
+                SelectOption::new("pineapple",  "Pineapple"),
+                SelectOption::new("plum",       "Plum"),
+                SelectOption::new("raspberry",  "Raspberry"),
+                SelectOption::new("strawberry", "Strawberry"),
+            ],
+            placeholder = Some("Search fruit…".to_string()),
+        )
+    };
+
+    let controls = ui! {
+        Stack(gap = StackGap::Sm) {
+            H3(content = "Notes".to_string())
+            P(content = "Focus the input to open the full menu with the committed \
+                selection painted solid and the keyboard cursor seeded on it; type to \
+                filter. ArrowUp/ArrowDown move the cursor (the subtle highlight), Enter \
+                commits it, Escape or focusing elsewhere dismisses and reverts unmatched \
+                typing to the committed selection. The menu matches the input's width \
+                and interacting with it never blurs the input.".to_string())
+            current
+        }
+    };
+
+    body(vec![ui! {
+        Section(title = "Live demo".to_string()) {
+            P(content = "A searchable combobox: the constrained-selection sibling of \
+                Select. The value committed to the bound `Signal<String>` is always one \
+                of the options' ids — never free text. Typing filters on a \
+                case-insensitive substring of the label.".to_string())
+            Demo(preview = Some(preview), controls = Some(controls))
+        }
+    }, ui! {
+        Section(title = "Props".to_string()) {
+            PropsTable(rows = vec![
+                Prop { name: "value",       ty: "Signal<String>",     desc: "The committed option's id. The host owns the signal." },
+                Prop { name: "on_change",   ty: "Rc<dyn Fn(String)>", desc: "Fires when the user commits a row; receives the option's id." },
+                Prop { name: "options",     ty: "Vec<SelectOption>",  desc: "Rows to offer. SelectOption::new(id, label); the query filters by label." },
+                Prop { name: "size",        ty: "SelectSize",         desc: "Sm / Md / Lg — input height. Shared with Select." },
+                Prop { name: "placeholder", ty: "Option<String>",     desc: "Hint text shown while the input is empty." },
+                Prop { name: "empty_text",  ty: "Option<String>",     desc: "Menu row shown when nothing matches. Default: \"No results\"." },
+            ])
+        }
+    }, ui! {
+        Callout(label = "Select or Autocomplete?".to_string()) {
+            P(content = "Both commit an id from a fixed option list and drop the same \
+                menu surface. Reach for Autocomplete when the list is long enough that \
+                filtering beats scanning; reach for Select when seeing every option at \
+                once is the point.".to_string())
         }
     }])
 }

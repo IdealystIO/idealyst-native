@@ -71,9 +71,10 @@ fn rebuild_tree(mode: Signal<u32>, count: Signal<usize>) -> Element {
 ///
 /// The fix is to follow the bench's variant pattern: write the
 /// row count, then touch the Switch's discriminant (here `mode`)
-/// unconditionally. `Signal::set` notifies subscribers regardless
-/// of value-equality, so `mode.set(0)` while mode is already 0
-/// still fires the Switch effect, which re-runs its arm body and
+/// unconditionally via `Signal::touch` — the purpose-built
+/// notify-without-write (the guarded `set` skips same-value writes,
+/// so `mode.set(0)` while mode is already 0 would be a no-op).
+/// Touching fires the Switch effect, which re-runs its arm body and
 /// picks up the latest `count.get()`.
 #[test]
 fn rebuild_pattern_actually_rebuilds_to_new_count() {
@@ -97,13 +98,13 @@ fn rebuild_pattern_actually_rebuilds_to_new_count() {
     // write the count, then touch the discriminant.
     rt.backend_mut().clear_events();
     count.set(500);
-    mode.set(0); // fires the Switch effect
+    mode.touch(); // fires the Switch effect
 
     let after = rt.events();
     let new_texts = count_create_text(&after);
     assert_eq!(
         new_texts, 500,
-        "after count.set(500) + mode.set(0), expected 500 NEW CreateText events \
+        "after count.set(500) + mode.touch(), expected 500 NEW CreateText events \
          (full rebuild), got {} — if this is 50, the arm body is reading stale count \
          (likely because we touched mode BEFORE count); if it's 0, the Switch's effect \
          didn't fire at all. Events: {:?}",
@@ -113,12 +114,12 @@ fn rebuild_pattern_actually_rebuilds_to_new_count() {
     // And the inverse: shrink back to a smaller count.
     rt.backend_mut().clear_events();
     count.set(10);
-    mode.set(0);
+    mode.touch();
     let after_shrink = rt.events();
     let shrunk_texts = count_create_text(&after_shrink);
     assert_eq!(
         shrunk_texts, 10,
-        "after count.set(10) + mode.set(0), expected exactly 10 NEW CreateText events, \
+        "after count.set(10) + mode.touch(), expected exactly 10 NEW CreateText events, \
          got {}. Events: {:?}",
         shrunk_texts, after_shrink,
     );
@@ -145,13 +146,13 @@ fn rebuild_at_bench_scale_produces_max_rows() {
     // Flip to MAX — count first, then touch discriminant.
     rt.backend_mut().clear_events();
     count.set(10_000);
-    mode.set(0);
+    mode.touch();
 
     let max_events = rt.events();
     let max_texts = count_create_text(&max_events);
     assert_eq!(
         max_texts, 10_000,
-        "after count.set(10000) + mode.set(0), expected 10000 NEW CreateText events. \
+        "after count.set(10000) + mode.touch(), expected 10000 NEW CreateText events. \
          Got {}. (event total: {})",
         max_texts,
         max_events.len(),

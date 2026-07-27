@@ -296,7 +296,10 @@ pub fn ref_picker_control<T: idea_theme::extensible::RefBuiltins>(
         // matched arm without lifetime headaches over `&builtins`.
         for (name, t_ref) in T::builtins_list() {
             if name == picked {
-                value.set(t_ref);
+                // `set_always`: `T` is only bound by the doc-controls
+                // trait (no `PartialEq`). The picker already filters to a
+                // real change via the key comparison above.
+                value.set_always(t_ref);
                 break;
             }
         }

@@ -29,6 +29,7 @@ pub(crate) mod slider;
 pub(crate) mod text;
 #[cfg(feature = "prim-text-input")]
 pub(crate) mod text_area;
+pub(crate) mod focus_retention;
 pub(crate) mod hover;
 pub(crate) mod keyboard;
 pub(crate) mod file_drop;

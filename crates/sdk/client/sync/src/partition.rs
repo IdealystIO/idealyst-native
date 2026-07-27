@@ -191,8 +191,11 @@ impl<T: Clone + Serialize + DeserializeOwned + Merge + 'static> Partition<T> {
         // Mirrors `async_reducer`, which cycles its applies for the same
         // reason. Coalesces the two sets into one flush, too.
         cycle(|| {
-            self.signal.set(live);
-            self.entries_signal.set(entries);
+            // `set_always`: author item type `T` carries no `PartialEq`
+            // bound (only `Merge`), so the projected lists can't be
+            // equality-guarded.
+            self.signal.set_always(live);
+            self.entries_signal.set_always(entries);
         });
     }
 

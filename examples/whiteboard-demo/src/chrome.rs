@@ -402,7 +402,8 @@ pub fn CameraToggle(props: &CameraToggleProps) -> Element {
     bare_btn(glyph, move || {
         if cam_on.get() {
             cam_on.set(false);
-            cam_stream.set(None);
+            // `set_always`: `MediaStream` has no `PartialEq`.
+            cam_stream.set_always(None);
         } else {
             cam_on.set(true);
             runtime_core::driver::spawn_async(async move {
@@ -411,7 +412,7 @@ pub fn CameraToggle(props: &CameraToggleProps) -> Element {
                     ..Default::default()
                 };
                 match Camera::new().open(config).await {
-                    Ok(stream) => cam_stream.set(Some(stream)),
+                    Ok(stream) => cam_stream.set_always(Some(stream)),
                     Err(e) => {
                         // Don't swallow it — e.g. on Android first tap this is
                         // `PermissionDenied` while the system dialog shows; the
@@ -1339,7 +1340,7 @@ pub fn RecordButton(props: &RecordButtonProps) -> Element {
                 // behind the Preview screen. Dropping the stream stops capture.
                 if cam_on.get() {
                     cam_on.set(false);
-                    cam_stream.set(None);
+                    cam_stream.set_always(None);
                 }
                 // Stop the microphone: drop our AudioStream clone so its stopper
                 // fires and the OS mic releases. The recorder already holds the

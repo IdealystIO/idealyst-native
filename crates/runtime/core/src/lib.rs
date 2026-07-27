@@ -513,6 +513,12 @@ pub fn signal<T: Clone + 'static>(value: T) -> Signal<T> {
 /// Leptos-parity alias: idealyst's unified [`Signal`] is what Leptos
 /// calls `RwSignal`, so ported code written as `RwSignal::new(v)`
 /// resolves unchanged. New idealyst code should write `signal(v)`.
+///
+/// One deliberate semantic divergence: idealyst's [`Signal::set`] is
+/// equality-guarded (a same-value write does not notify), while
+/// Leptos's `set` never compares. Ported Leptos code that uses a
+/// same-value `set` as a retrigger must switch those sites to
+/// [`Signal::set_always`] or [`Signal::touch`].
 pub type RwSignal<T> = Signal<T>;
 
 // The `signal!` macro is gone: it carried no macro-only capability (it

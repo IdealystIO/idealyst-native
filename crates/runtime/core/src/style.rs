@@ -2353,7 +2353,12 @@ pub struct TokenEntry {
 
 /// The concrete value carried by a token. The variant determines how
 /// the backend formats it (color string, pixel length, raw number).
-#[derive(Clone, Debug)]
+///
+/// `PartialEq` matters: token signals use the equality-guarded
+/// `Signal::set`, so a theme (re)install wakes only subscribers of
+/// tokens whose value actually changed. Unconditional re-tint on
+/// re-install is carried separately by `bump_tokens_version()`.
+#[derive(Clone, Debug, PartialEq)]
 pub enum TokenValue {
     Color(Color),
     Length(Length),

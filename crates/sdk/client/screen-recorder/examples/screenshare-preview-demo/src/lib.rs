@@ -76,7 +76,8 @@ pub fn app() -> Element {
             match ScreenRecorder::new().start(RecordingConfig::new()).await {
                 Ok(stream) => {
                     status.set("Live — screen feed via Video(source = stream)".to_string());
-                    stream_sig.set(Some(stream));
+                    // `set_always`: `MediaStream` has no `PartialEq`.
+                    stream_sig.set_always(Some(stream));
                 }
                 Err(e) => {
                     started.set(false);

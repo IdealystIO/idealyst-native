@@ -98,6 +98,7 @@ pub const SLIDER_ROUTE: Route<()> = Route::<()>::new("slider", "/forms/slider");
 pub const FIELD_ROUTE: Route<()> = Route::<()>::new("field", "/forms/field");
 pub const TEXTAREA_ROUTE: Route<()> = Route::<()>::new("textarea", "/forms/textarea");
 pub const SELECT_ROUTE: Route<()> = Route::<()>::new("select", "/forms/select");
+pub const AUTOCOMPLETE_ROUTE: Route<()> = Route::<()>::new("autocomplete", "/forms/autocomplete");
 pub const SEGMENTED_ROUTE: Route<()> =
     Route::<()>::new("segmentedcontrol", "/forms/segmented-control");
 // Overlays
@@ -446,6 +447,15 @@ pub const CATALOG: &[Group] = &[
                 token: "color-surface · border",
                 desc: "A single-choice dropdown built on the menu surface.",
                 body: pages::forms::select,
+                code: "",
+            },
+            Entry {
+                route: &AUTOCOMPLETE_ROUTE,
+                name: "Autocomplete",
+                status: Preview,
+                token: "color-surface · border",
+                desc: "A searchable combobox — a text input that filters the option menu as you type.",
+                body: pages::forms::autocomplete,
                 code: "",
             },
             Entry {

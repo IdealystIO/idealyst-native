@@ -44,7 +44,7 @@ pub fn registry(crate_name: &str) -> Option<&'static [IconEntry]> {
 }
 
 /// One grid cell. `IconData` is `Copy`, so the whole struct is `Copy`.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct Cell {
     pub name: &'static str,
     pub data: runtime_core::IconData,
@@ -52,7 +52,7 @@ pub struct Cell {
 
 /// One virtualized row: a stable `key` plus up to `COLS` cells. `None`
 /// cells pad the final short row so columns stay aligned.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct RowData {
     pub key: u64,
     pub cells: Vec<Option<Cell>>,

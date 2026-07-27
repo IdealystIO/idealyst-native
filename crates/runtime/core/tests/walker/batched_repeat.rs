@@ -379,10 +379,11 @@ fn batched_path_is_taken_on_each_rebuild_via_switch() {
     );
 
     // Trigger rebuild — the bench's setRows pattern: write count
-    // then touch the discriminant.
+    // then touch the discriminant (notify-without-write; a same-value
+    // `set(0)` would be skipped by the guarded default).
     rt.backend_mut().clear_events();
     count.set(7);
-    mode.set(0);
+    mode.touch();
 
     let after = rt.events();
     assert_eq!(

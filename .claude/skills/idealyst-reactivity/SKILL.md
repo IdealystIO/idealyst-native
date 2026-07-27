@@ -57,6 +57,11 @@ scope.
   plain `signal(value)` fn; scope anchoring happens inside the constructor, so
   `Signal::new` is merely redundant, not broken.) `idealyst lint`
   (`prefer-signal-fn`/`prefer-effect-macro`) flags both spellings.
+- **`set` is equality-guarded** — `.set(v)` (`T: PartialEq`) skips the fan-out
+  when the value is unchanged. A same-value write used as a retrigger must be
+  explicit: `touch()` (notify, no write), `set_always(v)` (write + always
+  notify; also the only setter for non-`PartialEq` `T`), `set_untracked(v)`
+  (write, never notify). `update(f)` is NOT guarded. Diverges from Leptos.
 - **Stale `set` is a safe no-op** — generational handles mean a `.set()` after
   the owning scope tore down does nothing (not a panic). Deferred/async
   callbacks after unmount are safe.

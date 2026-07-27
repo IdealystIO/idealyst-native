@@ -218,7 +218,9 @@ impl<I: 'static, T: Clone + 'static, E: Clone + 'static> Mutation<I, T, E> {
     /// when it eventually resolves).
     pub fn reset(&self) {
         self.sequence.set(self.sequence.get().wrapping_add(1));
-        self.state.set(MutationState::default());
+        // `set_always`: `T`/`E` are unbounded (no `PartialEq`), and a
+        // reset notifying its subscribers is the historical contract.
+        self.state.set_always(MutationState::default());
     }
 }
 

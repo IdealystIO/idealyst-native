@@ -1183,6 +1183,22 @@ impl TextKeyDelegate {
 // taps landing on a text input so field-to-field focus transfer stays a clean
 // native handoff instead of a dismiss+refocus flicker.
 
+/// Sentinel `UIView.tag` marking a focus-preserving press region
+/// (`Backend::mark_preserves_focus`): touches landing inside a view (or
+/// descendant of one) carrying this tag are skipped by the
+/// keyboard-dismiss tap recognizer, so pressing e.g. an option row in a
+/// combobox's anchored menu doesn't `endEditing:` the input the menu
+/// belongs to. The iOS half of web's canceled-`pointerdown` focus
+/// preservation.
+///
+/// Why `tag`: framework views are plain `UIView`s (no Idealyst subclass to
+/// hold an ivar), and `tag` is otherwise unused by this backend — it
+/// defaults to 0 on every view we create, so a nonzero sentinel is an
+/// unambiguous marker. Invariant: nothing else in this backend may write
+/// `tag` (grep `setTag` before introducing a second use; switch to objc
+/// associated objects if one ever appears).
+pub(crate) const PRESERVES_FOCUS_TAG: isize = 0x1DEA_F0C5;
+
 declare_class!(
     pub(crate) struct KeyboardDismissTarget;
 
@@ -1209,9 +1225,13 @@ declare_class!(
         }
 
         /// Skip touches that land on a text input — those manage focus
-        /// natively (tapping another field transfers focus). Everything else
-        /// (blank space, buttons) dismisses, matching web's "any outside click
-        /// blurs".
+        /// natively (tapping another field transfers focus) — and touches
+        /// inside a focus-preserving subtree ([`PRESERVES_FOCUS_TAG`]): a
+        /// combobox's anchored option menu or an input adornment must be
+        /// tappable without the tap blurring the field it belongs to (a
+        /// close-on-blur would unmount the row mid-tap). Everything else
+        /// (blank space, buttons) dismisses, matching web's "any outside
+        /// click blurs".
         #[method(gestureRecognizer:shouldReceiveTouch:)]
         fn should_receive_touch(&self, _gr: &NSObject, touch: &NSObject) -> objc2::runtime::Bool {
             let view: *mut NSObject = unsafe { msg_send![touch, view] };
@@ -1225,6 +1245,17 @@ declare_class!(
                         return objc2::runtime::Bool::new(false);
                     }
                 }
+            }
+            // Ancestor walk from the touched view: the sentinel tag usually
+            // sits on a wrapping container (the menu panel), while the touch
+            // is delivered to the deepest hit-test view (a row / label).
+            let mut cur = view;
+            while !cur.is_null() {
+                let tag: isize = unsafe { msg_send![cur, tag] };
+                if tag == PRESERVES_FOCUS_TAG {
+                    return objc2::runtime::Bool::new(false);
+                }
+                cur = unsafe { msg_send![cur, superview] };
             }
             objc2::runtime::Bool::new(true)
         }

@@ -759,7 +759,10 @@ impl Robot {
 
     /// Write a new value to a signal, triggering its subscribers.
     pub fn write_signal<T: Clone + 'static>(&self, signal: Signal<T>, value: T) {
-        signal.set(value);
+        // `set_always`: `T` is only `Clone` here, and "triggering its
+        // subscribers" is this verb's documented robot contract — a
+        // test driving a same-value write still expects the fan-out.
+        signal.set_always(value);
     }
 
     /// Update a signal's value in place via a closure.

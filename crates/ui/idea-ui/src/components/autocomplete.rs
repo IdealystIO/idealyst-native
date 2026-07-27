@@ -20,20 +20,33 @@
 //! ```
 //!
 //! Behaviour:
+//! - Focusing the input opens the menu (with the full option list when the
+//!   text equals the committed selection's label); losing focus — Tab away,
+//!   click elsewhere — closes it and reverts unmatched typing.
+//! - Opening seeds the keyboard cursor on the committed selection (typing
+//!   re-seeds it to the top row — the filter changed). The committed row and
+//!   the cursor row are styled differently: solid (`active: on`) vs the
+//!   subtle hover surface (`active: cursor`).
 //! - Typing filters the menu (case-insensitive substring on the option
 //!   label) and opens it.
-//! - `ArrowDown`/`ArrowUp` move the keyboard highlight, `Enter` commits the
-//!   highlighted row, `Escape` closes and reverts the text to the committed
+//! - `ArrowDown`/`ArrowUp` move the keyboard cursor, `Enter` commits the
+//!   cursor row, `Escape` closes and reverts the text to the committed
 //!   selection's label.
 //! - The chevron toggles the menu open and focuses the input.
 //! - Picking a row (click or `Enter`) fires `on_change` with the option's
 //!   `id` and shows its label.
-//! - Dismissing the menu without choosing (tap-away / `Escape`) reverts the
+//! - Dismissing the menu without choosing (blur / `Escape`) reverts the
 //!   typed text to the committed selection, so the input can never be left
 //!   showing a string that isn't a valid option.
 //!
 //! The dropdown deliberately reuses `Select`'s menu/row styling so the two
-//! controls drop visually identical menus.
+//! controls drop visually identical menus, with two combobox-specific
+//! adjustments (see `menu_panel::combobox_menu_panel`): the panel's width is
+//! floored at the input's width so filtering doesn't resize it under the
+//! field, and the panel + chevron are `preserves_focus` press regions so
+//! interacting with them never blurs the input (which is what makes the
+//! close-on-blur above safe — a row press can't dismiss-and-unmount the row
+//! before its own click commits).
 //!
 //! Rationale for the input-carries-the-chrome layout (vs. a bordered
 //! wrapper around a bare input): the native focus ring must land on the
@@ -137,6 +150,26 @@ pub(crate) fn filter_indices(
         .collect()
 }
 
+/// The keyboard-cursor seed when the menu OPENS (focus / chevron /
+/// ArrowDown-from-closed): the committed selection's position within the
+/// current filtered list, falling back to the top row when the selection
+/// isn't among the matches (or nothing is committed). Typing instead
+/// re-seeds the cursor to 0 — the filter just changed, so the previous
+/// position is meaningless. Pulled out as a pure function so the
+/// regression (opening always put the cursor on row 0, painting the top
+/// row highlighted regardless of the selection) stays unit-tested without
+/// a backend.
+pub(crate) fn initial_highlight(
+    filtered: &[usize],
+    options: &[SelectOption],
+    selected_id: &str,
+) -> usize {
+    filtered
+        .iter()
+        .position(|&oi| options.get(oi).map(|o| o.id == selected_id).unwrap_or(false))
+        .unwrap_or(0)
+}
+
 /// Renders a searchable combobox: a `text_input` that filters an anchored
 /// dropdown of [`SelectOption`] rows, with keyboard navigation and
 /// constrained (id-only) selection.
@@ -220,6 +253,19 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
         })
     };
 
+    // Open the menu with the keyboard cursor seeded on the committed
+    // selection — opening a combobox highlights what's already chosen, not
+    // the first row. Shared by every OPEN path (focus, chevron,
+    // ArrowDown-from-closed); typing bypasses it and resets the cursor to
+    // the top instead, because the filter just changed.
+    let open_menu: Rc<dyn Fn()> = {
+        let options = options.clone();
+        Rc::new(move || {
+            open.set(true);
+            highlight.set(initial_highlight(&filtered.get(), &options, &value.get()));
+        })
+    };
+
     // Keep the input text in sync when the host changes `value` out of band
     // (skips the initial run — we seeded `query` above). Body is untracked,
     // so reading `open` here doesn't subscribe; we skip while the menu is
@@ -254,7 +300,8 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
 
     let key_commit = commit.clone();
     let key_revert = revert.clone();
-    let mut input = text_input(query, move |v: String| {
+    let blur_revert = revert.clone();
+    let input = text_input(query, move |v: String| {
         query.set(v);
         open.set(true);
         highlight.set(0);
@@ -264,12 +311,38 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     // placeholder in place; a `Static` one sets it once.
     .placeholder_reactive(placeholder);
     let input = input
-        .on_key_down(move |e: &KeyEvent| match e.key.as_str() {
+        // Focus opens the menu (a combobox invites browsing the moment the
+        // field activates); losing focus dismisses + reverts, same as
+        // Escape / tap-away. This close-on-blur is only safe because every
+        // press surface belonging to the widget — the chevron and the
+        // anchored menu — is `preserves_focus`-marked, so pressing them
+        // never blurs the input: a blur here is always a GENUINE departure
+        // (Tab away, click elsewhere), never a mid-commit row press about
+        // to be unmounted by its own dismissal.
+        .on_focus({
+            let open_menu = open_menu.clone();
+            move |focused: bool| {
+                if focused {
+                    (open_menu)();
+                } else {
+                    open.set(false);
+                    (blur_revert)();
+                }
+            }
+        })
+        .on_key_down({
+            let open_menu = open_menu.clone();
+            move |e: &KeyEvent| match e.key.as_str() {
             "ArrowDown" => {
-                open.set(true);
-                let len = filtered.get().len();
-                if len > 0 {
-                    highlight.update(|h| *h = (*h + 1).min(len - 1));
+                if !open.get() {
+                    // Opening keystroke: seed the cursor on the selection;
+                    // the NEXT ArrowDown starts moving it.
+                    (open_menu)();
+                } else {
+                    let len = filtered.get().len();
+                    if len > 0 {
+                        highlight.update(|h| *h = (*h + 1).min(len - 1));
+                    }
                 }
                 KeyOutcome::PreventDefault
             }
@@ -299,7 +372,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
                 }
             }
             _ => KeyOutcome::Default,
-        });
+        }});
     // Reactive when `size` is live (re-resolves the input height in place);
     // else the build-time fast path.
     let input_node = if size_is_reactive {
@@ -309,15 +382,23 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     };
 
     // --- chevron ------------------------------------------------------------
-    let chevron = pressable(vec![text(CHEVRON.to_string()).into_element()], move || {
-        let now = !open.get();
-        open.set(now);
-        if now {
-            if let Some(h) = input_ref.get() {
-                h.focus();
+    // `preserves_focus`: pressing the chevron must not blur the input — a
+    // blur would close-on-blur the menu BEFORE this toggle runs, flipping
+    // `open` back to true and breaking "chevron closes an open menu".
+    let chevron = pressable(vec![text(CHEVRON.to_string()).into_element()], {
+        let open_menu = open_menu.clone();
+        move || {
+            if open.get() {
+                open.set(false);
+            } else {
+                (open_menu)();
+                if let Some(h) = input_ref.get() {
+                    h.focus();
+                }
             }
         }
     })
+    .preserves_focus(true)
     .with_style(AutocompleteChevron())
     .into_element();
 
@@ -357,8 +438,15 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
                     .collect()
             });
             // Cap + scroll the filtered list so a long set of matches scrolls
-            // within a bounded panel instead of running off the viewport.
-            let menu = crate::components::menu_panel::scrolling_menu_panel(vec![rows]);
+            // within a bounded panel instead of running off the viewport. The
+            // combobox shape additionally floors the panel's width at the
+            // input's (so filtering doesn't make it jump) and marks it
+            // focus-preserving (so row presses don't blur the input — see
+            // the input's `on_focus` close-on-blur).
+            let menu = crate::components::menu_panel::combobox_menu_panel(
+                vec![rows],
+                AnchorTarget::from(wrapper_ref),
+            );
             let dismiss_revert = menu_revert.clone();
             runtime_core::anchored_overlay(AnchorTarget::from(wrapper_ref), vec![menu])
                 .side(ElementSide::Below)
@@ -383,10 +471,14 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     }
 }
 
-/// One menu row. The "active" highlight is resolved reactively from the
+/// One menu row. The `active` variant is resolved reactively from the
 /// *current* filtered list (`filtered[highlight] == this option`) plus the
 /// committed selection, so moving the keyboard cursor or filtering the list
-/// re-styles rows in place without rebuilding them.
+/// re-styles rows in place without rebuilding them. Selection and cursor
+/// are DISTINCT looks: the committed row paints solid (`on`), the keyboard
+/// cursor paints the subtle hover surface (`cursor`) — an open menu never
+/// shows two solid rows. When the cursor rests on the committed row (the
+/// seeded state right after opening), `on` wins.
 fn row(
     o: SelectOption,
     oi: usize,
@@ -404,7 +496,13 @@ fn row(
                 .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
             let highlighted = filtered.get().get(highlight.get()).copied() == Some(oi);
             let selected = value.get() == id_for_style;
-            let variant = if highlighted || selected { "on" } else { "off" };
+            let variant = if selected {
+                "on"
+            } else if highlighted {
+                "cursor"
+            } else {
+                "off"
+            };
             StyleApplication::new(SelectOptionStyle::sheet()).with("active", variant.to_string())
         })
         .into_element()
@@ -460,6 +558,181 @@ mod tests {
     fn editing_away_from_selection_filters_normally() {
         let ls = labels(&["Apple", "Pear", "Plum"]);
         assert_eq!(filter_indices(&ls, "plu", Some("Apple")), vec![2]);
+    }
+
+    /// Destructure a built Autocomplete into the pieces the behavioral
+    /// regressions poke at: the input's `value` signal + `on_change` +
+    /// `on_focus` notifier, the chevron pressable, and the dropdown
+    /// `when`'s live `open` condition.
+    #[allow(clippy::type_complexity)]
+    fn dissect(
+        tree: Element,
+    ) -> (
+        Signal<String>,
+        Rc<dyn Fn(String)>,
+        Rc<dyn Fn(bool)>,
+        Element,
+        Rc<dyn Fn() -> bool>,
+    ) {
+        let Element::View { children, .. } = tree else {
+            panic!("Autocomplete renders a view wrapper");
+        };
+        let mut children = children.into_iter();
+        let wrapper = children.next().expect("wrapper view");
+        let panel = children.next().expect("dropdown panel");
+        let Element::View { children: wrapper_children, .. } = wrapper else {
+            panic!("first child is the input+chevron wrapper view");
+        };
+        let mut wrapper_children = wrapper_children.into_iter();
+        let input = wrapper_children.next().expect("text input");
+        let chevron = wrapper_children.next().expect("chevron pressable");
+        let Element::TextInput { value, on_change, on_focus, .. } = input else {
+            panic!("wrapper's first child is the text_input");
+        };
+        let on_focus = on_focus.expect("Autocomplete must install an on_focus notifier");
+        let Element::When { cond, .. } = panel else {
+            panic!("dropdown panel is a `when`");
+        };
+        (value, on_change, on_focus, chevron, cond.compute)
+    }
+
+    // REGRESSION: focusing the input did nothing — the menu only opened on
+    // typing / ArrowDown / the chevron. A combobox must invite browsing the
+    // moment the field activates.
+    #[test]
+    fn regression_focusing_the_input_opens_the_menu() {
+        idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+        let props = AutocompleteProps {
+            value: Signal::new("pear".to_string()),
+            options: vec![
+                SelectOption::new("apple", "Apple"),
+                SelectOption::new("pear", "Pear"),
+            ],
+            ..Default::default()
+        };
+        let (_query, _on_change, on_focus, _chevron, open) = dissect(Autocomplete(props));
+
+        assert!(!open(), "menu starts closed");
+        (on_focus)(true);
+        assert!(open(), "focusing the input must open the menu");
+    }
+
+    // REGRESSION: blurring the input left the menu dangling open (only
+    // Escape / a committed row closed it), and the typed filter text
+    // lingered. Losing focus must dismiss AND revert unmatched typing to
+    // the committed selection's label — same contract as Escape.
+    #[test]
+    fn regression_blurring_the_input_closes_the_menu_and_reverts() {
+        idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+        let props = AutocompleteProps {
+            value: Signal::new("pear".to_string()),
+            options: vec![
+                SelectOption::new("apple", "Apple"),
+                SelectOption::new("pear", "Pear"),
+            ],
+            ..Default::default()
+        };
+        let (query, on_change, on_focus, _chevron, open) = dissect(Autocomplete(props));
+
+        (on_focus)(true);
+        (on_change)("zzz".to_string()); // user types an unmatched filter
+        assert!(open());
+        assert_eq!(query.get(), "zzz");
+
+        (on_focus)(false);
+        assert!(!open(), "blurring the input must close the menu");
+        assert_eq!(
+            query.get(),
+            "Pear",
+            "blur must revert unmatched typing to the committed selection's label"
+        );
+    }
+
+    // The close-on-blur above is only safe because the widget's press
+    // surfaces never blur the input: the chevron must carry the
+    // `preserves_focus` mark (the menu panel's mark is pinned by
+    // `menu_panel::tests`). Without it, pressing the chevron blurs →
+    // close-on-blur flips `open` → the chevron's toggle re-opens instead
+    // of closing.
+    #[test]
+    fn chevron_is_a_focus_preserving_pressable() {
+        idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+        let props = AutocompleteProps {
+            options: vec![SelectOption::new("apple", "Apple")],
+            ..Default::default()
+        };
+        let (_query, _on_change, _on_focus, chevron, _open) = dissect(Autocomplete(props));
+        let Element::Pressable { preserves_focus, .. } = chevron else {
+            panic!("chevron is a pressable");
+        };
+        assert!(preserves_focus, "the chevron must not blur the input when pressed");
+    }
+
+    // REGRESSION: opening the menu always put the keyboard cursor on row 0,
+    // so the TOP row painted highlighted regardless of the committed
+    // selection. Opening must seed the cursor on the selection's position
+    // in the filtered list; a selection not among the matches (or none)
+    // falls back to the top.
+    #[test]
+    fn regression_open_seeds_cursor_on_committed_selection() {
+        let options = vec![
+            SelectOption::new("apple", "Apple"),
+            SelectOption::new("pear", "Pear"),
+            SelectOption::new("plum", "Plum"),
+        ];
+        // Full list open: selection sits at its own index.
+        assert_eq!(initial_highlight(&[0, 1, 2], &options, "pear"), 1);
+        // Filtered list: position is WITHIN the filtered indices, not the
+        // option's global index.
+        assert_eq!(initial_highlight(&[1, 2], &options, "plum"), 1);
+        // Selection filtered out / nothing committed → top row.
+        assert_eq!(initial_highlight(&[0], &options, "plum"), 0);
+        assert_eq!(initial_highlight(&[0, 1, 2], &options, ""), 0);
+        // Empty match list → 0 (Enter guards on non-empty separately).
+        assert_eq!(initial_highlight(&[], &options, "pear"), 0);
+    }
+
+    // REGRESSION: the keyboard-cursor row and the committed-selection row
+    // used the same `active: on` style, so an open menu showed two solid
+    // rows. The three states must resolve to three distinct paints:
+    // selection = solid, cursor = subtle hover surface, rest = transparent.
+    #[test]
+    fn regression_cursor_and_selected_rows_paint_differently() {
+        idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+
+        let filtered: ReadSignal<Vec<usize>> = memo(|| vec![0, 1]);
+        let highlight: Signal<usize> = Signal::new(0);
+        let value: Signal<String> = Signal::new("b".to_string());
+        let el = row(
+            SelectOption::new("a", "A"),
+            0,
+            Rc::new(|_| {}),
+            filtered,
+            highlight,
+            value,
+        );
+        let Element::Pressable { style: Some(style), .. } = el else {
+            panic!("a menu row is a styled pressable");
+        };
+        let runtime_core::StyleSource::Reactive(style) = style else {
+            panic!("row style is reactive (cursor/selection resolve live)");
+        };
+        let bg = |app: StyleApplication| {
+            runtime_core::resolve_style(&app).background.clone().map(|b| b.resolve())
+        };
+
+        // highlight=0 → cursor rests on this row; committed value is "b".
+        let cursor_bg = bg(style());
+        // Move the cursor off the row → plain row.
+        highlight.set(1);
+        let off_bg = bg(style());
+        // Commit this row's id → selection paint.
+        value.set("a".to_string());
+        let selected_bg = bg(style());
+
+        assert_ne!(cursor_bg, off_bg, "the cursor row must paint against a plain row");
+        assert_ne!(cursor_bg, selected_bg, "cursor and selection must be distinct looks");
+        assert_ne!(selected_bg, off_bg, "the selection must paint against a plain row");
     }
 
     // The whole reactive tree (seeded query signal, filter memo, input +

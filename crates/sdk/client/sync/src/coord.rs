@@ -77,8 +77,11 @@ impl<T: Clone + Serialize + DeserializeOwned + Merge + 'static> SharedInner<T> {
             .map(|e| e.value.clone())
             .collect::<Vec<_>>();
         runtime_core::cycle(|| {
-            self.items_sig.set(items);
-            self.entries_sig.set(entries);
+            // `set_always`: author item type `T` carries no `PartialEq`
+            // bound (only `Merge`), so the projected lists can't be
+            // equality-guarded.
+            self.items_sig.set_always(items);
+            self.entries_sig.set_always(entries);
         });
     }
 

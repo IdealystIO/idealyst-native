@@ -33,26 +33,24 @@ fn effect_fires_initial_and_on_change() {
     assert_eq!(counter.get(), 3);
 }
 
-/// Framework behavior: `Signal::set` does NOT do an equality check.
-/// Every `set` re-fires subscribers, even when the new value equals
-/// the old. Equality-aware caching is the job of `memo()` (which
-/// requires `T: PartialEq`).
-///
-/// This is a deliberate design choice: signals stay free of trait
-/// bounds, and equality semantics that vary by type (tolerance for
-/// floats, ignored sub-fields, etc.) are handled where they make
-/// sense rather than imposed globally.
+/// Framework behavior: `Signal::set` IS equality-guarded — a
+/// same-value write does not re-fire subscribers (matching the
+/// Solid/Vue/React default, and starving prop-sync echo loops).
+/// The unconditional spelling is `set_always` (also the only setter
+/// for `T` without `PartialEq`); `touch()` notifies without writing.
 #[test]
-fn signal_set_always_refires_even_with_same_value() {
+fn signal_set_skips_same_value_but_set_always_refires() {
     let s: Signal<i32> = signal(42);
     let (counter, _e) = counted_effect(move || {
         let _ = s.get();
     });
     assert_eq!(counter.get(), 1);
     s.set(42); // identical value
-    assert_eq!(counter.get(), 2, "Signal::set refires unconditionally");
-    s.set(42);
-    assert_eq!(counter.get(), 3);
+    assert_eq!(counter.get(), 1, "guarded set skips a same-value write");
+    s.set_always(42); // identical value, explicit retrigger
+    assert_eq!(counter.get(), 2, "Signal::set_always refires unconditionally");
+    s.set(43);
+    assert_eq!(counter.get(), 3, "real change fires");
 }
 
 /// Framework behavior: `memo()` computes its closure twice on

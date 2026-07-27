@@ -93,6 +93,12 @@ to each subscriber **once**, in first-write order, when the outer batch
 returns. Intermediate states are never observed by any effect. Nested batches
 join the outermost window and don't flush early.
 
+Change detection inside a window compares against the **window-initial**
+value: a signal set `A → B → A` within one batch nets to no change and never
+wakes its subscribers. Any `set_always`/`update`/`touch` in the window
+force-taints that signal's entry — the flush then notifies regardless of the
+net comparison.
+
 You rarely call `batch` by hand: **handlers are born batched.** A closure
 attached through a core builder (`pressable`, `Bound::on_*`, `reducer`'s
 dispatch) is wrapped in a `cycle` at the point the backend invokes it, so two
@@ -203,6 +209,15 @@ intended.
 
 ## Sharp edges worth knowing
 
+- **`set` is equality-guarded — a same-value write wakes nobody.** The default
+  `.set(v)` (`T: PartialEq`) skips the fan-out when the value is unchanged.
+  Code that used a same-value write as a *retrigger* (re-firing a `switch`
+  discriminant, forcing a re-render) must say so explicitly: `touch()`
+  notifies without writing, `set_always(v)` writes and always notifies (and is
+  the only setter for non-`PartialEq` types). `set_untracked(v)` is the
+  inverse — write silently, notify never. Note `update(f)` is NOT guarded
+  (guarding would `Clone`-snapshot every call); `update_if_changed` opts in.
+  This deliberately diverges from Leptos, whose `set` never compares.
 - **Stale `set` is a safe no-op, not a panic.** Signal handles are generational
   — a `.set()`/`.update()` on a handle whose slot was recycled (or whose owning
   scope was torn down) silently does nothing. This is why a deferred/async

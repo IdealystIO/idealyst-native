@@ -18,6 +18,18 @@ count.set(1);
 let value = count.get(); // 1
 ```
 
+`.set(v)` is **equality-guarded** (`T: PartialEq`): a write that leaves the
+value equal to what it already held wakes no subscribers. The full write
+surface decomposes "write" and "notify" independently:
+
+- `set(v)` — write, notify only on change (the default; `T: PartialEq`)
+- `set_always(v)` — write, always notify (any `T`; use for non-`PartialEq`
+  types or deliberate same-value retriggers)
+- `touch()` — notify without writing (e.g. re-fire a `switch` discriminant)
+- `set_untracked(v)` — write without notifying (rare, deliberate bookkeeping)
+- `update(f)` — in-place mutation, always notifies (`update_if_changed(f)`
+  opts into the guard at the cost of a `Clone` snapshot)
+
 Inside `ui!`, signals participate in reactivity automatically:
 
 ```rust

@@ -120,8 +120,9 @@ pub fn app() -> Element {
                             s.fill(Color::new(232, 46, 150, 220));
                         })
                         .build();
-                    input_sig.set(Some(input));
-                    output_sig.set(Some(out));
+                    // `set_always`: `MediaStream` has no `PartialEq`.
+                    input_sig.set_always(Some(input));
+                    output_sig.set_always(Some(out));
                     status.set("Live — left: input (untouched) · right: composited output".to_string());
                 }
                 Err(e) => {

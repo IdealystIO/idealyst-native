@@ -80,6 +80,34 @@ impl<H> Bound<H> {
         self
     }
 
+    /// Mark this view/pressable as focus-preserving: a press that begins
+    /// inside it does NOT blur the currently focused text input (or dismiss
+    /// the soft keyboard on mobile). Set it on surfaces that *belong to* a
+    /// focused input — a combobox's anchored option menu, its disclosure
+    /// chevron, a clear-text button — so interacting with them keeps the
+    /// field focused and a close-on-blur handler doesn't tear the surface
+    /// down before its own press lands.
+    ///
+    /// Backends converge on the same observable result from their native
+    /// focus-steal source: web cancels the capture-phase `pointerdown`
+    /// default (capture, so a descendant pressable's bubble-phase
+    /// `stopPropagation` can't bypass it), macOS exempts the subtree from
+    /// the outside-click first-responder resign, iOS exempts it from the
+    /// keyboard-dismiss tap recognizer. Backends without a blur-on-outside
+    /// concept ignore it. No-op on element kinds without the flag (only
+    /// `View` and `Pressable` carry it). See
+    /// [`crate::backend::Backend::mark_preserves_focus`].
+    pub fn preserves_focus(mut self, preserve: bool) -> Self {
+        match &mut self.primitive {
+            Element::View { preserves_focus, .. }
+            | Element::Pressable { preserves_focus, .. } => {
+                *preserves_focus = preserve;
+            }
+            _ => {}
+        }
+        self
+    }
+
     /// Assigns a test ID for robot/automation queries. Always present (so the
     /// `ui!` macro can emit `.test_id(...)` without depending on the `robot`
     /// feature at expansion time): a real store under `robot`, an inert no-op
@@ -599,6 +627,7 @@ pub fn view(children: Vec<Element>) -> Bound<ViewHandle> {
         on_wheel: None,
         on_hover: None,
         on_file_drop: None,
+        preserves_focus: false,
         is_container: false,
         accessibility: crate::accessibility::AccessibilityProps::default(),
         #[cfg(feature = "robot")]
@@ -675,6 +704,7 @@ pub fn pressable<F: Fn() + 'static>(
         style: None,
         ref_fill: None,
         disabled: None,
+        preserves_focus: false,
         accessibility: crate::accessibility::AccessibilityProps::default(),
         #[cfg(feature = "robot")]
         test_id: None,

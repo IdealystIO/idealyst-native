@@ -177,6 +177,11 @@ pub enum Event {
     /// `install_hover_handler(node, _)` — companion to the above for the
     /// hover channel.
     InstallHoverHandler { node: NodeId },
+    /// `mark_preserves_focus(node)` — the walker flagged this node as a
+    /// focus-preserving press region (`.preserves_focus(true)` on a view /
+    /// pressable). Recorded so a test can assert the combobox capability
+    /// reaches the backend for exactly the marked nodes.
+    MarkPreservesFocus { node: NodeId },
 
     // --- Style ---
     ApplyStyle { node: NodeId },
@@ -747,6 +752,10 @@ impl Backend for MockBackend {
 
     fn install_hover_handler(&mut self, node: &Self::Node, _handler: runtime_core::HoverHandler) {
         self.core.record(Event::InstallHoverHandler { node: *node });
+    }
+
+    fn mark_preserves_focus(&mut self, node: &Self::Node) {
+        self.core.record(Event::MarkPreservesFocus { node: *node });
     }
 
     // --- Optional but explicitly recorded ---

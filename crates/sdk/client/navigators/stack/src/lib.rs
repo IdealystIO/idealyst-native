@@ -565,8 +565,11 @@ impl<B: Backend> SharedStack<B> {
             .last()
             .and_then(|e| e.live.as_ref())
             .map(|l| l.options.to_state(false));
+        // `set_always`: `Rc<dyn Any>` has no `PartialEq`, and chrome must
+        // republish on every stack change (push/pop of screens sharing
+        // identical options still swaps the screen underneath).
         self.screen_chrome
-            .set(state.map(|s| Rc::new(s) as Rc<dyn Any>));
+            .set_always(state.map(|s| Rc::new(s) as Rc<dyn Any>));
     }
 
     /// Ensure the top entry has a live surface, re-mounting a cold entry

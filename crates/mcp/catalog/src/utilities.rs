@@ -12,7 +12,7 @@ inventory::submit! {
     UtilityEntry {
         name: "signal",
         module_path: "runtime_core",
-        docs: "Create a reactive `Signal<T>` from an initial value — the unit of mutable state in a component. A plain function (the historical `signal!` macro was removed; drop the `!`). `T` is inferred. Read with `.get()` (subscribes the surrounding reactive scope), write with `.set(v)` / `.update(|v| …)`. Equivalent to `Signal::new(value)`; the fn form is canonical. Capability halves: `.split()` → `(ReadSignal, WriteSignal)`, `.read_only()`, `.write_only()` — same slot, but the type only permits reading / writing. Type a prop `ReadSignal<T>` when the component observes without mutating. See [[reactivity]].",
+        docs: "Create a reactive `Signal<T>` from an initial value — the unit of mutable state in a component. A plain function (the historical `signal!` macro was removed; drop the `!`). `T` is inferred. Read with `.get()` (subscribes the surrounding reactive scope). Write surface: `.set(v)` is equality-guarded (`T: PartialEq` — a same-value write wakes no subscribers); `.set_always(v)` writes and always notifies (any `T`; use for non-`PartialEq` types or deliberate retriggers); `.touch()` notifies without writing; `.set_untracked(v)` writes without notifying; `.update(|v| …)` mutates in place and always notifies. Equivalent to `Signal::new(value)`; the fn form is canonical. Capability halves: `.split()` → `(ReadSignal, WriteSignal)`, `.read_only()`, `.write_only()` — same slot, but the type only permits reading / writing. Type a prop `ReadSignal<T>` when the component observes without mutating. See [[reactivity]].",
         params: &[
             ParamSpec {
                 name: "value",

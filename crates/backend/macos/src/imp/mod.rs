@@ -3189,6 +3189,25 @@ impl Backend for MacosBackend {
         flipped.set_file_drop_handler(handler);
     }
 
+    fn mark_preserves_focus(&mut self, node: &Self::Node) {
+        // Same FlippedView path as `install_hover_handler`: flag the view;
+        // `mouseDown:`'s blur-on-outside-click resign walks the pressed
+        // view's ancestor chain (`subtree_preserves_focus`) and skips
+        // resigning the field editor when it finds the flag.
+        let MacosNode::View(view) = node else {
+            return;
+        };
+        let cls = objc2::class!(IdealystFlippedView);
+        let is_flipped: bool = unsafe { msg_send![&**view, isKindOfClass: cls] };
+        if !is_flipped {
+            return;
+        }
+        // SAFETY: dynamic class confirmed `IdealystFlippedView`; layout is
+        // `NSView` + our ivars, ABI-compatible here.
+        let flipped: &FlippedView = unsafe { &*(Retained::as_ptr(view) as *const FlippedView) };
+        flipped.set_preserves_focus();
+    }
+
     fn create_pressable(
         &mut self,
         on_click: Rc<dyn Fn()>,

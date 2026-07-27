@@ -13,6 +13,7 @@
 
 use std::rc::Rc;
 
+use runtime_core::primitives::portal::AnchorTarget;
 use runtime_core::{
     ui, viewport_size, Element, FlexDirection, IntoElement, Length, StyleApplication, StyleRules,
     StyleSheet, Tokenized, VariantSet,
@@ -92,15 +93,62 @@ fn menu_scroll_sheet() -> Rc<StyleSheet> {
 /// height cap is applied reactively from `viewport_size()` so it tracks
 /// orientation / split-view / window resizes and never exceeds the visible area.
 pub(crate) fn scrolling_menu_panel(rows: Vec<Element>) -> Element {
+    let scroller = capped_scroller(rows);
+    ui! { view(style = SelectMenu()) { scroller } }
+}
+
+/// [`scrolling_menu_panel`] shaped for a combobox (`Autocomplete`): the same
+/// capped scroller, but the panel additionally
+///
+/// - **matches the anchor's width** — `min_width` tracks the anchoring
+///   input's measured width (re-read on viewport resize), so filtering the
+///   rows down doesn't shrink the panel to its shortest label and make it
+///   jump around under the field. Rows longer than the field still widen the
+///   panel (it's a floor, not a fixed width), matching a native select.
+/// - **preserves the input's focus** — `.preserves_focus(true)`, so pressing
+///   a row (or dragging the scrollbar) doesn't blur the input; the
+///   component's close-on-blur only fires on genuine focus departure and a
+///   row press can never unmount the row before its own click lands.
+pub(crate) fn combobox_menu_panel(rows: Vec<Element>, anchor: AnchorTarget) -> Element {
+    let viewport = viewport_size();
+    runtime_core::view(vec![capped_scroller(rows)])
+        .preserves_focus(true)
+        .with_style(move || {
+            // Reading the viewport subscribes this style: a window resize
+            // re-measures the anchor (its width can change with layout)
+            // while the menu is open. `rect()` itself is an imperative
+            // measure, not a reactive source.
+            let _ = viewport.get();
+            let app = StyleApplication::new(SelectMenu::sheet());
+            match anchor.rect() {
+                Some(r) if r.width > 0.0 => {
+                    let w = r.width;
+                    app.with_computed(
+                        format!("combobox-menu-minw-{}", w.round() as i32),
+                        move || StyleRules {
+                            min_width: Some(Tokenized::Literal(Length::Px(w))),
+                            ..Default::default()
+                        },
+                    )
+                }
+                _ => app,
+            }
+        })
+        .into_element()
+}
+
+/// The shared "content-sized up to a viewport-aware cap, then scroll" row
+/// scroller both panel shapes wrap (see the module docs for why the cap
+/// exists). Reactive height cap: re-resolves the `max_height` when the
+/// viewport changes. `with_computed`'s cache key folds identical caps across
+/// menu instances onto one backend class (mirrors `modal.rs`'s scroller).
+fn capped_scroller(rows: Vec<Element>) -> Element {
     let body = runtime_core::view(rows)
         .with_style(|| StyleApplication::new(menu_body_sheet()))
         .into_element();
 
-    // Reactive height cap: re-resolves the `max_height` when the viewport
-    // changes. `with_computed`'s cache key folds identical caps across menu
-    // instances onto one backend class (mirrors `modal.rs`'s scroller).
     let viewport = viewport_size();
-    let scroller = runtime_core::primitives::scroll_view::scroll_view(vec![body])
+    runtime_core::primitives::scroll_view::scroll_view(vec![body])
         .with_style(move || {
             let max_h = menu_max_height(viewport.get().height);
             StyleApplication::new(menu_scroll_sheet()).with_computed(
@@ -111,9 +159,7 @@ pub(crate) fn scrolling_menu_panel(rows: Vec<Element>) -> Element {
                 },
             )
         })
-        .into_element();
-
-    ui! { view(style = SelectMenu()) { scroller } }
+        .into_element()
 }
 
 #[cfg(test)]
@@ -145,6 +191,62 @@ mod tests {
         // A pathologically short viewport still leaves a usable, scrollable menu
         // rather than collapsing to an unusable sliver.
         assert_eq!(menu_max_height(80.0), MENU_MIN_HEIGHT);
+    }
+
+    /// A test anchor whose rect is fixed — stands in for the mounted input
+    /// wrapper the combobox panel measures.
+    #[derive(Clone)]
+    struct FixedAnchor;
+    impl runtime_core::primitives::portal::AnchorableHandle for FixedAnchor {
+        fn rect(&self) -> runtime_core::ViewportRect {
+            runtime_core::ViewportRect { x: 10.0, y: 10.0, width: 240.0, height: 32.0 }
+        }
+    }
+
+    /// REGRESSION (Autocomplete): the dropdown wrapped its content, so
+    /// filtering the rows resized the panel under the field ("jumps all
+    /// over in size"), and row presses blurred the input (no
+    /// focus-preservation), which with close-on-blur would unmount a row
+    /// before its own click landed. The combobox panel must floor its
+    /// width at the anchor's measured width AND carry the
+    /// `preserves_focus` mark.
+    #[test]
+    fn regression_combobox_panel_floors_width_at_anchor_and_preserves_focus() {
+        idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+
+        let anchor_ref: runtime_core::Ref<FixedAnchor> = runtime_core::Ref::new();
+        anchor_ref.fill(FixedAnchor);
+        let panel = combobox_menu_panel(
+            vec![runtime_core::text("A".to_string()).into_element()],
+            AnchorTarget::from(anchor_ref),
+        );
+
+        let Element::View { preserves_focus, style, children, .. } = panel else {
+            panic!("the combobox panel is a View (the SelectMenu surface)");
+        };
+        assert!(
+            preserves_focus,
+            "row presses must not blur the anchoring input (close-on-blur safety)"
+        );
+        assert!(
+            matches!(children.first(), Some(Element::ScrollView { .. })),
+            "the combobox panel wraps the same capped scroller as the plain panel"
+        );
+
+        // The panel style must resolve the anchor's width as `min_width` —
+        // a floor (rows longer than the field still widen it), not a fixed
+        // width.
+        let app = match style.expect("the panel carries the SelectMenu style") {
+            runtime_core::StyleSource::Reactive(f) => f(),
+            _ => panic!("the combobox panel style is reactive (anchor width + viewport cap)"),
+        };
+        let resolved = runtime_core::resolve_style(&app);
+        let min_width = resolved
+            .min_width
+            .clone()
+            .expect("a measurable anchor must produce a min_width floor")
+            .resolve();
+        assert_eq!(min_width, Length::Px(240.0));
     }
 
     /// Regression: the anchored menu panel must wrap its rows in a `scroll_view`

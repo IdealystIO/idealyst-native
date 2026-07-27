@@ -33,6 +33,7 @@ pub(super) fn build<B: Backend + 'static>(
     on_wheel: Option<crate::WheelHandler>,
     on_hover: Option<crate::HoverHandler>,
     on_file_drop: Option<crate::FileDropHandler>,
+    preserves_focus: bool,
     is_container: bool,
     a11y: AccessibilityProps,
 ) -> B::Node {
@@ -54,6 +55,9 @@ pub(super) fn build<B: Backend + 'static>(
     }
     if let Some(h) = on_file_drop {
         backend.borrow_mut().install_file_drop_handler(&n, h);
+    }
+    if preserves_focus {
+        backend.borrow_mut().mark_preserves_focus(&n);
     }
     if let Some(RefFill::View(fill)) = ref_fill {
         let handle = backend.borrow().make_view_handle(&n);
@@ -537,6 +541,7 @@ fn enqueue_primitive<B: Backend + 'static>(
             on_wheel,
             on_hover,
             on_file_drop,
+            preserves_focus,
             ..
         } => {
             if ref_fill.is_some()
@@ -544,6 +549,7 @@ fn enqueue_primitive<B: Backend + 'static>(
                 || on_wheel.is_some()
                 || on_hover.is_some()
                 || on_file_drop.is_some()
+                || preserves_focus
                 || !safe_area_sides.is_empty()
             {
                 return None;

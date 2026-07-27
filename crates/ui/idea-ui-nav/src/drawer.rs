@@ -15,9 +15,9 @@
 
 use idea_ui::{Surface, SurfaceColor};
 use runtime_core::{
-    component, pressable, ui, ChildList, Color, Easing, Element, IdealystSchema, Length,
-    PointerEvents, Position, Reactive, Signal, StyleApplication, StyleRules, StyleSheet, Tokenized,
-    Transform, Transition,
+    component, pressable, ui, ChildList, Color, Easing, Element, FlexDirection, IdealystSchema,
+    Length, PointerEvents, Position, Reactive, Signal, StyleApplication, StyleRules, StyleSheet,
+    Tokenized, Transform, Transition,
 };
 use std::rc::Rc;
 
@@ -143,6 +143,13 @@ pub fn Drawer(props: DrawerProps) -> Element {
                 left: left.clone(),
                 right: right.clone(),
                 width: Some(Length::Px(width).into()),
+                // The panel must be a flex COLUMN: on web a node with no
+                // flex-container property stays `display: block`, which makes
+                // the inner `Surface(grow = 1)` (flex-basis: 0) inert — the
+                // sidebar collapses to zero height and the open drawer shows
+                // an empty panel. Native backends are flex-by-default, so
+                // this also keeps the two layouts identical.
+                flex_direction: Some(FlexDirection::Column),
                 transform: Some(vec![Transform::TranslateX(Length::Px(dx))]),
                 transform_transition: Some(Transition::new(SLIDE_MS, Easing::EaseOut)),
                 ..Default::default()
@@ -243,6 +250,41 @@ mod tests {
         // Open: it slides flush to the edge.
         is_open.set(true);
         assert_eq!(panel_translate_x(&drawer), 0.0, "open panel is flush");
+    }
+
+    // The panel must resolve as a flex COLUMN. The web backend only promotes a
+    // node to `display: flex` when its rules carry a flex-container property;
+    // without one the panel is `display: block`, the inner `Surface(grow = 1)`
+    // (flex-basis: 0) is inert, and the open drawer renders an EMPTY panel over
+    // the scrim (the "sidebar content missing" bug).
+    #[test]
+    fn drawer_panel_is_a_flex_column() {
+        let drawer = Drawer(DrawerProps {
+            sidebar: vec![text("SIDEBAR").into()],
+            is_open: Signal::new(true),
+            side: Reactive::Static(DrawerSide::Start),
+            width: Reactive::Static(280.0),
+            children: vec![text("CONTENT").into()],
+        });
+        let children = match &drawer {
+            Element::View { children, .. } => children,
+            _ => panic!("Drawer root is a view"),
+        };
+        let panel = children.last().expect("panel is the last child");
+        let style = match panel {
+            Element::View { style, .. } => style.as_ref().expect("panel has a style"),
+            _ => panic!("panel is a view"),
+        };
+        let app = match style {
+            StyleSource::Reactive(f) => f(),
+            _ => panic!("panel style is reactive"),
+        };
+        let rules = resolve_style(&app);
+        assert_eq!(
+            rules.flex_direction,
+            Some(FlexDirection::Column),
+            "panel must be a flex column so Surface(grow = 1) can fill it"
+        );
     }
 
     // A trailing (`End`) drawer sits off the RIGHT edge when closed (+width).

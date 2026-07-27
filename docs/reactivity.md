@@ -36,9 +36,38 @@ the currently-running `Effect`; writes notify subscribers.
 ```rust
 let count = signal(0);                         // creates a Signal<i32>
 let _ = count.get();                            // reads, subscribes current effect
-count.set(5);                                   // writes, notifies subscribers
-count.update(|n| *n += 1);                      // in-place mutation
+count.set(5);                                   // writes; notifies subscribers IF the value changed
+count.update(|n| *n += 1);                      // in-place mutation, always notifies
 ```
+
+The full write surface (each half of "write" and "notify" is
+addressable on its own):
+
+| method               | writes | notifies         | bound          |
+|----------------------|--------|------------------|----------------|
+| `set(v)`             | yes    | only on change   | `T: PartialEq` |
+| `set_always(v)`      | yes    | always           | any `T`        |
+| `touch()`            | no     | always           | any `T`        |
+| `set_untracked(v)`   | yes    | never            | any `T`        |
+| `update(f)`          | yes    | always           | any `T`        |
+| `update_if_changed(f)`| yes   | only on change   | `T: PartialEq + Clone` |
+
+`set` being equality-guarded is the default the other fine-grained
+frameworks ship (Solid, Vue, React's bail-out) — a same-value write
+wakes nobody, which also starves the echo loops two-way-bound signal
+props could otherwise feed. For `T` without `PartialEq` (closures,
+media handles), or to deliberately re-fire subscribers on a same-value
+write, use `set_always`. `touch()` is the retrigger spelling when
+there's nothing to write — e.g. a `switch` discriminant whose arm body
+must re-run, or shared interior state the signal's value points to.
+`set_untracked` is the escape hatch that writes silently; dependents
+keep a stale view until something else notifies, so treat it as an
+antipattern outside deliberate bookkeeping. `update` stays
+always-notify: guarding it would require `Clone`-snapshotting the old
+value on every call, the exact copy in-place mutation exists to avoid.
+(Leptos note: Leptos's `set` never compares — ported code relying on
+same-value sets as retriggers must switch those sites to `set_always`
+or `touch`.)
 
 `Copy` is the ergonomic centerpiece: `count` can be moved into every
 closure that needs it without `.clone()`. This is what makes

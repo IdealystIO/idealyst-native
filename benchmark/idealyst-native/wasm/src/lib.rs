@@ -819,9 +819,9 @@ pub fn set_theme_by_name(name: &str) {
 /// is invisible to the Switch and the row list never rebuilds.
 ///
 /// The fix is to also touch `mode` so the Switch's Effect re-fires.
-/// `Signal::set` notifies subscribers unconditionally (no
-/// value-equality skip), so `mode.set(0)` when mode is already 0
-/// still triggers the rebuild — at which point the arm body reads
+/// `Signal::touch` notifies subscribers without writing (the guarded
+/// `set` skips same-value writes, so `mode.set(0)` when mode is
+/// already 0 would be a no-op) — at which point the arm body reads
 /// the latest `count.get()` and produces the new row list.
 ///
 /// We could fix this at the framework level (e.g. by including
@@ -842,7 +842,7 @@ pub fn set_rows(n: usize) {
     // not actually mount any new DOM).
     MODE.with(|c| {
         if let Some(sig) = c.borrow().as_ref() {
-            sig.set(0);
+            sig.touch();
         }
     });
 }
@@ -868,7 +868,11 @@ pub fn setup_hierarchy(seed: u32, nodes: u32, max_depth: u32) {
     runtime_core::batch(|| {
         MODE.with(|c| {
             if let Some(sig) = c.borrow().as_ref() {
-                sig.set(1);
+                // `set_always`: a re-setup of the same suite leaves the
+                // mode value unchanged, but the Switch must still re-fire
+                // (force-taints the batch window even if the count write
+                // below is also same-value).
+                sig.set_always(1);
             }
         });
         TREE_VERSION.with(|c| {
@@ -940,7 +944,11 @@ pub fn setup_counters(n: u32) {
     runtime_core::batch(|| {
         MODE.with(|c| {
             if let Some(sig) = c.borrow().as_ref() {
-                sig.set(2);
+                // `set_always`: a re-setup of the same suite leaves the
+                // mode value unchanged, but the Switch must still re-fire
+                // (force-taints the batch window even if the count write
+                // below is also same-value).
+                sig.set_always(2);
             }
         });
         COUNTER_COUNT.with(|c| {
@@ -1005,7 +1013,11 @@ pub fn setup_reactive_styles(n: u32) {
     runtime_core::batch(|| {
         MODE.with(|c| {
             if let Some(sig) = c.borrow().as_ref() {
-                sig.set(3);
+                // `set_always`: a re-setup of the same suite leaves the
+                // mode value unchanged, but the Switch must still re-fire
+                // (force-taints the batch window even if the count write
+                // below is also same-value).
+                sig.set_always(3);
             }
         });
         RSTYLE_COUNT.with(|c| {
@@ -1032,7 +1044,11 @@ pub fn setup_signal_class_rows(n: u32) {
     runtime_core::batch(|| {
         MODE.with(|c| {
             if let Some(sig) = c.borrow().as_ref() {
-                sig.set(4);
+                // `set_always`: a re-setup of the same suite leaves the
+                // mode value unchanged, but the Switch must still re-fire
+                // (force-taints the batch window even if the count write
+                // below is also same-value).
+                sig.set_always(4);
             }
         });
         SCLASS_COUNT.with(|c| {

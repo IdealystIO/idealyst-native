@@ -49,7 +49,7 @@ pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBack
 /// One grid cell: an icon + its name, plus a stable `key` (the icon's
 /// index in `ALL`) so its mounted subtree survives across search-filter
 /// changes. `IconData` is `Copy`, so the whole struct is `Copy`.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 struct Cell {
     key: u64,
     name: &'static str,

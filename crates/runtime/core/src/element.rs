@@ -131,6 +131,20 @@ pub enum Element {
         /// a no-op on iOS / Android (no OS file-drag concept) and the scaffold
         /// Windows / Linux backends. See [`crate::file_drop`].
         on_file_drop: Option<crate::FileDropHandler>,
+        /// Focus-preservation opt-in (`.preserves_focus(true)`). When
+        /// `true`, presses that begin inside this view's subtree do NOT
+        /// steal keyboard focus from the currently focused text input /
+        /// dismiss the soft keyboard. The capability every combobox-shaped
+        /// surface needs: an anchored menu attached to a focused input must
+        /// be clickable without the click blurring the input (a
+        /// close-on-blur would unmount the row before its press lands).
+        /// Backends map it to their native focus-steal source: web cancels
+        /// the capture-phase `pointerdown` default (the focus move is
+        /// `mousedown`'s default action), macOS exempts the subtree from
+        /// the `FlippedView` outside-click resign, iOS exempts it from the
+        /// keyboard-dismiss tap recognizer. Default `false`. See
+        /// [`crate::backend::Backend::mark_preserves_focus`].
+        preserves_focus: bool,
         /// Container-query containment context opt-in (`.container()`).
         /// When `true`, descendant `container (min_width: N)` style
         /// overlays resolve against *this* view's resolved inline-size
@@ -210,6 +224,11 @@ pub enum Element {
         ref_fill: Option<RefFill>,
         /// Same semantics as [`Element::Button::disabled`].
         disabled: Option<Box<dyn Fn() -> bool>>,
+        /// Same semantics as [`Element::View::preserves_focus`] — a press
+        /// on this pressable does not blur the focused text input. Set on
+        /// controls that adorn an input (a combobox's disclosure chevron,
+        /// a clear-text button) so activating them keeps the field focused.
+        preserves_focus: bool,
         accessibility: AccessibilityProps,
         #[cfg(feature = "robot")]
         test_id: Option<&'static str>,

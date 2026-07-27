@@ -63,7 +63,8 @@ pub fn app() -> Element {
             match Camera::new().open(CameraConfig::default()).await {
                 Ok(stream) => {
                     cam_status.set("live".to_string());
-                    cam_sig.set(Some(stream));
+                    // `set_always`: `MediaStream` has no `PartialEq`.
+                    cam_sig.set_always(Some(stream));
                 }
                 Err(e) => cam_status.set(camera_error(e)),
             }
@@ -76,7 +77,7 @@ pub fn app() -> Element {
             match open_screen_share().await {
                 Ok(stream) => {
                     screen_status.set("live".to_string());
-                    screen_sig.set(Some(stream));
+                    screen_sig.set_always(Some(stream));
                 }
                 Err(e) => screen_status.set(e),
             }

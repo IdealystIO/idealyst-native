@@ -42,7 +42,7 @@ pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBack
 
 /// The payload that travels from a chip to a bin. `Copy`, so the drag source's
 /// payload closure can hand out fresh copies cheaply.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 struct ChipData {
     label: &'static str,
     color: &'static str,

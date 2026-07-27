@@ -1,9 +1,32 @@
 # Change-detection (dedup) on `Signal::set`
 
-**Status:** IMPLEMENTED — `crates/runtime/core/src/reactive.rs`
-(`Signal::set_if_changed` / `Signal::update_if_changed`, batch-window
-net dedup, `DirtyWindow`). Tests: `reactive::tests::set_if_changed_*` /
-`update_if_changed_*`.
+**Status:** IMPLEMENTED, then PROMOTED TO THE DEFAULT —
+`crates/runtime/core/src/reactive.rs`. The equality guard originally
+shipped as opt-in `set_if_changed` / `update_if_changed` (Option 1
+below); it has since been promoted: **`Signal::set` itself is now the
+equality-guarded write** (`where T: PartialEq`), and the write surface
+decomposed into orthogonal spellings:
+
+- `set(v)` — write, notify **only on change** (`T: PartialEq`). THE default.
+- `set_always(v)` — write, notify unconditionally (any `T`; the old
+  `set`, and the only setter for non-`PartialEq` types).
+- `touch()` — notify without writing (retrigger; e.g. a `switch`
+  discriminant whose arm body must re-run).
+- `set_untracked(v)` — write without notifying (deliberate silent
+  bookkeeping; antipattern otherwise).
+- `update(f)` / `update_if_changed(f)` — unchanged: `update` stays
+  always-notify (guarding would `Clone`-snapshot every call),
+  `update_if_changed` is the opt-in guarded form.
+- `set_if_changed` remains as a **deprecated alias** of the new `set`.
+
+Rationale for the promotion: the guarded default matches Solid/Vue and
+React's bail-out, and starves echo loops between two-way-bound signal
+props. It deliberately diverges from Leptos (whose `set` never
+compares) — ported code using same-value sets as retriggers must use
+`set_always`/`touch`. Tests: `reactive::tests` "Notify semantics"
+section (`set_skips_when_value_unchanged`, `touch_*`,
+`set_untracked_*`, batch-window netting, NaN, stale-handle no-ops).
+
 **Area:** `crates/runtime/core/src/reactive.rs`. The
 `crates/runtime/reactive/arena/src/lib.rs` prototype is unintegrated
 (nothing depends on it) and was intentionally left untouched.
@@ -12,9 +35,9 @@ net dedup, `DirtyWindow`). Tests: `reactive::tests::set_if_changed_*` /
 
 Option 1 (opt-in `set_if_changed` / `update_if_changed`, `where T:
 PartialEq`) landed as written, **plus** batch-window *net* dedup, which
-is strictly stronger:
+is strictly stronger (and both now back the default `set`):
 
-- Outside a batch, `set_if_changed` compares the new value against the
+- Outside a batch, the guarded `set` compares the new value against the
   current one in place and fans out only on a real change.
 - **Inside a [`batch`], the comparison is against the *window-initial*
   value, not each intermediate.** A signal set `A → B → A` within one
@@ -30,17 +53,17 @@ is strictly stronger:
 (in first-dirty order) — deferring `collect_subscribers` to the flush so
 the net comparison has somewhere to live. Per dirty signal:
 
-- A plain `set`/`update` marks the entry `force` (always-notify
-  primitive; also *taints* the window so a co-resident `set_if_changed`
+- A `set_always`/`update`/`touch` marks the entry `force` (always-notify
+  primitives; also *taints* the window so a co-resident guarded `set`
   notifies regardless — the window-initial value was already overwritten
   uncaptured).
-- The **first** `set_if_changed` of the window captures the
+- The **first** guarded `set` of the window captures the
   window-initial value *by move* (free — it's overwritten anyway) inside
   a `FnOnce(&dyn Any) -> bool` closure. That closure is the type-erased
   bridge: it carries the typed original and, at flush, downcasts the
   signal's live `SignalInner<T>` and compares — so **no `PartialEq`
-  bound leaks onto `Signal<T>`**; it lives only on `set_if_changed`,
-  which built the closure. (Chosen over a `fn`-pointer + separately
+  bound leaks into the erased window machinery**; it lives only on the
+  guarded `set`, which built the closure. (Chosen over a `fn`-pointer + separately
   boxed original, and over a hash/fingerprint — the latter's collision
   risk would *drop* a real notification, a silent correctness bug.)
 
@@ -54,8 +77,8 @@ batch).
 > frame, reducer dispatch) runs inside a `cycle` window, so the
 > *batch-window* net dedup above applies to ordinary app code without an
 > explicit `batch(..)`. The two are separate levers: the cycle window
-> coalesces fan-out (universal, every `T`); `set_if_changed` additionally
-> elides net-zero writes (opt-in, `T: PartialEq`).
+> coalesces fan-out (universal, every `T`); the guarded `set` additionally
+> elides net-zero writes (the default for `T: PartialEq`).
 
 ---
 
