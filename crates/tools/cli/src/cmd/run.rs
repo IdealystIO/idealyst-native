@@ -502,6 +502,7 @@ fn run_server(args: &Args) -> anyhow::Result<()> {
                 strip_panics: false,
                 hydrate: false,
                 prune_dead_data_min: None,
+                premint: false,
             },
         )
         .context("web bundle build for `run server` failed")?;

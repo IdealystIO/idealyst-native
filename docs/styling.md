@@ -311,6 +311,109 @@ input there.
 
 ---
 
+## Preminted styles (build-time CSS)
+
+`idealyst build --web --premint` moves static styles out of the wasm
+entirely. The pipeline has two halves, coordinated by nothing but a
+shared naming scheme:
+
+1. **Dump build.** The CLI generates an ephemeral native binary that
+   links the app with `--cfg idealyst_premint_dump` and runtime-core's
+   `style-dump` feature. Every `stylesheet!` in the app and its
+   dependencies registers into a link-time distributed slice; the
+   binary enumerates each sheet's full variant space, resolves it
+   through the same layer resolution the live web engine uses, and
+   emits the result as CSS. The output lands in the bundle as a
+   content-addressed `pkg/premint.<hash>.css`, linked from
+   `index.html`.
+2. **Shipped build.** The wasm compiles with `--cfg idealyst_premint`,
+   which flips each `stylesheet!` builder's `into_style_source` to a
+   fast path: an all-constant application (plain variant values, no
+   overrides, nothing reactive) returns
+   `StyleSource::Preminted { class }`. The walker stamps the class on
+   the node and stops — no `StyleRules`, no resolution, no rule
+   minting. State overlays (`state hovered { … }`), breakpoints, and
+   container queries ship as pseudo-class/`@media`/`@container` rules
+   inside the same `.css`, so the browser drives them.
+
+Class names derive from an FNV-1a hash of each sheet's source text,
+computed inside the macro — the dump build and the shipped build agree
+byte-for-byte with no manifest or build coordination between them.
+One `-<value>` segment per variant axis is appended in declaration
+order (an unset axis contributes its `#[default]` arm's name, or `_`
+when the axis has none).
+
+### What stays on the live engine
+
+A sheet (or application) falls back to live minting when the build
+can't prove the CSS at build time:
+
+- **Reactive inputs** — a setter received a `Signal`/`derived`.
+- **Runtime overrides** — `.override_*` values at the call site, or
+  `with_style_overrides` layers.
+- **Shadow-carrying sheets** — `shadow` lowers as `text-shadow` on
+  text and `box-shadow` on boxes, and a class name carries no
+  node-kind information.
+- **Non-literal `font_family`** — a `Typeface` needs `@font-face` +
+  face-asset registration, which rides sheet registration; only
+  string-literal (system) fonts premint.
+
+Fallback is per-application and silent: the same build can serve one
+`Card()` preminted and another `Card().padding(sig)` live.
+
+### Theme state without registrations
+
+A fully-preminted app registers no sheets, so the host-state flush
+that normally rides registration gets its own driver: the first
+`Preminted` attach installs a per-thread Effect that drains queued
+theme tokens (as `:root` CSS variables), app background, scrollbar
+theme, and the app key handler into the backend, re-firing on every
+token-version bump. Theme swap therefore works identically — preminted
+rules reference `var(--token, fallback)` like live-minted ones.
+
+The theme's *default text font* is the one apply-time fill a
+build-time rule can't reproduce, so preminted rule bodies whose sheet
+sets no `font_family` carry
+`font-family: var(--iy-default-font, inherit)` and the driver defines
+that variable from the installed theme
+(`Backend::apply_default_text_font`; web sets it on the document
+element, SSR emits it in the head CSS). With no default font
+installed the `inherit` fallback reproduces the plain cascade.
+
+### Dropping the engine: the `style-dynamic` feature
+
+Preminting alone changes *when* rules are made, not the bundle size —
+the engine still ships for the fallback paths. The size win comes from
+the `style-dynamic` cargo feature (default-on, same model as the
+`prim-*` primitive gates): an app whose every style premints sets
+`default-features = false` on **both** runtime-core and backend-web
+(re-adding the `prim-*` families it uses), and the walker's dynamic
+style arms — `Static`/`Reactive`/`SignalClass` attachment, `StyleRules`
+resolution, the theme cohort, backend CSS minting — compile out.
+Preminted class stamping and the theme-state driver stay. Any dynamic
+style that still reaches the walker degrades to an UNSTYLED node with
+a dev-build warning naming the feature; release builds degrade
+silently.
+
+On the one-text-node floor app this is ~107 KB of wasm (~40 KB
+gzipped) — see `stylesheet!`'s feature docs in runtime-core's
+Cargo.toml for the unification caveat.
+
+### Current limits
+
+- `--premint` refuses to combine with `--ssg`/`--ssr`: server-rendered
+  HTML would carry live-minted classes while the hydrating client
+  stamps preminted ones, so adoption would diverge. SSR premint needs
+  its own wiring.
+- Only `stylesheet!` *builder* applications premint. A plain
+  `Rc<StyleSheet>` passed directly (e.g. `card_style()`) stays live.
+- Native backends never see either cfg — they keep the full rules
+  closures and the apply-time default-font fill. The observable
+  styling is identical everywhere; premint changes only *when* the
+  web's rules are produced.
+
+---
+
 ## Shadows: box vs. text
 
 `StyleRules::shadow` is a single `Shadow { x, y, blur, color }`. What it

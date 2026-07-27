@@ -231,8 +231,14 @@ pub fn jsx(input: TokenStream) -> TokenStream {
 /// grammar.
 #[proc_macro]
 pub fn stylesheet(input: TokenStream) -> TokenStream {
+    // Hash the raw input BEFORE parsing consumes it — preminted class
+    // names derive from this, so identical sheet source ⇒ identical
+    // classes (harmless dedup) and any source edit moves every class
+    // the sheet mints (a stale cached `.css` can never mis-style a
+    // fresh binary). See `stylesheet::content_hash`.
+    let content_hash = stylesheet::content_hash(&input.to_string());
     let parsed = parse_macro_input!(input as stylesheet::StyleSheetDecl);
-    stylesheet::emit(parsed).into()
+    stylesheet::emit(parsed, content_hash).into()
 }
 
 /// `#[component]` — annotates a component function. Rewrites its body for

@@ -1467,6 +1467,7 @@ fn launch_ssr(
                 // bundle size, and the heuristic adds a pass per
                 // rebuild.
                 prune_dead_data_min: None,
+                premint: false,
             },
         )
         .with_context(|| "wasm build for SSR mode failed")?;

@@ -8,7 +8,7 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = ["prim-virtualizer", "prim-icon", "prim-image", "prim-text-input", "prim-toggle", "prim-slider", "prim-activity", "prim-graphics", "prim-portal", "prim-presence", "prim-navigator", "prim-lazy"]
+default = ["style-dynamic", "prim-virtualizer", "prim-icon", "prim-image", "prim-text-input", "prim-toggle", "prim-slider", "prim-activity", "prim-graphics", "prim-portal", "prim-presence", "prim-navigator", "prim-lazy"]
 # Compile in `Element::Virtualizer` support: the windowed-list recycler
 # (`primitives::virtualizer`), the Backend hook overrides, and the
 # embedded `virtualizer.js` shim (~7.5 KB after build.rs minification). Mirrors runtime-core's `prim-virtualizer`
@@ -17,6 +17,14 @@ default = ["prim-virtualizer", "prim-icon", "prim-image", "prim-text-input", "pr
 # this crate to drop the machinery (the walker then renders the standard
 # "not supported" placeholder if a virtualizer arrives over the wire).
 prim-virtualizer = ["runtime-core/prim-virtualizer"]
+# Forward of runtime-core's live style engine gate (see the feature's
+# doc there). This backend carries no `#[cfg]` of its own for it — with
+# the walker's dynamic-style arms compiled out, the engine impl methods
+# (`register_stylesheet`, `apply_styled_variants`, class minting) lose
+# their only callers and the linker drops them plus the `StyleRules` →
+# CSS emission behind them. A fully-preminted app disables default
+# features on BOTH runtime-core and this crate to take the size win.
+style-dynamic = ["runtime-core/style-dynamic"]
 # Same shape per family — forwards runtime-core's gate and compiles this
 # backend's implementation module + Backend overrides for it.
 prim-icon = ["runtime-core/prim-icon"]
@@ -154,6 +162,7 @@ features = [
     "Document",
     "DocumentFragment",
     "DomRect",
+    "DomTokenList",
     "Element",
     "ErrorEvent",
     "Event",

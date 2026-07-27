@@ -31,6 +31,8 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use build_ios::{font_preload_tags, inject_into_head, parse_manifest, FrameworkSource, Manifest};
+
+mod premint;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 
@@ -116,6 +118,19 @@ pub struct BuildOptions {
     /// verified-safe floor on the website example; the CLI defaults
     /// to that for release web builds.
     pub prune_dead_data_min: Option<usize>,
+    /// Preminted styles: run the ephemeral native style-dump build
+    /// (every `stylesheet!` in the app graph emits its full variant
+    /// space as CSS into `pkg/premint.css`) and compile the wasm with
+    /// `--cfg idealyst_premint`, so all-constant style applications
+    /// ship as build-time class references instead of invoking the
+    /// runtime style engine. Pair with `primitives`-style minimal
+    /// features (`default-features = false` on runtime-core AND
+    /// backend-web, dropping `style-dynamic`) to remove the engine
+    /// from the bundle entirely. Opt-in while the parity soak is
+    /// running; not yet compatible with `hydrate` (SSG/SSR emits
+    /// live-minted classes — the build refuses the combination
+    /// rather than shipping a hydration mismatch).
+    pub premint: bool,
 }
 
 #[derive(Debug)]
@@ -185,10 +200,20 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         .join("target/wasm32-unknown-unknown")
         .join(if opts.release { "release" } else { "debug" })
         .join(format!("{}.wasm", manifest.lib_name));
+    if opts.premint && opts.hydrate {
+        anyhow::bail!(
+            "--premint cannot be combined with --ssg/--ssr yet: the \
+             server-rendered HTML would carry live-minted classes while the \
+             hydrating client stamps preminted ones, so adoption would \
+             diverge. Build the SPA form (--web without --ssg/--ssr), or \
+             drop --premint."
+        );
+    }
     cargo_build_wasm(
         &wrapper_dir,
         opts.release,
         opts.strip_panics,
+        opts.premint,
         &opts.user_features,
     )?;
     wasm_bindgen_build(&original_wasm, &wrapper_pkg, &manifest.lib_name)
@@ -204,6 +229,28 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     .with_context(|| "wasm-split-cli post-build")?;
     if opts.release {
         wasm_opt_pkg(&wrapper_pkg).with_context(|| "wasm-opt post-split")?;
+    }
+
+    if opts.premint {
+        // Native dump build → `pkg/premint.css`. Written into the
+        // wrapper pkg BEFORE staging/sync so both the staged bundle and
+        // the in-project `pkg/` carry it, and before `fingerprint_pkg`
+        // so it gets content-addressed with the rest of the bundle.
+        let css = premint::generate_and_run_dump(
+            wrapper_dir.parent().expect("wrapper dir has a parent"),
+            &project_dir,
+            &opts.source,
+            &manifest,
+        )
+        .with_context(|| "premint style dump")?;
+        fs::write(wrapper_pkg.join(premint::PREMINT_CSS_NAME), &css).with_context(|| {
+            format!("write {}", wrapper_pkg.join(premint::PREMINT_CSS_NAME).display())
+        })?;
+        eprintln!(
+            "[build-web] premint: {} bytes of preminted CSS → pkg/{}",
+            css.len(),
+            premint::PREMINT_CSS_NAME,
+        );
     }
 
     let (pkg_dir, bundle_dir, entry_js) = if let Some(out) = opts.bundle_out_dir.as_ref() {
@@ -229,6 +276,13 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         let fp = fingerprint_pkg(&staged_pkg, &manifest.lib_name)
             .with_context(|| format!("fingerprint {}", staged_pkg.display()))?;
         rewrite_index_bundle_ref(&staged.join("index.html"), &manifest.lib_name, &fp.entry_js)?;
+        // Link the preminted stylesheet (content-addressed by the
+        // fingerprint pass above). A plain <link> — the browser needs
+        // the rules before first paint anyway, and pkg/ is immutable
+        // so it caches like the wasm.
+        if let Some(css_name) = &fp.premint_css {
+            inject_premint_css_link(&staged.join("index.html"), css_name)?;
+        }
         // Rewrite the staged `index.html` to preload the project's
         // declared fonts. Has to run BEFORE `gzip_bundle` (which
         // overwrites `index.html` with gzipped bytes) so the gzipped
@@ -264,6 +318,15 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         sync_pkg_dir(&wrapper_pkg, &project_pkg).with_context(|| {
             format!("sync {} → {}", wrapper_pkg.display(), project_pkg.display())
         })?;
+        if opts.premint {
+            // No staging → no index rewriting; the project's own
+            // index.html must link the sheet itself.
+            eprintln!(
+                "[build-web] premint: add <link rel=\"stylesheet\" \
+                 href=\"pkg/{}\"> to your index.html <head>",
+                premint::PREMINT_CSS_NAME,
+            );
+        }
         (project_pkg, None, None)
     };
 
@@ -479,6 +542,18 @@ pub fn default_index_html(title: &str, lib_name: &str) -> String {
 /// Mirrors the dev-http path: both call the same `font_preload_tags`
 /// + `inject_into_head` helpers so the dev loop and the deployed
 /// bundle preload the same set from the same TOML list.
+/// Splice the preminted stylesheet `<link>` into the staged
+/// `index.html` head. Same read-modify-write shape as the font-preload
+/// injector below; runs before gzip for the same reason.
+fn inject_premint_css_link(index_path: &Path, css_name: &str) -> Result<()> {
+    let html = fs::read_to_string(index_path)
+        .with_context(|| format!("read {}", index_path.display()))?;
+    let snippet = format!("\n    <link rel=\"stylesheet\" href=\"pkg/{css_name}\">");
+    let out = inject_into_head(html, &snippet);
+    fs::write(index_path, out).with_context(|| format!("write {}", index_path.display()))?;
+    Ok(())
+}
+
 fn inject_font_preloads_into_staged_index(index_path: &Path, paths: &[String]) -> Result<()> {
     let snippet = font_preload_tags(paths);
     if snippet.is_empty() {
@@ -553,6 +628,11 @@ pub struct PkgFingerprint {
     /// e.g. `website.3f9a12bc44d0e1a7.js`. Pages boot the app via
     /// `/pkg/<entry_js>`.
     pub entry_js: String,
+    /// Content-hashed name of `premint.css` when the bundle carries a
+    /// preminted stylesheet (`--premint` builds), e.g.
+    /// `premint.3f9a12bc44d0e1a7.css`. `None` when no premint sheet
+    /// was in the pkg.
+    pub premint_css: Option<String>,
 }
 
 /// Content-address a staged `pkg/`: rename every top-level `.js` /
@@ -640,7 +720,10 @@ pub fn fingerprint_pkg(pkg_dir: &Path, lib_name: &str) -> Result<PkgFingerprint>
         let Some((stem, ext)) = rel.rsplit_once('.') else {
             continue;
         };
-        if ext != "js" && ext != "wasm" {
+        // `.css` covers the preminted stylesheet — it's a fetch URL
+        // referenced only from index.html (rewritten separately), so it
+        // renames like `.wasm`: no intra-pkg references to fix up.
+        if ext != "js" && ext != "wasm" && ext != "css" {
             continue;
         }
         renames.push((rel.clone(), format!("{stem}.{hash}.{ext}")));
@@ -668,7 +751,9 @@ pub fn fingerprint_pkg(pkg_dir: &Path, lib_name: &str) -> Result<PkgFingerprint>
         fs::remove_file(&src).with_context(|| format!("remove {}", src.display()))?;
     }
     for (old, new) in &renames {
-        if old.ends_with(".wasm") {
+        // `.wasm` and `.css` are plain fetch targets — no intra-pkg
+        // references to rewrite, so a straight rename suffices.
+        if old.ends_with(".wasm") || old.ends_with(".css") {
             fs::rename(pkg_dir.join(old), pkg_dir.join(new))
                 .with_context(|| format!("rename {old} → {new}"))?;
         }
@@ -685,11 +770,15 @@ pub fn fingerprint_pkg(pkg_dir: &Path, lib_name: &str) -> Result<PkgFingerprint>
                 pkg_dir.display(),
             )
         })?;
+    let premint_css = renames
+        .iter()
+        .find(|(o, _)| *o == premint::PREMINT_CSS_NAME)
+        .map(|(_, n)| n.clone());
     eprintln!(
         "[build-web] fingerprint {hash}: {} pkg file(s) content-addressed (entry {entry_js})",
         renames.len(),
     );
-    Ok(PkgFingerprint { hash, entry_js })
+    Ok(PkgFingerprint { hash, entry_js, premint_css })
 }
 
 /// Point the staged `index.html` at the fingerprinted entry shim:
@@ -1592,6 +1681,7 @@ fn cargo_build_wasm(
     wrapper_dir: &Path,
     release: bool,
     strip_panics: bool,
+    premint: bool,
     user_features: &[String],
 ) -> Result<()> {
     let mut cmd = Command::new("cargo");
@@ -1636,6 +1726,13 @@ fn cargo_build_wasm(
     // all evergreen browsers (Chrome/Firefox 2021+, Safari 16.4+).
     let mut base_flags =
         String::from("-C target-feature=+simd128 -C link-args=--emit-relocs");
+    if premint {
+        // Flip the `stylesheet!`-generated builders to their preminted
+        // fast path (`StyleSource::Preminted` for all-constant
+        // applications). Paired with the native dump build that emits
+        // the matching `pkg/premint.css` — see the `premint` module.
+        base_flags.push_str(" --cfg idealyst_premint");
+    }
     if strip_panics {
         // Select the `immediate-abort` panic strategy (the modern replacement
         // for the removed `panic_immediate_abort` build-std feature). Applies to

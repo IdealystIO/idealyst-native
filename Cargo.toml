@@ -182,6 +182,10 @@ members = [
     # Project configuration engine — powers `idealyst configure` (devcontainer
     # today) and the shared MCP `configure_devcontainer` tool.
     "crates/tools/configure",
+    # Premint style-dump assembly — the ephemeral dump wrapper the CLI
+    # generates links this to turn `runtime_core::premint::PREMINT_SHEETS`
+    # into the shipped `.css` asset.
+    "crates/tools/premint-dump",
     # wasm-split toolchain (vendored from DioxusLabs/dioxus alpha-0.8.0
     # — we own the snapshot, fix bugs as they fire on our codebase).
     # See `crates/tools/wasm-split/README.md`.
@@ -331,6 +335,13 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 css = { path = "crates/css" }
+premint-dump = { path = "crates/tools/premint-dump" }
+# Link-time distributed slices — the premint style-dump registry
+# (`runtime_core::premint`, `style-dump` feature). Link-section
+# collection instead of first-use registration because the dump must
+# see EVERY `stylesheet!` in the binary, including sheets on screens
+# the dump run never renders.
+linkme = "0.3"
 dev-hot = { path = "crates/dev/hot" }
 runtime-macros = { path = "crates/runtime/macros" }
 mcp-catalog = { path = "crates/mcp/catalog" }

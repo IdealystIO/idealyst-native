@@ -2176,6 +2176,42 @@ impl Backend for WebBackend {
         runtime_core::Platform::Web
     }
 
+    fn attach_html_class(&self, node: &Self::Node, class: &str) {
+        // `classList.add` (not `className =`) so a preminted/structural
+        // class composes with classes the style engine or hydration
+        // already stamped. Idempotent on hydration re-adoption.
+        if let Some(el) = node.dyn_ref::<web_sys::Element>() {
+            let _ = el.class_list().add_1(class);
+        }
+    }
+
+    fn supports_preminted_styles(&self) -> bool {
+        true
+    }
+
+    fn apply_default_text_font(&mut self, font: Option<&runtime_core::FontFamily>) {
+        // Inline custom property on `<html>` — wins over any stylesheet
+        // `:root` definition and needs no rule bookkeeping. Preminted
+        // rule bodies read it via `var(--iy-default-font, inherit)`.
+        let Some(root) = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.document_element())
+            .and_then(|e| e.dyn_into::<web_sys::HtmlElement>().ok())
+        else {
+            return;
+        };
+        let style = root.style();
+        match font {
+            Some(ff) => {
+                let _ = style
+                    .set_property(css::DEFAULT_TEXT_FONT_VAR, &css::font_family_css_value(ff));
+            }
+            None => {
+                let _ = style.remove_property(css::DEFAULT_TEXT_FONT_VAR);
+            }
+        }
+    }
+
     // Native render introspection (parity testing) — reads the browser's
     // resolved `getComputedStyle`/`getBoundingClientRect`. Available whenever
     // the robot bridge can call it (no extra feature); only the introspect

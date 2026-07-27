@@ -231,9 +231,126 @@ pub fn state_pseudo(state: runtime_core::StateBits) -> Option<&'static str> {
         StateBits::HOVERED => Some(":hover"),
         StateBits::PRESSED => Some(":active"),
         StateBits::FOCUSED => Some(":focus"),
-        StateBits::DISABLED => Some(":disabled"),
+        // Attribute selector, NOT the `:disabled` pseudo-class.
+        // `set_disabled` marks the node with the HTML `disabled`
+        // *attribute*, and a pressable renders as a `<div>`. The
+        // `:disabled` pseudo only matches real form controls, so
+        // `.cls:disabled` is inert on a `<div disabled>` and the
+        // overlay silently never applies. `[disabled]` matches any
+        // element carrying the attribute — div pressables AND form
+        // controls alike.
+        StateBits::DISABLED => Some("[disabled]"),
         _ => None,
     }
+}
+
+/// CSS custom property carrying the installed theme's default text font
+/// (see `runtime_core::style::set_default_text_font`). Preminted rule
+/// bodies whose sheet sets no `font_family` reference it as
+/// `font-family: var(--iy-default-font, inherit)`; the runtime's premint
+/// host driver defines it (web: inline on the document element, SSR: in
+/// the head CSS) via `Backend::apply_default_text_font`. The `inherit`
+/// fallback makes an unthemed app behave like plain CSS cascade — which
+/// is also what the live engine does when no default font is installed.
+pub const DEFAULT_TEXT_FONT_VAR: &str = "--iy-default-font";
+
+/// The CSS `font-family` value for a resolved [`runtime_core::FontFamily`]
+/// — `System` names pass through raw (they can be full fallback stacks),
+/// `Typeface` family names are quoted. Single source for `rules_to_css`,
+/// the styled-text run emitter, and `Backend::apply_default_text_font`
+/// impls, so a family formats identically everywhere.
+pub fn font_family_css_value(ff: &runtime_core::FontFamily) -> String {
+    match ff {
+        runtime_core::FontFamily::System(name) => name.clone(),
+        runtime_core::FontFamily::Typeface(tf) => format!("\"{}\"", tf.family_name),
+    }
+}
+
+/// One `.class { body }` rule string.
+pub fn class_rule(class_name: &str, body: &str) -> String {
+    let mut rule = String::with_capacity(class_name.len() + body.len() + 6);
+    rule.push('.');
+    rule.push_str(class_name);
+    rule.push_str(" { ");
+    rule.push_str(body);
+    rule.push_str(" }");
+    rule
+}
+
+/// Assemble the ordered rule group for one minted class: the base rule
+/// first, then each state overlay as a pseudo-class/`[disabled]` rule,
+/// then breakpoint overlays as `@media (min-width: …)` rules (callers
+/// pass them ascending by rank), then container overlays as
+/// `@container (min-width: …)` rules (ascending by threshold).
+///
+/// ORDER IS LOAD-BEARING: the base's physical index must sit below every
+/// overlay's and the responsive overlays must stack ascending, because
+/// the equal-specificity mobile-first cascade resolves conflicts by sheet
+/// order. Callers must insert the returned rules contiguously, in order.
+///
+/// Single source shared by the web backend (live stylesheet insert), SSR
+/// (`<head>` emit), and the premint style-dump (`.css` asset), so the
+/// same `(base, overlays)` mints semantically identical CSS everywhere —
+/// which is the whole hydration/premint contract.
+pub fn class_rule_group(
+    class_name: &str,
+    base: &StyleRules,
+    state_overlays: &[(runtime_core::StateBits, std::rc::Rc<StyleRules>)],
+    breakpoint_overlays: &[(runtime_core::Breakpoint, std::rc::Rc<StyleRules>)],
+    container_overlays: &[(f32, std::rc::Rc<StyleRules>)],
+) -> Vec<String> {
+    class_rule_group_with(
+        class_name,
+        base,
+        state_overlays,
+        breakpoint_overlays,
+        container_overlays,
+        rules_to_css,
+    )
+}
+
+/// [`class_rule_group`] with a caller-chosen per-layer lowering — the
+/// text-shadow variant passes [`rules_to_css_text`] so every layer
+/// renders shadows as `text-shadow` instead of `box-shadow`.
+pub fn class_rule_group_with(
+    class_name: &str,
+    base: &StyleRules,
+    state_overlays: &[(runtime_core::StateBits, std::rc::Rc<StyleRules>)],
+    breakpoint_overlays: &[(runtime_core::Breakpoint, std::rc::Rc<StyleRules>)],
+    container_overlays: &[(f32, std::rc::Rc<StyleRules>)],
+    emit: fn(&StyleRules) -> String,
+) -> Vec<String> {
+    let mut group_rules: Vec<String> = Vec::with_capacity(
+        1 + state_overlays.len() + breakpoint_overlays.len() + container_overlays.len(),
+    );
+    group_rules.push(class_rule(class_name, &emit(base)));
+    for (bit, overlay) in state_overlays {
+        let Some(pseudo) = state_pseudo(*bit) else { continue };
+        let selector = format!("{class_name}{pseudo}");
+        let body = emit(overlay);
+        // A component that declares its own `__state_focused` overlay
+        // owns the focus indicator, so suppress the browser's default
+        // `outline` on that `:focus` rule — otherwise the native ring
+        // double-draws with the themed one. Only emitted where a focus
+        // overlay exists; elements without one keep the default ring.
+        let body = if *bit == runtime_core::StateBits::FOCUSED {
+            format!("outline:none;{body}")
+        } else {
+            body
+        };
+        group_rules.push(class_rule(&selector, &body));
+    }
+    for (bp, overlay) in breakpoint_overlays {
+        // `None` only for `Breakpoint::Xs` (the base, no media query) —
+        // which the walker never emits as an overlay.
+        if let Some(rule) = breakpoint_media_rule(class_name, *bp, &emit(overlay)) {
+            group_rules.push(rule);
+        }
+    }
+    for (threshold, overlay) in container_overlays {
+        group_rules.push(container_query_rule(class_name, *threshold, &emit(overlay)));
+    }
+    group_rules
 }
 
 /// The `@media (min-width: …)` prelude for a breakpoint overlay, using
@@ -516,14 +633,7 @@ pub fn tokenized_color_css(t: &runtime_core::Tokenized<runtime_core::Color>) -> 
 pub fn text_run_style_css(style: &runtime_core::TextRunStyle) -> String {
     let mut out = String::new();
     if let Some(ff) = &style.font_family {
-        match ff {
-            runtime_core::FontFamily::System(name) => {
-                push_decl(&mut out, "font-family", name);
-            }
-            runtime_core::FontFamily::Typeface(tf) => {
-                push_decl(&mut out, "font-family", &format!("\"{}\"", tf.family_name));
-            }
-        }
+        push_decl(&mut out, "font-family", &font_family_css_value(ff));
     }
     if let Some(w) = style.font_weight {
         push_decl(&mut out, "font-weight", font_weight_css(w));
@@ -1071,10 +1181,7 @@ pub fn rules_to_css_with_shadow(rules: &StyleRules, shadow_kind: ShadowKind) -> 
         ("right", V::Len(&rules.right)),
         ("bottom", V::Len(&rules.bottom)),
         ("left", V::Len(&rules.left)),
-        ("font-family", V::Owned(rules.font_family.as_ref().map(|ff| match ff {
-            runtime_core::FontFamily::System(name) => name.clone(),
-            runtime_core::FontFamily::Typeface(tf) => format!("\"{}\"", tf.family_name),
-        }))),
+        ("font-family", V::Owned(rules.font_family.as_ref().map(font_family_css_value))),
         ("font-weight", V::Kw(rules.font_weight.map(font_weight_css))),
         ("font-style", V::Kw(rules.font_style.map(font_style_css))),
         ("line-height", V::Px(&rules.line_height)),

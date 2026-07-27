@@ -132,6 +132,7 @@ pub fn run(args: Args) -> Result<()> {
             // Debug builds skip data pruning; release docs aren't size-
             // critical enough to risk the heuristic, so leave it off.
             prune_dead_data_min: None,
+            premint: false,
         },
     )
     .context("build the docs web bundle")?;

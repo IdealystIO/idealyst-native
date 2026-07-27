@@ -78,7 +78,7 @@ mod robot;
 mod scroll_view;
 #[cfg(feature = "prim-slider")]
 mod slider;
-mod style;
+pub(crate) mod style;
 mod text;
 #[cfg(feature = "prim-text-input")]
 mod text_input;
@@ -559,7 +559,8 @@ pub(super) fn build_inner<B: Backend + 'static>(
             // list, where `insert_children` expands it inline.
             // Reaching this arm means a `Repeat` was used outside
             // a children context — author or macro bug.
-            panic!(
+            crate::diag_panic!(
+                "repeat-as-root",
                 "Element::Repeat encountered as a standalone subtree root. \
                  Repeat is a children-list primitive (used for `for` loops \
                  inside `ui!`); it cannot be the result of a `build()` call \

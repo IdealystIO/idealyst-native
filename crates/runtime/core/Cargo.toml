@@ -33,7 +33,7 @@ license.workspace = true
 # SDKs that render through a primitive must forward its feature on their
 # runtime-core dependency (e.g. `virtualized` forwards `prim-virtualizer`),
 # so depending on the SDK re-enables exactly what it needs.
-default = ["prim-virtualizer", "prim-icon", "prim-image", "prim-text-input", "prim-toggle", "prim-slider", "prim-activity", "prim-portal", "prim-presence", "prim-graphics", "prim-navigator", "prim-lazy"]
+default = ["style-dynamic", "prim-virtualizer", "prim-icon", "prim-image", "prim-text-input", "prim-toggle", "prim-slider", "prim-activity", "prim-portal", "prim-presence", "prim-graphics", "prim-navigator", "prim-lazy"]
 # `Element::Navigator` + `Element::NavigatorOutlet` behavior: the walker's
 # navigator build (screen scopes, outlet capture), URL sync (pushState /
 # popstate / deep links) and scroll persistence. The navigator *types*
@@ -196,9 +196,35 @@ async-driver = [
 # unified feature set) rather than inside the `face!` expansion (which
 # would be evaluated against the author crate's features).
 embed-font-bytes = []
+# Premint style-dump registry (`runtime_core::premint`): the linkme
+# distributed slice every `stylesheet!` registers into under
+# `cfg(idealyst_premint_dump)`, plus the resolver re-exports the dump
+# binary consumes. Enabled ONLY by the CLI's ephemeral dump build —
+# shipped builds never carry it. Requires `style-dynamic` because the
+# dump resolves sheets through the live resolution pipeline
+# (`premint::resolve_layers` → walker resolvers).
+style-dump = ["style-dynamic", "dep:linkme"]
+
+# The runtime style engine: `StyleSource::Static`/`Reactive`/`SignalClass`
+# attachment, `StyleRules` resolution/merging, the theme cohort, and
+# backend-side CSS minting. ON by default — existing apps change nothing.
+# A web app whose every sheet is preminted by the CLI (see
+# `docs/content/styling.md`, "Preminted styles") can set
+# `default-features = false` (re-adding the `prim-*` features it uses)
+# to drop the engine from the bundle; `StyleSource::Preminted` class
+# stamping, theme-token CSS-variable installation, and theme swap keep
+# working through the premint host driver. Any style that still needs
+# the live engine (a reactive closure, a `.override_*` at a call site,
+# a shadow/typeface-carrying sheet) degrades to UNSTYLED with a
+# dev-build warning naming this feature — same graceful-fallback model
+# as `prim-*`. Backend crates forward this feature (same unification
+# caveat as `prim-*`: the app must set `default-features = false` on
+# BOTH runtime-core and its backend crate).
+style-dynamic = []
 
 [dependencies]
 runtime-macros = { workspace = true }
+linkme = { workspace = true, optional = true }
 # `dev-hot` is only linked in when the `hot-reload` cargo
 # feature is on (typically by the runtime-server dylib-mode host wrapper). Off
 # by default — production builds don't compile it.

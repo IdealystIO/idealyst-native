@@ -1,0 +1,10 @@
+[package]
+name = "premint-dump"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Premint style-dump assembly: turns the runtime-core PREMINT_SHEETS registry into the shipped .css asset. Linked only by the CLI's ephemeral dump wrapper, never by shipped apps."
+
+[dependencies]
+runtime-core = { workspace = true, features = ["style-dump"] }
+css = { workspace = true }

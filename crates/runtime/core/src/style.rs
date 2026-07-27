@@ -3182,31 +3182,28 @@ pub fn is_registered(sheet: &Rc<StyleSheet>) -> bool {
     REGISTRATIONS.with(|r| r.borrow().contains_key(&key))
 }
 
-/// - Sweeps registrations whose `Weak<StyleSheet>` no longer upgrades
-///   into the pending-unregister queue.
-pub fn ensure_registered_with<R, U, I, UPD, RA, RT, SAB, SST, SAK>(
-    sheet: &Rc<StyleSheet>,
-    register: R,
-    unregister: U,
+/// Drain the queued host-level state — pending token installs/updates,
+/// app background, scrollbar theme, app key handler — into the backend
+/// via the given closures.
+///
+/// Historically this ran only as the prologue of
+/// [`ensure_registered_with`], i.e. it rode *sheet registration*. A
+/// fully-preminted app registers no sheets (its rules ship as a static
+/// `.css` asset), so the walker's premint host driver calls this
+/// directly — otherwise `install_tokens` / `set_theme` state queued by
+/// the theme SDK would never reach the backend and every `var(--…)`
+/// in the preminted CSS would fall back. Both callers share this one
+/// drain so the ordering invariant (tokens before host-surface
+/// settings, see the inline comment) can't diverge.
+pub(crate) fn flush_pending_host_state<I, UPD, SAB, SST, SAK>(
     install_tokens: I,
     update_tokens: UPD,
-    register_asset: RA,
-    register_typeface: RT,
     set_app_background: SAB,
     set_scrollbar_theme: SST,
     set_app_key_handler: SAK,
 ) where
-    R: FnOnce(&[Rc<StyleRules>]),
-    U: Fn(&[Rc<StyleRules>]),
     I: FnOnce(&[TokenEntry]),
     UPD: FnMut(&[TokenEntry]),
-    RA: FnMut(crate::assets::AssetId, crate::assets::AssetTag, &crate::assets::AssetSource),
-    RT: FnMut(
-        TypefaceId,
-        &'static str,
-        &'static [crate::assets::TypefaceFace],
-        crate::assets::SystemFallback,
-    ),
     SAB: FnOnce(&Tokenized<Color>),
     SST: FnOnce(&Tokenized<Color>, &Tokenized<Color>),
     SAK: FnOnce(Option<crate::primitives::key::KeyDownHandler>),
@@ -3244,6 +3241,44 @@ pub fn ensure_registered_with<R, U, I, UPD, RA, RT, SAB, SST, SAK>(
     if let Some(handler) = PENDING_APP_KEY_HANDLER.with(|p| p.borrow_mut().take()) {
         set_app_key_handler(handler);
     }
+}
+
+/// - Sweeps registrations whose `Weak<StyleSheet>` no longer upgrades
+///   into the pending-unregister queue.
+pub fn ensure_registered_with<R, U, I, UPD, RA, RT, SAB, SST, SAK>(
+    sheet: &Rc<StyleSheet>,
+    register: R,
+    unregister: U,
+    install_tokens: I,
+    update_tokens: UPD,
+    register_asset: RA,
+    register_typeface: RT,
+    set_app_background: SAB,
+    set_scrollbar_theme: SST,
+    set_app_key_handler: SAK,
+) where
+    R: FnOnce(&[Rc<StyleRules>]),
+    U: Fn(&[Rc<StyleRules>]),
+    I: FnOnce(&[TokenEntry]),
+    UPD: FnMut(&[TokenEntry]),
+    RA: FnMut(crate::assets::AssetId, crate::assets::AssetTag, &crate::assets::AssetSource),
+    RT: FnMut(
+        TypefaceId,
+        &'static str,
+        &'static [crate::assets::TypefaceFace],
+        crate::assets::SystemFallback,
+    ),
+    SAB: FnOnce(&Tokenized<Color>),
+    SST: FnOnce(&Tokenized<Color>, &Tokenized<Color>),
+    SAK: FnOnce(Option<crate::primitives::key::KeyDownHandler>),
+{
+    flush_pending_host_state(
+        install_tokens,
+        update_tokens,
+        set_app_background,
+        set_scrollbar_theme,
+        set_app_key_handler,
+    );
 
     let sheet_ptr = Rc::as_ptr(sheet);
     let key = RegKey { sheet: sheet_ptr };

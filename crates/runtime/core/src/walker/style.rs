@@ -21,14 +21,21 @@
 //! - [`attach_safe_area`] / [`attach_scroll_view_safe_area_inset`] —
 //!   per-primitive safe-area opt-in, in two flavors.
 
+#[cfg(feature = "style-dynamic")]
 use super::theme_cohort::{
     install_theme_cohort_driver, theme_cohort_register, theme_cohort_unregister, CohortId,
 };
 use crate::backend::Backend;
 use crate::handles::StateBits;
-use crate::reactive::{self, Effect, Signal};
-use crate::sources::{SignalClassSpec, StyleSource};
-use crate::style::{self, resolve as resolve_style, StyleApplication, StyleRules, StyleSheet};
+#[cfg(feature = "style-dynamic")]
+use crate::reactive;
+use crate::reactive::{Effect, Signal};
+#[cfg(feature = "style-dynamic")]
+use crate::sources::SignalClassSpec;
+use crate::sources::StyleSource;
+#[cfg(feature = "style-dynamic")]
+use crate::style::{resolve as resolve_style, StyleRules, StyleSheet};
+use crate::style::{self, StyleApplication};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -71,6 +78,7 @@ pub(super) fn pop_container() {
 /// current point in the build walk, or `None` when outside any
 /// `.container()`. Read at `attach_style` time and captured into the
 /// node's style Effect (which reads `.get()` to subscribe).
+#[cfg_attr(not(feature = "style-dynamic"), allow(dead_code))]
 pub(super) fn nearest_container() -> Option<Signal<f32>> {
     CONTAINER_STACK.with(|s| s.borrow().last().copied())
 }
@@ -80,6 +88,7 @@ pub(super) fn nearest_container() -> Option<Signal<f32>> {
 /// (e.g. the web backend's dynamic CSS class slot) gets cleaned up
 /// when the effect's scope drops — which happens on `when()` rebuilds
 /// and on `Owner` teardown.
+#[cfg(feature = "style-dynamic")]
 pub(super) struct StyleHandle<B: Backend + 'static> {
     backend: Rc<RefCell<B>>,
     /// Per-row node handle, shared via `Rc` so the cohort closure
@@ -98,6 +107,7 @@ pub(super) struct StyleHandle<B: Backend + 'static> {
     cohort_id: Option<CohortId>,
 }
 
+#[cfg(feature = "style-dynamic")]
 impl<B: Backend + 'static> Drop for StyleHandle<B> {
     fn drop(&mut self) {
         // Remove from the theme cohort first, if registered. The
@@ -150,6 +160,7 @@ impl<B: Backend + 'static> Drop for StyleHandle<B> {
 /// Members move into the cohort. The shared `Rc<StyleApplication>`s
 /// avoid cloning the (possibly heavy) `StyleApplication` into the
 /// reapply closure.
+#[cfg(feature = "style-dynamic")]
 pub(super) fn register_static_cohort_batch<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     members: Vec<(B::Node, StyleApplication)>,
@@ -218,6 +229,59 @@ pub(super) fn register_static_cohort_batch<B: Backend + 'static>(
     );
 }
 
+/// Gated-off variant of [`register_static_cohort_batch`]. With
+/// `style-dynamic` disabled the batched-Repeat walker never queues style
+/// attachments (its `StyleSource::Static` arm bails to the per-call
+/// path), so this only ever sees an empty member list — the assert
+/// keeps that invariant honest if the batch path grows a new producer.
+#[cfg(not(feature = "style-dynamic"))]
+pub(super) fn register_static_cohort_batch<B: Backend + 'static>(
+    _backend: &Rc<RefCell<B>>,
+    members: Vec<(B::Node, StyleApplication)>,
+) {
+    debug_assert!(
+        members.is_empty(),
+        "batched-Repeat queued style attachments with `style-dynamic` \
+         disabled — the enqueue path must bail non-Preminted styles to \
+         the per-call walker"
+    );
+}
+
+/// Dev-build warning for a dynamic style reaching the walker with the
+/// `style-dynamic` feature disabled: the node renders UNSTYLED. One
+/// warning per distinct cause (not per node — a 10k-row list must not
+/// emit 10k lines). Release builds degrade silently; the graceful
+/// fallback contract mirrors the `prim-*` placeholder model, but a
+/// visible placeholder would be worse than an unstyled node here.
+#[cfg(not(feature = "style-dynamic"))]
+pub(super) fn warn_style_dynamic_disabled(cause: &'static str) {
+    #[cfg(debug_assertions)]
+    {
+        thread_local! {
+            static WARNED: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
+        }
+        WARNED.with(|w| {
+            let mut w = w.borrow_mut();
+            if !w.contains(&cause) {
+                w.push(cause);
+                crate::logging::log(
+                    crate::logging::LogLevel::Warn,
+                    &format!(
+                        "[style-dynamic] {cause} reached the walker but the \
+                         `style-dynamic` feature is disabled — the node renders \
+                         UNSTYLED. Re-enable `runtime-core/style-dynamic` (and \
+                         the backend crate's forward of it), or make the style \
+                         premintable (static `stylesheet!`, no overrides, no \
+                         shadow/typeface)."
+                    ),
+                );
+            }
+        });
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = cause;
+}
+
 /// Attaches a style to an already-constructed node by spawning an
 /// independent reactive Effect that re-applies on each signal change.
 /// The effect captures a `StyleHandle` so that when its scope drops
@@ -232,10 +296,175 @@ pub(super) fn attach_style<B: Backend + 'static>(
     style: StyleSource,
 ) -> Rc<dyn Fn(StateBits, bool)> {
     match style {
+        #[cfg(feature = "style-dynamic")]
         StyleSource::Static(app) => attach_style_static(backend, node, app),
+        #[cfg(feature = "style-dynamic")]
         StyleSource::Reactive(f) => attach_style_reactive(backend, node, f),
+        #[cfg(feature = "style-dynamic")]
         StyleSource::SignalClass(spec) => attach_style_signal_class(backend, node, spec),
+        StyleSource::Preminted { class, overrides } => {
+            // Build-time-minted class: stamp it and stop. No StyleRules,
+            // no cohort registration (theme swap reaches preminted rules
+            // through CSS variables, not re-application), and a no-op
+            // state setter — state overlays for preminted sheets ship as
+            // pseudo-class rules inside the same `.css` asset, so the
+            // document's own engine drives hover/press/focus.
+            debug_assert!(
+                backend.borrow().supports_preminted_styles(),
+                "StyleSource::Preminted reached a backend with no preminted \
+                 support — the stylesheet! macro must keep the full rules \
+                 closure on native targets"
+            );
+            // Preminted rules bypass sheet registration entirely, so the
+            // host-state flush that normally rides registration (theme
+            // tokens → CSS vars, app background, …) needs its own driver.
+            install_premint_host_driver(backend);
+            backend.borrow().attach_html_class(node, &class);
+            if let Some(rules) = overrides {
+                // Runtime slot overrides layer a normal static application
+                // on top of the preminted class. Only this path touches
+                // StyleRules, so fully-preminted apps never link it.
+                // Same shared-empty-sheet trick as `with_style_overrides`
+                // (one cached sheet, not one per node — Android's TLS-key
+                // budget and the registration table both care).
+                #[cfg(feature = "style-dynamic")]
+                {
+                    fn empty_sheet() -> Rc<crate::style::StyleSheet> {
+                        static KEY: u8 = 0;
+                        crate::style::cached_stylesheet(&KEY as *const u8 as usize, || {
+                            Rc::new(crate::style::StyleSheet::r#static(
+                                crate::style::StyleRules::default(),
+                            ))
+                        })
+                    }
+                    return attach_style_static(
+                        backend,
+                        node,
+                        crate::style::StyleApplication::new(empty_sheet())
+                            .with_overrides((*rules).clone()),
+                    );
+                }
+                #[cfg(not(feature = "style-dynamic"))]
+                {
+                    // Overrides are per-node resolved rules — realizing
+                    // them requires the live engine. Class still stamps;
+                    // the override layer is dropped with a warning.
+                    let _ = rules;
+                    warn_style_dynamic_disabled("a preminted style's runtime overrides");
+                }
+            }
+            Rc::new(|_, _| {})
+        }
+        #[cfg(not(feature = "style-dynamic"))]
+        StyleSource::Static(_) => {
+            warn_style_dynamic_disabled("a live-minted static style");
+            Rc::new(|_, _| {})
+        }
+        #[cfg(not(feature = "style-dynamic"))]
+        StyleSource::Reactive(_) => {
+            warn_style_dynamic_disabled("a reactive style closure");
+            Rc::new(|_, _| {})
+        }
+        #[cfg(not(feature = "style-dynamic"))]
+        StyleSource::SignalClass(_) => {
+            warn_style_dynamic_disabled("a signal_class! style binding");
+            Rc::new(|_, _| {})
+        }
     }
+}
+
+thread_local! {
+    /// Premint host driver installed-flag for this thread. Mirrors
+    /// `THEME_COHORT_DRIVER_INSTALLED`: cleared by the driver Effect's
+    /// guard on scope teardown so a follow-up `render(...)` reinstalls
+    /// against the new backend.
+    static PREMINT_HOST_DRIVER_INSTALLED: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Install (idempotently, per thread) the premint host driver: an Effect
+/// that drains the queued host-level state — pending token
+/// installs/updates, app background, scrollbar theme, app key handler —
+/// into the backend, plus the theme's default text font via
+/// [`Backend::apply_default_text_font`].
+///
+/// Why it exists: that drain normally runs as the prologue of
+/// `style::ensure_registered_with`, i.e. it rides *sheet registration*.
+/// A fully-preminted app registers no sheets (rules ship as a static
+/// `.css` asset), so without this driver `install_theme(...)` state
+/// would sit in the queues forever and every `var(--…)` in the
+/// preminted CSS would render its fallback. Subscribing to the tokens
+/// VERSION signal makes theme swaps re-fire the drain — both
+/// `install_tokens` and `update_tokens` bump it.
+///
+/// Installed from the `Preminted` walker arm regardless of the
+/// `style-dynamic` feature: even with the live engine compiled in, an
+/// all-preminted screen performs no registrations.
+fn install_premint_host_driver<B: Backend + 'static>(backend: &Rc<RefCell<B>>) {
+    if PREMINT_HOST_DRIVER_INSTALLED.with(|c| c.get()) {
+        return;
+    }
+    PREMINT_HOST_DRIVER_INSTALLED.with(|c| c.set(true));
+
+    // Same guard model as the theme cohort driver: on scope teardown the
+    // Effect (and this guard) drop, clearing the flag so the next render
+    // reinstalls. `try_with` because Drop can run during TLS teardown at
+    // process exit, when the flag cell may already be destroyed — a plain
+    // `with` would panic inside a destructor and abort.
+    struct DriverGuard;
+    impl Drop for DriverGuard {
+        fn drop(&mut self) {
+            let _ = PREMINT_HOST_DRIVER_INSTALLED.try_with(|c| c.set(false));
+        }
+    }
+    let _guard = DriverGuard;
+
+    let backend = backend.clone();
+    let _e = Effect::new(move || {
+        // Anchor the guard inside the effect closure so it lives
+        // exactly as long as the effect.
+        let _ = &_guard;
+        // One version bump per install_tokens/update_tokens batch —
+        // subscribing here re-fires the drain on every theme swap.
+        let _ = style::tokens_version_signal().get();
+        flush_host_state_to_backend(&backend);
+        // The default text font is document-level state for preminted
+        // classes (they carry `font-family: var(--iy-default-font,
+        // inherit)`); the theme SDK sets it in the same call that
+        // installs/updates tokens, so re-publishing on each version
+        // bump keeps it current across swaps.
+        let font = style::default_text_font();
+        backend.borrow_mut().apply_default_text_font(font.as_ref());
+    });
+}
+
+/// Drain the pending host-state queues straight into `backend`. Shared
+/// shape with the closure bundle `apply_one` hands to
+/// `ensure_registered_with` — one `Rc` clone per closure because each
+/// needs its own `borrow_mut()` window.
+fn flush_host_state_to_backend<B: Backend + 'static>(backend: &Rc<RefCell<B>>) {
+    let b_install = backend.clone();
+    let b_update = backend.clone();
+    let b_bg = backend.clone();
+    let b_scroll = backend.clone();
+    let b_key = backend.clone();
+    style::flush_pending_host_state(
+        |tokens| {
+            b_install.borrow_mut().install_tokens(tokens);
+        },
+        |tokens| {
+            b_update.borrow_mut().update_tokens(tokens);
+        },
+        |c| {
+            b_bg.borrow_mut().set_app_background(c);
+        },
+        |thumb, track| {
+            b_scroll.borrow_mut().set_scrollbar_theme(thumb, track);
+        },
+        |h| {
+            b_key.borrow_mut().set_app_key_handler(h);
+        },
+    );
 }
 
 /// Wire `safe_area_sides` to the backend reactively. Subscribes to
@@ -290,6 +519,7 @@ pub(super) fn attach_scroll_view_safe_area_inset<B: Backend + 'static>(
 /// vs. the reactive path. RAII guard inside the build walker (via
 /// the returned `StyleHandle` captured by the cleanup effect)
 /// removes the cohort entry on teardown.
+#[cfg(feature = "style-dynamic")]
 fn attach_style_static<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     node: &B::Node,
@@ -433,6 +663,7 @@ fn attach_style_static<B: Backend + 'static>(
 /// inline-size signal again, but under the inline-size containment
 /// invariant that width is unchanged, so the change-guarded signal does
 /// not re-fire and the system settles. See [`crate::container_query`].
+#[cfg(feature = "style-dynamic")]
 fn attach_style_static_container<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     node: &B::Node,
@@ -496,6 +727,7 @@ fn attach_style_static_container<B: Backend + 'static>(
 /// the spec's `compute_fallback` runs inside a normal style Effect
 /// — same shape as `attach_style_reactive` would produce. No
 /// behavioral difference, just no FFI fan-out optimization.
+#[cfg(feature = "style-dynamic")]
 fn attach_style_signal_class<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     node: &B::Node,
@@ -610,6 +842,7 @@ fn attach_style_signal_class<B: Backend + 'static>(
 /// Apply a style to a single node. Pulled out as a free function
 /// so both the static path (called inline at mount) and the cohort
 /// driver (called on theme change) can re-use it.
+#[cfg(feature = "style-dynamic")]
 pub(super) fn apply_one<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     node: &B::Node,
@@ -722,6 +955,7 @@ pub(super) fn apply_one<B: Backend + 'static>(
 /// when the node already sets a font or no default is installed; the author's
 /// explicit `font_family` always wins. Inert on non-text nodes (a container's
 /// `font-family` just cascades on web, matching normal CSS).
+#[cfg(feature = "style-dynamic")]
 #[inline]
 fn apply_default_text_font(rules: &mut StyleRules) {
     if rules.font_family.is_none() {
@@ -735,8 +969,9 @@ fn apply_default_text_font(rules: &mut StyleRules) {
 /// resolved rules as a shared `Rc`. Clones ONLY when it actually fills, so
 /// nodes that set their own font (or when no default is installed) keep
 /// sharing the cached `Rc` with no allocation.
+#[cfg(feature = "style-dynamic")]
 #[inline]
-fn with_default_text_font(rules: std::rc::Rc<StyleRules>) -> std::rc::Rc<StyleRules> {
+pub(crate) fn with_default_text_font(rules: std::rc::Rc<StyleRules>) -> std::rc::Rc<StyleRules> {
     if rules.font_family.is_none() && crate::style::default_text_font().is_some() {
         let mut owned = (*rules).clone();
         apply_default_text_font(&mut owned);
@@ -751,6 +986,7 @@ fn with_default_text_font(rules: std::rc::Rc<StyleRules>) -> std::rc::Rc<StyleRu
 /// has registered (so a same-sheet typeface is already recorded). The
 /// whole call — including the `font_family` read — compiles out in
 /// release; see `style::maybe_warn_unregistered_system_font`.
+#[cfg(feature = "style-dynamic")]
 #[inline]
 fn warn_if_orphan_system_font(_rules: &StyleRules) {
     #[cfg(debug_assertions)]
@@ -759,6 +995,7 @@ fn warn_if_orphan_system_font(_rules: &StyleRules) {
     }
 }
 
+#[cfg(feature = "style-dynamic")]
 fn attach_style_reactive<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     node: &B::Node,
@@ -1167,7 +1404,8 @@ fn attach_style_reactive<B: Backend + 'static>(
 /// resolves each one with the corresponding axis set to `"on"`, and
 /// returns `(StateBits, Rc<StyleRules>)` pairs the backend can emit
 /// as pseudo-class CSS.
-pub(super) fn resolve_state_overlays(app: &StyleApplication) -> Vec<(StateBits, Rc<StyleRules>)> {
+#[cfg(feature = "style-dynamic")]
+pub(crate) fn resolve_state_overlays(app: &StyleApplication) -> Vec<(StateBits, Rc<StyleRules>)> {
     // Fast path: most stylesheets declare zero state blocks. The
     // cached slice is empty for them, so we skip both the
     // `variant_keys()` walk (which clones every axis/value String
@@ -1211,7 +1449,8 @@ pub(super) fn resolve_state_overlays(app: &StyleApplication) -> Vec<(StateBits, 
 ///
 /// Returns an empty Vec (no allocation past the slice check) for the
 /// common case of a sheet with no `breakpoint` blocks.
-pub(super) fn resolve_breakpoint_overlays(
+#[cfg(feature = "style-dynamic")]
+pub(crate) fn resolve_breakpoint_overlays(
     app: &StyleApplication,
 ) -> Vec<(crate::Breakpoint, Rc<StyleRules>)> {
     let bp_axes = app.sheet.breakpoint_axes();
@@ -1243,6 +1482,7 @@ pub(super) fn resolve_breakpoint_overlays(
 /// breakpoint blocks pays nothing and never subscribes. Returns the
 /// original `base` Rc untouched when no overlay is active (e.g. a phone
 /// width below `sm`), so the common cases allocate no new `StyleRules`.
+#[cfg(feature = "style-dynamic")]
 fn merge_active_breakpoints(
     base: Rc<StyleRules>,
     overlays: &[(crate::Breakpoint, Rc<StyleRules>)],
@@ -1287,7 +1527,8 @@ fn merge_active_breakpoints(
 ///
 /// Returns an empty Vec (no allocation past the slice check) for the
 /// common case of a sheet with no `container` blocks.
-pub(super) fn resolve_container_overlays(app: &StyleApplication) -> Vec<(f32, Rc<StyleRules>)> {
+#[cfg(feature = "style-dynamic")]
+pub(crate) fn resolve_container_overlays(app: &StyleApplication) -> Vec<(f32, Rc<StyleRules>)> {
     let cq_axes = app.sheet.container_axes();
     if cq_axes.is_empty() {
         return Vec::new();
@@ -1322,6 +1563,7 @@ pub(super) fn resolve_container_overlays(app: &StyleApplication) -> Vec<(f32, Rc
 /// re-subscribes and re-fires when the container's width crosses a
 /// threshold. Returns the original `base` Rc untouched when no overlay
 /// is active, so the common cases allocate no new `StyleRules`.
+#[cfg(feature = "style-dynamic")]
 pub(super) fn merge_active_containers(
     base: Rc<StyleRules>,
     overlays: &[(f32, Rc<StyleRules>)],
@@ -1382,7 +1624,7 @@ pub(super) fn attach_disabled<B: Backend + 'static>(
     });
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "style-dynamic"))]
 mod breakpoint_tests {
     use super::*;
     use crate::style::StyleSheet;
@@ -1463,7 +1705,7 @@ mod breakpoint_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "style-dynamic"))]
 mod container_tests {
     use super::*;
     use crate::container_query::container_axis_name;

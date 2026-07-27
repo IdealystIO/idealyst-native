@@ -396,6 +396,35 @@ pub enum StyleSource {
     /// mobile, in-process renderers) get the same behavior — just
     /// with the per-node Effect path they'd take anyway.
     SignalClass(SignalClassSpec),
+    /// A class whose rules were emitted into a `.css` asset at build
+    /// time (the "preminted" path — see the styling guide's build-time
+    /// CSS section). The runtime does no `StyleRules` work at all:
+    /// the walker stamps `class` via [`crate::Backend::attach_html_class`]
+    /// and returns a no-op state setter (hover/press/focus overlays for
+    /// preminted sheets ship as CSS pseudo-class rules in the same
+    /// asset).
+    ///
+    /// Only constructed on document-backed targets (web, SSR) — the
+    /// `stylesheet!` macro keeps the full rules closure on native
+    /// targets, where there is no CSS engine to premint into. The
+    /// walker debug-asserts that invariant via
+    /// [`crate::Backend::supports_preminted_styles`].
+    ///
+    /// `overrides` carries runtime-supplied override rules (the
+    /// `with_style_overrides` slot-override path). `None` for the
+    /// common case; when `Some`, the walker layers a normal static
+    /// application on top of the preminted class — so only apps that
+    /// actually use runtime overrides link the style engine.
+    Preminted {
+        /// `Cow` because the common macro expansion assembles
+        /// `"iy-<sheet-hash>-<variant>-<variant>"` at runtime from the
+        /// chosen variant values (Owned), while framework/test call
+        /// sites pass literals (Borrowed). The dump build derives the
+        /// same names, which is what keeps the `.css` and the runtime
+        /// agreeing without a manifest.
+        class: std::borrow::Cow<'static, str>,
+        overrides: Option<std::rc::Rc<crate::style::StyleRules>>,
+    },
 }
 
 /// Spec for a `StyleSource::SignalClass` binding. Built via the
@@ -464,6 +493,15 @@ where
 impl IntoStyleSource for SignalClassSpec {
     fn into_style_source(self) -> StyleSource {
         StyleSource::SignalClass(self)
+    }
+}
+
+/// Identity — lets code that already holds a `StyleSource` (the
+/// `stylesheet!` macro's preminted expansion, tests) pass it straight
+/// to `with_style` without wrapping ceremony.
+impl IntoStyleSource for StyleSource {
+    fn into_style_source(self) -> StyleSource {
+        self
     }
 }
 

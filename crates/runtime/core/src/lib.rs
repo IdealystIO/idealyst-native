@@ -1,5 +1,29 @@
 //! Framework core: primitives, Backend trait, render walker, reactivity.
 
+/// Panic with an actionable diagnostic in dev builds and a terse stable
+/// code in release builds.
+///
+/// Long diagnostic prose ships in wasm rodata — the framework's six
+/// biggest messages alone were ~1.5 KB of every release bundle. The
+/// prose (and any format-arg machinery it pulls in) is compiled out of
+/// release; the short code keeps the failure greppable, and rebuilding
+/// in dev (`idealyst dev`) reproduces the full message at the same site.
+///
+/// `$code` is a stable slug (`"reentrant-signal-read"`), not an error
+/// number — grep the codebase for it to find the one call site and its
+/// full prose. The slug prefixes the message in BOTH modes so
+/// `#[should_panic(expected = "<slug>")]` tests hold under
+/// `cargo test --release` too.
+macro_rules! diag_panic {
+    ($code:literal, $fmt:literal $(, $arg:expr)* $(,)?) => {{
+        #[cfg(debug_assertions)]
+        { panic!(concat!("idealyst[", $code, "]: ", $fmt) $(, $arg)*) }
+        #[cfg(not(debug_assertions))]
+        { panic!(concat!("idealyst[", $code, "] (debug build has details)")) }
+    }};
+}
+pub(crate) use diag_panic;
+
 pub mod accessibility;
 pub mod animation;
 pub mod assets;
@@ -17,6 +41,10 @@ mod handles;
 mod identity;
 pub mod logging;
 mod element;
+/// Premint style-dump registry — only the CLI's ephemeral dump build
+/// enables the feature; shipped builds never carry it.
+#[cfg(feature = "style-dump")]
+pub mod premint;
 mod reactive;
 mod reactive_value;
 mod safe_area;
@@ -27,6 +55,12 @@ pub mod scheduling;
 pub mod session;
 pub mod time;
 mod sources;
+// With `style-dynamic` off, the live engine's registration/resolution
+// internals become unreachable (the walker arms that called them are
+// compiled out) — that's the point, DCE drops them from the binary. The
+// items stay compiled so the public API surface is identical in every
+// configuration; silence the dead-code lint rather than cfg-ing the API.
+#[cfg_attr(not(feature = "style-dynamic"), allow(dead_code))]
 mod style;
 pub mod styled_text;
 pub mod text_defaults;

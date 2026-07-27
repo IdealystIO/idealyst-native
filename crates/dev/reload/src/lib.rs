@@ -340,6 +340,7 @@ fn build_wasm(dir: &Path, opts: &BuildOptions) -> Result<()> {
             // beats bundle size, and the heuristic adds a pass per
             // rebuild.
             prune_dead_data_min: None,
+            premint: false,
         },
     )
     .map(|_| ())

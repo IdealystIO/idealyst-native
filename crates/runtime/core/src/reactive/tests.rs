@@ -285,13 +285,13 @@ fn provided_signal_is_reactive_for_descendants() {
 }
 
 #[test]
-#[should_panic(expected = "outside any active reactive scope")]
+#[should_panic(expected = "provide-outside-scope")]
 fn provide_outside_scope_panics() {
     provide(Theme("nope"));
 }
 
 #[test]
-#[should_panic(expected = "memo's compute closure")]
+#[should_panic(expected = "signal-write-in-memo")]
 fn provide_inside_memo_compute_panics() {
     // `provide` is a side effect that would attach to the
     // memo-creation scope and accumulate duplicates on each
@@ -309,7 +309,7 @@ fn provide_inside_memo_compute_panics() {
 // -----------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "memo's compute closure")]
+#[should_panic(expected = "signal-write-in-memo")]
 fn memo_write_during_compute_panics() {
     // A memo whose compute closure writes to a signal — the panic
     // points at the offending write, not the downstream cascade.
@@ -323,7 +323,7 @@ fn memo_write_during_compute_panics() {
 }
 
 #[test]
-#[should_panic(expected = "memo's compute closure")]
+#[should_panic(expected = "signal-write-in-memo")]
 fn memo_update_during_compute_panics() {
     // `update` goes through the same guard as `set`.
     let trigger = Signal::new(0i32);
@@ -411,7 +411,7 @@ fn batch_returns_inner_result() {
 }
 
 #[test]
-#[should_panic(expected = "read re-entrantly while it was mid-mutation")]
+#[should_panic(expected = "reentrant-signal-read")]
 fn read_during_own_mutation_reports_reentrancy_not_scope_drop() {
     // A non-batched `update` whose closure writes ANOTHER signal whose
     // synchronous fan-out wakes an effect that reads the target while the

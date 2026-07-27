@@ -606,6 +606,32 @@ pub trait Backend {
     #[allow(unused_variables)]
     fn attach_html_class(&self, node: &Self::Node, class: &str) {}
 
+    /// `true` when this backend can realize a [`crate::StyleSource::Preminted`]
+    /// class — i.e. it is document-backed and the build pipeline ships a
+    /// `.css` asset its classes resolve against (web, SSR). Native
+    /// backends return the default `false`; the `stylesheet!` macro never
+    /// constructs `Preminted` for them, and the walker debug-asserts
+    /// that invariant so a routing bug fails loudly in dev instead of
+    /// silently rendering an unstyled node.
+    fn supports_preminted_styles(&self) -> bool {
+        false
+    }
+
+    /// Publish the theme's default text font (see
+    /// [`crate::style::set_default_text_font`]) at the DOCUMENT level, for
+    /// backends whose preminted classes resolve against a static `.css`
+    /// asset. The live style engine fills an absent `font_family` into
+    /// every node's resolved rules at apply time — but a preminted class's
+    /// rules were emitted at build time, before any theme was installed,
+    /// so they carry `font-family: var(--iy-default-font, inherit)` instead
+    /// and this hook defines that variable (web: on `:root`; SSR: in the
+    /// emitted head CSS). Called by the walker's premint host driver on
+    /// install and on every theme swap; `None` clears the variable so the
+    /// `inherit` fallback applies. Native backends keep the default no-op —
+    /// their per-node fill path never went away.
+    #[allow(unused_variables)]
+    fn apply_default_text_font(&mut self, font: Option<&crate::style::FontFamily>) {}
+
     /// Set an inline CSS custom-property / declaration on `node` — the
     /// per-instance escape hatch paired with [`attach_html_class`] +
     /// [`register_raw_css`](Backend::register_raw_css) for the rare value

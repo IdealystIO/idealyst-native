@@ -937,7 +937,8 @@ pub fn provide<T: 'static>(value: T) {
     ACTIVE_SCOPE.with(|s| {
         let stack = s.borrow();
         let Some(&top) = stack.last() else {
-            panic!(
+            crate::diag_panic!(
+                "provide-outside-scope",
                 "`provide` called outside any active reactive scope. \
                  Wrap with `with_scope(..)` or call from inside a \
                  component or effect body."
@@ -1520,7 +1521,8 @@ impl<T: Clone + 'static> Signal<T> {
                     a.borrow().signal_gen.get(sid.0 as usize).copied() == Some(self.gen)
                 });
                 if gen_still_live {
-                    panic!(
+                    crate::diag_panic!(
+                        "reentrant-signal-read",
                         "signal {:?} read re-entrantly while it was \
                          mid-mutation: its storage is moved out of the arena \
                          for the duration of its own `set`/`update`/reducer- \
@@ -2033,7 +2035,8 @@ impl Drop for MemoComputeGuard {
 /// produced.
 fn assert_not_in_memo_compute() {
     if MEMO_COMPUTE_DEPTH.with(|d| d.get()) > 0 {
-        panic!(
+        crate::diag_panic!(
+            "signal-write-in-memo",
             "Signal::set / Signal::update called inside a memo's compute closure. \
              Memos must be pure derivations of their input signals. \
              For side effects use an `Effect` or `on(deps, ..)`; \
@@ -2153,11 +2156,28 @@ fn fan_out_now(sid: SignalId) {
 /// });
 /// ```
 pub fn batch<R>(f: impl FnOnce() -> R) -> R {
-    // Only the outermost batch owns the window. Nested batches see
-    // `Some(_)` already in place and skip the install — when the outer
-    // returns, it flushes everything written across all nested batches
-    // in one pass.
-    let is_outer = BATCH_PENDING.with(|b| {
+    // Only the non-generic enter/flush pair below carries the batch
+    // machinery; this generic shell is three calls. `batch` is
+    // monomorphized once per calling closure (every handler, every
+    // `cycle` wrap site), so any code in this body is duplicated
+    // per call site in the binary — keep it to the closure call.
+    let is_outer = enter_batch();
+    let result = f();
+    if is_outer {
+        flush_batch();
+    }
+    result
+}
+
+/// Installs the outermost batch window. Returns `true` if this call
+/// owns the window (the caller must `flush_batch` after its closure
+/// returns). Nested batches see `Some(_)` already in place and skip
+/// the install — when the outer returns, it flushes everything written
+/// across all nested batches in one pass.
+///
+/// Non-generic on purpose: see the size note in [`batch`].
+fn enter_batch() -> bool {
+    BATCH_PENDING.with(|b| {
         let mut b = b.borrow_mut();
         if b.is_none() {
             *b = Some(DirtyWindow::default());
@@ -2165,68 +2185,72 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
         } else {
             false
         }
-    });
+    })
+}
 
-    let result = f();
+/// Flushes the outermost batch window: resolves each dirty signal's
+/// change decision, wakes subscribers once each, fires JS notifiers.
+///
+/// `#[inline(never)]` + non-generic on purpose: this is the entire
+/// batch algorithm, and inlining it back into the generic [`batch`]
+/// shell would re-duplicate it per calling closure (measured ~1 KB per
+/// call site on wasm before the split).
+#[inline(never)]
+fn flush_batch() {
+    // Take the window out and clear the slot *before* running
+    // effects. An effect's body can call set() — that write should
+    // see `BATCH_PENDING = None` (the batch is over) and fan out
+    // synchronously, not record into a window we're already flushing.
+    let window = BATCH_PENDING.with(|b| b.borrow_mut().take()).unwrap_or_default();
 
-    if is_outer {
-        // Take the window out and clear the slot *before* running
-        // effects. An effect's body can call set() — that write should
-        // see `BATCH_PENDING = None` (the batch is over) and fan out
-        // synchronously, not record into a window we're already flushing.
-        let window = BATCH_PENDING.with(|b| b.borrow_mut().take()).unwrap_or_default();
-
-        let DirtyWindow { order, mut entries } = window;
-        // Resolve each dirty signal's change decision in first-dirty
-        // order, collecting the subscribers to wake (deduped, first-seen
-        // order preserved) and the signals whose JS notifiers should
-        // fire. A net-zero guarded-`set` window contributes neither.
-        let mut ordered: Vec<EffectId> = Vec::new();
-        let mut changed_sids: Vec<SignalId> = Vec::with_capacity(order.len());
-        for sid in order {
-            let entry = entries.remove(&sid).expect("dirty order/entries out of sync");
-            let changed = entry.force
-                || match entry.check {
-                    // Compare window-initial vs current. Missing slot →
-                    // not changed (no subscribers to wake regardless).
-                    Some(check) => with_signal_any(sid, check).unwrap_or(false),
-                    // No force and no snapshot can't happen (force-writes
-                    // set `force`, guarded `set`s install `check`); treat
-                    // defensively as changed.
-                    None => true,
-                };
-            if changed {
-                changed_sids.push(sid);
-                for eid in collect_subscribers(sid) {
-                    // For typical batch sizes (a handful of writes) the
-                    // linear `contains` beats allocating a HashSet.
-                    if !ordered.contains(&eid) {
-                        ordered.push(eid);
-                    }
+    let DirtyWindow { order, mut entries } = window;
+    // Resolve each dirty signal's change decision in first-dirty
+    // order, collecting the subscribers to wake (deduped, first-seen
+    // order preserved) and the signals whose JS notifiers should
+    // fire. A net-zero guarded-`set` window contributes neither.
+    let mut ordered: Vec<EffectId> = Vec::new();
+    let mut changed_sids: Vec<SignalId> = Vec::with_capacity(order.len());
+    for sid in order {
+        let entry = entries.remove(&sid).expect("dirty order/entries out of sync");
+        let changed = entry.force
+            || match entry.check {
+                // Compare window-initial vs current. Missing slot →
+                // not changed (no subscribers to wake regardless).
+                Some(check) => with_signal_any(sid, check).unwrap_or(false),
+                // No force and no snapshot can't happen (force-writes
+                // set `force`, guarded `set`s install `check`); treat
+                // defensively as changed.
+                None => true,
+            };
+        if changed {
+            changed_sids.push(sid);
+            for eid in collect_subscribers(sid) {
+                // For typical batch sizes (a handful of writes) the
+                // linear `contains` beats allocating a HashSet.
+                if !ordered.contains(&eid) {
+                    ordered.push(eid);
                 }
             }
         }
-
-        if !ordered.is_empty() {
-            // Reactive-profile: a batch flush is one transaction whose triggers
-            // are all the signals that net-changed in the window.
-            #[cfg(feature = "debug-stats")]
-            crate::debug::record_txn_enter(
-                changed_sids.iter().map(|s| s.0 as u64).collect(),
-                ordered.len(),
-            );
-            run_effects(&ordered);
-            #[cfg(feature = "debug-stats")]
-            crate::debug::record_txn_exit();
-        }
-        // JS notifiers fire after the Rust fan-out, matching the
-        // non-batched path, and once per net-changed signal.
-        for sid in changed_sids {
-            notify_js_subscriber(sid);
-        }
     }
 
-    result
+    if !ordered.is_empty() {
+        // Reactive-profile: a batch flush is one transaction whose triggers
+        // are all the signals that net-changed in the window.
+        #[cfg(feature = "debug-stats")]
+        crate::debug::record_txn_enter(
+            changed_sids.iter().map(|s| s.0 as u64).collect(),
+            ordered.len(),
+        );
+        run_effects(&ordered);
+        #[cfg(feature = "debug-stats")]
+        crate::debug::record_txn_exit();
+    }
+    // JS notifiers fire after the Rust fan-out, matching the
+    // non-batched path, and once per net-changed signal.
+    for sid in changed_sids {
+        notify_js_subscriber(sid);
+    }
 }
 
 /// Run `f` as one **reactive cycle** (a "turn"): every signal write it
@@ -2312,28 +2336,18 @@ fn with_signal<T: 'static, R>(
 /// Generation-checked mutable access. Returns `None` (no-op) on a stale
 /// handle — see [`with_signal`]. The take/run/restore dance is
 /// unchanged from the live path.
+///
+/// Size note: this is monomorphized per `(T, closure)` across every
+/// `Signal::set`/`update`/reducer path, so the generic body carries only
+/// the downcast and the closure call — the whole stale-check/take/restore
+/// frame (arena access, re-entrancy diagnostic) lives in the non-generic
+/// [`take_signal_slot`]/[`restore_signal_slot`] pair below and is emitted
+/// once, not per instantiation.
 fn with_signal_mut<T: 'static, R>(
     id: SignalId,
     gen: u32,
     f: impl FnOnce(&mut SignalInner<T>) -> R,
 ) -> Option<R> {
-    // Bail before taking the slot if the handle is stale. Single-
-    // threaded with no user code between this check and the take below,
-    // so the generation can't change underneath us.
-    if ARENA.with(|a| a.borrow().signal_gen.get(id.0 as usize).copied()) != Some(gen) {
-        return None;
-    }
-    // `f` is a user closure (e.g. `Signal::update`'s) that may create or
-    // touch OTHER signals — each of which re-enters the arena RefCell.
-    // Holding the arena borrow across `f` would panic ("RefCell already
-    // borrowed"), so we TAKE the signal's box out of the arena, drop the
-    // borrow, run `f`, then restore the box.
-    //
-    // Safe against aliasing: the taken slot is left `None` but is NOT
-    // added to `signal_free`, and `insert_signal` only recycles slots
-    // popped from that free-list — so a signal created inside `f` can
-    // never grab this slot. (Re-entrant access to *this same* signal
-    // inside `f` is the one unsupported case; the slot reads as `None`.)
     // Mark the arena as mid-mutation for the take/run/restore window.
     // The signal's slot reads `None` until we restore it; a deferred
     // scope-anchored callback that fires during this window must NOT
@@ -2341,13 +2355,47 @@ fn with_signal_mut<T: 'static, R>(
     // effect's dep recording may be half-done). `is_reactive_busy`
     // exposes this so those callbacks skip + re-arm. The guard's Drop
     // runs even if `f` panics, so the busy count can't get stuck.
+    // (On the stale-handle path the guard enters and drops with no user
+    // code in between, so entering before the check is unobservable.)
     let _busy = ReactiveBusyGuard::enter();
+    let mut boxed = take_signal_slot(id, gen)?;
+    let inner = boxed
+        .downcast_mut::<SignalInner<T>>()
+        .expect("internal: signal type mismatch (generation matched but type differs)");
+    let result = f(inner);
+    restore_signal_slot(id, boxed);
+    Some(result)
+}
+
+/// Non-generic frame of [`with_signal_mut`]: stale-handle check + slot
+/// take. Returns `None` for a stale handle (freed/recycled slot — safe
+/// no-op), panics on the one unsupported re-entrancy case.
+///
+/// `f` in the caller is a user closure (e.g. `Signal::update`'s) that may
+/// create or touch OTHER signals — each of which re-enters the arena
+/// RefCell. Holding the arena borrow across `f` would panic ("RefCell
+/// already borrowed"), so we TAKE the signal's box out of the arena, drop
+/// the borrow, let the caller run `f`, then restore the box.
+///
+/// Safe against aliasing: the taken slot is left `None` but is NOT
+/// added to `signal_free`, and `insert_signal` only recycles slots
+/// popped from that free-list — so a signal created inside `f` can
+/// never grab this slot. (Re-entrant access to *this same* signal
+/// inside `f` is the one unsupported case; the slot reads as `None`.)
+#[inline(never)]
+fn take_signal_slot(id: SignalId, gen: u32) -> Option<Box<dyn Any>> {
+    // Bail before taking the slot if the handle is stale. Single-
+    // threaded with no user code between this check and the take below,
+    // so the generation can't change underneath us.
+    if ARENA.with(|a| a.borrow().signal_gen.get(id.0 as usize).copied()) != Some(gen) {
+        return None;
+    }
     // Generation already matched above, so the slot is occupied — the
     // only way `take()` yields `None` here is the documented unsupported
     // case of re-entrant mutation of *this same* signal inside `f`,
     // which stays a panic (a real logic bug, distinct from a stale
     // handle, which `None`-ed out before this point).
-    let mut boxed = ARENA.with(|a| {
+    Some(ARENA.with(|a| {
         a.borrow_mut()
             .signals
             .get_mut(id.0 as usize)
@@ -2360,7 +2408,8 @@ fn with_signal_mut<T: 'static, R>(
                 // apply touching its own signal is the culprit. `batch`/`cycle`
                 // can't rescue this — the box is moved out regardless of
                 // batching — so the fix is to restructure, not to wrap.
-                panic!(
+                crate::diag_panic!(
+                    "reentrant-signal-write",
                     "re-entrant mutation of signal {:?}: it was written from \
                      inside its own `set`/`update` closure (or an \
                      `async_reducer`/`reducer` apply that targets this same \
@@ -2372,15 +2421,16 @@ fn with_signal_mut<T: 'static, R>(
                     id
                 )
             })
-    });
-    let inner = boxed
-        .downcast_mut::<SignalInner<T>>()
-        .expect("internal: signal type mismatch (generation matched but type differs)");
-    let result = f(inner);
+    }))
+}
+
+/// Non-generic restore half of the take/run/restore dance — see
+/// [`take_signal_slot`].
+#[inline(never)]
+fn restore_signal_slot(id: SignalId, boxed: Box<dyn Any>) {
     ARENA.with(|a| {
         a.borrow_mut().signals[id.0 as usize] = Some(boxed);
     });
-    Some(result)
 }
 
 /// Drop every dependency link the effect currently holds. Called right
@@ -2787,7 +2837,8 @@ fn run_effect(id: EffectId) {
     // must skip rather than re-enter. See `is_reactive_busy`.
     let _busy = ReactiveBusyGuard::enter();
     if depth > MAX_EFFECT_DEPTH {
-        panic!(
+        crate::diag_panic!(
+            "effect-depth-cycle",
             "effect run depth exceeded {} — likely a mutual signal/effect cycle. \
              Check for two or more effects that read and write each other's signals.",
             MAX_EFFECT_DEPTH

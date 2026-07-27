@@ -19,7 +19,9 @@ use crate::batch::{BackendBatch, BatchOp};
 use crate::handles::RefFill;
 use crate::element::Element;
 use crate::sources::{StyleSource, TextSource};
-use crate::style::{self, resolve as resolve_style, StyleApplication, StyleRules};
+#[cfg(feature = "style-dynamic")]
+use crate::style::{self, resolve as resolve_style};
+use crate::style::{StyleApplication, StyleRules};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -558,9 +560,26 @@ fn enqueue_primitive<B: Backend + 'static>(
             // For a styled View, resolve & mint the class up front
             // so the batch can ship a class-name string. Reactive
             // styles bail out.
+            #[cfg_attr(not(feature = "style-dynamic"), allow(unused_mut))]
             let mut style_app_for_defer: Option<StyleApplication> = None;
             let resolved_class: Option<(String, Rc<StyleRules>)> = match style {
                 None => None,
+                // Preminted classes take the per-call path for now — the
+                // batch fast path wants resolved rules alongside the class,
+                // which a preminted node deliberately doesn't have. The
+                // slow path is one `attach_html_class` call, so there is
+                // little to batch anyway.
+                Some(StyleSource::Preminted { .. }) => {
+                    return None;
+                }
+                // With the live engine compiled out there is nothing to
+                // resolve or mint — bail to the per-call path, whose
+                // dispatcher warns and degrades the node to unstyled.
+                #[cfg(not(feature = "style-dynamic"))]
+                Some(StyleSource::Static(_)) => {
+                    return None;
+                }
+                #[cfg(feature = "style-dynamic")]
                 Some(StyleSource::Static(app)) => {
                     // Drive theme/asset/typeface/token registration
                     // Rust-side immediately. This is the same call

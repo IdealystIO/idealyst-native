@@ -124,6 +124,10 @@ pub enum Event {
     CreateReactiveAnchor,
     CreateExternal { type_name: &'static str },
 
+    /// `attach_html_class(node, class)` — structural/preminted class
+    /// stamping (the `StyleSource::Preminted` walker path routes here).
+    AttachHtmlClass { node: NodeId, class: String },
+
     // --- Tree mutation ---
     Insert { parent: NodeId, child: NodeId },
     InsertMany { parent: NodeId, children: Vec<NodeId> },
@@ -198,6 +202,10 @@ pub enum Event {
     // --- Tokens / theme variables ---
     InstallThemeVariables { token_count: usize },
     UpdateTokens { token_count: usize },
+    /// `Backend::apply_default_text_font` — the premint host driver's
+    /// document-level default-font publish. `family` is the resolved
+    /// family name, `None` for a clear.
+    ApplyDefaultTextFont { family: Option<String> },
 
     // --- Release ---
     ReleaseVirtualizer { node: NodeId },
@@ -663,6 +671,17 @@ impl runtime_core::primitives::scroll_view::ScrollViewOps for MockScrollViewOps 
 
 impl Backend for MockBackend {
     type Node = NodeId;
+
+    // Records preminted/structural class stamps and opts into the
+    // `StyleSource::Preminted` path so walker tests can drive it (the
+    // walker debug-asserts `supports_preminted_styles` before stamping).
+    fn attach_html_class(&self, node: &Self::Node, class: &str) {
+        self.core.record(Event::AttachHtmlClass { node: *node, class: class.to_string() });
+    }
+
+    fn supports_preminted_styles(&self) -> bool {
+        true
+    }
 
     // --- Required ---
 
@@ -1210,6 +1229,14 @@ impl Backend for MockBackend {
 
     fn update_tokens(&mut self, tokens: &[runtime_core::TokenEntry]) {
         self.core.record(Event::UpdateTokens { token_count: tokens.len() });
+    }
+
+    fn apply_default_text_font(&mut self, font: Option<&runtime_core::FontFamily>) {
+        let family = font.map(|f| match f {
+            runtime_core::FontFamily::System(name) => name.clone(),
+            runtime_core::FontFamily::Typeface(tf) => tf.family_name.to_string(),
+        });
+        self.core.record(Event::ApplyDefaultTextFont { family });
     }
 
     fn on_node_unstyled(&mut self, node: &Self::Node) {

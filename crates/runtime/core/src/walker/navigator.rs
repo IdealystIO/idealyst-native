@@ -668,14 +668,17 @@ fn attach_slot_style<B: Backend + 'static>(
     slot: &'static str,
     style: StyleSource,
 ) {
+    #[cfg(feature = "style-dynamic")]
     use crate::style::resolve as resolve_style;
     match style {
+        #[cfg(feature = "style-dynamic")]
         StyleSource::Static(app) => {
             let rules = resolve_style(&app);
             backend
                 .borrow_mut()
                 .apply_navigator_slot_style(node, slot, &rules);
         }
+        #[cfg(feature = "style-dynamic")]
         StyleSource::Reactive(f) => {
             let backend_c = backend.clone();
             let node_c = node.clone();
@@ -687,6 +690,7 @@ fn attach_slot_style<B: Backend + 'static>(
                     .apply_navigator_slot_style(&node_c, slot, &rules);
             });
         }
+        #[cfg(feature = "style-dynamic")]
         StyleSource::SignalClass(spec) => {
             let f = spec.compute_fallback.clone();
             let backend_c = backend.clone();
@@ -698,6 +702,26 @@ fn attach_slot_style<B: Backend + 'static>(
                     .borrow_mut()
                     .apply_navigator_slot_style(&node_c, slot, &rules);
             });
+        }
+        StyleSource::Preminted { class, overrides } => {
+            // A preminted class works on any document-backed slot node
+            // the same way it works on a regular node. Runtime overrides
+            // (the only part with resolvable rules) go through the slot
+            // channel so they compose with the navigator's own slot CSS.
+            let b = backend.borrow();
+            b.attach_html_class(node, &class);
+            drop(b);
+            if let Some(rules) = overrides {
+                backend
+                    .borrow_mut()
+                    .apply_navigator_slot_style(node, slot, &rules);
+            }
+        }
+        // Live-minted slot styles need the engine; degrade to the
+        // navigator's own slot CSS with the standard dev warning.
+        #[cfg(not(feature = "style-dynamic"))]
+        StyleSource::Static(_) | StyleSource::Reactive(_) | StyleSource::SignalClass(_) => {
+            super::style::warn_style_dynamic_disabled("a navigator slot style");
         }
     }
 }

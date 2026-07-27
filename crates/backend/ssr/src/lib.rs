@@ -201,6 +201,12 @@ pub struct SsrBackend {
     /// `var(--token, fallback)` to the real theme value (matching the
     /// live web build, which installs the same variables at runtime).
     tokens: Vec<runtime_core::TokenEntry>,
+    /// The theme's default text font, captured from
+    /// [`Backend::apply_default_text_font`] (premint host driver).
+    /// Emitted as `--iy-default-font` on `:root` so preminted rule
+    /// bodies (`font-family: var(--iy-default-font, inherit)`) resolve
+    /// on the SSR first paint exactly like the live web build.
+    default_text_font: Option<runtime_core::FontFamily>,
     /// Served URL per registered asset id (fonts/images), from
     /// [`Backend::register_asset`]. Fonts feed the `@font-face` rules
     /// below; image URLs are read at `create_image` time.
@@ -281,6 +287,13 @@ impl SsrBackend {
         let mut out = css::base_reset_css();
         out.push_str(&self.font_faces.concat());
         out.push_str(&css::tokens_to_root_css(&self.tokens));
+        if let Some(ff) = &self.default_text_font {
+            out.push_str(&format!(
+                ":root {{ {}: {}; }}",
+                css::DEFAULT_TEXT_FONT_VAR,
+                css::font_family_css_value(ff),
+            ));
+        }
         if let Some(color) = &self.app_bg {
             out.push_str(&format!(
                 "html, body {{ background: {}; }}",
@@ -752,7 +765,18 @@ impl Backend for SsrBackend {
                 // `.ui-<hash>:hover{ … }` (the node still wears `ui-<hash>`).
                 self.style_rules
                     .entry(format!("{class}{pseudo}"))
-                    .or_insert_with(|| emit(overlay));
+                    .or_insert_with(|| {
+                        let body = emit(overlay);
+                        // Component-owned focus overlay suppresses the UA
+                        // ring, matching the web backend's minted rule —
+                        // without this the SSR first paint double-draws the
+                        // native outline under the themed ring.
+                        if *state == runtime_core::StateBits::FOCUSED {
+                            format!("outline:none;{body}")
+                        } else {
+                            body
+                        }
+                    });
             }
         }
         // Breakpoint overlays → `@media (min-width: …) { .ui-<hash> { … } }`.
@@ -1051,6 +1075,13 @@ impl Backend for SsrBackend {
         add_class(node, class);
     }
 
+    // Preminted classes resolve against the same build-time `.css` asset
+    // the served page links, so SSR markup carrying them is correct on
+    // first paint and adopts cleanly on hydration.
+    fn supports_preminted_styles(&self) -> bool {
+        true
+    }
+
     fn attach_html_style(&self, node: &Self::Node, prop: &str, value: &str) {
         add_inline_style(node, prop, value);
     }
@@ -1110,6 +1141,10 @@ impl Backend for SsrBackend {
 
     fn install_tokens(&mut self, tokens: &[runtime_core::TokenEntry]) {
         self.tokens = tokens.to_vec();
+    }
+
+    fn apply_default_text_font(&mut self, font: Option<&runtime_core::FontFamily>) {
+        self.default_text_font = font.cloned();
     }
 
     fn update_tokens(&mut self, tokens: &[runtime_core::TokenEntry]) {
@@ -1598,6 +1633,63 @@ mod tests {
         assert!(head.contains(&format!(".{class}:hover{{background: #eeeeee}}")), "hover rule, got: {head}");
     }
 
+    /// A disabled-state overlay must select on the `[disabled]`
+    /// ATTRIBUTE, not the `:disabled` pseudo-class — pressables render
+    /// as `<div disabled>`, which `:disabled` never matches (it only
+    /// matches real form controls), so the overlay silently never
+    /// applied in SSR output. Web already used `[disabled]`; this
+    /// pins SSR to the shared `css::state_pseudo` fix.
+    #[test]
+    fn regression_ssr_disabled_overlay_uses_attribute_selector() {
+        use runtime_core::StateBits;
+        let mut b = SsrBackend::new();
+        let v = b.create_view(&AccessibilityProps::default());
+        let mut base = StyleRules::default();
+        base.background = Some(Tokenized::Literal(Color("#ffffff".into())));
+        let mut disabled = StyleRules::default();
+        disabled.background = Some(Tokenized::Literal(Color("#cccccc".into())));
+        b.apply_styled_states(
+            &v,
+            &Rc::new(base),
+            &[(StateBits::DISABLED, Rc::new(disabled))],
+        );
+        let head = b.head_css();
+        assert!(
+            head.contains("[disabled]{background: #cccccc}"),
+            "disabled overlay must use the attribute selector, got: {head}"
+        );
+        assert!(
+            !head.contains(":disabled"),
+            "the :disabled pseudo-class is inert on div pressables, got: {head}"
+        );
+    }
+
+    /// A focused-state overlay owns the focus indicator, so the SSR
+    /// rule must suppress the UA outline exactly like the web backend's
+    /// minted rule — otherwise the server-rendered first paint
+    /// double-draws the native ring under the themed one until
+    /// hydration replaces the sheet.
+    #[test]
+    fn regression_ssr_focus_overlay_suppresses_ua_outline() {
+        use runtime_core::StateBits;
+        let mut b = SsrBackend::new();
+        let v = b.create_view(&AccessibilityProps::default());
+        let mut base = StyleRules::default();
+        base.background = Some(Tokenized::Literal(Color("#ffffff".into())));
+        let mut focused = StyleRules::default();
+        focused.background = Some(Tokenized::Literal(Color("#ddddff".into())));
+        b.apply_styled_states(
+            &v,
+            &Rc::new(base),
+            &[(StateBits::FOCUSED, Rc::new(focused))],
+        );
+        let head = b.head_css();
+        assert!(
+            head.contains(":focus{outline:none;background: #ddddff}"),
+            "focus overlay must prepend outline:none, got: {head}"
+        );
+    }
+
     /// `apply_styled_variants` emits the base rule plus an
     /// `@media (min-width: …)` rule per breakpoint overlay — so the SSR
     /// first paint already respects size boundaries (the whole point:
@@ -1972,6 +2064,29 @@ mod tests {
     }
 
     /// Theme tokens delivered via `install_tokens` are emitted as a
+    /// The premint host driver publishes the theme's default text font
+    /// through `apply_default_text_font`; SSR must emit it as the
+    /// `--iy-default-font` `:root` variable so preminted rule bodies
+    /// (`font-family: var(--iy-default-font, inherit)`) resolve on the
+    /// server-rendered first paint. `None` clears it.
+    #[test]
+    fn regression_ssr_default_text_font_emits_root_variable() {
+        let mut b = SsrBackend::new();
+        b.apply_default_text_font(Some(&runtime_core::FontFamily::System("Inter".into())));
+        let head = b.head_css();
+        assert!(
+            head.contains(":root { --iy-default-font: Inter; }"),
+            "default font var missing from head css: {head}"
+        );
+
+        b.apply_default_text_font(None);
+        let head = b.head_css();
+        assert!(
+            !head.contains("--iy-default-font"),
+            "cleared default font must not emit: {head}"
+        );
+    }
+
     /// `:root { … }` block in `head_css`, so the SSR first paint resolves
     /// `var(--token, fallback)` to the real theme value (matching the
     /// live web build). `update_tokens` merges (changed tokens only).

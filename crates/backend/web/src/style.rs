@@ -950,88 +950,26 @@ impl WebBackend {
                 let _t = PhaseTimer::start("hash_class_name");
                 hash_class_name(&key)
             };
-            let base_body = {
-                let _t = PhaseTimer::start("rules_to_css");
-                rules_to_css(base)
+            // The whole cohort's rule strings — base first, then state /
+            // breakpoint / container overlays — assembled by the shared
+            // `css::class_rule_group` (single source with SSR and the
+            // premint style-dump) and inserted as ONE ordered group. The
+            // group insert (`insert_rule_group`) guarantees the base's
+            // physical index is below every overlay's, which the
+            // equal-specificity mobile-first cascade depends on; per-rule
+            // inserts through the LIFO slot recycler used to invert that
+            // order on re-mint. All indices go in one vec so
+            // `release_dynamic_rule` deletes them on teardown.
+            let group_rules = {
+                let _t = PhaseTimer::start("class_rule_group");
+                css::class_rule_group(
+                    &class_name,
+                    base,
+                    overlays,
+                    breakpoint_overlays,
+                    container_overlays,
+                )
             };
-
-            // Collect the whole cohort's rule strings — base first,
-            // then each state overlay as a pseudo-class scoped rule,
-            // each breakpoint overlay as a `@media (min-width: …)`
-            // rule, each container overlay as an `@container` rule —
-            // and insert them as ONE ordered group at the end. The
-            // group insert (`insert_rule_group`) guarantees the
-            // base's physical index is below every overlay's, which
-            // the equal-specificity mobile-first cascade depends on;
-            // per-rule inserts through the LIFO slot recycler used to
-            // invert that order on re-mint. All indices go in one vec
-            // so `release_dynamic_rule` deletes them on teardown.
-            let mut group_rules: Vec<String> = Vec::with_capacity(
-                1 + overlays.len() + breakpoint_overlays.len() + container_overlays.len(),
-            );
-            group_rules.push(class_rule(&class_name, &base_body));
-            for (bit, overlay) in overlays {
-                let pseudo = match *bit {
-                    runtime_core::StateBits::HOVERED => ":hover",
-                    runtime_core::StateBits::PRESSED => ":active",
-                    runtime_core::StateBits::FOCUSED => ":focus",
-                    // Attribute selector, NOT the `:disabled` pseudo-class.
-                    // `set_disabled` marks the disabled node with the HTML
-                    // `disabled` *attribute*, and a pressable renders as a
-                    // `<div>`. The `:disabled` pseudo only matches real form
-                    // controls (button/input/select/...), so `.cls:disabled`
-                    // is inert on a `<div disabled>` and the disabled overlay
-                    // silently never applies. `[disabled]` matches any element
-                    // carrying the attribute — div pressables AND form
-                    // controls alike — so it's strictly more general.
-                    runtime_core::StateBits::DISABLED => "[disabled]",
-                    _ => continue,
-                };
-                let selector = format!("{}{}", class_name, pseudo);
-                let body = {
-                    let _t = PhaseTimer::start("rules_to_css");
-                    rules_to_css(overlay)
-                };
-                // A component that declares its own `__state_focused` overlay
-                // owns the focus indicator, so suppress the browser's default
-                // `outline` on that `:focus` rule — otherwise the native ring
-                // double-draws with the themed one. Only emitted where a focus
-                // overlay exists; elements without one keep the default ring.
-                let body = if *bit == runtime_core::StateBits::FOCUSED {
-                    format!("outline:none;{body}")
-                } else {
-                    body
-                };
-                group_rules.push(class_rule(&selector, &body));
-            }
-            // Breakpoint overlays: emitted ascending by rank (the walker
-            // pre-sorts `breakpoint_overlays`), so stacked `@media`
-            // rules cascade mobile-first — higher breakpoints come later
-            // in the sheet and win on conflicting properties.
-            for (bp, overlay) in breakpoint_overlays {
-                let body = {
-                    let _t = PhaseTimer::start("rules_to_css");
-                    rules_to_css(overlay)
-                };
-                // `None` only for `Breakpoint::Xs` (the base, no media
-                // query) — which the walker never emits as an overlay.
-                if let Some(rule) = css::breakpoint_media_rule(&class_name, *bp, &body) {
-                    group_rules.push(rule);
-                }
-            }
-            // Container overlays: emitted ascending by threshold (the
-            // walker pre-sorts `container_overlays`), so stacked
-            // `@container (min-width: …)` rules cascade with higher
-            // thresholds winning — the mobile-first cascade keyed on the
-            // nearest `container-type` ancestor's width rather than the
-            // viewport's.
-            for (threshold, overlay) in container_overlays {
-                let body = {
-                    let _t = PhaseTimer::start("rules_to_css");
-                    rules_to_css(overlay)
-                };
-                group_rules.push(css::container_query_rule(&class_name, *threshold, &body));
-            }
 
             let indices = {
                 let _t = PhaseTimer::start("insert_rule");
@@ -1111,40 +1049,17 @@ impl WebBackend {
             // rule must physically precede its equal-specificity
             // `@media` / `@container` overlays, and per-rule inserts
             // through the LIFO slot recycler can invert that on
-            // re-mint (see `insert_rule_group`).
-            let mut group_rules: Vec<String> = Vec::with_capacity(
-                1 + overlays.len() + breakpoint_overlays.len() + container_overlays.len(),
+            // re-mint (see `insert_rule_group`). Shared builder with
+            // `rules_to_css_text` so every layer lowers shadows as
+            // `text-shadow`.
+            let group_rules = css::class_rule_group_with(
+                &class_name,
+                base,
+                overlays,
+                breakpoint_overlays,
+                container_overlays,
+                rules_to_css_text,
             );
-            group_rules.push(class_rule(&class_name, &rules_to_css_text(base)));
-            for (bit, overlay) in overlays {
-                let pseudo = match *bit {
-                    runtime_core::StateBits::HOVERED => ":hover",
-                    runtime_core::StateBits::PRESSED => ":active",
-                    runtime_core::StateBits::FOCUSED => ":focus",
-                    runtime_core::StateBits::DISABLED => "[disabled]",
-                    _ => continue,
-                };
-                let selector = format!("{}{}", class_name, pseudo);
-                let body = rules_to_css_text(overlay);
-                // Component-owned focus overlay suppresses the UA ring,
-                // mirroring the box path.
-                let body = if *bit == runtime_core::StateBits::FOCUSED {
-                    format!("outline:none;{body}")
-                } else {
-                    body
-                };
-                group_rules.push(class_rule(&selector, &body));
-            }
-            for (bp, overlay) in breakpoint_overlays {
-                let body = rules_to_css_text(overlay);
-                if let Some(rule) = css::breakpoint_media_rule(&class_name, *bp, &body) {
-                    group_rules.push(rule);
-                }
-            }
-            for (threshold, overlay) in container_overlays {
-                let body = rules_to_css_text(overlay);
-                group_rules.push(css::container_query_rule(&class_name, *threshold, &body));
-            }
             let indices = self.insert_rule_group(&group_rules);
             let base_idx = indices[0];
             let overlay_indices: Vec<u32> = indices[1..].to_vec();

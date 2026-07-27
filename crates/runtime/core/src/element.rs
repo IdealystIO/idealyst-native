@@ -1227,5 +1227,15 @@ fn overlay_style_source(
                 Rc::new(move || (fallback)().with_overrides((*rules_for_fallback).clone()));
             StyleSource::SignalClass(spec)
         }
+        Some(StyleSource::Preminted { class, overrides }) => {
+            // Keep the build-time class; accumulate runtime overrides in
+            // the variant's override slot (later layers win, matching the
+            // repeated `with_overrides` stacking on the Static path).
+            let merged = match overrides {
+                None => rules,
+                Some(prev) => Rc::new((*prev).clone().merge(&rules)),
+            };
+            StyleSource::Preminted { class, overrides: Some(merged) }
+        }
     }
 }

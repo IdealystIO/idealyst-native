@@ -191,6 +191,22 @@ pub struct Args {
     #[arg(long)]
     pub strip_panics: bool,
 
+    /// Web only: premint static styles at build time. Runs an ephemeral
+    /// native dump build that emits every `stylesheet!`'s full variant
+    /// space into a content-addressed `pkg/premint.<hash>.css` (linked
+    /// from index.html), and compiles the wasm with
+    /// `--cfg idealyst_premint` so all-constant style applications ship
+    /// as class references instead of invoking the runtime style
+    /// engine. The full size win additionally needs the app to disable
+    /// the `style-dynamic` feature (`default-features = false` on
+    /// runtime-core AND backend-web) so the engine drops out of the
+    /// bundle — without that edit the classes premint but the engine
+    /// still ships. Not yet combinable with `--ssg`/`--ssr` (the
+    /// server-rendered HTML would carry live-minted classes; the build
+    /// refuses the pair).
+    #[arg(long)]
+    pub premint: bool,
+
     /// Web only: enable the Robot bridge in the bundle (`robot` feature →
     /// `backend-web/robot` → `runtime-core/robot`). A browser app can't host
     /// the bridge itself, so it dials a `robot-relay` whose URL it reads from
@@ -430,6 +446,7 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
                 args.data_prune,
                 args.no_data_prune,
             ),
+            premint: args.premint,
         },
     )?;
     let bundle = artifact

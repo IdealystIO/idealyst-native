@@ -161,6 +161,10 @@ Note that **theme swaps never need a reactive style**: a static sheet whose valu
 - iOS clamps `cornerRadius` against the layer's smaller dimension (see [[ios_cornerradius_unclamped]]). Don't over-specify.
 - Gradients (`background_gradient`) work on every backend; radial gradient radius is closest-side scaled (`1.0` = edge midpoint).
 
+## Preminted styles (web bundle size)
+
+`idealyst build --web --premint` emits every static `stylesheet!`'s CSS at build time (a content-addressed `pkg/premint.<hash>.css`) and ships class references instead of running the style engine for them. Reactive inputs, `.override_*` values, shadow sheets, and `Typeface` fonts silently stay on the live engine. For the full size win, a fully-preminted app disables the `style-dynamic` cargo feature (`default-features = false` on runtime-core AND backend-web, re-adding needed `prim-*` features) — the runtime style engine then compiles out of the wasm (~40 KB gzipped on the floor app). Theming still works: tokens are CSS variables, and a premint host driver delivers theme state without sheet registrations. Not yet combinable with `--ssg`/`--ssr`. Details: `docs/styling.md`, "Preminted styles".
+
 ## Appendix: StyleRules properties
 
 Every `stylesheet!` rule body sets fields of `runtime_core::StyleRules`. All fields are optional. Values wrapped `Into::into(...)` — so `padding: 16` works for `Length` fields, `"#fff"` strings need `Color(...)`.

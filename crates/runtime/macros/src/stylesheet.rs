@@ -495,18 +495,133 @@ fn parse_rules_block(input: ParseStream) -> syn::Result<RulesBlock> {
 // Emitter
 // =============================================================================
 
-pub fn emit(decl: StyleSheetDecl) -> TokenStream2 {
+/// FNV-1a 64 over the macro's raw input text. Feeds the preminted
+/// class base (`iy-<12 hex chars>`): stable across builds of the same
+/// source, shared by identical sheets, moved by any edit. The dump
+/// build and the shipped build hash the same source, which is what
+/// lets the `.css` and the runtime agree on names with no manifest.
+pub fn content_hash(input: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in input.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}
+
+pub fn emit(decl: StyleSheetDecl, content_hash: u64) -> TokenStream2 {
     if let Err(err) = check_no_theme_refs(&decl) {
         return err.to_compile_error();
     }
     let stylesheet_fn = emit_stylesheet_fn(&decl);
     let enums = decl.variants.iter().map(|v| emit_variant_enum(&decl, v)).collect::<Vec<_>>();
-    let builder = emit_builder(&decl);
+
+    // Premint eligibility — two disqualifiers, both keeping the sheet on
+    // the live-minting path everywhere (correct, just not preminted):
+    //
+    // - a `shadow` on any layer: shadows lower differently per node kind
+    //   (`text-shadow` on text, `box-shadow` on boxes) and a preminted
+    //   class name carries no node-kind information, so the dump couldn't
+    //   emit one correct rule body.
+    // - a `font_family` whose value is not a string literal: a non-literal
+    //   value (`&INTER`, `active_font_family()`) can be a `Typeface`,
+    //   whose `@font-face` + face-asset registration rides sheet
+    //   registration (`ensure_typefaces_registered_with`) — exactly the
+    //   step a preminted class skips. A string literal is always
+    //   `FontFamily::System` (plain family names, no registration), so it
+    //   stays eligible.
+    let premintable = !sheet_has_shadow(&decl) && !sheet_has_dynamic_font(&decl);
+    let base_class = format!("iy-{:012x}", content_hash & 0xffff_ffff_ffff);
+    let builder = emit_builder(&decl, &base_class, premintable);
+    let registration = if premintable {
+        emit_premint_registration(&decl, &base_class)
+    } else {
+        TokenStream2::new()
+    };
 
     quote! {
         #stylesheet_fn
         #(#enums)*
         #builder
+        #registration
+    }
+}
+
+/// `true` if any rules block on any layer declares a `shadow` — see the
+/// premint-eligibility note in [`emit`].
+fn sheet_has_shadow(decl: &StyleSheetDecl) -> bool {
+    any_rules_block(decl, |b| b.fields.iter().any(|(name, _)| name == "shadow"))
+}
+
+/// `true` if any rules block sets `font_family` to something other than
+/// a string literal — see the premint-eligibility note in [`emit`].
+fn sheet_has_dynamic_font(decl: &StyleSheetDecl) -> bool {
+    any_rules_block(decl, |b| {
+        b.fields.iter().any(|(name, expr)| {
+            name == "font_family"
+                && !matches!(
+                    expr,
+                    Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(_), .. })
+                )
+        })
+    })
+}
+
+/// Apply `pred` across every rules block on every layer of the sheet.
+fn any_rules_block(decl: &StyleSheetDecl, pred: impl Fn(&RulesBlock) -> bool) -> bool {
+    pred(&decl.base.rules)
+        || decl.variants.iter().any(|axis| axis.arms.iter().any(|arm| pred(&arm.rules)))
+        || decl.states.iter().any(|s| pred(&s.rules))
+        || decl.breakpoints.iter().any(|b| pred(&b.rules))
+        || decl.containers.iter().any(|c| pred(&c.rules))
+}
+
+/// The `cfg(idealyst_premint_dump)` linkme registration for one sheet —
+/// the collection side the CLI's dump build links in. Never present in
+/// shipped builds (the cfg is only set for the ephemeral dump binary,
+/// paired with runtime-core's `style-dump` feature which provides
+/// `runtime_core::premint`).
+fn emit_premint_registration(decl: &StyleSheetDecl, base_class: &str) -> TokenStream2 {
+    let stylesheet_fn = format_ident!("{}_style", snake_case(&decl.name));
+    let axes = decl.variants.iter().map(|axis| {
+        let axis_name = axis.axis.to_string();
+        let values = axis.arms.iter().map(|a| a.name.to_string());
+        let default_value = axis
+            .arms
+            .iter()
+            .find(|a| a.is_default)
+            .map(|a| a.name.to_string())
+            .unwrap_or_else(|| "_".to_string());
+        quote! {
+            ::runtime_core::premint::PremintAxis {
+                name: #axis_name,
+                values: &[#(#values),*],
+                default_value: #default_value,
+            }
+        }
+    });
+    quote! {
+        // The `#[cfg]` sits on the INNER static, not on this const:
+        // when a cfg strips an item, the lint level for
+        // `unexpected_cfgs` comes from the item's ANCESTORS — the
+        // stripped item's own `#[allow]` is discarded with it. With the
+        // allow here on the enclosing const, app crates (which don't
+        // declare this build-pipeline cfg in check-cfg) compile
+        // warning-free.
+        #[allow(unexpected_cfgs)]
+        const _: () = {
+            #[cfg(idealyst_premint_dump)]
+            #[::runtime_core::premint::linkme::distributed_slice(
+                ::runtime_core::premint::PREMINT_SHEETS
+            )]
+            #[linkme(crate = ::runtime_core::premint::linkme)]
+            static __PREMINT_SHEET: ::runtime_core::premint::PremintSheet =
+                ::runtime_core::premint::PremintSheet {
+                    base_class: #base_class,
+                    sheet: #stylesheet_fn,
+                    axes: &[#(#axes),*],
+                };
+        };
     }
 }
 
@@ -1010,11 +1125,33 @@ fn pascal(ident: &Ident) -> Ident {
 /// then emits `StyleSource::Reactive` (signal changes re-apply the
 /// style) when the flag is set, and the cheaper `StyleSource::Static`
 /// (no per-node Effect) when every input was constant.
-fn emit_builder(decl: &StyleSheetDecl) -> TokenStream2 {
+fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> TokenStream2 {
     let name = &decl.name;
     let vis = &decl.vis;
     let entry_fn = name; // `Card()` returns `Card` — see free function below.
     let stylesheet_fn = format_ident!("{}_style", snake_case(name));
+    // Per-axis (field ident, default segment) for premint class assembly.
+    let premint_axis_fields: Vec<_> = decl
+        .variants
+        .iter()
+        .map(|axis| format_ident!("__v_{}", axis.axis))
+        .collect();
+    let premint_axis_defaults: Vec<String> = decl
+        .variants
+        .iter()
+        .map(|axis| {
+            axis.arms
+                .iter()
+                .find(|a| a.is_default)
+                .map(|a| a.name.to_string())
+                .unwrap_or_else(|| "_".to_string())
+        })
+        .collect();
+    let premint_override_fields: Vec<_> = decl
+        .overrides
+        .iter()
+        .map(|o| format_ident!("__o_{}", o.name))
+        .collect();
 
     // Per-axis fields and setters.
     let axis_fields = decl.variants.iter().map(|axis| {
@@ -1090,6 +1227,39 @@ fn emit_builder(decl: &StyleSheetDecl) -> TokenStream2 {
         }
     });
 
+    // Emitted only for premint-eligible sheets (see `sheet_has_shadow`);
+    // ineligible sheets compile to the live path with no cfg block at all.
+    let premint_branch = if premintable {
+        quote! {
+            // Preminted fast path (web builds with build-time CSS):
+            // an all-constant builder with no overrides resolves to a
+            // class name that the CLI's style-dump pass already wrote
+            // into the shipped `.css` — no StyleRules work at runtime.
+            // Reactive inputs or runtime overrides fall through to
+            // the live engine below.
+            #[cfg(idealyst_premint)]
+            {
+                let __any_override = false #(|| self.#premint_override_fields.is_some())*;
+                if !self.__reactive && !__any_override {
+                    let mut __class = ::std::string::String::from(#base_class);
+                    #(
+                        __class.push('-');
+                        __class.push_str(match self.#premint_axis_fields.as_ref() {
+                            ::std::option::Option::Some(g) => g(),
+                            ::std::option::Option::None => #premint_axis_defaults,
+                        });
+                    )*
+                    return ::runtime_core::StyleSource::Preminted {
+                        class: ::std::borrow::Cow::Owned(__class),
+                        overrides: ::std::option::Option::None,
+                    };
+                }
+            }
+        }
+    } else {
+        TokenStream2::new()
+    };
+
     quote! {
         #vis struct #name {
             #(#axis_fields,)*
@@ -1124,8 +1294,13 @@ fn emit_builder(decl: &StyleSheetDecl) -> TokenStream2 {
             fn default() -> Self { Self::new() }
         }
 
+        // `idealyst_premint` is a build-pipeline cfg (set by the CLI's
+        // web build alongside the style-dump pass), not a crate feature
+        // — hence the allow: app crates don't declare it in check-cfg.
+        #[allow(unexpected_cfgs)]
         impl ::runtime_core::IntoStyleSource for #name {
             fn into_style_source(self) -> ::runtime_core::StyleSource {
+                #premint_branch
                 // The builder routes to one of two style sources:
                 //
                 // - All-constant inputs (variant values are plain enums,
