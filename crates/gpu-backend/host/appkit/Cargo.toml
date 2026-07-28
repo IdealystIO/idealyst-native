@@ -27,6 +27,11 @@ default = []
 # available. Off by default so the local-render build path pulls
 # zero transport code.
 runtime-server = ["backend-macos/runtime-server"]
+# idea-lite core migration (P4a): compile in `host_appkit::newcore::run` —
+# the new-core windowed boot (World + Registry + realize + flush driver via
+# `backend_macos::newcore`). Off by default so the local-render build path
+# is unchanged.
+new-core = ["backend-macos/new-core"]
 
 [dependencies]
 runtime-core = { workspace = true }

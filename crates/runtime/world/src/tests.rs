@@ -1384,3 +1384,50 @@ fn owned_merge_folds_scopes_into_one_drop() {
     let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| host_sig.get()));
     assert!(panicked.is_err(), "the host's own slot was freed too");
 }
+
+#[test]
+fn unscoped_creations_survive_the_enclosing_collector() {
+    // The world-lifetime-service escape hatch (new-core style engine):
+    // a signal/effect created via `unscoped` inside a `collect_owned`
+    // scope must NOT be collected — it lives until the world drops.
+    let world = World::new();
+    let fires = counter();
+    let (service_sig, owned) = world.enter(|| {
+        collect_owned(|| {
+            let fires = Rc::clone(&fires);
+            // World-root-owned: survives the Owned drop below.
+            let sig = unscoped(|| signal(1));
+            unscoped(move || {
+                effect(move || {
+                    let _ = sig.get();
+                    bump(&fires);
+                })
+            });
+            // Collected: dies with the Owned.
+            let _scoped = signal(0);
+            sig
+        })
+    });
+    assert_eq!(fires.get(), 1, "driver-style effect ran once at creation");
+    drop(owned);
+    // Both the signal and the effect survived the collector's death.
+    world.enter(|| service_sig.set(2));
+    world.flush();
+    assert_eq!(fires.get(), 2, "unscoped effect still re-fires after the scope died");
+    assert_eq!(service_sig.get(), 2, "unscoped signal still lives after the scope died");
+}
+
+#[test]
+fn unscoped_restores_the_collector_stack() {
+    // A collect_owned around an unscoped region still collects what's
+    // created AFTER the region — the stack is restored verbatim.
+    let world = World::new();
+    world.enter(|| {
+        let (sig_after, owned) = collect_owned(|| {
+            unscoped(|| signal(10));
+            signal(20)
+        });
+        assert_eq!(owned.len(), 1, "only the post-unscoped creation was collected");
+        assert_eq!(sig_after.get(), 20);
+    });
+}

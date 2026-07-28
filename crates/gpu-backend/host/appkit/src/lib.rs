@@ -18,6 +18,14 @@ mod app_delegate;
 #[cfg(target_os = "macos")]
 pub use app::{run, run_with, RunError, RunOptions};
 
+// idea-lite core migration (P4a): the new-core windowed boot —
+// identical NSApplication/NSWindow/content-view sequence, mounting via
+// `backend_macos::newcore::start` (World + Registry + realize) instead
+// of `runtime_core::mount`. Off by default; forwarded feature, zero
+// cost when off.
+#[cfg(all(target_os = "macos", feature = "new-core"))]
+pub mod newcore;
+
 // runtime-server variant. Mirrors `run` but, instead of mounting the user's
 // app() locally, connects to an runtime-server dev-server and applies the
 // command stream the sidecar produces. Only present when the

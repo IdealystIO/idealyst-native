@@ -194,12 +194,37 @@ paths model; unrecorded methods stay at the trait default. Deliberately
 OUTSIDE the alphabet (this is an alphabet choice, like the structural
 suite's 7-op choice — not a divergence):
 
-- `register_stylesheet` / `unregister_stylesheet` / `install_tokens` /
-  `update_tokens` / `apply_default_text_font` — sheet-registration +
-  token services of the old style engine. P2's `StyleProp` carries
-  *resolved* rules (no sheets); the sheet model and its registration
-  calls migrate with the P3 style-policy work and get their own gate
-  then.
+- `register_stylesheet` / `unregister_stylesheet` — the fixtures mint
+  a fresh `Rc<StyleSheet>` per closure fire (the common inline shape),
+  so this stream would pin Rc-lifetime churn (dead-Weak sweep timing)
+  rather than style semantics — and the two sides register through
+  different engines by design (runtime-core's thread-local table vs
+  the vocabulary's per-world table, P3c). Registration/unregistration
+  behavior on the new path is pinned by
+  `runtime-vocabulary/tests/vocab.rs`'s sheet-path suite.
+- `apply_default_text_font` — document-level premint plumbing with no
+  per-node observable; pinned by the vocabulary suite.
+
+Added to the alphabet by the P3c style-engine gate (none fire in the
+pre-P3c scenarios, so their goldens were untouched):
+
+- `install_tokens` / `update_tokens` — theme delivery + the
+  swap-then-cohort-fan-out ordering.
+- `attach_html_class` — preminted class stamping (the recorder also
+  reports `supports_preminted_styles() == true` so the `Preminted` arm
+  is reachable).
+- `attach_states` setters are now CAPTURED (`FullRecorder::state_setter`)
+  so the overlay-flip scenario drives hover like a native event source.
+
+The four `full_style_*` scenarios (static-sheet cohort + styled
+unmount, state-overlay divert + flip, signal-class fallback rebind,
+preminted stamping + premint-driver token delivery) pass byte-for-byte
+against the old-side goldens — no new sanctioned divergence was
+needed. Note the signal-class pair pins the FALLBACK path on both
+sides (the recorder reports no JS class bindings); the old core's
+web-only JS fan-out has no new-core counterpart yet (see
+`runtime_vocabulary::style_attach::signal_class` — a bench-phase
+item, not an op-stream divergence).
 - `WireBindingOps` notes — declarative wire backends only; the
   scenarios' opaque closures skip them on the old side too.
 - `finish` / `run_layout` / `set_page_metadata` / robot /
@@ -270,8 +295,9 @@ Four test binaries:
 - `goldens_new_core` (new core, the P1 gate): the same 19 pairs against
   the same goldens (modulo the sanctioned divergences above) + the
   registry-mirror check + the override-set sync check.
-- `goldens_full` (old core, FULL-OP): 8 golden comparisons + 1
+- `goldens_full` (old core, FULL-OP): 12 golden comparisons + 1
   registry↔disk check — pins the walker's complete backend-call
-  streams.
-- `goldens_full_new` (new core, the P2b gate): the same 8 pairs through
-  the vocabulary handlers + registry-mirror + override-set checks.
+  streams (incl. the four P3c `full_style_*` scenarios).
+- `goldens_full_new` (new core, the P2b/P3c gate): the same 12 pairs
+  through the vocabulary handlers + registry-mirror + override-set
+  checks.

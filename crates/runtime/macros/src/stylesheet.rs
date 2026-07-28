@@ -1248,6 +1248,27 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
 
     // Emitted only for premint-eligible sheets (see `sheet_has_shadow`);
     // ineligible sheets compile to the live path with no cfg block at all.
+    //
+    // Two variants of the preminted return: the old core's
+    // `StyleSource::Preminted` vs the new core's `StyleProp::Preminted`
+    // (same class-string assembly either way). Selected by this CRATE's
+    // `new-core` feature — the same switch that retargets the whole
+    // expansion (`finish`), so the `::runtime_core::…` path below lands
+    // on `::runtime_vocabulary::glue::StyleProp` post-retarget.
+    #[cfg(not(feature = "new-core"))]
+    let premint_return = quote! {
+        return ::runtime_core::StyleSource::Preminted {
+            class: ::std::borrow::Cow::Owned(__class),
+            overrides: ::std::option::Option::None,
+        };
+    };
+    #[cfg(feature = "new-core")]
+    let premint_return = quote! {
+        return ::runtime_core::StyleProp::Preminted {
+            class: ::std::borrow::Cow::Owned(__class),
+            overrides: ::std::option::Option::None,
+        };
+    };
     let premint_branch = if premintable {
         quote! {
             // Preminted fast path (web builds with build-time CSS):
@@ -1262,15 +1283,93 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
                 if !self.__reactive && !__any_override {
                     let mut __class = ::std::string::String::from(#base_class);
                     #(#premint_axis_pushes)*
-                    return ::runtime_core::StyleSource::Preminted {
-                        class: ::std::borrow::Cow::Owned(__class),
-                        overrides: ::std::option::Option::None,
-                    };
+                    #premint_return
                 }
             }
         }
     } else {
         TokenStream2::new()
+    };
+
+    // The builder → style-value conversion impl. Old core:
+    // `IntoStyleSource` → `StyleSource::{Static,Reactive}`. New core:
+    // `IntoStyleProp` → `StyleProp::{Sheet,SheetDynamic}` — the same
+    // static-vs-reactive split (`__reactive` gates it), lowered onto the
+    // vocabulary's sheet paths (static → cohort enrollment, reactive →
+    // per-node binding effect). Paths are spelled `::runtime_core::…`
+    // in BOTH arms on purpose: the shared `finish()` retarget rewrites
+    // them to `::runtime_vocabulary::glue::…` under `new-core`, where
+    // the glue re-exports resolve them (`IntoStyleProp`/`StyleProp` are
+    // glue-only names — they do not exist in runtime-core, which is
+    // fine: this arm is only emitted when the retarget runs).
+    #[cfg(not(feature = "new-core"))]
+    let conversion_impl = quote! {
+        // `idealyst_premint` is a build-pipeline cfg (set by the CLI's
+        // web build alongside the style-dump pass), not a crate feature
+        // — hence the allow: app crates don't declare it in check-cfg.
+        #[allow(unexpected_cfgs)]
+        impl ::runtime_core::IntoStyleSource for #name {
+            fn into_style_source(self) -> ::runtime_core::StyleSource {
+                #premint_branch
+                // The builder routes to one of two style sources:
+                //
+                // - All-constant inputs (variant values are plain enums,
+                //   overrides are plain values) → `StyleSource::Static`:
+                //   resolved once here, no per-node `Effect`, cohort theme
+                //   reactivity only. For the common case this is a strict
+                //   win — 10k static rows allocate zero per-node effects.
+                //
+                // - Any setter received a reactive source (`Signal` /
+                //   `derived(...)`) → `StyleSource::Reactive`: the build
+                //   closure is handed to the framework's apply-style
+                //   `Effect`, which re-runs it on every signal change so
+                //   the variant / override re-resolves and the style
+                //   re-applies. `__reactive` (set by the setters) selects
+                //   the path. The boxed closure re-invokes each stored
+                //   per-axis closure on every run, so signals read inside
+                //   a `derived` become live dependencies.
+                let __reactive = self.__reactive;
+                let __build = move || {
+                    let mut __app = ::runtime_core::StyleApplication::new(#stylesheet_fn());
+                    #(#axis_applies)*
+                    #(#override_applies)*
+                    __app
+                };
+                if __reactive {
+                    ::runtime_core::StyleSource::Reactive(::std::boxed::Box::new(__build))
+                } else {
+                    ::runtime_core::StyleSource::Static(__build())
+                }
+            }
+        }
+    };
+    #[cfg(feature = "new-core")]
+    let conversion_impl = quote! {
+        #[allow(unexpected_cfgs)]
+        impl ::runtime_core::IntoStyleProp for #name {
+            fn into_style_prop(self) -> ::runtime_core::StyleProp {
+                #premint_branch
+                // Same static-vs-reactive routing as the old core's
+                // `IntoStyleSource` (see the sibling emission): constant
+                // builders take the cohort path (`Sheet`), any reactive
+                // input (`Signal<E>` isn't available under new-core —
+                // use `derived(move || sig.get())`, whose closure reads
+                // subscribe the binding effect) takes the per-node
+                // effect path (`SheetDynamic`).
+                let __reactive = self.__reactive;
+                let __build = move || {
+                    let mut __app = ::runtime_core::StyleApplication::new(#stylesheet_fn());
+                    #(#axis_applies)*
+                    #(#override_applies)*
+                    __app
+                };
+                if __reactive {
+                    ::runtime_core::StyleProp::SheetDynamic(::std::boxed::Box::new(__build))
+                } else {
+                    ::runtime_core::StyleProp::Sheet(__build())
+                }
+            }
+        }
     };
 
     quote! {
@@ -1324,44 +1423,7 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
             fn default() -> Self { Self::new() }
         }
 
-        // `idealyst_premint` is a build-pipeline cfg (set by the CLI's
-        // web build alongside the style-dump pass), not a crate feature
-        // — hence the allow: app crates don't declare it in check-cfg.
-        #[allow(unexpected_cfgs)]
-        impl ::runtime_core::IntoStyleSource for #name {
-            fn into_style_source(self) -> ::runtime_core::StyleSource {
-                #premint_branch
-                // The builder routes to one of two style sources:
-                //
-                // - All-constant inputs (variant values are plain enums,
-                //   overrides are plain values) → `StyleSource::Static`:
-                //   resolved once here, no per-node `Effect`, cohort theme
-                //   reactivity only. For the common case this is a strict
-                //   win — 10k static rows allocate zero per-node effects.
-                //
-                // - Any setter received a reactive source (`Signal` /
-                //   `derived(...)`) → `StyleSource::Reactive`: the build
-                //   closure is handed to the framework's apply-style
-                //   `Effect`, which re-runs it on every signal change so
-                //   the variant / override re-resolves and the style
-                //   re-applies. `__reactive` (set by the setters) selects
-                //   the path. The boxed closure re-invokes each stored
-                //   per-axis closure on every run, so signals read inside
-                //   a `derived` become live dependencies.
-                let __reactive = self.__reactive;
-                let __build = move || {
-                    let mut __app = ::runtime_core::StyleApplication::new(#stylesheet_fn());
-                    #(#axis_applies)*
-                    #(#override_applies)*
-                    __app
-                };
-                if __reactive {
-                    ::runtime_core::StyleSource::Reactive(::std::boxed::Box::new(__build))
-                } else {
-                    ::runtime_core::StyleSource::Static(__build())
-                }
-            }
-        }
+        #conversion_impl
 
         /// Entry point: `Card()` returns a fresh builder. The free
         /// function shadows the struct name for call sites like

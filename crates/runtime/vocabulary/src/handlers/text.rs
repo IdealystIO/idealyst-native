@@ -5,7 +5,7 @@ use runtime_world::{effect, Value};
 
 use crate::caps::{ButtonOps, StyleOps, TextOps};
 use crate::prims::{ButtonPrim, TextPrim, TextSourceProp};
-use crate::style_attach::{attach_style, on_teardown};
+use crate::style_attach::{attach_style, on_teardown, StyleServices};
 
 use super::bind_value;
 
@@ -25,7 +25,7 @@ use super::bind_value;
 /// Then attach_style → ref-fill, matching the walker's outer sequence.
 pub fn mount_text<H>(cx: &mut MountCx<'_, H>, prim: TextPrim, _children: Vec<Element>) -> H::Node
 where
-    H: TextOps + StyleOps,
+    H: TextOps + StyleServices,
 {
     let backend = cx.backend().clone();
     let node = match prim.content {
@@ -88,7 +88,7 @@ where
 /// fire at mount — the walker's reactive-label shape).
 pub fn mount_button<H>(cx: &mut MountCx<'_, H>, prim: ButtonPrim, _children: Vec<Element>) -> H::Node
 where
-    H: ButtonOps + StyleOps,
+    H: ButtonOps + StyleServices,
 {
     let backend = cx.backend().clone();
     let (initial_label, dyn_label) = match prim.label {
@@ -102,20 +102,25 @@ where
         prim.trailing_icon.as_ref(),
         &prim.a11y,
     );
-    if let Some(style) = prim.style {
-        attach_style(&backend, &node, style);
-    }
+    let state_setter = prim
+        .style
+        .map(|style| attach_style(&backend, &node, style));
     if let Some(fill) = prim.ref_fill {
         let handle = backend.borrow().make_button_handle(&node);
         fill(handle);
     }
     if let Some(disabled) = prim.disabled {
         // A real widget goes inert natively via set_disabled — no
-        // press-block flag (that's the bare-pressable path).
+        // press-block flag (that's the bare-pressable path). The
+        // DISABLED state-bit flip rides the styled setter so a
+        // `state disabled { … }` overlay applies (old `attach_disabled`).
         let b = backend.clone();
         let n = node.clone();
         bind_value(disabled, move |&d| {
             b.borrow_mut().set_disabled(&n, d);
+            if let Some(setter) = state_setter.as_ref() {
+                setter(runtime_core::StateBits::DISABLED, d);
+            }
         });
     }
     if let Some(f) = dyn_label {

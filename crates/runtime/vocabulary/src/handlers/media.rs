@@ -8,7 +8,7 @@ use runtime_world::{effect, Value};
 
 use crate::caps::{AssetOps, IconOps, ImageOps, LinkOps, StyleOps};
 use crate::prims::{IconPrim, ImagePrim, LinkPrim};
-use crate::style_attach::attach_style;
+use crate::style_attach::{attach_style, StyleServices};
 
 use super::{bind_dyn, bind_value, initial_of};
 
@@ -21,7 +21,7 @@ use super::{bind_dyn, bind_value, initial_of};
 /// unconditional effect) → `Dyn` alt binding → ref-fill.
 pub fn mount_image<H>(cx: &mut MountCx<'_, H>, prim: ImagePrim, _children: Vec<Element>) -> H::Node
 where
-    H: ImageOps + StyleOps + AssetOps,
+    H: ImageOps + StyleServices + AssetOps,
 {
     let backend = cx.backend().clone();
     if let Some(asset) = prim.asset {
@@ -82,7 +82,7 @@ where
 /// walker).
 pub fn mount_icon<H>(cx: &mut MountCx<'_, H>, prim: IconPrim, _children: Vec<Element>) -> H::Node
 where
-    H: IconOps + StyleOps,
+    H: IconOps + StyleServices,
 {
     let backend = cx.backend().clone();
     let (initial_data, dyn_data) = match prim.data {
@@ -158,7 +158,7 @@ where
 /// first fire at mount) → ref-fill.
 pub fn mount_link<H>(cx: &mut MountCx<'_, H>, prim: LinkPrim, children: Vec<Element>) -> H::Node
 where
-    H: LinkOps + StyleOps,
+    H: LinkOps + StyleServices,
 {
     let backend = cx.backend().clone();
     let initial_url = initial_of(&prim.url);

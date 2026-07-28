@@ -250,7 +250,17 @@ pub fn stylesheet(input: TokenStream) -> TokenStream {
     // fresh binary). See `stylesheet::content_hash`.
     let content_hash = stylesheet::content_hash(&input.to_string());
     let parsed = parse_macro_input!(input as stylesheet::StyleSheetDecl);
-    stylesheet::emit(parsed, content_hash).into()
+    // Through `finish`: under `new-core` the emission's absolute
+    // `::runtime_core::…` paths retarget to `::runtime_vocabulary::glue::…`
+    // (which re-exports the whole sheet vocabulary — StyleSheet,
+    // cached_stylesheet, VariantSet, IntoVariantSource, … — plus the
+    // new-core-only `IntoStyleProp`/`StyleProp` the builder's conversion
+    // impl targets). Old builds pass through byte-identical. The
+    // premint-dump linkme registration (`cfg(idealyst_premint_dump)`)
+    // would retarget to a nonexistent `glue::premint`, but dump builds
+    // are CLI-driven old-core builds — the combination cannot occur; if
+    // it ever does, the loud unresolved-path error names glue.
+    finish(stylesheet::emit(parsed, content_hash))
 }
 
 /// `#[component]` — annotates a component function. Rewrites its body for

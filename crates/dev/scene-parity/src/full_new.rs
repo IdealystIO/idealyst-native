@@ -57,6 +57,12 @@ impl FullNewCx {
         self.rec.clone()
     }
 
+    /// The `nth` captured interaction-state setter — mirror of
+    /// `FullCx::state_setter` (P3c overlay-flip scenarios).
+    pub fn state_setter(&self, nth: usize) -> Rc<dyn Fn(runtime_core::StateBits, bool)> {
+        self.backend.borrow().0.state_setter(nth)
+    }
+
     pub fn mount(&mut self, root: Element) {
         assert!(self.realized.is_none(), "scenario mounted twice");
         let realized = realize(&self.backend, &self.registry, root);

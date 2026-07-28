@@ -1082,6 +1082,52 @@ pub fn untrack<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
+/// Run `f` with the ownership-collector stack SUSPENDED, so every signal /
+/// effect / memo created inside is **world-root-owned** (freed only when its
+/// world drops) instead of being collected into whatever `collect_owned`
+/// scope happens to be active.
+///
+/// The escape hatch for **world-lifetime services created lazily during a
+/// mount**: a per-world theme-version signal or cohort-driver effect is
+/// first needed inside some subtree's realization (a `collect_owned`
+/// scope), but must outlive that subtree — without suspension it would be
+/// collected into the subtree's `Owned` and freed on that subtree's
+/// unmount, leaving the service's `Copy` handles dangling. This is the
+/// direct analogue of the old core's `reactive::unscope`, added for the
+/// exact same regression class (runtime-core `style.rs`'s token-registry
+/// "signal used after its scope was dropped" incident; the new-core style
+/// engine hit the same shape with its per-world theme state).
+///
+/// Suspension is a swap of the whole collector stack (panic-safe restore),
+/// mirroring [`untrack`]'s global posture: "this creation is
+/// world-lifetime" is a property of the code region, not of one collector.
+pub fn unscoped<R>(f: impl FnOnce() -> R) -> R {
+    let saved = with_tls(|t| std::mem::take(&mut t.collectors));
+    struct Guard {
+        saved: Vec<Vec<OwnedItem>>,
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let saved = std::mem::take(&mut self.saved);
+            let _ = TLS.try_with(|t| {
+                let mut t = t.borrow_mut();
+                // Anything the suspended region pushed (it starts empty, so
+                // only a nested `collect_owned` that itself panicked could
+                // leave residue) is world-root-owned by construction; the
+                // outer stack is restored verbatim.
+                debug_assert!(
+                    t.collectors.is_empty(),
+                    "unscoped: collector stack not empty on exit — a nested \
+                     collect_owned failed to pop"
+                );
+                t.collectors = saved;
+            });
+        }
+    }
+    let _guard = Guard { saved };
+    f()
+}
+
 /// Register a cleanup for the innermost RUNNING effect (whatever world it
 /// belongs to). Runs before that effect's next re-run, or when its owning
 /// scope drops — whichever comes first. May be called multiple times per

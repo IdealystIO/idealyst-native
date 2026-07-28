@@ -8,7 +8,7 @@ use runtime_world::Value;
 
 use crate::caps::{ActivityIndicatorOps, SliderOps, StyleOps, TextInputOps, ToggleOps};
 use crate::prims::{ActivityIndicatorPrim, SliderPrim, TextAreaPrim, TextInputPrim, TogglePrim};
-use crate::style_attach::attach_style;
+use crate::style_attach::{attach_style, StyleServices};
 
 use super::{bind_dyn, bind_value, initial_of};
 
@@ -20,7 +20,7 @@ use super::{bind_dyn, bind_value, initial_of};
 /// the round-trip is stable) → ref-fill.
 pub fn mount_toggle<H>(cx: &mut MountCx<'_, H>, prim: TogglePrim, _children: Vec<Element>) -> H::Node
 where
-    H: ToggleOps + StyleOps,
+    H: ToggleOps + StyleServices,
 {
     let backend = cx.backend().clone();
     let initial = initial_of(&prim.value);
@@ -50,7 +50,7 @@ where
 /// regardless of native step handling.
 pub fn mount_slider<H>(cx: &mut MountCx<'_, H>, prim: SliderPrim, _children: Vec<Element>) -> H::Node
 where
-    H: SliderOps + StyleOps,
+    H: SliderOps + StyleServices,
 {
     let backend = cx.backend().clone();
     let initial = initial_of(&prim.value);
@@ -99,7 +99,7 @@ pub fn mount_activity_indicator<H>(
     _children: Vec<Element>,
 ) -> H::Node
 where
-    H: ActivityIndicatorOps + StyleOps,
+    H: ActivityIndicatorOps + StyleServices,
 {
     let backend = cx.backend().clone();
     let (initial_size, dyn_size) = match prim.size {
@@ -141,7 +141,7 @@ pub fn mount_text_input<H>(
     _children: Vec<Element>,
 ) -> H::Node
 where
-    H: TextInputOps + StyleOps,
+    H: TextInputOps + StyleServices,
 {
     let backend = cx.backend().clone();
     let initial_value = initial_of(&prim.value);
@@ -202,7 +202,7 @@ pub fn mount_text_area<H>(
     _children: Vec<Element>,
 ) -> H::Node
 where
-    H: TextInputOps + StyleOps,
+    H: TextInputOps + StyleServices,
 {
     let backend = cx.backend().clone();
     let initial_value = initial_of(&prim.value);

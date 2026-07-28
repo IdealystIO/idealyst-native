@@ -67,21 +67,40 @@ use runtime_core::accessibility::{
 };
 use runtime_core::primitives::activity_indicator::ActivityIndicatorSize;
 use runtime_core::primitives::icon::{IconData, StrokeAnimation};
-use runtime_core::Easing;
-use runtime_core::{
-    Color, FileDropHandler, IntoAction, SafeAreaSides, TouchHandler, WheelHandler,
-};
+// `Easing` is re-exported (not just imported): the `stylesheet!`
+// emitter spells `::runtime_core::Easing::…` for `transitions { … }`
+// blocks, which the new-core retarget maps here.
+pub use runtime_core::Easing;
+// `Color` re-exported for the same reason (stylesheet bodies and app
+// preludes reference it; the type is shared with the old core).
+pub use runtime_core::Color;
+use runtime_core::{FileDropHandler, IntoAction, SafeAreaSides, TouchHandler, WheelHandler};
 use runtime_scene::{dyn_element, dyn_keyed, fragment, Key};
 use runtime_world::{IntoValue, Value};
 
 use crate::builders::{self, TextContent};
-use crate::style_attach::IntoStyleProp;
 
 // Re-exports: the reactive surface + the scene Element under the names
 // the macro (and app preludes) reach for.
 pub use runtime_scene::{component_scope, Element};
 pub use runtime_world::{
     effect, memo, on_cleanup, signal, untrack, Effect, Memo, ReadSignal, Signal, WriteSignal,
+};
+
+// The `stylesheet!` emission surface (P3c). Under `new-core` the macro's
+// output is retargeted `::runtime_core::…` → `::runtime_vocabulary::glue::…`
+// wholesale, so every name the generated sheet fn / builder / variant
+// enums reference must resolve HERE. The style data model itself stays
+// runtime-core's (sanctioned transitional dependency, crate docs) — these
+// are re-exports, not forks. `IntoStyleProp`/`StyleProp` are the one
+// NEW pair: the generated builder's conversion impl targets them instead
+// of the old `IntoStyleSource`/`StyleSource`.
+pub use crate::style_attach::{signal_class, IntoStyleProp, StyleProp};
+pub use crate::theme;
+pub use runtime_core::{
+    cached_stylesheet, derived, Breakpoint, IntoOverrideSource, IntoVariantSource, Length,
+    StateBits, StyleApplication, StyleRules, StyleSheet, TokenEntry, TokenValue, Tokenized,
+    Transition, VariantEnum, VariantSet,
 };
 
 /// A fresh, world-root-owned signal — used by the macro for the

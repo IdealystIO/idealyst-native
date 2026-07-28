@@ -23,6 +23,10 @@ full_golden!(full_dyn_swap_primitives_anchored, "full_dyn_swap_primitives", Mode
 full_golden!(full_dyn_swap_primitives_spliced, "full_dyn_swap_primitives", Mode::Spliced);
 full_golden!(full_release_on_swap_anchored, "full_release_on_swap", Mode::Anchored);
 full_golden!(full_release_on_swap_spliced, "full_release_on_swap", Mode::Spliced);
+full_golden!(full_style_sheet_cohort_spliced, "full_style_sheet_cohort", Mode::Spliced);
+full_golden!(full_style_state_overlay_spliced, "full_style_state_overlay", Mode::Spliced);
+full_golden!(full_style_signal_class_spliced, "full_style_signal_class", Mode::Spliced);
+full_golden!(full_style_preminted_spliced, "full_style_preminted", Mode::Spliced);
 
 /// Every (scenario, mode) pair has a golden on disk, and every golden on
 /// disk has a registered pair — no orphans in either direction.

@@ -7,7 +7,47 @@
 //! this file changes between the two.
 
 use crate::prelude::*;
-use runtime_macros::{component, ui};
+use runtime_macros::{component, stylesheet, ui};
+
+// The app's stylesheet — P3c: theme tokens (the `color-surface`
+// background tracks the installed theme), a `size` variant, and a
+// `state hovered` interaction overlay. Core-agnostic like everything
+// else in this file: the macro emits the old `IntoStyleSource` impl or
+// the new `IntoStyleProp` impl depending on the build's core.
+stylesheet! {
+    pub Card<()> {
+        base(_t) {
+            padding: 8,
+            background: Tokenized::token("color-surface", Color("#101010".into())),
+        }
+        variant size {
+            #[default]
+            medium(_t) {}
+            large(_t) { padding: 16 }
+        }
+        state hovered(_t) {
+            border_width: 4.0,
+        }
+    }
+}
+
+/// A themed container: static sheet application with a variant picked
+/// from a static prop. The `state hovered` overlay makes this the
+/// static-divert case on event-driven backends (state machine attached
+/// even though the application itself is constant).
+#[component]
+fn StyledCard(
+    /// Picks the `size` variant (static prop with a default).
+    #[prop(static, default = false)]
+    large: bool,
+    children: Vec<Element>,
+) -> Element {
+    ui! {
+        view(style = Card().size(if large { CardSize::Large } else { CardSize::Medium })) {
+            children
+        }
+    }
+}
 
 /// One todo item. Rows are keyed by `id`.
 #[derive(Clone, PartialEq)]
@@ -167,6 +207,9 @@ fn TodoApp(
             }
             Section(title = "About") {
                 text { "static footer" }
+            }
+            StyledCard(large = true) {
+                text { "themed card" }
             }
         }
     }

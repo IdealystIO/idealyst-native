@@ -1,0 +1,24 @@
+# scene-parity FULL-OP golden — scenario `full_style_signal_class`, mode `spliced`
+#
+# P3c: signal_class on a backend without JS class bindings — the
+# fallback per-node binding path. Mount applies the value-0 class
+# rules + attach_states; each signal write is exactly one
+# apply_style with the new value's digest.
+#
+# Complete backend-call stream (create_*/update_*/apply_style/release_*
+# + the structural ops). Node names are creation-order (n0, n1, ...).
+# Owned by the OLD core; regenerate after an INTENDED walker change
+# with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 view
+apply_style n1 {background: Some(Literal(Color("#606060"))), width: Some(Literal(Px(60.0)))}
+attach_states n1
+insert n0 <- n1
+
+== set active = 1 (one apply_style, value-1 digest) ==
+apply_style n1 {background: Some(Literal(Color("#606060"))), width: Some(Literal(Px(200.0)))}
+
+== set active = 0 (back to the value-0 digest) ==
+apply_style n1 {background: Some(Literal(Color("#606060"))), width: Some(Literal(Px(60.0)))}

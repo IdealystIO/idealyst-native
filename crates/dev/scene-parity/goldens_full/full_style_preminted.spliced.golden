@@ -1,0 +1,28 @@
+# scene-parity FULL-OP golden — scenario `full_style_preminted`, mode `spliced`
+#
+# P3c: preminted classes stamp via attach_html_class (one per
+# segment) with zero StyleRules work; pre-mount tokens still reach
+# the backend (the premint host driver — no sheet ever registers),
+# as do theme swaps. The overrides variant layers one apply_style
+# on top of its class.
+#
+# Complete backend-call stream (create_*/update_*/apply_style/release_*
+# + the structural ops). Node names are creation-order (n0, n1, ...).
+# Owned by the OLD core; regenerate after an INTENDED walker change
+# with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 view
+install_tokens ["color-surface"]
+attach_html_class n1 iy-fixed
+attach_html_class n1 iy-fixed-size-large
+insert n0 <- n1
+create n2 view
+attach_html_class n2 iy-over
+apply_style n2 {background: Some(Literal(Color("#0000ff"))), width: Some(Literal(Px(50.0)))}
+insert n0 <- n2
+
+== swap theme (premint driver flushes update_tokens) ==
+update_tokens ["color-surface"]
+apply_style n2 {background: Some(Literal(Color("#0000ff"))), width: Some(Literal(Px(50.0)))}

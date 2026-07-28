@@ -47,6 +47,17 @@ pub use imp::{
 #[cfg(not(target_os = "macos"))]
 pub use stub::MacosBackend;
 
+// idea-lite core migration (P4a): `runtime_scene::Host` + all 30
+// `runtime_vocabulary::caps` traits implemented directly on
+// `MacosBackend` (UFCS delegation to the existing Backend impl), plus
+// the new-core mount (`newcore::start`) and its runloop-turn flush
+// driver (local NSEvent monitor + frame tick). Off by default; with the
+// feature off the build is unchanged (module + deps not compiled).
+// macOS-gated like `imp` — the stub backend has no real Backend impl to
+// front. `host-appkit`'s `newcore::run` is the windowed entry point.
+#[cfg(all(target_os = "macos", feature = "new-core"))]
+pub mod newcore;
+
 // Optional runtime-server-client entry point. Exposes `spawn_runtime_server_shell` +
 // `start_main_thread_drain_timer`, modeled on `backend-ios-mobile`'s
 // `aas` module. Only compiled when `--features runtime-server` is set —

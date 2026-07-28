@@ -55,7 +55,7 @@ fn launcher_alive(pid: i32) -> bool {
 /// No-op when `LAUNCHER_PID_ENV` is unset — a standalone app has no
 /// launcher to follow.
 #[cfg(unix)]
-fn spawn_launcher_watchdog() {
+pub(crate) fn spawn_launcher_watchdog() {
     let Ok(raw) = std::env::var(LAUNCHER_PID_ENV) else {
         return;
     };
@@ -76,7 +76,7 @@ fn spawn_launcher_watchdog() {
 }
 
 #[cfg(not(unix))]
-fn spawn_launcher_watchdog() {}
+pub(crate) fn spawn_launcher_watchdog() {}
 
 #[derive(Clone, Debug)]
 pub struct RunOptions {
@@ -138,7 +138,7 @@ impl std::error::Error for RunError {}
 /// is first responder, so the same menu drives editing in any text control with
 /// no per-control wiring. The App menu carries `Quit` (`Cmd-Q`) so the standard
 /// quit shortcut works too.
-fn install_main_menu(mtm: MainThreadMarker, nsapp: &NSApplication) {
+pub(crate) fn install_main_menu(mtm: MainThreadMarker, nsapp: &NSApplication) {
     // `nil`-target item whose action travels the responder chain. `cmd_extra`
     // adds modifiers beyond the implicit Command (e.g. Shift for Redo).
     let make_item = |title: &str, action: objc2::runtime::Sel, key: &str, cmd_extra: bool| {

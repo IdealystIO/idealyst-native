@@ -7,7 +7,7 @@ use runtime_scene::{Element, MountCx};
 
 use crate::caps::{InputOps, PressableOps, SafeAreaOps, ScrollOps, StyleOps, ViewOps};
 use crate::prims::{PressablePrim, ScrollViewPrim, ViewPrim};
-use crate::style_attach::attach_style;
+use crate::style_attach::{attach_style, StyleServices};
 
 use super::bind_value;
 
@@ -27,7 +27,7 @@ use super::bind_value;
 ///   with the style engine.
 pub fn mount_view<H>(cx: &mut MountCx<'_, H>, prim: ViewPrim, children: Vec<Element>) -> H::Node
 where
-    H: ViewOps + InputOps + StyleOps + SafeAreaOps,
+    H: ViewOps + InputOps + StyleServices + SafeAreaOps,
 {
     let backend = cx.backend().clone();
     let mut node = backend.borrow_mut().create_view(&prim.a11y);
@@ -82,7 +82,7 @@ pub fn mount_pressable<H>(
     children: Vec<Element>,
 ) -> H::Node
 where
-    H: PressableOps + InputOps + StyleOps,
+    H: PressableOps + InputOps + StyleServices,
 {
     let (on_press, press_block): (Rc<dyn Fn()>, Option<Rc<Cell<bool>>>) = if prim.disabled.is_some()
     {
@@ -102,9 +102,9 @@ where
     let backend = cx.backend().clone();
     let mut node = backend.borrow_mut().create_pressable(on_press, &prim.a11y);
     cx.realize_children_into(&mut node, children);
-    if let Some(style) = prim.style {
-        attach_style(&backend, &node, style);
-    }
+    let state_setter = prim
+        .style
+        .map(|style| attach_style(&backend, &node, style));
     if let Some(fill) = prim.ref_fill {
         let handle = backend.borrow().make_pressable_handle(&node);
         fill(handle);
@@ -112,11 +112,17 @@ where
     if let Some(disabled) = prim.disabled {
         let b = backend.clone();
         let n = node.clone();
+        // Old `attach_disabled` ordering: press-block flag, native
+        // set_disabled, then the DISABLED state-bit flip so a
+        // `state disabled { … }` overlay applies via the state machinery.
         bind_value(disabled, move |&d| {
             if let Some(flag) = press_block.as_ref() {
                 flag.set(d);
             }
             b.borrow_mut().set_disabled(&n, d);
+            if let Some(setter) = state_setter.as_ref() {
+                setter(runtime_core::StateBits::DISABLED, d);
+            }
         });
     }
     if prim.preserves_focus {
@@ -136,7 +142,7 @@ pub fn mount_scroll_view<H>(
     children: Vec<Element>,
 ) -> H::Node
 where
-    H: ScrollOps + SafeAreaOps + StyleOps,
+    H: ScrollOps + SafeAreaOps + StyleServices,
 {
     let backend = cx.backend().clone();
     let mut node = backend

@@ -1,0 +1,26 @@
+# scene-parity FULL-OP golden — scenario `full_style_state_overlay`, mode `spliced`
+#
+# P3c: a STATIC sheet application whose sheet declares
+# `state hovered` on an event-driven backend must divert to the
+# state machine (attach_states at mount — the static-divert
+# regression); flipping the hover bit re-resolves WITH the overlay
+# (one apply_style, overlay digest), flipping it off restores the
+# base digest.
+#
+# Complete backend-call stream (create_*/update_*/apply_style/release_*
+# + the structural ops). Node names are creation-order (n0, n1, ...).
+# Owned by the OLD core; regenerate after an INTENDED walker change
+# with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 view
+apply_style n1 {width: Some(Literal(Px(100.0)))}
+attach_states n1
+insert n0 <- n1
+
+== hover on (one apply_style, overlay digest) ==
+apply_style n1 {width: Some(Literal(Px(999.0)))}
+
+== hover off (base digest restored) ==
+apply_style n1 {width: Some(Literal(Px(100.0)))}

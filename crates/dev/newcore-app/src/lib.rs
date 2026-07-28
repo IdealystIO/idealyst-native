@@ -17,16 +17,18 @@ compile_error!(
 /// The shared authoring surface, resolved per core.
 #[cfg(feature = "new-core")]
 pub mod prelude {
-    pub use runtime_vocabulary::glue::{memo, signal, Element, Memo, Signal};
+    pub use runtime_vocabulary::glue::{memo, signal, Color, Element, Memo, Signal, Tokenized};
     // `ui!` emits `::runtime_vocabulary::glue::…` paths under `new-core`;
     // the dispatch traits and coercions are resolved absolutely by the
-    // macro, so nothing else needs importing here.
+    // macro, so nothing else needs importing here. `Tokenized`/`Color`
+    // serve the `stylesheet!` bodies (the sheet DATA MODEL is shared
+    // with the old core — these are re-exports of the same types).
     pub use std::rc::Rc;
 }
 
 #[cfg(all(feature = "old-core", not(feature = "new-core")))]
 pub mod prelude {
-    pub use runtime_core::{memo, signal, Element, Signal};
+    pub use runtime_core::{memo, signal, Color, Element, Signal, Tokenized};
     pub use std::rc::Rc;
 }
 

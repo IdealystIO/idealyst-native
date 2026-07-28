@@ -82,6 +82,8 @@ members = [
     "crates/dev/scene-parity",
     # Smoke app for backend-web's new-core boot path (idea-lite P3b).
     "crates/dev/newcore-web-smoke",
+    # Smoke app for backend-macos's new-core boot path (idea-lite P4a).
+    "crates/dev/newcore-macos-smoke",
     # Integration example for the ui!/#[component] new-core lowering
     # (idea-lite P3a). Featureless (empty) by default on purpose: its
     # `new-core` feature flips runtime-macros' lowering build-graph-wide,

@@ -255,3 +255,77 @@ fn drop_realized_is_unmount() {
     world.flush();
     assert!(rec.take_ops().is_empty(), "no ops after unmount");
 }
+
+// ===========================================================================
+// P3c: the stylesheet!-styled component through the sheet engine
+// ===========================================================================
+
+/// The `stylesheet!` card mounts through the sheet engine: the `large`
+/// variant resolves (padding 16 over the base 8), the background rides
+/// the `color-surface` theme token, and — because the sheet declares
+/// `state hovered` — the STATIC application diverts to the state
+/// machine on this event-driven mock (attach_states present; the
+/// static-divert regression, authored-app edition).
+#[test]
+fn styled_card_resolves_variant_and_token_through_the_sheet_engine() {
+    let (_h, ops) = Harness::mount();
+    let log = joined(&ops);
+    assert!(
+        log.contains("Token { name: \"color-surface\""),
+        "background must reference the theme token:\n{log}"
+    );
+    assert!(
+        log.contains("padding_top: Some(Literal(Px(16.0)))"),
+        "the large variant's padding must win over the base:\n{log}"
+    );
+    assert_eq!(
+        log.matches("attach_states").count(),
+        1,
+        "exactly the state-overlay-bearing card hooks the state machine:\n{log}"
+    );
+}
+
+/// A theme swap re-applies the styled card: one backend `update_tokens`
+/// then a re-apply — driven by the per-world theme version signal, not
+/// a per-node subscription.
+#[test]
+fn theme_swap_reapplies_styled_card() {
+    let (h, _) = Harness::mount();
+    h.world.enter(|| {
+        runtime_vocabulary::theme::update_tokens(&[runtime_vocabulary::glue::TokenEntry {
+            name: "color-surface",
+            value: runtime_vocabulary::glue::TokenValue::Color(runtime_vocabulary::glue::Color("#fefefe".into())),
+        }]);
+    });
+    let ops = h.flush();
+    let log = joined(&ops);
+    assert!(
+        log.contains("update_tokens [\"color-surface\"]"),
+        "the swap reaches the backend:\n{log}"
+    );
+    assert!(
+        log.contains("Token { name: \"color-surface\""),
+        "the styled card re-applies on the swap:\n{log}"
+    );
+}
+
+/// Flipping the hover bit (as a native event source would, through the
+/// captured attach_states setter) applies the `state hovered` overlay
+/// (border width 4) and removes it again on release.
+#[test]
+fn hover_flip_applies_the_state_overlay() {
+    let (h, _) = Harness::mount();
+    let setter = h.backend.borrow().0.state_setter(0);
+    setter(runtime_vocabulary::glue::StateBits::HOVERED, true);
+    let log = joined(&h.flush());
+    assert!(
+        log.contains("border_top_width: Some(Literal(4.0))"),
+        "hover overlay applies:\n{log}"
+    );
+    setter(runtime_vocabulary::glue::StateBits::HOVERED, false);
+    let log = joined(&h.flush());
+    assert!(
+        log.contains("apply_style") && !log.contains("border_top_width"),
+        "hover release restores the base digest:\n{log}"
+    );
+}

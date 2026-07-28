@@ -1457,7 +1457,10 @@ dependencies = [
  "raw-window-handle",
  "runtime-core",
  "runtime-layout",
+ "runtime-scene",
  "runtime-server-shell-native",
+ "runtime-vocabulary",
+ "runtime-world",
 ]
 
 [[package]]
@@ -7258,6 +7261,19 @@ dependencies = [
  "runtime-vocabulary",
  "runtime-world",
  "scene-parity",
+]
+
+[[package]]
+name = "newcore-macos-smoke"
+version = "0.4.0"
+dependencies = [
+ "host-appkit",
+ "objc2-app-kit",
+ "objc2-foundation 0.2.2",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
 ]
 
 [[package]]

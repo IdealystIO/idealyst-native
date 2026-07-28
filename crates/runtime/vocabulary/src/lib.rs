@@ -44,11 +44,15 @@
 //! - styled-text runs beyond the basic `create_styled_text` path (theme
 //!   re-realization, `JsBinding` fan-out);
 //! - hydration behavior (P3 web);
-//! - cohort / premint / signal-class / preminted styling and sheet
-//!   registration (P3 web style policy) — [`style_attach::StyleProp`]
-//!   carries the two P2 paths only;
 //! - safe-area *reactive* inset re-application (P3; P2 applies once at
 //!   mount) and the native container-query inline-size feedback loop.
+//!
+//! The **style engine** (P3c) is ported: [`style_attach::StyleProp`]
+//! carries the sheet paths (static + cohort, dynamic, signal-class,
+//! preminted) on top of the P2 resolved-rules paths, and [`theme`] owns
+//! the per-world token/version/cohort model. Remaining style gaps are
+//! listed loudly in `style_attach`'s module docs (native container
+//! feedback, native breakpoint re-fire, the JS class-binding fan-out).
 //!
 //! ## P3a — the macro glue ([`glue`])
 //!
@@ -130,6 +134,7 @@ pub mod glue;
 pub mod handlers;
 pub mod prims;
 pub mod style_attach;
+pub mod theme;
 
 pub use bridge::LegacyBridge;
 pub use builders::{
@@ -138,4 +143,6 @@ pub use builders::{
 };
 pub use caps::AllCaps;
 pub use handlers::register_builtins;
-pub use style_attach::{attach_style, on_teardown, IntoStyleProp, StyleProp};
+pub use style_attach::{
+    attach_style, on_teardown, signal_class, IntoStyleProp, StyleProp, StyleServices,
+};

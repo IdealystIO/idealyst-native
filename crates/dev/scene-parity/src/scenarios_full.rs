@@ -102,6 +102,57 @@ pub fn full_scenarios() -> Vec<FullScenario> {
             modes: &[Mode::Anchored, Mode::Spliced],
             run: full_release_on_swap,
         },
+        FullScenario {
+            name: "full_style_sheet_cohort",
+            about: &[
+                "P3c: static SHEET applications through the token engine. Tokens",
+                "installed pre-mount are delivered (install_tokens) before the",
+                "first styled apply; each theme swap emits ONE backend",
+                "update_tokens then re-applies every registered static node (the",
+                "shared theme cohort, registration order). Hiding a styled branch",
+                "removes it structurally + fires on_node_unstyled; the FOLLOWING",
+                "swap re-applies only the survivor — the dead node's cohort entry",
+                "is gone.",
+            ],
+            modes: &[Mode::Spliced],
+            run: full_style_sheet_cohort,
+        },
+        FullScenario {
+            name: "full_style_state_overlay",
+            about: &[
+                "P3c: a STATIC sheet application whose sheet declares",
+                "`state hovered` on an event-driven backend must divert to the",
+                "state machine (attach_states at mount — the static-divert",
+                "regression); flipping the hover bit re-resolves WITH the overlay",
+                "(one apply_style, overlay digest), flipping it off restores the",
+                "base digest.",
+            ],
+            modes: &[Mode::Spliced],
+            run: full_style_state_overlay,
+        },
+        FullScenario {
+            name: "full_style_signal_class",
+            about: &[
+                "P3c: signal_class on a backend without JS class bindings — the",
+                "fallback per-node binding path. Mount applies the value-0 class",
+                "rules + attach_states; each signal write is exactly one",
+                "apply_style with the new value's digest.",
+            ],
+            modes: &[Mode::Spliced],
+            run: full_style_signal_class,
+        },
+        FullScenario {
+            name: "full_style_preminted",
+            about: &[
+                "P3c: preminted classes stamp via attach_html_class (one per",
+                "segment) with zero StyleRules work; pre-mount tokens still reach",
+                "the backend (the premint host driver — no sheet ever registers),",
+                "as do theme swaps. The overrides variant layers one apply_style",
+                "on top of its class.",
+            ],
+            modes: &[Mode::Spliced],
+            run: full_style_preminted,
+        },
     ]
 }
 
@@ -277,4 +328,113 @@ fn full_release_on_swap(cx: &mut FullCx) {
         present.set(false)
     });
     cx.step("swap back in (fresh ids minted)", || present.set(true));
+}
+
+// ===========================================================================
+// (g) P3c: static sheets + tokens + cohort + styled unmount
+// ===========================================================================
+
+fn full_style_sheet_cohort(cx: &mut FullCx) {
+    use crate::full::{surface_token, themed_sheet};
+    runtime_core::install_tokens(&[surface_token("#101010")]);
+    let show: Signal<bool> = signal(true);
+    cx.mount(
+        view(vec![
+            view(vec![])
+                .with_style(StyleApplication::new(themed_sheet()))
+                .into_element(),
+            when(
+                move || show.get(),
+                || {
+                    view(vec![])
+                        .with_style(StyleApplication::new(themed_sheet()).with("size", "large"))
+                        .into_element()
+                },
+                || text("hidden").into_element(),
+            ),
+        ])
+        .into_element(),
+    );
+    cx.step("swap theme (update_tokens + cohort re-applies both)", || {
+        runtime_core::update_tokens(&[surface_token("#f0f0f0")]);
+    });
+    cx.step("hide the styled branch (structural + on_node_unstyled)", || {
+        show.set(false);
+    });
+    cx.step("swap theme again (only the survivor re-applies)", || {
+        runtime_core::update_tokens(&[surface_token("#202020")]);
+    });
+}
+
+// ===========================================================================
+// (h) P3c: static sheet with a state overlay (the divert + flip)
+// ===========================================================================
+
+fn full_style_state_overlay(cx: &mut FullCx) {
+    use crate::full::hover_sheet;
+    cx.mount(
+        view(vec![view(vec![])
+            .with_style(StyleApplication::new(hover_sheet()))
+            .into_element()])
+        .into_element(),
+    );
+    let setter = cx.state_setter(0);
+    let on = setter.clone();
+    cx.step("hover on (one apply_style, overlay digest)", move || {
+        on(runtime_core::StateBits::HOVERED, true);
+    });
+    cx.step("hover off (base digest restored)", move || {
+        setter(runtime_core::StateBits::HOVERED, false);
+    });
+}
+
+// ===========================================================================
+// (i) P3c: signal_class fallback rebind
+// ===========================================================================
+
+fn full_style_signal_class(cx: &mut FullCx) {
+    use crate::full::class_app;
+    let active: Signal<u32> = signal(0);
+    cx.mount(
+        view(vec![view(vec![])
+            .with_style(runtime_core::signal_class(active, &[0, 1], class_app))
+            .into_element()])
+        .into_element(),
+    );
+    cx.step("set active = 1 (one apply_style, value-1 digest)", || {
+        active.set(1)
+    });
+    cx.step("set active = 0 (back to the value-0 digest)", || {
+        active.set(0)
+    });
+}
+
+// ===========================================================================
+// (j) P3c: preminted classes + premint host token delivery
+// ===========================================================================
+
+fn full_style_preminted(cx: &mut FullCx) {
+    use crate::full::{surface_token, test_rules};
+    use std::borrow::Cow;
+    runtime_core::install_tokens(&[surface_token("#101010")]);
+    cx.mount(
+        view(vec![
+            view(vec![])
+                .with_style(runtime_core::StyleSource::Preminted {
+                    class: Cow::Borrowed("iy-fixed iy-fixed-size-large"),
+                    overrides: None,
+                })
+                .into_element(),
+            view(vec![])
+                .with_style(runtime_core::StyleSource::Preminted {
+                    class: Cow::Borrowed("iy-over"),
+                    overrides: Some(Rc::new(test_rules(50.0, "#0000ff"))),
+                })
+                .into_element(),
+        ])
+        .into_element(),
+    );
+    cx.step("swap theme (premint driver flushes update_tokens)", || {
+        runtime_core::update_tokens(&[surface_token("#f0f0f0")]);
+    });
 }

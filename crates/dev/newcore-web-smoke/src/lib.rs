@@ -12,10 +12,14 @@
 //! child), and a keyed list with add/remove/reverse (keyed
 //! reconciliation against the real DOM).
 
-use runtime_core::{Length, StyleRules, Tokenized};
+use std::rc::Rc;
+
+use runtime_core::{
+    Color, Length, StyleApplication, StyleRules, StyleSheet, TokenEntry, TokenValue, Tokenized,
+};
 use runtime_scene::{keyed, Element};
 use runtime_vocabulary::builders::IntoSceneElement;
-use runtime_vocabulary::{button, text, toggle, view};
+use runtime_vocabulary::{button, text, theme, toggle, view};
 use runtime_world::signal;
 use wasm_bindgen::prelude::*;
 
@@ -30,6 +34,108 @@ fn padded_column() -> StyleRules {
     }
 }
 
+// ===========================================================================
+// P3c styled section: sheet engine + theme tokens + hover overlay
+// ===========================================================================
+
+/// The two theme palettes the "Swap theme" button cycles. Web delivers
+/// these as `:root` CSS variables (`install_tokens`/`update_tokens`
+/// through the per-world theme driver); the card's `var(--color-surface)`
+/// re-tints via the cascade with NO re-apply (the cohort short-circuit).
+fn palette(dark: bool) -> [TokenEntry; 2] {
+    if dark {
+        [
+            TokenEntry { name: "color-surface", value: TokenValue::Color(Color("#1e293b".into())) },
+            TokenEntry { name: "color-ink", value: TokenValue::Color(Color("#f8fafc".into())) },
+        ]
+    } else {
+        [
+            TokenEntry { name: "color-surface", value: TokenValue::Color(Color("#e2e8f0".into())) },
+            TokenEntry { name: "color-ink", value: TokenValue::Color(Color("#0f172a".into())) },
+        ]
+    }
+}
+
+/// A `stylesheet!`-shaped sheet built by hand (this crate stays
+/// macro-free by design — module docs): token-referencing base + a
+/// `size` variant + a `state hovered` overlay. On web the overlay is
+/// realized as a `:hover` pseudo-class rule (`apply_styled_variants`),
+/// so hovering the card must thicken its border with zero Rust work.
+fn card_sheet() -> Rc<StyleSheet> {
+    fn side(v: f32) -> Option<Tokenized<Length>> {
+        Some(Tokenized::Literal(Length::Px(v)))
+    }
+    Rc::new(
+        StyleSheet::new(|_vs| StyleRules {
+            background: Some(Tokenized::token("color-surface", Color("#e2e8f0".into()))),
+            color: Some(Tokenized::token("color-ink", Color("#0f172a".into()))),
+            padding_top: side(8.0),
+            padding_right: side(8.0),
+            padding_bottom: side(8.0),
+            padding_left: side(8.0),
+            border_top_left_radius: side(6.0),
+            border_top_right_radius: side(6.0),
+            border_bottom_left_radius: side(6.0),
+            border_bottom_right_radius: side(6.0),
+            border_top_width: Some(Tokenized::Literal(1.0)),
+            border_right_width: Some(Tokenized::Literal(1.0)),
+            border_bottom_width: Some(Tokenized::Literal(1.0)),
+            border_left_width: Some(Tokenized::Literal(1.0)),
+            border_top_color: Some(Tokenized::Literal(Color("#64748b".into()))),
+            border_right_color: Some(Tokenized::Literal(Color("#64748b".into()))),
+            border_bottom_color: Some(Tokenized::Literal(Color("#64748b".into()))),
+            border_left_color: Some(Tokenized::Literal(Color("#64748b".into()))),
+            ..StyleRules::default()
+        })
+        .variant("size", "large", |_vs| StyleRules {
+            padding_top: side(24.0),
+            padding_right: side(24.0),
+            padding_bottom: side(24.0),
+            padding_left: side(24.0),
+            ..StyleRules::default()
+        })
+        .variant("size", "medium", |_vs| StyleRules::default())
+        .variant_default("size", "medium")
+        .variant("__state_hovered", "on", |_vs| StyleRules {
+            border_top_width: Some(Tokenized::Literal(4.0)),
+            border_right_width: Some(Tokenized::Literal(4.0)),
+            border_bottom_width: Some(Tokenized::Literal(4.0)),
+            border_left_width: Some(Tokenized::Literal(4.0)),
+            ..StyleRules::default()
+        }),
+    )
+}
+
+/// The styled section: a static-sheet card (cohort path — on web the
+/// theme swap re-tints via the `var()` cascade), a large-variant card,
+/// and the theme-swap button.
+fn styled_section() -> Element {
+    let dark = signal(false);
+    // Captured at BUILD time: event handlers run outside `World::enter`
+    // (the flush driver commits after dispatch), so the swap handler
+    // needs the ctx handle, not the ambient free fn — same capture
+    // discipline as world signals. See `runtime_vocabulary::theme`.
+    let theme_ctx = theme::theme_ctx();
+    view()
+        .child(text().content("Styled (P3c sheet engine)"))
+        .child(
+            view()
+                .style(StyleApplication::new(card_sheet()))
+                .child(text().content("themed card — hover me")),
+        )
+        .child(
+            view()
+                .style(StyleApplication::new(card_sheet()).with("size", "large"))
+                .child(text().content("large variant")),
+        )
+        .child(button().label("Swap theme").on_press(move || {
+            let next = !dark.peek();
+            dark.set(next);
+            theme_ctx.update_tokens(&palette(next));
+        }))
+        .into_scene_element()
+}
+
 /// The app tree. Runs inside `World::enter` (the boot path wraps it), so
 /// the free `signal()` constructor works; these top-level signals are
 /// world-root-owned and live for the page.
@@ -38,6 +144,10 @@ pub fn app() -> Element {
     let on = signal(false);
     let rows = signal(vec![1u32, 2, 3]);
     let next_row = signal(4u32);
+
+    // Install the initial theme before the first styled mount, the
+    // normal app shape — the first sheet attach delivers it.
+    theme::install_tokens(&palette(false));
 
     view()
         .style(padded_column())
@@ -93,6 +203,7 @@ pub fn app() -> Element {
             |n| *n,
             |n| text().content(format!("row #{n}")).build(),
         ))
+        .child(styled_section())
         .build()
 }
 

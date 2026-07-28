@@ -70,6 +70,26 @@ pub fn full_new_scenarios() -> Vec<FullNewScenario> {
             modes: &[Mode::Anchored, Mode::Spliced],
             run: full_release_on_swap,
         },
+        FullNewScenario {
+            name: "full_style_sheet_cohort",
+            modes: &[Mode::Spliced],
+            run: full_style_sheet_cohort,
+        },
+        FullNewScenario {
+            name: "full_style_state_overlay",
+            modes: &[Mode::Spliced],
+            run: full_style_state_overlay,
+        },
+        FullNewScenario {
+            name: "full_style_signal_class",
+            modes: &[Mode::Spliced],
+            run: full_style_signal_class,
+        },
+        FullNewScenario {
+            name: "full_style_preminted",
+            modes: &[Mode::Spliced],
+            run: full_style_preminted,
+        },
     ]
 }
 
@@ -265,4 +285,112 @@ fn full_release_on_swap(cx: &mut FullNewCx) {
         present.set(false)
     });
     cx.step("swap back in (fresh ids minted)", || present.set(true));
+}
+
+// ===========================================================================
+// (g) P3c: static sheets + tokens + cohort + styled unmount
+// ===========================================================================
+
+fn full_style_sheet_cohort(cx: &mut FullNewCx) {
+    use crate::full::{surface_token, themed_sheet};
+    use runtime_core::StyleApplication;
+    use runtime_vocabulary::theme;
+    theme::install_tokens(&[surface_token("#101010")]);
+    let show: Signal<bool> = signal(true);
+    cx.mount(
+        view()
+            .child(view().style(StyleApplication::new(themed_sheet())))
+            .child(dyn_keyed(
+                move || show.get(),
+                move |&on| {
+                    if on {
+                        view()
+                            .style(StyleApplication::new(themed_sheet()).with("size", "large"))
+                            .build()
+                    } else {
+                        text().content("hidden").build()
+                    }
+                },
+            ))
+            .build(),
+    );
+    cx.step("swap theme (update_tokens + cohort re-applies both)", || {
+        theme::update_tokens(&[surface_token("#f0f0f0")]);
+    });
+    cx.step("hide the styled branch (structural + on_node_unstyled)", || {
+        show.set(false);
+    });
+    cx.step("swap theme again (only the survivor re-applies)", || {
+        theme::update_tokens(&[surface_token("#202020")]);
+    });
+}
+
+// ===========================================================================
+// (h) P3c: static sheet with a state overlay (the divert + flip)
+// ===========================================================================
+
+fn full_style_state_overlay(cx: &mut FullNewCx) {
+    use crate::full::hover_sheet;
+    use runtime_core::StyleApplication;
+    cx.mount(
+        view()
+            .child(view().style(StyleApplication::new(hover_sheet())))
+            .build(),
+    );
+    let setter = cx.state_setter(0);
+    let on = setter.clone();
+    cx.step("hover on (one apply_style, overlay digest)", move || {
+        on(runtime_core::StateBits::HOVERED, true);
+    });
+    cx.step("hover off (base digest restored)", move || {
+        setter(runtime_core::StateBits::HOVERED, false);
+    });
+}
+
+// ===========================================================================
+// (i) P3c: signal_class fallback rebind
+// ===========================================================================
+
+fn full_style_signal_class(cx: &mut FullNewCx) {
+    use crate::full::class_app;
+    let active: Signal<u32> = signal(0);
+    cx.mount(
+        view()
+            .child(view().style(runtime_vocabulary::signal_class(active, &[0, 1], class_app)))
+            .build(),
+    );
+    cx.step("set active = 1 (one apply_style, value-1 digest)", || {
+        active.set(1)
+    });
+    cx.step("set active = 0 (back to the value-0 digest)", || {
+        active.set(0)
+    });
+}
+
+// ===========================================================================
+// (j) P3c: preminted classes + premint host token delivery
+// ===========================================================================
+
+fn full_style_preminted(cx: &mut FullNewCx) {
+    use crate::full::{surface_token, test_rules};
+    use runtime_vocabulary::theme;
+    use runtime_vocabulary::StyleProp;
+    use std::borrow::Cow;
+    use std::rc::Rc;
+    theme::install_tokens(&[surface_token("#101010")]);
+    cx.mount(
+        view()
+            .child(view().style(StyleProp::Preminted {
+                class: Cow::Borrowed("iy-fixed iy-fixed-size-large"),
+                overrides: None,
+            }))
+            .child(view().style(StyleProp::Preminted {
+                class: Cow::Borrowed("iy-over"),
+                overrides: Some(Rc::new(test_rules(50.0, "#0000ff"))),
+            }))
+            .build(),
+    );
+    cx.step("swap theme (premint driver flushes update_tokens)", || {
+        theme::update_tokens(&[surface_token("#f0f0f0")]);
+    });
 }

@@ -7,16 +7,23 @@
 //! # The recorded alphabet
 //!
 //! [`FullRecorder`] overrides exactly the Backend methods both mount
-//! paths model in P2; everything else stays at the trait default
-//! (unrecorded). Deliberately OUTSIDE the alphabet, with rationale:
+//! paths model in P2/P3c; everything else stays at the trait default
+//! (unrecorded). The P3c style-engine gate added `install_tokens` /
+//! `update_tokens` (theme delivery + cohort-swap ordering) and
+//! `attach_html_class` (preminted class stamping) — none fire in the
+//! pre-P3c scenarios, so their goldens are unchanged. Deliberately
+//! OUTSIDE the alphabet, with rationale:
 //!
-//! - `register_stylesheet`/`unregister_stylesheet`/`install_tokens`/
-//!   `update_tokens`/`apply_default_text_font` — sheet-registration and
-//!   token services of the old style engine. The P2 `StyleProp` carries
-//!   *resolved* rules (no sheets); the sheet model and its registration
-//!   calls migrate with the P3 style-policy work, where they get their
-//!   own gate. Recording them here would pin old-engine internals the
-//!   new path deliberately does not have yet.
+//! - `register_stylesheet`/`unregister_stylesheet` — the fixtures mint
+//!   a fresh `Rc<StyleSheet>` per closure fire (the common inline
+//!   shape), so this stream pins Rc-lifetime churn (dead-Weak sweep
+//!   timing) rather than style semantics; and the two sides register
+//!   through different engines (runtime-core's thread-local table vs
+//!   the vocabulary's per-world table) whose sweep POINTS legitimately
+//!   differ. Registration behavior on the new path is pinned by
+//!   `runtime-vocabulary/tests/vocab.rs`'s sheet-path suite instead.
+//! - `apply_default_text_font` — document-level premint plumbing with
+//!   no per-node observable; pinned by the vocabulary suite.
 //! - `WireBindingOps` notes (`note_text_binding`, …) — declarative
 //!   wire/generator backends only; scenarios use opaque closures, which
 //!   skip them on the old side too.
@@ -128,6 +135,11 @@ pub struct FullRecorder {
     /// backend would (proving the macro → builders → handlers → backend
     /// wiring end to end). See [`FullRecorder::button_action`].
     actions: Vec<(String, Rc<dyn Fn()>)>,
+    /// Captured `attach_states` setters, in attach order — lets a style
+    /// scenario flip interaction bits exactly as a native event source
+    /// would (the P3c state-overlay gate). See
+    /// [`FullRecorder::state_setter`].
+    state_setters: Vec<Rc<dyn Fn(StateBits, bool)>>,
 }
 
 impl FullRecorder {
@@ -136,7 +148,22 @@ impl FullRecorder {
             rec,
             splice: matches!(mode, Mode::Spliced),
             actions: Vec::new(),
+            state_setters: Vec::new(),
         }
+    }
+
+    /// The `nth` captured interaction-state setter (attach order).
+    /// Panics loudly when out of range.
+    pub fn state_setter(&self, nth: usize) -> Rc<dyn Fn(StateBits, bool)> {
+        self.state_setters
+            .get(nth)
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!(
+                    "no state setter #{nth}; {} were captured",
+                    self.state_setters.len()
+                )
+            })
     }
 
     /// The press callback of the most recently created button whose
@@ -597,8 +624,32 @@ impl Backend for FullRecorder {
         self.rec.push(format!("on_node_unstyled {node}"));
     }
 
-    fn attach_states(&mut self, node: &PNode, _setter: Rc<dyn Fn(StateBits, bool)>) {
+    fn attach_states(&mut self, node: &PNode, setter: Rc<dyn Fn(StateBits, bool)>) {
+        self.state_setters.push(setter);
         self.rec.push(format!("attach_states {node}"));
+    }
+
+    // --- P3c style-engine alphabet: theme-token delivery + preminted
+    //     class stamping. None of these fire in the pre-P3c scenarios
+    //     (no tokens installed, no Preminted styles), so adding them
+    //     left the existing goldens untouched. ---
+
+    fn install_tokens(&mut self, tokens: &[runtime_core::TokenEntry]) {
+        let names: Vec<&str> = tokens.iter().map(|t| t.name).collect();
+        self.rec.push(format!("install_tokens {names:?}"));
+    }
+
+    fn update_tokens(&mut self, tokens: &[runtime_core::TokenEntry]) {
+        let names: Vec<&str> = tokens.iter().map(|t| t.name).collect();
+        self.rec.push(format!("update_tokens {names:?}"));
+    }
+
+    fn supports_preminted_styles(&self) -> bool {
+        true
+    }
+
+    fn attach_html_class(&self, node: &PNode, class: &str) {
+        self.rec.push(format!("attach_html_class {node} {class}"));
     }
 
     fn set_disabled(&mut self, node: &PNode, disabled: bool) {
@@ -644,6 +695,64 @@ pub const TEST_ICON: IconData = IconData {
     fill_rule: primitives::icon::FillRule::NonZero,
     filled: false,
 };
+
+// --- P3c style-engine fixtures (shared: both sides must resolve to
+//     byte-equal digests; the SHEET types are runtime-core's on both
+//     cores, so the constructors are literally shared) ---
+
+use runtime_core::{StyleApplication, StyleSheet, TokenEntry, TokenValue, Tokenized};
+
+/// The theme token both style scenarios swap.
+pub fn surface_token(value: &str) -> TokenEntry {
+    TokenEntry {
+        name: "color-surface",
+        value: TokenValue::Color(Color(value.to_string())),
+    }
+}
+
+/// A `stylesheet!`-shaped sheet: token-referencing base (background via
+/// `color-surface`) + a `size` variant with a `large` arm and a
+/// defaulted `medium` arm.
+pub fn themed_sheet() -> Rc<StyleSheet> {
+    fn base() -> StyleRules {
+        StyleRules {
+            width: Some(Tokenized::Literal(runtime_core::Length::Px(100.0))),
+            background: Some(Tokenized::token("color-surface", Color("#000".into()))),
+            ..Default::default()
+        }
+    }
+    Rc::new(
+        StyleSheet::new(|_vs| base())
+            .variant("size", "large", |_vs| StyleRules {
+                width: Some(Tokenized::Literal(runtime_core::Length::Px(400.0))),
+                ..Default::default()
+            })
+            .variant("size", "medium", |_vs| StyleRules::default())
+            .variant_default("size", "medium"),
+    )
+}
+
+/// A sheet with a `state hovered { … }` overlay (the macro's reserved
+/// `__state_hovered` axis) — the static-divert + overlay-flip fixture.
+pub fn hover_sheet() -> Rc<StyleSheet> {
+    Rc::new(
+        StyleSheet::new(|_vs| StyleRules {
+            width: Some(Tokenized::Literal(runtime_core::Length::Px(100.0))),
+            ..Default::default()
+        })
+        .variant("__state_hovered", "on", |_vs| StyleRules {
+            width: Some(Tokenized::Literal(runtime_core::Length::Px(999.0))),
+            ..Default::default()
+        }),
+    )
+}
+
+/// The signal-class mapping: value 0 → a 60px sheet, value 1 → 200px.
+/// A fresh static sheet per call, matching the common inline shape.
+pub fn class_app(v: u32) -> StyleApplication {
+    let width = if v == 0 { 60.0 } else { 200.0 };
+    StyleApplication::new(Rc::new(StyleSheet::r#static(test_rules(width, "#606060"))))
+}
 
 // ===========================================================================
 // Golden paths
@@ -699,6 +808,12 @@ pub struct FullCx {
 impl FullCx {
     pub fn recorder(&self) -> Recorder {
         self.rec.clone()
+    }
+
+    /// The `nth` captured interaction-state setter (P3c overlay-flip
+    /// scenarios drive hover exactly as a native event source would).
+    pub fn state_setter(&self, nth: usize) -> Rc<dyn Fn(StateBits, bool)> {
+        self.backend.borrow().state_setter(nth)
     }
 
     pub fn mount(&mut self, root: Element) {
