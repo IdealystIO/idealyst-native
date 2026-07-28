@@ -133,6 +133,54 @@ pub use runtime_core::{Ref, ViewHandle};
 // so a new-core crate needs no direct runtime-core dependency.
 pub use runtime_core::scheduling;
 
+// ============================================================================
+// `#[method]` emission surface (P5). The `#[component]` macro emits, for a
+// methods-bearing component: `::runtime_core::robot::Method` literals +
+// `::runtime_core::robot::register_component(...)`, a
+// `::runtime_core::__component_keepalive_effect(...)`, and a
+// `::runtime_core::__component_root(...)` tail wrap — all retargeted here.
+// The registration surface always exists (`crate::robot_methods` is
+// stub-shaped when the vocabulary `robot` feature is off, mirroring the
+// old core's non-robot stub module), so the emission is unconditional on
+// both cores. `bind_to` props ride the re-exported old-core `Ref`
+// (above): `Ref::new/fill/get` operate purely on runtime-core's
+// thread-local ref arena, independent of which core mounted — a `Ref`
+// created outside an old-core Scope simply never frees its slot, the
+// documented `Ref::new` rule.
+// ============================================================================
+
+/// Re-export of `serde_json` for the `#[method]` auto-registration
+/// codegen (mirror of `runtime_core::__serde_json`).
+#[doc(hidden)]
+pub use runtime_core::__serde_json;
+
+/// The names the macro spells as `::runtime_core::robot::…`, resolved
+/// against the vocabulary method registry.
+pub mod robot {
+    pub use crate::robot_methods::{
+        register_component, ComponentInstanceId, ComponentRegistration, Method,
+    };
+}
+
+#[doc(hidden)]
+pub use crate::robot_methods::__component_root;
+
+/// Keepalive for a `#[method]` component's robot registration: an
+/// effect whose closure owns the `ComponentRegistration` guard. Created
+/// inside the component body — i.e. inside `component_scope`'s
+/// collector — so the surrounding `Owned` owns it and the registration
+/// deregisters exactly when the component's subtree unrealizes (the
+/// new-core analogue of the old scope-adopted keepalive `Effect`). The
+/// closure reads no signals, so the effect fires once and never
+/// re-runs.
+#[doc(hidden)]
+pub fn __component_keepalive_effect(f: impl FnMut() + 'static) {
+    let mut f = f;
+    let _ = runtime_world::effect(move || {
+        f();
+    });
+}
+
 /// A fresh, world-root-owned signal — used by the macro for the
 /// *uncontrolled* `text_input` / `toggle` / `slider` defaults (the old
 /// lowering's `Signal::new(...)`; `runtime_world::Signal` has no `new`,

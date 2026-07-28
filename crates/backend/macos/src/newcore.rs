@@ -16,30 +16,30 @@
 //! | Trait | Status |
 //! |---|---|
 //! | `runtime_scene::Host` (7 ops) | direct (`create_anchor` → `create_reactive_anchor`, `supports_splice` → `supports_child_splice` — the P1 renames) |
-//! | `AppEnvOps` | direct |
+//! | `AppEnvOps` | direct (app-level key handler wrapped — dispatch-site glue) |
 //! | `LifecycleOps` | direct (`is_hydrating` is always `false` on this backend — no hydration on native) |
 //! | `ViewOps` | direct |
-//! | `InputOps` | direct |
-//! | `PressableOps` | direct |
+//! | `InputOps` | direct (touch / wheel / hover / file-drop handlers wrapped) |
+//! | `PressableOps` | direct (on_click wrapped) |
 //! | `TextOps` | direct (the js-binding methods resolve to the trait-default no-ops, same as the old walker: `supports_js_text_bindings` is `false` here) |
-//! | `ButtonOps` | direct |
-//! | `ImageOps` | direct |
+//! | `ButtonOps` | direct (`Action::fire` wrapped) |
+//! | `ImageOps` | direct (load / error handlers wrapped) |
 //! | `IconOps` | direct |
-//! | `LinkOps` | direct |
-//! | `TextInputOps` | direct |
-//! | `ToggleOps` | direct |
-//! | `SliderOps` | direct |
+//! | `LinkOps` | direct (on_activate wrapped) |
+//! | `TextInputOps` | direct (on_change / on_key_down / on_blur / focus wrapped) |
+//! | `ToggleOps` | direct (on_change wrapped) |
+//! | `SliderOps` | direct (on_change wrapped) |
 //! | `ActivityIndicatorOps` | direct |
-//! | `ScrollOps` | direct |
+//! | `ScrollOps` | direct (on_scroll wrapped) |
 //! | `SafeAreaOps` | direct |
-//! | `VirtualizerOps` | direct |
-//! | `GraphicsOps` | direct |
-//! | `PortalOps` | direct |
+//! | `VirtualizerOps` | direct (mount / release / measured-size wrapped) |
+//! | `GraphicsOps` | direct (ready / resize / lost wrapped) |
+//! | `PortalOps` | direct (on_dismiss wrapped) |
 //! | `PresenceOps` | direct |
-//! | `NavigatorOps` | direct |
+//! | `NavigatorOps` | direct (host callbacks deliberately NOT wrapped — see impl) |
 //! | `ExternalOps` | direct |
 //! | `DocumentOps` | direct (web-flavored methods — `create_element`, `attach_html_*`, `register_raw_css` — resolve to the same trait-default no-ops the old walker hit on this backend) |
-//! | `StyleOps` | direct (class-minting methods return the trait-default `None` on native; the vocabulary's `attach_style` then takes the `apply_styled_variants` path — identical routing to the old walker. See *Styling* below.) |
+//! | `StyleOps` | direct (class-minting methods return the trait-default `None` on native; the vocabulary's `attach_style` then takes the `apply_styled_variants` path — identical routing to the old walker. `attach_states` setter wrapped. See *Styling* below.) |
 //! | `AssetOps` | direct |
 //! | `A11yOps` | direct |
 //! | `AnimationOps` | direct |
@@ -109,62 +109,94 @@
 //!    drain microtasks while the borrow is held.
 //! 5. `world.flush()` — commit anything staged during mount (ref-fill
 //!    callbacks, handler setup) before the first paint.
-//! 6. Install the flush pump, retain `{Realized, pump, backend,
-//!    registry, world}` in the returned [`NewCoreApp`]. The host closes
-//!    the buffering window (`end_mount_buffering`) after this returns —
-//!    leftover microtasks (e.g. `finish`'s viewport mirror) dispatch
-//!    normally onto the main queue, same as the old boot.
+//! 6. Install the flush driver (the `backend-apple-core` post-dispatch
+//!    hook), retain `{Realized, backend, registry, world}` in the
+//!    returned [`NewCoreApp`]. The host closes the buffering window
+//!    (`end_mount_buffering`) after this returns — leftover microtasks
+//!    (e.g. `finish`'s viewport mirror) dispatch normally onto the main
+//!    queue, same as the old boot.
 //!
-//! **Hydration is NOT in scope** (native never hydrates); navigator /
-//! portal / presence payload handlers are not ported yet (later phase) —
-//! the smoke app avoids them.
+//! **Hydration is NOT in scope** (native never hydrates).
 //!
-//! # Flush driver (design §3: Apple = runloop turn boundary)
+//! # Flush driver (design §3) — dispatch-site glue, NO safety net
 //!
 //! The new kernel stages writes; nothing is observable until the host
-//! driver calls [`World::flush`]. Two hooks, mirroring the web driver's
-//! event-listener + rAF pair with this platform's equivalents:
+//! driver calls [`World::flush`]. This backend uses the SETTLED driver
+//! design (the web module's, adopted by iOS/Android and now here —
+//! replacing the original P4a NSEvent-local-monitor + 60 Hz NSTimer
+//! pair): **precise dispatch-site glue**, no polling.
 //!
-//! 1. **Local NSEvent monitor → microtask.** `install_flush_pump`
-//!    registers ONE `NSEvent addLocalMonitorForEventsMatchingMask:`
-//!    monitor for the discrete event families that reach author callbacks
-//!    (mouse down/up ×3 buttons, key down/up — the macOS analogue of
-//!    web's `click`/`input`/`keydown`/… window listeners). A local
-//!    monitor fires BEFORE `NSApplication sendEvent:` dispatches the
-//!    event; the monitor calls [`schedule_flush`], which queues ONE
-//!    deduped `runtime_core::scheduling::schedule_microtask` — on this
-//!    platform that is `dispatch_async(main_queue)` (see
-//!    `backend_apple_core::scheduler`), which drains on a LATER run-loop
-//!    iteration, i.e. strictly AFTER the current event's synchronous
+//! 1. **Author-callback wrapping (this module).** Every callback-taking
+//!    capability impl below wraps the author callback before delegating
+//!    to the `Backend` machinery: press/click, input/change, toggle,
+//!    slider, scroll, hover, wheel, touch, key, blur/focus, file-drop,
+//!    image load/error, link activation, portal dismiss, graphics
+//!    lifecycle, virtualizer row mount/release/measure, state setters,
+//!    and the app-level key handler. The wrapper calls the author fn,
+//!    then [`schedule_flush`] — one deduped
+//!    `runtime_core::scheduling::schedule_microtask`, which on this
+//!    platform is `dispatch_async(main_queue)` (see
+//!    `backend_apple_core::scheduler`) and drains on a LATER run-loop
+//!    iteration — strictly AFTER the current event's synchronous
 //!    dispatch (responder chain, target-action, author `on_press`
 //!    closures) completes. Net effect: stage during dispatch, commit at
 //!    the run-loop turn boundary right after — the idea-lite contract.
-//!    Same precedent as `imp/keyboard.rs`'s app-key monitor.
-//! 2. **Frame tick.** A `runtime_core::scheduling::raf_loop` (on macOS: a
-//!    common-modes 60 Hz NSTimer — the platform's CADisplayLink stand-in,
-//!    see the scheduler's `raf_loop` note) flushes once per frame. This
-//!    is the animation-tick driver from the design AND the safety net
-//!    for staged writes whose event never crosses the monitor: AppKit
-//!    control **tracking loops** (NSButton/NSSlider pull events via
-//!    `nextEventMatchingMask:` during a press/drag, bypassing
-//!    `sendEvent:` and therefore local monitors) and `after_ms` timer
-//!    callbacks both commit at the next frame boundary instead of never.
-//!    Common modes matter: the timer keeps firing during those same
-//!    tracking loops. An empty flush is a cheap early-out, so the idle
-//!    cost is one vec-drain per frame.
+//!    Because the wrapping happens in these new-core-only impls, the
+//!    shared old-core event closures are reused verbatim and the old
+//!    core never pays for it.
+//! 2. **Post-dispatch hook (`backend_apple_core::dispatch_hook`).**
+//!    Author code also runs from non-event surfaces: `after_ms` timers,
+//!    `after_animation_frame` one-shots, `raf_loop` iterations (the
+//!    animation clock's common-modes NSTimer on macOS), and
+//!    async-executor future polls. The apple-core scheduler and executor
+//!    fire a thread-local hook after each such callback; [`start`]
+//!    installs [`schedule_flush`] into that slot (no-op default, so the
+//!    old core is untouched).
 //!
-//! Both hooks funnel through [`schedule_flush`]/`flush_now`, which skips
-//! re-entrant flushes (`world.is_flushing()`) — belt and braces; a
-//! main-queue microtask can't actually preempt a synchronous flush.
+//! **Why the P4a monitor+timer are gone — the tracking-loop question.**
+//! The original monitor+timer pair existed because AppKit control
+//! **tracking loops** (NSButton/NSSlider press-drags, scroller-knob
+//! drags, menu tracking — nested run-loop turns in
+//! `NSEventTrackingRunLoopMode` that pull events via
+//! `nextEventMatchingMask:`) bypass `sendEvent:` and therefore local
+//! NSEvent monitors; the common-modes timer was the net that caught
+//! writes staged inside them. With dispatch-site wrapping the monitor's
+//! job is done at the source: an author callback invoked DURING a
+//! tracking loop still comes through the wrapped caps closure, so the
+//! flush is scheduled regardless of which run-loop turn is active. The
+//! remaining question is whether the scheduled flush *fires* while the
+//! nested tracking loop is still running (a default-mode source would
+//! stall until tracking ends — the classic frozen-slider-label bug).
+//! It does: `schedule_microtask` is `dispatch_async(main_queue)`, and
+//! the main GCD queue is a **common-modes** run-loop source — CF drains
+//! it whenever the main run loop runs in any common mode, and
+//! `NSEventTrackingRunLoopMode` is a common mode. Verified LIVE, not
+//! assumed: the `newcore-macos-smoke` self-test stages a write via
+//! `schedule_flush`, then spins a nested
+//! `CFRunLoopRunInMode(NSEventTrackingRunLoopMode)` turn (the exact
+//! run-loop state a control tracking loop creates) and observes the
+//! commit effect fire *inside* that nested turn, with
+//! `CFRunLoopCopyCurrentMode` reporting the tracking mode at commit
+//! time — including for a write staged by a scroll-view `on_scroll`
+//! author callback (see the smoke crate's scroll/tracking self-test).
+//! If libdispatch ever stopped draining the main queue in tracking
+//! mode, that self-test is the regression tripwire; the fix would be
+//! scheduling the flush like apple-core schedules common-modes timers,
+//! NOT resurrecting the monitor.
+//!
+//! Everything funnels through [`schedule_flush`]/`flush_now`, which
+//! skips re-entrant flushes (`world.is_flushing()`) — belt and braces;
+//! a main-queue microtask can't actually preempt a synchronous flush.
+//!
+//! Residual surfaces NOT covered (documented, not silent): callbacks
+//! installed by `Element::External` third-party macOS glue (the
+//! External registry predates the new core; its port must call
+//! [`schedule_flush`] after author callbacks).
 
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use block2::RcBlock;
-use objc2::rc::Retained;
-use objc2::{class, msg_send};
-use objc2_foundation::NSObject;
 use runtime_core::accessibility::{AccessibilityProps, AccessibilityTree, LiveRegionPriority, Role};
 use runtime_core::animation::AnimProp;
 use runtime_core::assets::{
@@ -208,14 +240,12 @@ thread_local! {
 }
 
 /// Everything the boot path must keep alive. Field order is drop order:
-/// the realized tree unmounts before the world (its slots' owner) dies,
-/// and the flush pump's monitor/timer cancel before the world they flush
-/// is gone. The host typically `std::mem::forget`s this before entering
-/// the run loop (same retention as the old boot's `forget(owner)` — the
-/// process exits with the run loop).
+/// the realized tree unmounts before the world (its slots' owner) dies.
+/// The host typically `std::mem::forget`s this before entering the run
+/// loop (same retention as the old boot's `forget(owner)` — the process
+/// exits with the run loop).
 pub struct NewCoreApp {
     realized: Realized<MacosNode>,
-    _pump: FlushPump,
     _backend: Rc<RefCell<MacosBackend>>,
     _registry: Rc<Registry<MacosBackend>>,
     world: World,
@@ -232,11 +262,12 @@ impl NewCoreApp {
         &self.world
     }
 
-    /// Unmount: drops the `Realized` (cleanups fire, views detach from
-    /// the live tree's point of view), the flush pump, and the world —
-    /// after unhooking the flush driver's world reference. Primarily for
-    /// tests; a windowed app forgets the value instead.
+    /// Unmount: unhooks the flush driver (dispatch hook + world
+    /// reference), then drops the `Realized` (cleanups fire, views
+    /// detach from the live tree's point of view) and the world.
+    /// Primarily for tests; a windowed app forgets the value instead.
     pub fn stop(self) {
+        backend_apple_core::dispatch_hook::clear_dispatch_hook();
         set_flush_world(None);
         drop(self);
     }
@@ -305,11 +336,13 @@ pub fn start(
     // Commit anything staged during mount before the first paint.
     world.flush();
 
-    let pump = install_flush_pump();
+    // Install the flush driver: schedule_flush becomes reachable from
+    // (a) the author-callback wrappers in the caps impls below and
+    // (b) the apple-core scheduler/executor post-dispatch hook.
+    backend_apple_core::dispatch_hook::install_dispatch_hook(schedule_flush);
     set_flush_world(Some(world.clone()));
     NewCoreApp {
         realized,
-        _pump: pump,
         _backend: backend,
         _registry: registry,
         world,
@@ -326,10 +359,10 @@ fn set_flush_world(world: Option<World>) {
 
 /// Queue one flush of the mounted world on the framework microtask
 /// queue (deduped). Safe to call any time; a no-op before [`start`].
-/// The event monitor and future new-core wrappers call this right
-/// after author-visible dispatch. During a mount-buffering window the
-/// microtask buffers and commits inside the host's synchronous drain
-/// (module docs, step 3).
+/// The dispatch-site wrappers and the apple-core post-dispatch hook
+/// call this right after author-visible dispatch. During a
+/// mount-buffering window the microtask buffers and commits inside the
+/// host's synchronous drain (module docs, step 3).
 pub fn schedule_flush() {
     if FLUSH_QUEUED.with(|q| q.replace(true)) {
         return;
@@ -351,66 +384,45 @@ fn flush_now() {
     }
 }
 
-/// `NSEventMask` bits for the discrete event families that reach author
-/// callbacks — the macOS analogue of the web driver's `FLUSH_EVENTS`
-/// window listeners. Continuous streams (mouseMoved, scrollWheel) are
-/// deliberately absent: they are frame-paced by the timer hook, which is
-/// the right cadence for drag/scroll-driven state. Bit positions are
-/// `1 << NSEventType` (same convention as `imp/keyboard.rs`'s
-/// `NS_EVENT_MASK_KEY_DOWN`).
-const FLUSH_EVENT_MASK: usize = (1 << 1)  // leftMouseDown
-    | (1 << 2)   // leftMouseUp
-    | (1 << 3)   // rightMouseDown
-    | (1 << 4)   // rightMouseUp
-    | (1 << 25)  // otherMouseDown
-    | (1 << 26)  // otherMouseUp
-    | (1 << 10)  // keyDown
-    | (1 << 11); // keyUp
+// ---------------------------------------------------------------------------
+// Dispatch-site glue: author-callback wrappers
+// ---------------------------------------------------------------------------
+//
+// Each helper wraps an author callback so that, AFTER the author code
+// returns, one deduped flush microtask is queued. These are used by the
+// callback-taking caps impls below — the precise dispatch-site glue the
+// flush driver is built on (module docs, "Flush driver"). Wrapping here
+// (instead of inside the shared `Backend` event closures) keeps the
+// old-core render path byte-identical: the old core applies writes
+// synchronously and must not pay a flush per event. Mirrors
+// `backend_ios::newcore` mechanically.
 
-/// The two flush hooks (module docs): a local NSEvent monitor for
-/// discrete events + the frame-tick loop. Dropping cancels both (the
-/// `RafLoop` handle invalidates its NSTimer on drop; the monitor is
-/// removed explicitly).
-struct FlushPump {
-    _raf: runtime_core::scheduling::RafLoop,
-    monitor: Option<Retained<NSObject>>,
-}
-
-fn install_flush_pump() -> FlushPump {
-    // The monitor block: nudge the flush driver, return the event
-    // UNCHANGED so normal routing continues (never swallow). The body is
-    // two thread-local ops + at most one dispatch_async — panic-free by
-    // inspection, so no catch_unwind shim is needed here (compare
-    // `imp/keyboard.rs`, whose block runs arbitrary author handlers).
-    let block = RcBlock::new(move |event: *mut NSObject| -> *mut NSObject {
+/// Wrap a zero-arg author callback (`on_press`, `on_dismiss`,
+/// `on_activate`, image error, …).
+fn flushing0(f: Rc<dyn Fn()>) -> Rc<dyn Fn()> {
+    Rc::new(move || {
+        f();
         schedule_flush();
-        event
-    });
-    // `addLocalMonitor…` copies the handler block internally, so the
-    // local `block` may drop after this; we retain the returned monitor
-    // token to feed `removeMonitor:` later. Same shape as
-    // `imp/keyboard.rs::set_app_key_handler`.
-    let monitor: *mut NSObject = unsafe {
-        msg_send![
-            class!(NSEvent),
-            addLocalMonitorForEventsMatchingMask: FLUSH_EVENT_MASK,
-            handler: &*block,
-        ]
-    };
-    FlushPump {
-        _raf: runtime_core::scheduling::raf_loop(flush_now),
-        monitor: unsafe { Retained::retain(monitor) },
-    }
+    })
 }
 
-impl Drop for FlushPump {
-    fn drop(&mut self) {
-        if let Some(monitor) = self.monitor.take() {
-            unsafe {
-                let _: () = msg_send![class!(NSEvent), removeMonitor: &*monitor];
-            }
-        }
-    }
+/// Wrap a one-value author callback (`on_change(String/bool/f32)`,
+/// hover, focus …).
+fn flushing1<A: 'static>(f: Rc<dyn Fn(A)>) -> Rc<dyn Fn(A)> {
+    Rc::new(move |a| {
+        f(a);
+        schedule_flush();
+    })
+}
+
+/// Wrap a key handler (`&KeyEvent -> KeyOutcome`; outcome passes
+/// through so the backend's suppress-default decision is unchanged).
+fn flushing_key(f: primitives::key::KeyDownHandler) -> primitives::key::KeyDownHandler {
+    Rc::new(move |ev| {
+        let outcome = f(ev);
+        schedule_flush();
+        outcome
+    })
 }
 
 // ===========================================================================
@@ -489,6 +501,9 @@ impl caps::AppEnvOps for MacosBackend {
     }
 
     fn set_app_key_handler(&mut self, handler: Option<primitives::key::KeyDownHandler>) {
+        // Dispatch-site glue: app-level key handlers run author code
+        // (the imp/keyboard.rs NSEvent monitor dispatches into them).
+        let handler = handler.map(flushing_key);
         <MacosBackend as Backend>::set_app_key_handler(self, handler)
     }
 }
@@ -531,6 +546,15 @@ impl caps::ViewOps for MacosBackend {
 
 impl caps::InputOps for MacosBackend {
     fn install_touch_handler(&mut self, node: &Self::Node, handler: TouchHandler) {
+        // Dispatch-site glue (module docs): flush after author code.
+        let handler: TouchHandler = {
+            let f = handler;
+            Rc::new(move |ev| {
+                let response = f(ev);
+                schedule_flush();
+                response
+            })
+        };
         <MacosBackend as Backend>::install_touch_handler(self, node, handler)
     }
 
@@ -539,11 +563,19 @@ impl caps::InputOps for MacosBackend {
     }
 
     fn install_wheel_handler(&mut self, node: &Self::Node, handler: WheelHandler) {
+        let handler: WheelHandler = {
+            let f = handler;
+            Rc::new(move |ev| {
+                let response = f(ev);
+                schedule_flush();
+                response
+            })
+        };
         <MacosBackend as Backend>::install_wheel_handler(self, node, handler)
     }
 
     fn install_hover_handler(&mut self, node: &Self::Node, handler: HoverHandler) {
-        <MacosBackend as Backend>::install_hover_handler(self, node, handler)
+        <MacosBackend as Backend>::install_hover_handler(self, node, flushing1(handler))
     }
 
     fn mark_preserves_focus(&mut self, node: &Self::Node) {
@@ -551,13 +583,21 @@ impl caps::InputOps for MacosBackend {
     }
 
     fn install_file_drop_handler(&mut self, node: &Self::Node, handler: FileDropHandler) {
+        let handler: FileDropHandler = {
+            let f = handler;
+            Rc::new(move |ev| {
+                let response = f(ev);
+                schedule_flush();
+                response
+            })
+        };
         <MacosBackend as Backend>::install_file_drop_handler(self, node, handler)
     }
 }
 
 impl caps::PressableOps for MacosBackend {
     fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, a11y: &AccessibilityProps) -> Self::Node {
-        <MacosBackend as Backend>::create_pressable(self, on_click, a11y)
+        <MacosBackend as Backend>::create_pressable(self, flushing0(on_click), a11y)
     }
 
     fn make_pressable_handle(&self, node: &Self::Node) -> runtime_core::PressableHandle {
@@ -642,7 +682,23 @@ impl caps::ButtonOps for MacosBackend {
         trailing_icon: Option<&primitives::icon::IconData>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <MacosBackend as Backend>::create_button(self, label, on_click, leading_icon, trailing_icon, a11y)
+        // Dispatch-site glue: wrap the Action's runtime evaluator;
+        // the serialization metadata passes through untouched.
+        let on_click = Action {
+            method: on_click.method,
+            inputs: on_click.inputs.clone(),
+            initial: on_click.initial.clone(),
+            output: on_click.output,
+            fire: flushing0(on_click.fire.clone()),
+        };
+        <MacosBackend as Backend>::create_button(
+            self,
+            label,
+            &on_click,
+            leading_icon,
+            trailing_icon,
+            a11y,
+        )
     }
 
     fn update_button_label(&mut self, node: &Self::Node, label: &str) {
@@ -672,11 +728,19 @@ impl caps::ImageOps for MacosBackend {
     }
 
     fn install_image_load_handler(&mut self, node: &Self::Node, handler: ImageLoadHandler) {
+        // Dispatch-site glue: async image completion runs author code.
+        let handler: ImageLoadHandler = {
+            let f = handler;
+            Rc::new(move |ev| {
+                f(ev);
+                schedule_flush();
+            })
+        };
         <MacosBackend as Backend>::install_image_load_handler(self, node, handler)
     }
 
     fn install_image_error_handler(&mut self, node: &Self::Node, handler: ImageErrorHandler) {
-        <MacosBackend as Backend>::install_image_error_handler(self, node, handler)
+        <MacosBackend as Backend>::install_image_error_handler(self, node, flushing0(handler))
     }
 
     fn make_image_handle(&self, node: &Self::Node) -> primitives::image::ImageHandle {
@@ -739,6 +803,10 @@ impl caps::LinkOps for MacosBackend {
         config: primitives::link::LinkConfig,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
+        // Dispatch-site glue: link activation dispatches navigation
+        // (stages nav-queue tick signals on the new core).
+        let mut config = config;
+        config.on_activate = flushing0(config.on_activate.clone());
         <MacosBackend as Backend>::create_link(self, config, a11y)
     }
 
@@ -770,9 +838,15 @@ impl caps::TextInputOps for MacosBackend {
             self,
             initial_value,
             placeholder,
-            on_change,
-            on_key_down,
-            on_blur,
+            flushing1(on_change),
+            on_key_down.map(flushing_key),
+            on_blur.map(|f| -> primitives::text_input::BlurHandler {
+                Rc::new(move || {
+                    let outcome = f();
+                    schedule_flush();
+                    outcome
+                })
+            }),
             secure,
             a11y,
         )
@@ -787,7 +861,7 @@ impl caps::TextInputOps for MacosBackend {
     }
 
     fn set_text_input_focus_handler(&mut self, node: &Self::Node, handler: Rc<dyn Fn(bool)>) {
-        <MacosBackend as Backend>::set_text_input_focus_handler(self, node, handler)
+        <MacosBackend as Backend>::set_text_input_focus_handler(self, node, flushing1(handler))
     }
 
     fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
@@ -812,8 +886,8 @@ impl caps::TextInputOps for MacosBackend {
             wrap,
             min_rows,
             max_rows,
-            on_change,
-            on_key_down,
+            flushing1(on_change),
+            on_key_down.map(flushing_key),
             a11y,
         )
     }
@@ -838,7 +912,7 @@ impl caps::ToggleOps for MacosBackend {
         on_change: Rc<dyn Fn(bool)>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <MacosBackend as Backend>::create_toggle(self, initial_value, on_change, a11y)
+        <MacosBackend as Backend>::create_toggle(self, initial_value, flushing1(on_change), a11y)
     }
 
     fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
@@ -860,7 +934,15 @@ impl caps::SliderOps for MacosBackend {
         on_change: Rc<dyn Fn(f32)>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <MacosBackend as Backend>::create_slider(self, initial_value, min, max, step, on_change, a11y)
+        <MacosBackend as Backend>::create_slider(
+            self,
+            initial_value,
+            min,
+            max,
+            step,
+            flushing1(on_change),
+            a11y,
+        )
     }
 
     fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
@@ -909,6 +991,18 @@ impl caps::ScrollOps for MacosBackend {
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
+        // Dispatch-site glue: on_scroll fires per scroll notification;
+        // the flush microtask is deduped so a burst costs one commit.
+        // (Apple on_scroll delivery is already microtask-deferred — see
+        // the apple on_scroll async note — so the wrapper adds a flush
+        // after that deferred author call, same ordering as every other
+        // callback.)
+        let on_scroll = on_scroll.map(|f| -> Rc<dyn Fn(f32, f32)> {
+            Rc::new(move |x, y| {
+                f(x, y);
+                schedule_flush();
+            })
+        });
         <MacosBackend as Backend>::create_scroll_view(self, horizontal, on_scroll, a11y)
     }
 
@@ -943,6 +1037,48 @@ impl caps::VirtualizerOps for MacosBackend {
         layout: primitives::virtualizer::VirtualLayout,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
+        // Dispatch-site glue: mount/release run author render closures
+        // and scope cleanups (which may stage writes) from the backend's
+        // own scroll handling; measured-size reports feed the handler's
+        // layout cache. item_count/item_key/item_size are pure reads and
+        // stay unwrapped.
+        let VirtualizerCallbacks {
+            item_count,
+            item_key,
+            item_size,
+            measure_sizes,
+            mount_item,
+            release_item,
+            set_measured_size,
+        } = callbacks;
+        let callbacks = VirtualizerCallbacks {
+            item_count,
+            item_key,
+            item_size,
+            measure_sizes,
+            mount_item: {
+                let f = mount_item;
+                Rc::new(move |i| {
+                    let mounted = f(i);
+                    schedule_flush();
+                    mounted
+                })
+            },
+            release_item: {
+                let f = release_item;
+                Rc::new(move |scope_id| {
+                    f(scope_id);
+                    schedule_flush();
+                })
+            },
+            set_measured_size: {
+                let f = set_measured_size;
+                Rc::new(move |key, size| {
+                    f(key, size);
+                    schedule_flush();
+                })
+            },
+        };
         <MacosBackend as Backend>::create_virtualizer(self, callbacks, overscan, layout, a11y)
     }
 
@@ -971,6 +1107,29 @@ impl caps::GraphicsOps for MacosBackend {
         on_lost: primitives::graphics::OnLost,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
+        // Dispatch-site glue: surface lifecycle callbacks run author
+        // code (draw-scene setup that creates/sets signals).
+        let on_ready: primitives::graphics::OnReady = {
+            let mut f = on_ready;
+            Box::new(move |ev| {
+                f(ev);
+                schedule_flush();
+            })
+        };
+        let on_resize: primitives::graphics::OnResize = {
+            let mut f = on_resize;
+            Box::new(move |ev| {
+                f(ev);
+                schedule_flush();
+            })
+        };
+        let on_lost: primitives::graphics::OnLost = {
+            let mut f = on_lost;
+            Box::new(move || {
+                f();
+                schedule_flush();
+            })
+        };
         <MacosBackend as Backend>::create_graphics(self, on_ready, on_resize, on_lost, a11y)
     }
 
@@ -991,6 +1150,9 @@ impl caps::PortalOps for MacosBackend {
         trap_focus: bool,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
+        // Dispatch-site glue: backdrop click dismissal runs the
+        // author's on_dismiss.
+        let on_dismiss = on_dismiss.map(flushing0);
         <MacosBackend as Backend>::create_portal(self, target, on_dismiss, trap_focus, a11y)
     }
 
@@ -1035,7 +1197,19 @@ impl caps::NavigatorOps for MacosBackend {
         host: primitives::navigator::NavigatorHost<Self::Node>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <MacosBackend as Backend>::create_navigator(self, type_id, type_name, presentation, host, a11y)
+        // NOT wrapped: NavigatorHost's callbacks (mount_screen etc.)
+        // belong to the OLD-core navigator path, which the new core
+        // does not route through (the vocabulary navigator handlers
+        // own screens; author-initiated navigation stages via handlers
+        // already wrapped above and commits inside the flush).
+        <MacosBackend as Backend>::create_navigator(
+            self,
+            type_id,
+            type_name,
+            presentation,
+            host,
+            a11y,
+        )
     }
 
     fn release_navigator(&mut self, node: &Self::Node) {
@@ -1189,6 +1363,17 @@ impl caps::StyleOps for MacosBackend {
     }
 
     fn attach_states(&mut self, node: &Self::Node, setter: Rc<dyn Fn(StateBits, bool)>) {
+        // Dispatch-site glue: hover/press/focus state flips can stage
+        // writes when the style path routes states through signals — on
+        // native this IS the live state path (no CSS pseudo-classes),
+        // so the wrapper matters here, unlike web.
+        let setter: Rc<dyn Fn(StateBits, bool)> = {
+            let f = setter;
+            Rc::new(move |bits, on| {
+                f(bits, on);
+                schedule_flush();
+            })
+        };
         <MacosBackend as Backend>::attach_states(self, node, setter)
     }
 
@@ -1511,9 +1696,9 @@ mod tests {
         backend_apple_core::scheduler::end_mount_buffering();
     }
 
-    /// `flush_now` with no mounted world is a no-op (the pump's timer
-    /// tick fires before `start` finishes wiring on a cold boot), and a
-    /// re-entrant flush is skipped via `world.is_flushing()`.
+    /// `flush_now` with no mounted world is a no-op (the apple-core
+    /// hook can fire before `start` finishes wiring on a cold boot),
+    /// and a re-entrant flush is skipped via `world.is_flushing()`.
     #[test]
     fn flush_now_tolerates_no_world_and_reentry() {
         set_flush_world(None);
@@ -1540,5 +1725,124 @@ mod tests {
         flush_now();
         assert!(obs.get(), "effect ran; re-entrant flush_now didn't recurse/panic");
         set_flush_world(None);
+    }
+
+    /// The apple-core post-dispatch hook wired to `schedule_flush` is
+    /// THE driver for timer/frame/future-poll surfaces on macOS now
+    /// that the P4a NSEvent monitor + 60 Hz NSTimer pair is gone
+    /// (module docs). Regression: installing the hook and firing it
+    /// after a staged write must commit the write on the next
+    /// microtask drain, and clearing the hook must sever the path (a
+    /// torn-down app's timers can't flush a dead world).
+    #[test]
+    fn dispatch_hook_route_commits_staged_writes() {
+        backend_apple_core::scheduler::install_scheduler();
+        backend_apple_core::scheduler::end_mount_buffering(); // clean slate
+        backend_apple_core::scheduler::begin_mount_buffering();
+
+        let world = World::new();
+        set_flush_world(Some(world.clone()));
+        // What `start` does (step 6) — the glue under test.
+        backend_apple_core::dispatch_hook::install_dispatch_hook(schedule_flush);
+
+        let log: Rc<RefCell<Vec<i32>>> = Rc::new(RefCell::new(Vec::new()));
+        let count = world.enter(|| {
+            let count = signal(0i32);
+            let log = log.clone();
+            effect(move || log.borrow_mut().push(count.get()));
+            count
+        });
+
+        // Simulate an `after_ms` body: author code stages a write, then
+        // the scheduler fires the hook (see apple-core scheduler's
+        // `after_ms_inner` wrapping).
+        count.set(7);
+        backend_apple_core::dispatch_hook::fire_dispatch_hook();
+        assert_eq!(*log.borrow(), vec![0], "staged, commits at the turn boundary");
+        runtime_core::scheduling::drain_buffered_microtasks();
+        assert_eq!(*log.borrow(), vec![0, 7], "hook → schedule_flush → commit");
+
+        // Teardown severs the route: a late timer fires the hook into a
+        // no-op slot, nothing is scheduled.
+        backend_apple_core::dispatch_hook::clear_dispatch_hook();
+        set_flush_world(None);
+        count.set(8);
+        backend_apple_core::dispatch_hook::fire_dispatch_hook();
+        assert!(
+            !FLUSH_QUEUED.with(|q| q.get()),
+            "cleared hook schedules nothing"
+        );
+        runtime_core::scheduling::drain_buffered_microtasks();
+        assert_eq!(*log.borrow(), vec![0, 7], "no commit after teardown");
+        backend_apple_core::scheduler::end_mount_buffering();
+    }
+
+    /// The dispatch-site wrappers: author callback runs FIRST, then one
+    /// deduped flush is queued — for all three shapes (zero-arg,
+    /// one-value, key-outcome pass-through). These wrappers replace the
+    /// removed NSEvent local monitor: an author callback invoked from
+    /// inside an AppKit tracking loop (which bypasses monitors) still
+    /// schedules its own flush.
+    #[test]
+    fn flushing_wrappers_run_author_code_then_queue_one_flush() {
+        backend_apple_core::scheduler::install_scheduler();
+        backend_apple_core::scheduler::end_mount_buffering(); // clean slate
+        backend_apple_core::scheduler::begin_mount_buffering();
+
+        let world = World::new();
+        set_flush_world(Some(world.clone()));
+
+        let log: Rc<RefCell<Vec<i32>>> = Rc::new(RefCell::new(Vec::new()));
+        let count = world.enter(|| {
+            let count = signal(0i32);
+            let log = log.clone();
+            effect(move || log.borrow_mut().push(count.get()));
+            count
+        });
+
+        // flushing0 — the on_press shape.
+        let wrapped = flushing0(Rc::new(move || count.set(1)));
+        wrapped();
+        assert!(FLUSH_QUEUED.with(|q| q.get()), "flush queued after author fn");
+        runtime_core::scheduling::drain_buffered_microtasks();
+        assert_eq!(*log.borrow(), vec![0, 1], "on_press write committed");
+
+        // flushing1 — the on_change shape (value passes through).
+        let seen: Rc<Cell<f32>> = Rc::new(Cell::new(0.0));
+        let seen2 = seen.clone();
+        let wrapped = flushing1::<f32>(Rc::new(move |v| {
+            seen2.set(v);
+            count.set(2);
+        }));
+        wrapped(0.5);
+        assert_eq!(seen.get(), 0.5, "value reached the author fn unchanged");
+        runtime_core::scheduling::drain_buffered_microtasks();
+        assert_eq!(*log.borrow(), vec![0, 1, 2], "on_change write committed");
+
+        // flushing_key — outcome passes through so the backend's
+        // suppress-default decision is unchanged.
+        let wrapped = flushing_key(Rc::new(move |_ev| {
+            count.set(3);
+            runtime_core::primitives::key::KeyOutcome::PreventDefault
+        }));
+        let ev = runtime_core::primitives::key::KeyEvent {
+            key: "a".into(),
+            shift: false,
+            ctrl: false,
+            alt: false,
+            meta: false,
+            selection_start: 0,
+            selection_end: 0,
+        };
+        let outcome = wrapped(&ev);
+        assert!(matches!(
+            outcome,
+            runtime_core::primitives::key::KeyOutcome::PreventDefault
+        ));
+        runtime_core::scheduling::drain_buffered_microtasks();
+        assert_eq!(*log.borrow(), vec![0, 1, 2, 3], "key write committed");
+
+        set_flush_world(None);
+        backend_apple_core::scheduler::end_mount_buffering();
     }
 }

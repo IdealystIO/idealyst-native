@@ -12,6 +12,13 @@ mod app;
 mod gpu;
 mod scheduler;
 
+// idea-lite core migration (P5): `newcore::run`/`run_with` — the
+// new-core windowed boot (World + Registry + realize + flush driver via
+// `render_wgpu::newcore`). Off by default so the local-render build
+// path is unchanged.
+#[cfg(feature = "new-core")]
+pub mod newcore;
+
 pub use app::{run, run_with, RunError};
 
 #[cfg(feature = "runtime-server")]

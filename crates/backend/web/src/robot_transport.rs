@@ -303,4 +303,90 @@ mod tests {
         let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
         crate::newcore::stop();
     }
+
+    /// The P5-remainder verbs resolve against a booted new-core app
+    /// through the SAME `dispatch_verb` routing (no transport edits):
+    /// `list_components`/`invoke_method` drive a registered component
+    /// method (the invoke settles via the driver env, so the follow-up
+    /// label query reads the committed value), `read_signal`/
+    /// `list_watched_signals` serve a `watch_signal` entry, and
+    /// `list_navigators` answers (empty here) instead of erroring —
+    /// pre-wave, all five returned named P5 errors.
+    #[wasm_bindgen_test]
+    async fn regression_method_watch_and_nav_verbs_resolve_on_newcore() {
+        use std::rc::Rc;
+        let _mount = setup_mount();
+        crate::newcore::start(|| {
+            let count = runtime_world::signal(0i32);
+            runtime_vocabulary::robot::watch_signal("count", count);
+            // The macro's emission shape by hand: register + keepalive
+            // (the guard dies with the app's Owned on stop()).
+            let count_in = count;
+            let reg = runtime_vocabulary::glue::robot::register_component(
+                "Bumper",
+                vec![runtime_vocabulary::glue::robot::Method {
+                    name: "bump_by",
+                    args: &[("n", "i32")],
+                    invoke: Rc::new(move |args| {
+                        let n = args["n"].as_i64().ok_or("arg 'n': missing")? as i32;
+                        count_in.set(count_in.get() + n);
+                        Ok(())
+                    }),
+                }],
+            );
+            runtime_vocabulary::glue::__component_keepalive_effect(move || {
+                let _ = &reg;
+            });
+            runtime_vocabulary::view()
+                .child(
+                    runtime_vocabulary::text()
+                        .content(move || format!("n={}", count.get()))
+                        .test_id("count"),
+                )
+                .build()
+        });
+
+        // list_components surfaces the instance + method schema.
+        let list = dispatch_verb("list_components", &json!({})).expect("list_components");
+        let v: serde_json::Value = serde_json::from_str(&list).unwrap();
+        let comp = &v.as_array().unwrap()[0];
+        assert_eq!(comp["name"], "Bumper");
+        assert_eq!(comp["methods"][0]["name"], "bump_by");
+        let instance = comp["instance_id"].as_u64().unwrap();
+
+        // invoke_method runs the author closure and SETTLES — the next
+        // query reads the post-invoke label.
+        let ok = dispatch_verb(
+            "invoke_method",
+            &json!({ "instance_id": instance, "method": "bump_by", "args": { "n": 3 } }),
+        )
+        .expect("invoke_method");
+        assert_eq!(ok, "\"ok\"");
+        let el = dispatch_verb("find_element", &json!({ "test_id": "count" })).unwrap();
+        let el: serde_json::Value = serde_json::from_str(&el).unwrap();
+        assert_eq!(el["label"], "n=3", "invoke settled before the query");
+
+        // Watch verbs read the live value through the entered env.
+        assert_eq!(
+            dispatch_verb("read_signal", &json!({ "name": "count" })).unwrap(),
+            "\"3\""
+        );
+        let watched = dispatch_verb("list_watched_signals", &json!({})).unwrap();
+        assert!(watched.contains("\"name\":\"count\""), "{watched}");
+
+        // Nav verbs answer (no navigator mounted here → empty array),
+        // rather than returning the pre-wave P5 error.
+        assert_eq!(dispatch_verb("list_navigators", &json!({})).unwrap(), "[]");
+
+        let promise = js_sys::Promise::resolve(&wasm_bindgen::JsValue::UNDEFINED);
+        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+        crate::newcore::stop();
+        // The keepalive died with the world: the vocabulary registry is
+        // empty. (Asserted on the registry directly — post-stop,
+        // dispatch_verb routes to the old core again.)
+        assert!(
+            runtime_vocabulary::robot::list_components().is_empty(),
+            "stop() drops the app Owned → keepalive → registration"
+        );
+    }
 }

@@ -28,6 +28,11 @@ runtime-server = ["dep:runtime-server-shell-native", "runtime-server-shell-nativ
 # + its platform bindings into the dep graph. Enable per app at the
 # binary's Cargo.toml.
 a11y = ["dep:host-wgpu-accesskit"]
+# idea-lite core migration (P5): compile in `host_winit::newcore::run` —
+# the new-core windowed boot (World + Registry + realize + flush driver
+# via `render_wgpu::newcore`). Off by default so the local-render build
+# path is unchanged. Mirrors `host-appkit`'s `new-core`.
+new-core = ["render-wgpu/new-core"]
 
 [dependencies]
 render-api = { workspace = true }

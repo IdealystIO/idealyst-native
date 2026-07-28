@@ -82,6 +82,20 @@ use runtime_core::primitives::portal::ViewportRect;
 
 use crate::caps::IntrospectionOps;
 
+// The P5 remainder seams, re-exported at the old core's `robot::…`
+// paths so suites/apps swap only the crate root
+// (`runtime_core::robot::X` ↔ `runtime_vocabulary::robot::X`):
+// component `#[method]` registry + element link, and the signal watch
+// registry.
+pub use crate::robot_methods::{
+    component_for_element, invoke_method, list_components, register_component,
+    ComponentInstanceId, ComponentRegistration, ComponentSnapshot, Method,
+};
+pub use crate::robot_watch::{
+    list_watched, read_watched_by_id, read_watched_by_name, unwatch_signal, watch_signal,
+    WatchTarget, WatchedSnapshot,
+};
+
 // =============================================================================
 // Element kinds (mirrors `runtime_core::robot::ElementKind`)
 // =============================================================================
@@ -278,7 +292,8 @@ pub(crate) struct RegisteredPrim {
 }
 
 impl RegisteredPrim {
-    #[cfg(test)]
+    /// The registry id this mount received — read by the navigator
+    /// handlers (nav-registry `element_id`) and tests.
     pub(crate) fn id(&self) -> ElementId {
         self.id
     }
@@ -386,6 +401,15 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
             }
         });
     }
+    // Element↔component link: a `#[method]` component's realize-time
+    // wrap (`robot_methods::__component_root`) armed a one-shot pending
+    // cell just before its subtree realized; the FIRST registration
+    // after arming — this one, the component's root primitive —
+    // consumes it (old walker parity: `take_pending_component_link` at
+    // `robot_register`).
+    if let Some(instance) = crate::robot_methods::take_pending_component_link() {
+        crate::robot_methods::link_component_element(instance, id.0);
+    }
     bump_revision();
 
     // Deregister when the realized subtree tears down (branch swap,
@@ -398,6 +422,193 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
 
     PARENT_STACK.with(|s| s.borrow_mut().push(id));
     RegisteredPrim { id }
+}
+
+// =============================================================================
+// Navigator registry — the NEW core's `list_navigators` / back-stack
+// snapshot surface (mirrors `runtime_core::primitives::navigator`'s
+// robot registry: slab + free list + "current" marker + prune-on-read)
+// =============================================================================
+
+/// Stable id for a navigator in the registry. Cheap to copy.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct NavId(pub u32);
+
+/// The per-snapshot payload a navigator's mount handler computes on
+/// demand (`None` ⇒ the navigator's shared state is gone — dead `Weak`,
+/// pruned like the old registry's dead controls). Signal reads inside
+/// the closure are untracked; the bridge runs them world-entered.
+pub struct NavSnapshotData {
+    pub active_route: String,
+    pub active_path: String,
+    pub depth: usize,
+    pub can_go_back: bool,
+    pub base: String,
+    /// Back-stack `(route, path)` pairs, root-first, current last.
+    /// A swap navigator (depth-less) reports its single active entry.
+    pub stack: Vec<(String, String)>,
+}
+
+/// A read-only snapshot of one registered navigator — wire-identical
+/// field set to the old core's `NavSnapshot` (`nav_snapshot_json`).
+pub struct NavSnapshot {
+    pub nav_id: u32,
+    pub element_id: Option<u32>,
+    /// Kind carrier. On the new core this is the VOCABULARY builder
+    /// name (`"swap_navigator"` / `"stack_navigator"`) — honest and
+    /// kind-agnostic like the old SDK `Presentation` type_name, but a
+    /// different string: the SDK presentation labels (Tab/Drawer/…)
+    /// only exist after the P6 SDK retarget. Field-level gap, not a
+    /// verb gap.
+    pub type_name: &'static str,
+    pub active_route: String,
+    pub active_path: String,
+    pub depth: usize,
+    pub can_go_back: bool,
+    /// `true` for the most-recently-dispatched-against navigator.
+    pub is_current: bool,
+    pub base: String,
+    pub stack: Vec<(String, String)>,
+}
+
+struct NavRegEntry {
+    type_name: &'static str,
+    element_id: Option<u32>,
+    snapshot: Rc<dyn Fn() -> Option<NavSnapshotData>>,
+}
+
+#[derive(Default)]
+struct NavRegistry {
+    /// Slab; index = `NavId`. `None` = freed slot (LIFO recycled).
+    entries: Vec<Option<NavRegEntry>>,
+    free: Vec<u32>,
+    /// Most-recently-dispatched-against navigator — "current".
+    active: Option<NavId>,
+}
+
+thread_local! {
+    static NAV_REGISTRY: RefCell<NavRegistry> = RefCell::new(NavRegistry::default());
+}
+
+/// Register a freshly-mounted navigator. The mount handler supplies the
+/// kind carrier, its element-registry id, and an on-demand snapshot
+/// closure (typically over a `Weak` of the navigator's shared state).
+/// If no navigator is yet current, this one becomes current (cold-start
+/// root — old registry contract).
+pub(crate) fn register_navigator(
+    type_name: &'static str,
+    element_id: Option<u32>,
+    snapshot: Rc<dyn Fn() -> Option<NavSnapshotData>>,
+) -> NavId {
+    NAV_REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        let entry = NavRegEntry {
+            type_name,
+            element_id,
+            snapshot,
+        };
+        let id = if let Some(idx) = reg.free.pop() {
+            reg.entries[idx as usize] = Some(entry);
+            NavId(idx)
+        } else {
+            let idx = reg.entries.len() as u32;
+            reg.entries.push(Some(entry));
+            NavId(idx)
+        };
+        if reg.active.is_none() {
+            reg.active = Some(id);
+        }
+        id
+    })
+}
+
+/// Remove a navigator (its subtree tore down). Clears `active` if it
+/// pointed here. No-op for an unknown id.
+pub(crate) fn deregister_navigator(id: NavId) {
+    NAV_REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        if let Some(slot) = reg.entries.get_mut(id.0 as usize) {
+            if slot.take().is_some() {
+                reg.free.push(id.0);
+            }
+        }
+        if reg.active == Some(id) {
+            reg.active = None;
+        }
+    });
+}
+
+/// Mark a navigator as the current one (last dispatched-against).
+/// Called from the handlers' dispatch closures; bumps the live-update
+/// revision like the old registry did.
+pub(crate) fn mark_active_navigator(id: NavId) {
+    NAV_REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        if reg
+            .entries
+            .get(id.0 as usize)
+            .map(|s| s.is_some())
+            .unwrap_or(false)
+        {
+            reg.active = Some(id);
+        }
+    });
+    bump_revision();
+}
+
+/// Snapshot every live navigator. Entries whose snapshot closure
+/// reports dead shared state are skipped and pruned (old registry's
+/// dead-`Weak` prune). Closures run AFTER the registry borrow drops —
+/// they read signals and could re-enter. Callers wanting label-accurate
+/// signal reads run this entered (the bridge does).
+pub fn all_navigators() -> Vec<NavSnapshot> {
+    let collected: Vec<(u32, &'static str, Option<u32>, Rc<dyn Fn() -> Option<NavSnapshotData>>, bool)> =
+        NAV_REGISTRY.with(|r| {
+            let reg = r.borrow();
+            let active = reg.active;
+            reg.entries
+                .iter()
+                .enumerate()
+                .filter_map(|(i, slot)| {
+                    let entry = slot.as_ref()?;
+                    Some((
+                        i as u32,
+                        entry.type_name,
+                        entry.element_id,
+                        entry.snapshot.clone(),
+                        active == Some(NavId(i as u32)),
+                    ))
+                })
+                .collect()
+        });
+    let mut out = Vec::with_capacity(collected.len());
+    let mut dead = Vec::new();
+    for (id, type_name, element_id, snapshot, is_current) in collected {
+        match snapshot() {
+            Some(data) => out.push(NavSnapshot {
+                nav_id: id,
+                element_id,
+                type_name,
+                active_route: data.active_route,
+                active_path: data.active_path,
+                depth: data.depth,
+                can_go_back: data.can_go_back,
+                is_current,
+                base: data.base,
+                stack: data.stack,
+            }),
+            None => dead.push(NavId(id)),
+        }
+    }
+    for id in dead {
+        deregister_navigator(id);
+    }
+    out
+}
+
+/// Snapshot one navigator by id, or `None` if unknown/dead.
+pub fn navigator_snapshot(id: NavId) -> Option<NavSnapshot> {
+    all_navigators().into_iter().find(|s| s.nav_id == id.0)
 }
 
 // =============================================================================
@@ -775,11 +986,15 @@ impl Robot {
         })
     }
 
-    /// Clear the registry (test isolation; registries are thread-local,
-    /// so parallel `#[test]` threads never share entries).
+    /// Clear every robot registry (elements, component methods, watched
+    /// signals, navigators) — test isolation; registries are
+    /// thread-local, so parallel `#[test]` threads never share entries.
     pub fn reset(&self) {
         REGISTRY.with(|r| *r.borrow_mut() = Registry::new());
         PARENT_STACK.with(|s| s.borrow_mut().clear());
+        crate::robot_methods::reset();
+        crate::robot_watch::reset();
+        NAV_REGISTRY.with(|r| *r.borrow_mut() = NavRegistry::default());
     }
 
     fn build_tree_node(reg: &Registry, id: ElementId) -> Option<TreeNode> {
@@ -899,8 +1114,10 @@ pub fn clear_driver_env() {
 
 /// Run `f` with the app's world entered when an env is installed
 /// (identity otherwise). The env `Rc` is cloned out before the call so
-/// `f` may itself touch the env slot.
-fn entered<R>(f: impl FnOnce() -> R) -> R {
+/// `f` may itself touch the env slot. `World::enter` nests, so wrapping
+/// an already-entered caller is harmless (crate-internal read paths —
+/// watch reads, nav snapshots — self-wrap through this).
+pub(crate) fn entered<R>(f: impl FnOnce() -> R) -> R {
     let enter = DRIVER_ENV.with(|slot| slot.borrow().as_ref().map(|e| e.enter.clone()));
     match enter {
         Some(enter) => {
@@ -939,16 +1156,16 @@ pub fn settle() {
 /// same response JSON), so the MCP server / relay / `robot-test` client
 /// drive a new-core app unchanged.
 ///
-/// Verbs owned by still-deferred seams (`invoke_method` /
-/// `list_components` → `#[method]` P5; `list_navigators` /
-/// `get_navigator_state` → robot nav registry P5; watched signals →
-/// `watch_signal` P5) return a **named error** rather than an empty
-/// success, so a harness failure points at the seam, not at a phantom
-/// empty registry. Verbs the registry doesn't own at all (`get_logs`,
-/// `screenshot`, custom commands) return `unknown command: …` — the
-/// transport falls back to its platform path for those (the web relay
-/// client routes them to the old bridge dispatch, whose log/custom
-/// machinery is registry-independent).
+/// The P5 remainder verbs are LIVE (this wave): `list_components` /
+/// `invoke_method` (the `#[method]` registry), `list_watched_signals` /
+/// `read_signal` (the watch registry), and `list_navigators` /
+/// `get_navigator_state` (the nav registry) — all wire-identical to
+/// the old `runtime_core::robot::bridge` responses. Verbs the registry
+/// doesn't own at all (`get_logs`, `screenshot`, custom commands)
+/// return `unknown command: …` — the transport falls back to its
+/// platform path for those (the web relay client routes them to the
+/// old bridge dispatch, whose log/custom machinery is
+/// registry-independent).
 pub mod bridge {
     use super::*;
     use runtime_core::__serde_json as serde_json;
@@ -1054,21 +1271,147 @@ pub mod bridge {
                     None => Ok("null".into()),
                 }
             }
-            // Deferred seams: fail with the seam's name (module docs).
-            "invoke_method" | "list_components" => Err(format!(
-                "{cmd}: `#[method]` components are not yet available on the new core \
-                 (idea-lite migration, P5 seam)"
-            )),
-            "list_navigators" | "get_navigator_state" => Err(format!(
-                "{cmd}: the robot navigator registry is not yet available on the new \
-                 core (idea-lite migration, P5 seam)"
-            )),
-            "list_watched_signals" | "read_signal" => Err(format!(
-                "{cmd}: `watch_signal` is not yet available on the new core \
-                 (idea-lite migration, P5 seam)"
-            )),
+            "list_components" => {
+                // Same JSON shape as the old bridge's `list_components`
+                // (instance_id / name / element_id / methods[{name,args}]).
+                let snaps = crate::robot_methods::list_components();
+                let entries: Vec<String> = snaps
+                    .iter()
+                    .map(|s| {
+                        let methods: Vec<String> = s
+                            .methods
+                            .iter()
+                            .map(|(name, args)| {
+                                let args_json: Vec<String> = args
+                                    .iter()
+                                    .map(|(arg_name, arg_type)| {
+                                        format!(
+                                            "{{\"name\":{},\"type\":{}}}",
+                                            serde_json::to_string(arg_name).unwrap(),
+                                            serde_json::to_string(arg_type).unwrap(),
+                                        )
+                                    })
+                                    .collect();
+                                format!(
+                                    "{{\"name\":{},\"args\":[{}]}}",
+                                    serde_json::to_string(name).unwrap(),
+                                    args_json.join(",")
+                                )
+                            })
+                            .collect();
+                        let element_id = match s.element_id {
+                            Some(eid) => eid.0.to_string(),
+                            None => "null".to_string(),
+                        };
+                        format!(
+                            "{{\"instance_id\":{},\"name\":{},\"element_id\":{},\"methods\":[{}]}}",
+                            s.id.0,
+                            serde_json::to_string(s.name).unwrap(),
+                            element_id,
+                            methods.join(",")
+                        )
+                    })
+                    .collect();
+                Ok(format!("[{}]", entries.join(",")))
+            }
+            "invoke_method" => {
+                let instance_id = args["instance_id"]
+                    .as_u64()
+                    .ok_or("missing 'instance_id' argument")? as u32;
+                let method = args["method"]
+                    .as_str()
+                    .ok_or("missing 'method' argument")?;
+                let method_args = args
+                    .get("args")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+                // Author code: runs OUTSIDE the world, stages writes, and
+                // settles (inside `invoke_method` itself — action contract).
+                crate::robot_methods::invoke_method(
+                    ComponentInstanceId(instance_id),
+                    method,
+                    &method_args,
+                )?;
+                Ok("\"ok\"".into())
+            }
+            "list_watched_signals" => {
+                // Reads run entered inside `list_watched` (driver env).
+                let items: Vec<String> = crate::robot_watch::list_watched()
+                    .iter()
+                    .map(|s| {
+                        format!(
+                            "{{\"id\":{},\"name\":{},\"value\":{}}}",
+                            s.id,
+                            serde_json::to_string(&s.name).unwrap_or_else(|_| "\"\"".into()),
+                            // `Value`'s Display emits valid compact JSON.
+                            s.value,
+                        )
+                    })
+                    .collect();
+                Ok(format!("[{}]", items.join(",")))
+            }
+            "read_signal" => {
+                let value = if let Some(name) = args["name"].as_str() {
+                    crate::robot_watch::read_watched_by_name(name)
+                } else if let Some(id) = args["id"].as_u64() {
+                    crate::robot_watch::read_watched_by_id(id as u32)
+                } else {
+                    return Err("read_signal requires a 'name' or 'id' argument".into());
+                };
+                Ok(value.map(|v| v.to_string()).unwrap_or_else(|| "null".into()))
+            }
+            "list_navigators" => {
+                // Snapshot closures read nav signals — run entered.
+                let items: Vec<String> = entered(all_navigators)
+                    .iter()
+                    .map(nav_snapshot_json)
+                    .collect();
+                Ok(format!("[{}]", items.join(",")))
+            }
+            "get_navigator_state" => {
+                let nav_id =
+                    args["nav_id"].as_u64().ok_or("missing 'nav_id' argument")? as u32;
+                match entered(|| navigator_snapshot(NavId(nav_id))) {
+                    Some(s) => Ok(nav_snapshot_json(&s)),
+                    None => Ok("null".into()),
+                }
+            }
             _ => Err(format!("unknown command: {cmd}")),
         }
+    }
+
+    /// Byte-for-byte mirror of the old bridge's `nav_snapshot_json`.
+    fn nav_snapshot_json(s: &NavSnapshot) -> String {
+        let stack: Vec<String> = s
+            .stack
+            .iter()
+            .map(|(route, path)| {
+                format!(
+                    "{{\"route\":{},\"path\":{}}}",
+                    serde_json::to_string(route).unwrap_or_else(|_| "\"\"".into()),
+                    serde_json::to_string(path).unwrap_or_else(|_| "\"\"".into()),
+                )
+            })
+            .collect();
+        let element_id = match s.element_id {
+            Some(id) => id.to_string(),
+            None => "null".into(),
+        };
+        format!(
+            "{{\"nav_id\":{},\"element_id\":{},\"type_name\":{},\"active_route\":{},\
+               \"active_path\":{},\"depth\":{},\"can_go_back\":{},\"is_current\":{},\
+               \"base\":{},\"stack\":[{}]}}",
+            s.nav_id,
+            element_id,
+            serde_json::to_string(s.type_name).unwrap_or_else(|_| "\"\"".into()),
+            serde_json::to_string(&s.active_route).unwrap_or_else(|_| "\"\"".into()),
+            serde_json::to_string(&s.active_path).unwrap_or_else(|_| "\"\"".into()),
+            s.depth,
+            s.can_go_back,
+            s.is_current,
+            serde_json::to_string(&s.base).unwrap_or_else(|_| "\"\"".into()),
+            stack.join(","),
+        )
     }
 
     fn parse_query(args: &serde_json::Value) -> Result<Query, String> {
@@ -1265,11 +1608,192 @@ mod tests {
         assert_eq!(clicks.get(), 1, "author callback fired through the verb loop");
 
         // Unknown verbs surface as the fallback marker the transport
-        // keys on; deferred seams surface their phase by name.
+        // keys on; owned verbs with bad args fail with the argument
+        // name (never the fallback marker — the transport must not
+        // route them to the old core).
         let unknown = bridge::invoke_command("get_logs", &json!({})).unwrap_err();
         assert!(unknown.starts_with("unknown command:"), "{unknown}");
-        let deferred = bridge::invoke_command("invoke_method", &json!({})).unwrap_err();
-        assert!(deferred.contains("P5"), "{deferred}");
+        let bad_args = bridge::invoke_command("invoke_method", &json!({})).unwrap_err();
+        assert!(bad_args.contains("instance_id"), "{bad_args}");
+        robot.reset();
+    }
+
+    /// `list_components` + `invoke_method` over the bridge — the exact
+    /// verb path the MCP server / Inspector use, wire shapes mirroring
+    /// the old `runtime_core::robot::bridge` responses.
+    #[test]
+    fn bridge_method_verbs_round_trip() {
+        use runtime_core::__serde_json::json;
+        use std::cell::Cell;
+
+        let robot = Robot::new();
+        robot.reset();
+        let hits: Rc<Cell<i32>> = Rc::new(Cell::new(0));
+        let hits_in = hits.clone();
+        let reg = crate::robot_methods::register_component(
+            "MethodCounter",
+            vec![crate::robot_methods::Method {
+                name: "bump_by",
+                args: &[("n", "i32")],
+                invoke: Rc::new(move |args| {
+                    let n = args["n"].as_i64().ok_or("arg 'n': missing")? as i32;
+                    hits_in.set(hits_in.get() + n);
+                    Ok(())
+                }),
+            }],
+        );
+        crate::robot_methods::link_component_element(reg.id(), 7);
+
+        let list = bridge::invoke_command("list_components", &json!({})).expect("list");
+        let expected = format!(
+            "[{{\"instance_id\":{},\"name\":\"MethodCounter\",\"element_id\":7,\
+             \"methods\":[{{\"name\":\"bump_by\",\"args\":[{{\"name\":\"n\",\"type\":\"i32\"}}]}}]}}]",
+            reg.id().0
+        );
+        assert_eq!(list, expected, "old-bridge wire shape");
+
+        let ok = bridge::invoke_command(
+            "invoke_method",
+            &json!({ "instance_id": reg.id().0, "method": "bump_by", "args": { "n": 4 } }),
+        )
+        .expect("invoke");
+        assert_eq!(ok, "\"ok\"");
+        assert_eq!(hits.get(), 4, "method ran through the verb loop");
+
+        drop(reg);
+        assert!(
+            bridge::invoke_command(
+                "invoke_method",
+                &json!({ "instance_id": 999, "method": "bump_by", "args": {} }),
+            )
+            .is_err(),
+            "unknown instance errors"
+        );
+        robot.reset();
+    }
+
+    /// `list_watched_signals` / `read_signal` expose a
+    /// `watch_signal`-registered signal's live value over the bridge —
+    /// mirror of the old `watch_verbs_read_live_signal_value_over_bridge`.
+    #[test]
+    fn bridge_watch_verbs_read_live_signal_value() {
+        use runtime_core::__serde_json::json;
+        use runtime_world::World;
+
+        let robot = Robot::new();
+        robot.reset();
+        let world = World::new();
+        let sig = world.enter(|| {
+            let s = runtime_world::signal(7i32);
+            crate::robot_watch::watch_signal("bridge_counter", s);
+            s.set(42);
+            s
+        });
+        world.flush();
+
+        // Bridge reads self-wrap through the driver env; none is
+        // installed here, so give them the world via a real env.
+        {
+            let world_for_env = world.clone();
+            install_driver_env(move |f| world_for_env.enter(|| f()), || {});
+        }
+        let out = bridge::invoke_command("read_signal", &json!({ "name": "bridge_counter" }))
+            .expect("read_signal by name");
+        assert_eq!(out, "\"42\"");
+        let id = (world.enter(|| sig.raw_id()) & 0xffff_ffff) as u32;
+        let by_id = bridge::invoke_command("read_signal", &json!({ "id": id })).unwrap();
+        assert_eq!(by_id, "\"42\"");
+        let list = bridge::invoke_command("list_watched_signals", &json!({})).unwrap();
+        assert_eq!(
+            list,
+            format!("[{{\"id\":{id},\"name\":\"bridge_counter\",\"value\":\"42\"}}]"),
+            "old-bridge wire shape"
+        );
+        assert!(bridge::invoke_command("read_signal", &json!({})).is_err());
+        clear_driver_env();
+        robot.reset();
+    }
+
+    /// Nav registry: snapshot shape (wire-identical `nav_snapshot_json`),
+    /// current-marking, and dead-state pruning.
+    #[test]
+    fn bridge_nav_verbs_snapshot_mark_active_and_prune() {
+        use runtime_core::__serde_json::json;
+        use std::cell::Cell;
+
+        let robot = Robot::new();
+        robot.reset();
+        let alive = Rc::new(Cell::new(true));
+        let alive_in = alive.clone();
+        let id = register_navigator(
+            "stack_navigator",
+            Some(3),
+            Rc::new(move || {
+                alive_in.get().then(|| NavSnapshotData {
+                    active_route: "detail".into(),
+                    active_path: "/detail".into(),
+                    depth: 2,
+                    can_go_back: true,
+                    base: String::new(),
+                    stack: vec![
+                        ("root".into(), "/".into()),
+                        ("detail".into(), "/detail".into()),
+                    ],
+                })
+            }),
+        );
+
+        let json_one =
+            bridge::invoke_command("get_navigator_state", &json!({ "nav_id": id.0 })).unwrap();
+        assert_eq!(
+            json_one,
+            format!(
+                "{{\"nav_id\":{},\"element_id\":3,\"type_name\":\"stack_navigator\",\
+                 \"active_route\":\"detail\",\"active_path\":\"/detail\",\"depth\":2,\
+                 \"can_go_back\":true,\"is_current\":true,\
+                 \"base\":\"\",\"stack\":[{{\"route\":\"root\",\"path\":\"/\"}},\
+                 {{\"route\":\"detail\",\"path\":\"/detail\"}}]}}",
+                id.0
+            ),
+            "old-bridge wire shape"
+        );
+
+        // A second navigator; marking it active flips is_current.
+        let id2 = register_navigator(
+            "swap_navigator",
+            None,
+            Rc::new(|| {
+                Some(NavSnapshotData {
+                    active_route: "home".into(),
+                    active_path: "/".into(),
+                    depth: 1,
+                    can_go_back: false,
+                    base: String::new(),
+                    stack: vec![("home".into(), "/".into())],
+                })
+            }),
+        );
+        mark_active_navigator(id2);
+        let all = bridge::invoke_command("list_navigators", &json!({})).unwrap();
+        use runtime_core::__serde_json as serde_json;
+        let v: serde_json::Value = serde_json::from_str(&all).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 2);
+        let current: Vec<bool> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["is_current"].as_bool().unwrap())
+            .collect();
+        assert_eq!(current, vec![false, true], "mark_active moved the current bit");
+
+        // Dead shared state prunes on read (old dead-Weak contract).
+        alive.set(false);
+        assert!(navigator_snapshot(id).is_none(), "dead snapshot pruned");
+        let unknown =
+            bridge::invoke_command("get_navigator_state", &json!({ "nav_id": id.0 })).unwrap();
+        assert_eq!(unknown, "null");
+        deregister_navigator(id2);
+        assert!(all_navigators().is_empty());
         robot.reset();
     }
 

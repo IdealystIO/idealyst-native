@@ -31,6 +31,13 @@ mod serve;
 #[cfg(feature = "serve")]
 pub use serve::{resolve_bundle_module, serve, ServeConfig};
 
+// New-core (idea-lite) render path: `SsrBackend` as a direct
+// `runtime_scene::Host` + 30-caps implementor, with per-request
+// `runtime_world::World` lifecycles (`newcore::render_path`). Additive —
+// nothing in the old-core path below changes under the feature.
+#[cfg(feature = "new-core")]
+pub mod newcore;
+
 /// A stashed navigator handler, keyed by its container node's pointer id.
 type NavHandler = Rc<RefCell<Box<dyn NavigatorHandler<SsrBackend>>>>;
 

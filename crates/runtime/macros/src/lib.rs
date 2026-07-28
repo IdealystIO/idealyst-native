@@ -368,12 +368,29 @@ fn emit_component(attr: component_attr::ComponentAttr, item: TokenStream) -> Tok
             .to_compile_error()
             .into();
         }
-        if methods_block::has_method_fns(&item_fn) {
+        // `#[method]` lowers on the new core (P5 robot remainder) for the
+        // inline-props shape: the SAME emission as the old core, with the
+        // retarget mapping `::runtime_core::robot::…` /
+        // `::runtime_core::__component_root` /
+        // `::runtime_core::__component_keepalive_effect` to their
+        // `runtime_vocabulary::glue` mirrors. Only the LEGACY
+        // explicit-props form stays rejected: its handle escapes through
+        // a `Bindable<H>` return, and `runtime_core::Bindable` wraps the
+        // OLD `Element` — un-portable by type, not by phase. Generic
+        // components can't inject `bind_to` on either core (monomorphic
+        // props glue), so they get the same pointer.
+        if methods_block::has_method_fns(&item_fn)
+            && (inline_props::is_legacy_props_sig(&item_fn.sig)
+                || !item_fn.sig.generics.params.is_empty())
+        {
             return syn::Error::new_spanned(
                 &item_fn.sig.ident,
-                "#[method] blocks are not yet available on the new core (idea-lite \
-                 migration: the Ref/robot handle machinery migrates in P5). Build \
-                 without `runtime-macros/new-core` or drop the #[method] fns.",
+                "#[method] fns on the new core require the inline-props component \
+                 shape (props as fn parameters; zero parameters is fine) so the \
+                 handle binds through the auto-injected `bind_to` prop. The legacy \
+                 explicit-props form returns `Bindable<H>` over the OLD core's \
+                 `Element` and cannot lower here; generic components can't take \
+                 the injected prop on either core.",
             )
             .to_compile_error()
             .into();

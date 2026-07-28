@@ -1,0 +1,37 @@
+# newcore-gpu-smoke — P5 smoke app for the wgpu backend's NEW-core boot
+# path (`host_winit::newcore::run` → `render_wgpu::newcore::start`).
+# Builds the same small vocabulary-builder tree as `newcore-macos-smoke`
+# (text + button + toggle + a dyn hole + a keyed list + one literal
+# StyleRules) with DIRECT builder calls — no `ui!`/`jsx!` — so it
+# exercises the registry-dispatch render path against the live GPU node
+# tree independent of the macro-lowering work.
+#
+# Run windowed (any desktop OS with a GPU):
+#   cargo run -p newcore-gpu-smoke
+# Self-test (windowed; prints [SMOKE-SELFTEST] committed=… views=… and exits):
+#   NEWCORE_SMOKE_SELFTEST=1 cargo run -p newcore-gpu-smoke
+# Headless Metal/Vulkan capture (offscreen, no window; PNGs prove the
+# new-core tree renders + a staged write commits between captures):
+#   NEWCORE_SMOKE_HEADLESS=/tmp/out cargo run -p newcore-gpu-smoke
+[package]
+name = "newcore-gpu-smoke"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Smoke app for render-wgpu's new-core (Host + caps) boot path — idea-lite migration P5."
+
+[[bin]]
+name = "newcore-gpu-smoke"
+path = "src/main.rs"
+
+[dependencies]
+runtime-core = { workspace = true }
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
+host-winit = { workspace = true, features = ["new-core"] }
+# `headless` for the NEWCORE_SMOKE_HEADLESS capture mode: the
+# Screenshotter's offscreen wgpu device + PNG readback (hardware Metal
+# on a Mac, lavapipe fallback on GPU-less CI) renders the SAME node
+# tree the windowed run shows.
+render-wgpu = { workspace = true, features = ["new-core", "headless"] }

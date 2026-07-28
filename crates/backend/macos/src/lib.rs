@@ -50,8 +50,9 @@ pub use stub::MacosBackend;
 // idea-lite core migration (P4a): `runtime_scene::Host` + all 30
 // `runtime_vocabulary::caps` traits implemented directly on
 // `MacosBackend` (UFCS delegation to the existing Backend impl), plus
-// the new-core mount (`newcore::start`) and its runloop-turn flush
-// driver (local NSEvent monitor + frame tick). Off by default; with the
+// the new-core mount (`newcore::start`) and its flush driver
+// (dispatch-site author-callback wrapping + the shared
+// `backend_apple_core::dispatch_hook`). Off by default; with the
 // feature off the build is unchanged (module + deps not compiled).
 // macOS-gated like `imp` — the stub backend has no real Backend impl to
 // front. `host-appkit`'s `newcore::run` is the windowed entry point.

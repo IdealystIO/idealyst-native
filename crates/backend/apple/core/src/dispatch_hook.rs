@@ -30,10 +30,10 @@
 //! updated". The old-core reactive system applies writes synchronously
 //! and never needs this, so the slot defaults to `None` and every fire
 //! site is a single thread-local read — a no-op unless a new-core boot
-//! installed the flush driver. In particular the macOS backend, whose
-//! P4a flush driver is an NSEvent monitor + frame-tick pair, never
-//! installs this hook today, so its behavior is byte-identical
-//! (migrating it onto this hook is a known follow-up).
+//! installed the flush driver. Both Apple new-core boots install it:
+//! `backend_ios::newcore::start` and `backend_macos::newcore::start`
+//! (the macOS P4a NSEvent-monitor + frame-tick pair has been replaced
+//! by this hook plus dispatch-site callback wrapping).
 //!
 //! # What deliberately does NOT fire the hook
 //!
@@ -56,7 +56,8 @@ thread_local! {
 }
 
 /// Install the post-dispatch hook (replaces any previous one).
-/// `backend_ios::newcore`'s boot installs its `schedule_flush` here.
+/// The Apple new-core boots (`backend_ios::newcore`,
+/// `backend_macos::newcore`) install their `schedule_flush` here.
 pub fn install_dispatch_hook(f: fn()) {
     HOOK.with(|h| h.set(Some(f)));
 }

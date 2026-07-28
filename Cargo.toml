@@ -93,6 +93,11 @@ members = [
     # JNI wrapper's `new-core` feature; `--features launcher --bin
     # launch` drives the existing build/run tooling end-to-end.
     "crates/dev/newcore-android-smoke",
+    # Smoke app for render-wgpu's new-core boot path (idea-lite P5, GPU).
+    # Windowed via host-winit's `new-core` feature; also a headless
+    # offscreen-capture mode (NEWCORE_SMOKE_HEADLESS) for real-GPU PNG
+    # evidence without a window.
+    "crates/dev/newcore-gpu-smoke",
     # Integration example for the ui!/#[component] new-core lowering
     # (idea-lite P3a). Featureless (empty) by default on purpose: its
     # `new-core` feature flips runtime-macros' lowering build-graph-wide,

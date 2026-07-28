@@ -96,16 +96,23 @@
 //!   `test_id` slot + builder setter, mount handlers register into the
 //!   vocabulary-owned `robot` registry (`src/robot.rs`, behind the
 //!   `robot` Cargo feature), and the macro lowers `test_id = …` to the
-//!   setter on both cores. Still deferred from the robot surface: the
-//!   nav registry, `#[method]` component blocks, and `watch_signal`
-//!   (P5 remainder — see `robot`'s module docs for the bridge-adapter
-//!   contract);
+//!   setter on both cores. The P5 robot REMAINDER is also in: the
+//!   `#[method]` component registry + element link (`robot_methods`,
+//!   emission surface in `glue`), the signal watch registry
+//!   (`robot_watch` / `robot::watch_signal`), and the navigator
+//!   registry (`robot::register_navigator`, fed by
+//!   `handlers/navigator.rs`) — all served by `robot::bridge`'s
+//!   wire-identical `list_components` / `invoke_method` /
+//!   `list_watched_signals` / `read_signal` / `list_navigators` /
+//!   `get_navigator_state` verbs;
 //! - `web_view` (dispatches through the old-core WebView SDK component;
 //!   SDK retarget, P6);
 //! - `#[component(lazy)]` / `#[lazy]` (no lazy/chunk-mount prim in the
 //!   vocabulary yet — `Element::Lazy`'s wasm-split chunk driver
-//!   retargets with the remaining web deferred set) and `#[method]`
-//!   blocks (Ref/robot machinery, P5);
+//!   retargets with the remaining web deferred set). `#[method]`
+//!   blocks LOWER (P5 robot remainder) for the inline-props component
+//!   shape; only the legacy explicit-props/`Bindable` form stays a
+//!   loud macro error (its return type rides the old `Element`);
 //! - structured generator-backend bindings (`Derived` metadata,
 //!   `Element::Switch` wire metadata): lowered instead to the
 //!   equivalent closure forms — same observable reactivity, no wire
@@ -177,6 +184,15 @@ pub mod handlers;
 pub mod prims;
 #[cfg(feature = "robot")]
 pub mod robot;
+// Always compiled (stub-shaped without `robot`): the `#[component]`
+// macro's `#[method]` emission references `glue::robot::…` +
+// `glue::__component_root` unconditionally — old-core stub-module
+// parity (see robot_methods' module docs).
+#[doc(hidden)]
+pub mod robot_methods;
+#[cfg(feature = "robot")]
+#[doc(hidden)]
+pub mod robot_watch;
 pub mod style_attach;
 pub mod theme;
 

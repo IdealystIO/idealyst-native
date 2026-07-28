@@ -9,6 +9,12 @@ license.workspace = true
 # that renders each route per request. Off by default so the library
 # stays a lean, dependency-light renderer.
 serve = ["dep:tiny_http"]
+# New-core (idea-lite) render path: `newcore::render_path` renders on a
+# fresh `runtime_world::World` per request through the vocabulary's
+# builtin handlers, with `SsrBackend` implementing `runtime_scene::Host`
+# + all 30 capability traits directly. Additive — the old-core render
+# path is untouched with or without this feature.
+new-core = ["dep:runtime-world", "dep:runtime-scene", "dep:runtime-vocabulary"]
 
 [dependencies]
 runtime-core = { workspace = true }
@@ -16,11 +22,22 @@ css = { workspace = true }
 # Only with the `serve` feature. Same minimal HTTP lib the static dev
 # server (`dev-http`) uses.
 tiny_http = { version = "0.12", optional = true }
-# NOTE: backend-ssr stays SDK-free. Navigator SDKs depend on backend-ssr
-# (for their SSR handlers), so a dev-dep back on a nav SDK would create a
-# crate cycle + duplicate `backend-ssr`. Navigator render-at-path + chrome
-# tests/examples live in the SDK crates (e.g. stack-navigator/tests/ssr.rs).
+# New-core migration crates — only compiled under the `new-core` feature.
+runtime-world = { workspace = true, optional = true }
+runtime-scene = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
+# NOTE: backend-ssr's NORMAL deps stay SDK-free. Navigator SDKs dev-dep
+# backend-ssr (for their SSR handler tests), so their render-at-path +
+# chrome tests/examples live in the SDK crates (e.g.
+# stack-navigator/tests/ssr.rs).
 
 [dev-dependencies]
 # `resolve_bundle_module` tests build synthetic `pkg/` dirs.
 tempfile = "3"
+# Old-core side of the new-core byte-identity corpus
+# (`tests/newcore_byte_identity.rs`): the backend-neutral swap handler
+# registers on `SsrBackend` so old-core SSR emits the same navigator
+# chrome the vocabulary handler emits. Dev-dep only — swap-navigator's
+# own backend-ssr dep is ALSO dev-only, so no cycle and no duplicate
+# backend-ssr in any lib build.
+swap-navigator = { workspace = true }

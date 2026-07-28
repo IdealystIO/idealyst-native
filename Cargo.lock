@@ -1503,6 +1503,10 @@ version = "0.4.0"
 dependencies = [
  "css",
  "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
+ "swap-navigator",
  "tempfile",
  "tiny_http",
 ]
@@ -7293,6 +7297,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "newcore-gpu-smoke"
+version = "0.4.0"
+dependencies = [
+ "host-winit",
+ "render-wgpu",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
+]
+
+[[package]]
 name = "newcore-ios-smoke"
 version = "0.4.0"
 dependencies = [
@@ -7311,6 +7327,7 @@ name = "newcore-macos-smoke"
 version = "0.4.0"
 dependencies = [
  "host-appkit",
+ "objc2 0.5.2",
  "objc2-app-kit",
  "objc2-foundation 0.2.2",
  "runtime-core",
@@ -9130,6 +9147,9 @@ dependencies = [
  "render-api",
  "runtime-core",
  "runtime-layout",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
  "web-time",
  "wgpu",
 ]

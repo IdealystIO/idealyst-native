@@ -11,12 +11,12 @@ use robot_e2e::{expect, flow, run_suites, suite, test, ElementKind, Page};
 
 /// Entry point scheduled from `app()` ~1s after mount.
 ///
-/// Dual-core: the first three suites are identical on both cores (same
-/// tests, same `test_id`s). The idea-ui suite (idea-ui is old-core-only
-/// until the SDK retarget, P6) and the `#[method]` suite (P5 seam)
-/// exist only on the old core — BLOCKED on new-core, not weakened; the
-/// per-core totals differ accordingly and the conformance report names
-/// the seams.
+/// Dual-core: every suite except idea-ui runs on both cores (same
+/// tests, same `test_id`s — the methods suite swaps only its
+/// `list_components`/`invoke_method` import to the vocabulary mirror).
+/// The idea-ui suite (idea-ui is old-core-only until the SDK retarget,
+/// P6) exists only on the old core — BLOCKED on new-core, not
+/// weakened; the per-core totals differ accordingly.
 pub(crate) fn run_all() {
     run_suites(vec![
         primitives_suite(),
@@ -24,7 +24,6 @@ pub(crate) fn run_all() {
         navigation_suite(),
         #[cfg(feature = "old-core")]
         idea_ui_suite(),
-        #[cfg(feature = "old-core")]
         component_methods_suite(),
     ]);
 }
@@ -172,11 +171,18 @@ fn navigation_suite() -> robot_e2e::Suite {
 
 /// `#[method]` invocation over the robot surface — the same
 /// `list_components` → `invoke_method` path the MCP server and the Inspector
-/// use. Also asserts the element↔component link the macro/walker establish
-/// (so the Inspector can resolve a selected element to its methods).
-#[cfg(feature = "old-core")]
+/// use. Also asserts the element↔component link the macro establishes
+/// (walker unwrap on the old core, realize-time `__component_root` arm on
+/// the new — so the Inspector can resolve a selected element to its
+/// methods). Dual-core: only the registry import differs; the two APIs are
+/// mirror-identical. NOTE: this suite FAILS on the old core pre-existing
+/// (screens.rs's MethodCounter label is a build-time snapshot that never
+/// updates) — the new core's screen uses a reactive label and passes.
 fn component_methods_suite() -> robot_e2e::Suite {
+    #[cfg(feature = "old-core")]
     use runtime_core::robot::{invoke_method, list_components};
+    #[cfg(feature = "new-core")]
+    use runtime_vocabulary::robot::{invoke_method, list_components};
 
     suite(
         "component methods",

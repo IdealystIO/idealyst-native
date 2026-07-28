@@ -41,8 +41,8 @@ runtime-server = ["dep:runtime-server-shell-native", "runtime-server-shell-nativ
 # idea-lite core migration (P4a): the `newcore` module — `runtime_scene::Host`
 # + all 30 `runtime_vocabulary::caps` traits implemented directly on
 # `MacosBackend` (UFCS delegation to the existing Backend impl), plus the
-# new-core mount path (`newcore::start`) and its runloop-turn flush driver
-# (local NSEvent monitor + frame tick). OFF by default; with the feature off
+# new-core mount path (`newcore::start`) and its flush driver (dispatch-site
+# author-callback wrapping + apple-core dispatch hook). OFF by default; with the feature off
 # the build is unchanged (the module and its deps are not compiled). Mirrors
 # `backend-web`'s `new-core`. The module itself is additionally macOS-gated
 # (like `imp`), so enabling this on a non-macOS host only adds the unused

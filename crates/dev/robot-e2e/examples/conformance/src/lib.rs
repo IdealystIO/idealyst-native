@@ -39,7 +39,10 @@
 //! Old-core-ONLY surfaces are gated out of the new-core build and their
 //! suites reported as blocked (never weakened): idea-ui components
 //! (idea-ui's own `ui!` sites can't lower to the new core yet — SDK
-//! retarget, P6) and `#[method]` component invocation (P5).
+//! retarget, P6). `#[method]` component invocation runs on BOTH cores
+//! (P5 robot remainder) — and the methods suite PASSES on the new core
+//! (reactive label), while the old core keeps its pre-existing
+//! static-label failure (do-not-fix-old-core migration rule).
 
 #[cfg(all(feature = "new-core", feature = "old-core"))]
 compile_error!(
@@ -156,8 +159,8 @@ pub use old_app::{app, State};
 // ===========================================================================
 // NEW-core app — the same screens/state authored against the vocabulary
 // (screens_newcore.rs), on the vocabulary stack navigator. The COMPONENTS
-// screen (idea-ui) and the `#[method]` counter are old-core-only; their
-// suites are gated out (blocked, reported — see suites.rs).
+// screen (idea-ui) is old-core-only and its suite gated out (blocked,
+// reported — see suites.rs); the `#[method]` counter runs on both cores.
 // ===========================================================================
 
 #[cfg(feature = "new-core")]

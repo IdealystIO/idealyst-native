@@ -60,7 +60,14 @@
 //!
 //! - Native system-back routing (`on_system_back`) and the iOS/Android
 //!   native push surfaces — P4/P5 backend work.
-//! - Robot nav registry / back-stack snapshots — identity/robot port, P5.
+//! - ~~Robot nav registry / back-stack snapshots~~ — LANDED (P5 robot
+//!   remainder): robot builds register each navigator into
+//!   `crate::robot`'s nav registry (element-registry entry +
+//!   snapshot-closure over the mirror signals / back-stack, dispatch
+//!   marks "current", teardown deregisters); `list_navigators` /
+//!   `get_navigator_state` serve wire-identical JSON. `type_name` is
+//!   the vocabulary builder name (`"swap_navigator"`/`"stack_navigator"`)
+//!   until the P6 SDK retarget supplies presentation labels.
 //! - Stack per-screen header options (`StackScreenOptions`,
 //!   `screen_chrome`, `StackHeaderState`) — the old `Screen` options
 //!   carrier rode the old `Element`; the new screen contract is a bare
@@ -82,7 +89,7 @@ use runtime_core::StyleRules;
 use runtime_scene::{component_scope, realize, Element, MountCx, Realized, Registry};
 use runtime_world::{effect, inject, provide, signal, Signal};
 
-use crate::caps::{LifecycleOps, ViewOps};
+use crate::caps::{IntrospectionOps, LifecycleOps, ViewOps};
 use crate::prims::{
     MountPolicy, NavConfig, NavHandle, NavScreenEntry, NavigatorOutletPrim, PrimCell,
     StackNav, StackNavigatorPrim, StackRetention, SwapNav, SwapNavigatorPrim,
@@ -90,11 +97,14 @@ use crate::prims::{
 use crate::style_attach::{attach_style, StyleProp, StyleServices};
 
 /// The capability bundle both navigator handlers need: view creation for
-/// the root, the style service for fill rules + author styles, and the
-/// lifecycle hook for the post-navigation layout pass. Structural ops
-/// come from the `Host` supertrait.
-pub trait NavCaps: ViewOps + StyleServices + LifecycleOps {}
-impl<T: ViewOps + StyleServices + LifecycleOps> NavCaps for T {}
+/// the root, the style service for fill rules + author styles, the
+/// lifecycle hook for the post-navigation layout pass, and (robot
+/// builds) the introspection surface the element-registry registration
+/// closes over — bounded unconditionally like every other handler
+/// (`mount_view`), since `IntrospectionOps` is data-only defaults.
+/// Structural ops come from the `Host` supertrait.
+pub trait NavCaps: ViewOps + StyleServices + LifecycleOps + IntrospectionOps {}
+impl<T: ViewOps + StyleServices + LifecycleOps + IntrospectionOps> NavCaps for T {}
 
 /// Install the three navigator handlers on `registry`. Called by
 /// [`register_builtins`](crate::handlers::register_builtins).
@@ -750,6 +760,22 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
     // init-then-walker-style order.
     let root = backend.borrow_mut().create_view(&prim.a11y);
     backend.borrow_mut().apply_style(&root, &navigator_fill_rules());
+    // Identity registration (robot builds): the navigator surfaces as an
+    // `ElementKind::Navigator` element whose children are everything
+    // mounted inside this handler (initial screen + chrome) — the guard
+    // lives to the end of the fn so those mounts link here. Screens
+    // mounted LATER by the driver effect register as orphan roots (the
+    // old registry's exact behavior for post-walk screen mounts).
+    #[cfg(feature = "robot")]
+    let robot_reg = crate::robot::register_mount(
+        &backend,
+        &root,
+        crate::robot::ElementKind::Navigator,
+        None,
+        None,
+        None,
+        crate::robot::MountActions::default(),
+    );
 
     // Resolve the initial BEFORE creating the nav-state signals so a
     // cold-start deep link is their *committed* initial value (the new
@@ -780,6 +806,38 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         active_route,
     });
 
+    // Robot nav registry (P5): snapshot closure over the mirror signals
+    // + a Weak of the shared state (liveness gate, the old registry's
+    // dead-`Weak` prune); deregistration rides a teardown probe owned by
+    // the navigator's Realized. A swap navigator is depth-less: depth 1,
+    // no back, stack = its single active entry.
+    #[cfg(feature = "robot")]
+    let nav_id = {
+        let weak = Rc::downgrade(&shared);
+        let base = base.clone();
+        let nav_id = crate::robot::register_navigator(
+            "swap_navigator",
+            Some(robot_reg.id().0),
+            Rc::new(move || {
+                let _live = weak.upgrade()?;
+                let route = active_route.peek().to_string();
+                let path = active_path.peek();
+                Some(crate::robot::NavSnapshotData {
+                    active_route: route.clone(),
+                    active_path: path.clone(),
+                    depth: 1,
+                    can_go_back: false,
+                    base: base.clone(),
+                    stack: vec![(route, path)],
+                })
+            }),
+        );
+        crate::style_attach::on_teardown(move || {
+            crate::robot::deregister_navigator(nav_id);
+        });
+        nav_id
+    };
+
     let channel = Rc::new(CommandChannel {
         queue: Rc::new(RefCell::new(VecDeque::new())),
         tick: signal(0u64),
@@ -793,6 +851,9 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         let base = base.clone();
         let sync = sync.clone();
         Rc::new(move |cmd| {
+            // Last-driven navigator = the inspector's "current".
+            #[cfg(feature = "robot")]
+            crate::robot::mark_active_navigator(nav_id);
             let cmd = compose_url(&base, cmd);
             mirror_command(&cmd, active_route, active_path);
             let suppress = sync.before(&cmd);
@@ -1147,6 +1208,17 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
 
     let root = backend.borrow_mut().create_view(&prim.a11y);
     backend.borrow_mut().apply_style(&root, &navigator_fill_rules());
+    // Identity registration (robot builds) — see mount_swap_navigator.
+    #[cfg(feature = "robot")]
+    let robot_reg = crate::robot::register_mount(
+        &backend,
+        &root,
+        crate::robot::ElementKind::Navigator,
+        None,
+        None,
+        None,
+        crate::robot::MountActions::default(),
+    );
 
     // Browser semantics on web, native-stack semantics elsewhere
     // (resolved at mount, old handler contract).
@@ -1185,6 +1257,40 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         can_go_back,
     });
 
+    // Robot nav registry (P5): the stack's snapshot reads the live
+    // back-stack through a Weak of the shared state (root-first
+    // `(route, path)` pairs — the old `NavSnapshot.stack` contract).
+    #[cfg(feature = "robot")]
+    let nav_id = {
+        let weak = Rc::downgrade(&shared);
+        let base = base.clone();
+        let nav_id = crate::robot::register_navigator(
+            "stack_navigator",
+            Some(robot_reg.id().0),
+            Rc::new(move || {
+                let live = weak.upgrade()?;
+                let stack: Vec<(String, String)> = live
+                    .stack
+                    .borrow()
+                    .iter()
+                    .map(|e| (e.route.to_string(), e.path.clone()))
+                    .collect();
+                Some(crate::robot::NavSnapshotData {
+                    active_route: active_route.peek().to_string(),
+                    active_path: active_path.peek(),
+                    depth: depth.peek(),
+                    can_go_back: can_go_back.peek(),
+                    base: base.clone(),
+                    stack,
+                })
+            }),
+        );
+        crate::style_attach::on_teardown(move || {
+            crate::robot::deregister_navigator(nav_id);
+        });
+        nav_id
+    };
+
     let channel = Rc::new(CommandChannel {
         queue: Rc::new(RefCell::new(VecDeque::new())),
         tick: signal(0u64),
@@ -1195,6 +1301,9 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         let base = base.clone();
         let sync = sync.clone();
         Rc::new(move |cmd| {
+            // Last-driven navigator = the inspector's "current".
+            #[cfg(feature = "robot")]
+            crate::robot::mark_active_navigator(nav_id);
             let cmd = compose_url(&base, cmd);
             mirror_command(&cmd, active_route, active_path);
             let suppress = sync.before(&cmd);

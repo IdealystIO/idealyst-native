@@ -27,7 +27,8 @@ runtime-vocabulary = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 host-appkit = { workspace = true, features = ["new-core"] }
+objc2 = "0.5"
 # Self-test only (`NEWCORE_SMOKE_SELFTEST=1`): count the live NSView
 # tree under the key window to prove realize/finish attached real views.
 objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSResponder", "NSWindow", "NSView"] }
-objc2-foundation = { version = "0.2", features = ["NSThread", "NSArray", "NSGeometry"] }
+objc2-foundation = { version = "0.2", features = ["NSThread", "NSArray", "NSGeometry", "NSString"] }

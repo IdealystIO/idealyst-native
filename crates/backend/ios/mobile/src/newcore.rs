@@ -126,8 +126,9 @@
 //!
 //! The new kernel stages writes; nothing is observable until the host
 //! driver calls [`World::flush`]. iOS uses the SETTLED driver design
-//! (the web module's, which post-dates macOS's P4a monitor+timer
-//! pair): **precise dispatch-site glue**, no polling.
+//! (the web module's, which replaced macOS's original P4a
+//! monitor+timer pair — macOS has since migrated onto this same
+//! shape): **precise dispatch-site glue**, no polling.
 //!
 //! 1. **Author-callback wrapping (this module).** Every
 //!    callback-taking capability impl below wraps the author callback
@@ -153,11 +154,11 @@
 //!    (the animation clock), and async-executor future polls. The
 //!    apple-core scheduler and executor fire a thread-local hook after
 //!    each such callback; [`start`] installs [`schedule_flush`] into
-//!    that slot (no-op default, so the old core — and macOS, which
-//!    keeps its P4a monitor driver for now — is untouched).
+//!    that slot (no-op default, so the old core is untouched;
+//!    `backend_macos::newcore` installs the same hook).
 //!
-//! **Why no NSEvent-monitor / frame-tick safety net (the macOS P4a
-//! shape):** UIKit has no `NSEvent addLocalMonitor…` equivalent — there
+//! **Why no NSEvent-monitor / frame-tick safety net (the original
+//! macOS P4a shape, since retired there too):** UIKit has no `NSEvent addLocalMonitor…` equivalent — there
 //! is no app-level "observe every event before dispatch" seam — and
 //! none is needed: unlike AppKit, UIKit controls do NOT run nested
 //! `nextEventMatchingMask:` tracking loops that bypass wrapped

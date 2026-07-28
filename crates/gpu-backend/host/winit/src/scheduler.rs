@@ -344,6 +344,25 @@ struct WinitScheduler;
 unsafe impl Send for WinitScheduler {}
 unsafe impl Sync for WinitScheduler {}
 
+/// Register a one-shot timer WITHOUT the new-core post-dispatch hook
+/// wrap. Shared registration body for [`Scheduler::after_ms`] (which
+/// wraps) and [`Scheduler::schedule_microtask`] (which must NOT wrap —
+/// see the comment there).
+fn after_ms_raw(delay_ms: i32, f: Box<dyn FnOnce() + 'static>) -> Box<dyn ScheduleHandle> {
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let deadline = Instant::now() + Duration::from_millis(delay_ms.max(0) as u64);
+    MAIN_QUEUE.with(|q| {
+        q.borrow_mut().timers.insert(
+            id,
+            PendingTimer { f: Some(f), deadline },
+        );
+    });
+    if let Some(tx) = CMD_TX.lock().unwrap().clone() {
+        let _ = tx.send(WorkerCmd::AfterMs { id, deadline });
+    }
+    Box::new(TimerHandle { id })
+}
+
 impl Scheduler for WinitScheduler {
     fn schedule_microtask(&self, f: Box<dyn FnOnce() + 'static>) {
         // "Microtask" = run after the current synchronous stack
@@ -351,13 +370,23 @@ impl Scheduler for WinitScheduler {
         // `after_ms` lands the closure in the next event-loop
         // iteration — same shape as iOS's NSTimer-based scheduler.
         //
+        // Routed through `after_ms_raw`, NOT `after_ms`: microtasks
+        // must not fire the new-core post-dispatch hook. The new-core
+        // flush itself is dispatched as a scheduled microtask, so
+        // hooking here would re-schedule a flush from inside the
+        // flush's own dispatch and spin the 0 ms timer queue forever
+        // (see `render_wgpu::dispatch_hook`'s module docs and the
+        // Android scheduler's identical exclusion). No author code
+        // reaches the microtask queue outside an already-hooked
+        // surface (wrapped event callbacks, timers, frames).
+        //
         // `forget` the returned handle because microtasks are
         // fire-and-forget by contract: dropping the handle here
         // would cancel the timer before the worker ever wakes
         // (the framework discards the return value, so we'd
         // otherwise be cancelling a microtask scheduled milli-
         // seconds ago).
-        std::mem::forget(self.after_ms(0, f));
+        std::mem::forget(after_ms_raw(0, f));
     }
 
     fn after_animation_frame(
@@ -367,7 +396,8 @@ impl Scheduler for WinitScheduler {
         // Match the rest of the framework's scheduler impls — one
         // animation frame ≈ 16 ms. The worker may signal sooner
         // if a timer is due before the next raf pulse; either way
-        // the closure fires once.
+        // the closure fires once. Routes through `after_ms`, so the
+        // post-dispatch hook wrap below covers frame one-shots too.
         self.after_ms(16, f)
     }
 
@@ -376,23 +406,34 @@ impl Scheduler for WinitScheduler {
         delay_ms: i32,
         f: Box<dyn FnOnce() + 'static>,
     ) -> Box<dyn ScheduleHandle> {
-        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let deadline = Instant::now() + Duration::from_millis(delay_ms.max(0) as u64);
-        MAIN_QUEUE.with(|q| {
-            q.borrow_mut().timers.insert(
-                id,
-                PendingTimer { f: Some(f), deadline },
-            );
+        // New-core flush driver: `after_ms` timers run author code (a
+        // debounce that sets a signal); fire the post-dispatch hook
+        // after the callback so staged writes commit. A single
+        // thread-local read when no hook is installed (old core).
+        // Wrapped HERE (at the Scheduler impl) rather than in
+        // `drain_due` so `schedule_microtask`'s 0 ms timers stay
+        // unhooked — the flush-microtask re-arm trap above.
+        let f = Box::new(move || {
+            f();
+            render_wgpu::dispatch_hook::fire_dispatch_hook();
         });
-        if let Some(tx) = CMD_TX.lock().unwrap().clone() {
-            let _ = tx.send(WorkerCmd::AfterMs { id, deadline });
-        }
-        Box::new(TimerHandle { id })
+        after_ms_raw(delay_ms, f)
     }
 
     fn raf_loop(&self, f: Box<dyn FnMut() + 'static>) -> Box<dyn ScheduleHandle> {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let alive = Rc::new(Cell::new(true));
+        // Post-dispatch hook per iteration (animation ticks that stage
+        // writes — e.g. an author `raf_loop` driving a signal). Same
+        // rationale as `after_ms`; deduped downstream, so a running
+        // loop costs at most one queued flush per drain.
+        let f = {
+            let mut f = f;
+            Box::new(move || {
+                f();
+                render_wgpu::dispatch_hook::fire_dispatch_hook();
+            })
+        };
         MAIN_QUEUE.with(|q| {
             q.borrow_mut().rafs.push(RafEntry {
                 id,
@@ -427,7 +468,17 @@ struct TimerHandle {
 
 impl ScheduleHandle for TimerHandle {
     fn cancel(&mut self) {
-        MAIN_QUEUE.with(|q| {
+        // `try_with`, NOT `with`: handles can drop during THREAD
+        // TEARDOWN, after `MAIN_QUEUE`'s own destructor ran. Concretely:
+        // `std::process::exit` on macOS runs the main thread's TLS
+        // destructors, `runtime_core::scheduling::DETACHED_TASKS` drops
+        // its parked `ScheduledTask`s (cancel-on-drop), and a plain
+        // `with` here aborts the whole exit with "cannot access a TLS
+        // value during or after destruction" → "panic in a destructor
+        // during cleanup". A destroyed queue needs no cleanup — skip.
+        // (app.rs's windowWillClose `_exit` comment describes the same
+        // trap; this is the root fix so normal `process::exit` works.)
+        let _ = MAIN_QUEUE.try_with(|q| {
             q.borrow_mut().timers.remove(&self.id);
         });
     }
@@ -468,9 +519,10 @@ impl ScheduleHandle for RafHandle {
         // Best-effort eager cleanup. If we're mid-`drain_due`, the
         // entry is in `taken` not `MAIN_QUEUE.rafs`; the retain is a
         // no-op then, but the merge step below filters by `alive`
-        // so the entry won't come back.
+        // so the entry won't come back. `try_with` for the same
+        // thread-teardown reason as `TimerHandle::cancel` above.
         let id = self.id;
-        MAIN_QUEUE.with(|q| {
+        let _ = MAIN_QUEUE.try_with(|q| {
             q.borrow_mut().rafs.retain(|e| e.id != id);
         });
     }
@@ -479,5 +531,166 @@ impl ScheduleHandle for RafHandle {
 impl Drop for RafHandle {
     fn drop(&mut self) {
         self.cancel();
+    }
+}
+
+// ===========================================================================
+// Tests — the new-core post-dispatch hook contract on this scheduler.
+//
+// Host-testable without a winit event loop: `after_ms_raw` and the
+// `Scheduler` impl only touch `MAIN_QUEUE` (thread-local) when `CMD_TX`
+// is empty (no worker running), and `drain_due` fires due closures on
+// the calling thread — exactly what the `user_event` handler does. The
+// hook slot lives in `render_wgpu::dispatch_hook` (also thread-local),
+// so each test thread is isolated.
+// ===========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use render_wgpu::dispatch_hook::{clear_dispatch_hook, install_dispatch_hook};
+
+    thread_local! {
+        /// Ordered event log: "cb" entries from scheduled closures,
+        /// "hook" entries from the dispatch hook. Thread-local so
+        /// parallel tests don't interleave.
+        static LOG: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn log_hook() {
+        LOG.with(|l| l.borrow_mut().push("hook"));
+    }
+
+    fn take_log() -> Vec<&'static str> {
+        LOG.with(|l| std::mem::take(&mut *l.borrow_mut()))
+    }
+
+    /// `after_ms` timers run author code → the hook must fire AFTER the
+    /// callback returns (the flush-driver route for timer-staged
+    /// writes).
+    #[test]
+    fn after_ms_fires_hook_after_callback() {
+        install_dispatch_hook(log_hook);
+        let handle = WinitScheduler.after_ms(0, Box::new(|| {
+            LOG.with(|l| l.borrow_mut().push("cb"));
+        }));
+        assert!(take_log().is_empty(), "nothing fires before the drain");
+        drain_due();
+        assert_eq!(take_log(), vec!["cb", "hook"], "hook fires after the author callback");
+        drop(handle); // spent timer; cancel is a no-op
+        clear_dispatch_hook();
+    }
+
+    /// `schedule_microtask` must NOT fire the hook: the new-core flush
+    /// itself is dispatched as a microtask (a 0 ms timer here), so a
+    /// hooked microtask would re-schedule a flush from inside the
+    /// flush's own dispatch and spin the timer queue forever. This is
+    /// the regression test for that re-arm loop.
+    #[test]
+    fn schedule_microtask_does_not_fire_hook() {
+        install_dispatch_hook(log_hook);
+        WinitScheduler.schedule_microtask(Box::new(|| {
+            LOG.with(|l| l.borrow_mut().push("cb"));
+        }));
+        drain_due();
+        assert_eq!(
+            take_log(),
+            vec!["cb"],
+            "microtasks are excluded from the post-dispatch hook"
+        );
+        clear_dispatch_hook();
+    }
+
+    /// `after_animation_frame` routes through `after_ms`, so frame
+    /// one-shots (animation ticks that stage writes) get the hook too.
+    #[test]
+    fn after_animation_frame_fires_hook() {
+        install_dispatch_hook(log_hook);
+        let handle = WinitScheduler.after_animation_frame(Box::new(|| {
+            LOG.with(|l| l.borrow_mut().push("cb"));
+        }));
+        // The 16 ms deadline is in the future; force it due by waiting.
+        std::thread::sleep(Duration::from_millis(20));
+        drain_due();
+        assert_eq!(take_log(), vec!["cb", "hook"]);
+        drop(handle);
+        clear_dispatch_hook();
+    }
+
+    /// Every `raf_loop` iteration fires the hook (per-frame author code
+    /// staging writes commits once per drained frame), and cancelling
+    /// the loop stops both the callback and the hook.
+    #[test]
+    fn raf_loop_fires_hook_per_iteration_until_cancelled() {
+        install_dispatch_hook(log_hook);
+        let mut handle = WinitScheduler.raf_loop(Box::new(|| {
+            LOG.with(|l| l.borrow_mut().push("cb"));
+        }));
+        drain_due();
+        drain_due();
+        assert_eq!(take_log(), vec!["cb", "hook", "cb", "hook"]);
+        handle.cancel();
+        drain_due();
+        assert!(take_log().is_empty(), "cancelled loop is silent");
+        drop(handle);
+        clear_dispatch_hook();
+    }
+
+    /// With no hook installed (old core), the wrapped closures degrade
+    /// to plain dispatch — one thread-local read, no behavior change.
+    #[test]
+    fn no_hook_installed_is_plain_dispatch() {
+        clear_dispatch_hook();
+        let handle = WinitScheduler.after_ms(0, Box::new(|| {
+            LOG.with(|l| l.borrow_mut().push("cb"));
+        }));
+        drain_due();
+        assert_eq!(take_log(), vec!["cb"]);
+        drop(handle);
+    }
+
+    /// Regression: a `ScheduleHandle` dropped during THREAD TEARDOWN —
+    /// after `MAIN_QUEUE`'s TLS destructor already ran — must not abort.
+    /// This is exactly what `std::process::exit` triggers on macOS: the
+    /// main thread's TLS destructors run, `runtime_core::scheduling::
+    /// DETACHED_TASKS` drops its parked timer handles, and (before the
+    /// `try_with` fix in `TimerHandle::cancel`) the cancel's
+    /// `MAIN_QUEUE.with` panicked inside a destructor → non-unwinding
+    /// abort of the whole exit (hit live by newcore-gpu-smoke's
+    /// self-test exit).
+    ///
+    /// Reproduction relies on macOS/_tlv_atexit running TLS destructors
+    /// in reverse registration order: HOLDER is touched FIRST (destroyed
+    /// last), MAIN_QUEUE initializes second (destroyed first), so
+    /// HOLDER's drop → `cancel` runs against a destroyed MAIN_QUEUE. On
+    /// platforms with a different dtor order the test degrades to a
+    /// benign drop — never to a false failure. Before the fix this test
+    /// aborts the test process; after it, the thread exits cleanly.
+    #[test]
+    fn handle_drop_after_tls_teardown_does_not_abort() {
+        thread::Builder::new()
+            .name("tls-teardown-repro".into())
+            .spawn(|| {
+                thread_local! {
+                    static HOLDER: RefCell<Vec<Box<dyn ScheduleHandle>>> =
+                        const { RefCell::new(Vec::new()) };
+                }
+                // Register HOLDER's destructor before MAIN_QUEUE exists
+                // on this thread.
+                HOLDER.with(|_| {});
+                // Registers MAIN_QUEUE (timer insert) — its dtor lands
+                // after HOLDER's, so it runs first at thread exit.
+                let timer = WinitScheduler.after_ms(60_000, Box::new(|| {}));
+                let raf = WinitScheduler.raf_loop(Box::new(|| {}));
+                HOLDER.with(|h| {
+                    h.borrow_mut().push(timer);
+                    h.borrow_mut().push(raf);
+                });
+                // Thread exits holding live handles; drops fire from
+                // HOLDER's TLS destructor.
+            })
+            .expect("spawn repro thread")
+            .join()
+            .expect("thread exited cleanly (no destructor abort)");
     }
 }

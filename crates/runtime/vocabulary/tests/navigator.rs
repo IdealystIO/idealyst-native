@@ -531,3 +531,107 @@ fn dropping_the_navigator_drops_every_cached_screen() {
         assert_eq!(torn_about.get(), 1, "active about scope dropped with the navigator");
     });
 }
+
+// ===========================================================================
+// Robot nav registry (P5 remainder) — the handler-side wiring:
+// registration at mount, live back-stack snapshots, dispatch marks
+// "current", teardown deregisters. The verb JSON shape is pinned in
+// `robot.rs`'s bridge tests; this exercises the registry against REAL
+// navigator state.
+// ===========================================================================
+
+#[cfg(feature = "robot")]
+#[test]
+fn robot_nav_registry_tracks_stack_state_and_teardown() {
+    use runtime_vocabulary::robot::{all_navigators, ElementKind, Query, Robot};
+
+    let robot = Robot::new();
+    robot.reset();
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        let fx = mount_stack(&h, StackRetention::Retain);
+
+        // Registered at mount, linked to the ElementKind::Navigator
+        // element the same mount registered.
+        let navs = all_navigators();
+        assert_eq!(navs.len(), 1, "one mounted navigator");
+        let snap = &navs[0];
+        assert_eq!(snap.type_name, "stack_navigator");
+        assert_eq!(snap.active_route, "home");
+        assert_eq!(snap.active_path, "/");
+        assert_eq!(snap.depth, 1);
+        assert!(!snap.can_go_back);
+        assert_eq!(snap.stack, vec![("home".to_string(), "/".to_string())]);
+        let nav_el = robot
+            .find(Query::kind(ElementKind::Navigator))
+            .expect("navigator element registered");
+        assert_eq!(snap.element_id, Some(nav_el.id.0), "element link");
+        assert!(snap.is_current, "cold-start root becomes current");
+
+        // Push commits on the flush; the snapshot reads the LIVE stack.
+        fx.handle.push(&DETAIL, ());
+        world.flush();
+        let navs = all_navigators();
+        let snap = &navs[0];
+        assert_eq!(snap.active_route, "detail");
+        assert_eq!(snap.active_path, "/detail");
+        assert_eq!(snap.depth, 2);
+        assert!(snap.can_go_back);
+        assert_eq!(
+            snap.stack,
+            vec![
+                ("home".to_string(), "/".to_string()),
+                ("detail".to_string(), "/detail".to_string()),
+            ],
+            "back-stack root-first, current last"
+        );
+
+        // Pop reveals home again.
+        (fx.ctx.pop)();
+        world.flush();
+        let navs = all_navigators();
+        assert_eq!(navs[0].depth, 1);
+        assert_eq!(navs[0].active_route, "home");
+
+        // Teardown deregisters (the on_teardown probe owned by the
+        // navigator's Realized).
+        drop(fx);
+        assert!(
+            all_navigators().is_empty(),
+            "navigator must deregister with its subtree"
+        );
+    });
+    robot.reset();
+}
+
+#[cfg(feature = "robot")]
+#[test]
+fn robot_nav_registry_swap_snapshot_is_depthless() {
+    use runtime_vocabulary::robot::all_navigators;
+
+    let robot = runtime_vocabulary::robot::Robot::new();
+    robot.reset();
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        let fx = mount_swap(&h, MountPolicy::LazyPersistent);
+        (fx.ctx.on_select)("about");
+        world.flush();
+        let navs = all_navigators();
+        assert_eq!(navs.len(), 1);
+        let snap = &navs[0];
+        assert_eq!(snap.type_name, "swap_navigator");
+        assert_eq!(snap.active_route, "about");
+        assert_eq!(snap.active_path, "/about");
+        assert_eq!(snap.depth, 1, "swap is depth-less");
+        assert!(!snap.can_go_back);
+        assert_eq!(
+            snap.stack,
+            vec![("about".to_string(), "/about".to_string())],
+            "swap reports its single active entry"
+        );
+        assert!(snap.is_current, "dispatch marked the swap current");
+    });
+    robot.reset();
+}

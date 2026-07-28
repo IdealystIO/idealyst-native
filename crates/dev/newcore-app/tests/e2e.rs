@@ -684,3 +684,119 @@ fn robot_registry_empties_on_app_unmount() {
     );
     assert!(robot.elements().is_empty(), "no stale entries after unmount");
 }
+
+// ===========================================================================
+// P5 robot remainder: `#[method]` components + `watch_signal` on the
+// new core — driven through the same registry/bridge surfaces the
+// conformance app and robot-test client use.
+// ===========================================================================
+
+/// The `#[method]` component registers its methods at mount, links to
+/// its root element (the realize-time `__component_root` arm), invokes
+/// by name + JSON args (writes settle through the driver env), and
+/// deregisters on unmount.
+#[test]
+fn robot_method_component_registers_invokes_and_deregisters() {
+    use runtime_vocabulary::robot::{invoke_method, list_components};
+
+    let robot = Robot::new();
+    robot.reset();
+    let (h, _) = Harness::mount();
+    // Driver env: queries enter the world (label_fn), actions settle
+    // (invoke_method commits its staged writes before returning).
+    {
+        let enter_world = h.world.clone();
+        let settle_world = h.world.clone();
+        runtime_vocabulary::robot::install_driver_env(
+            move |f| enter_world.enter(|| f()),
+            move || settle_world.flush(),
+        );
+    }
+
+    let comps = list_components();
+    let tally = comps
+        .iter()
+        .find(|c| c.name == "MethodTally")
+        .expect("MethodTally registered its methods at mount");
+    // Element↔component link: the instance resolves to the SAME element
+    // the `method-tally` test_id resolves to (root view).
+    let root_el = robot.find(Query::test_id("method-tally")).expect("root registered");
+    assert_eq!(
+        tally.element_id,
+        Some(root_el.id),
+        "realize-time pending link landed on the component's root primitive"
+    );
+
+    let val = robot.find(Query::test_id("method-tally-val")).unwrap();
+    assert_eq!(val.label.as_deref(), Some("tally: 5"), "mounted initial");
+
+    invoke_method(
+        tally.id,
+        "bump_by",
+        &runtime_vocabulary::glue::__serde_json::json!({ "n": 3 }),
+    )
+    .expect("bump_by(3)");
+    let val = robot.find(Query::test_id("method-tally-val")).unwrap();
+    assert_eq!(val.label.as_deref(), Some("tally: 8"), "invoke settled synchronously");
+
+    invoke_method(tally.id, "reset", &runtime_vocabulary::glue::__serde_json::json!({}))
+        .expect("reset()");
+    let val = robot.find(Query::test_id("method-tally-val")).unwrap();
+    assert_eq!(val.label.as_deref(), Some("tally: 5"));
+
+    runtime_vocabulary::robot::clear_driver_env();
+    drop(h);
+    assert!(
+        list_components().iter().all(|c| c.name != "MethodTally"),
+        "unmount must deregister the component's methods (keepalive died with the Owned)"
+    );
+}
+
+/// `watch_signal("remaining", memo)` in the authored source exposes the
+/// live memo value to the watch registry (robot-test's `assert_signal`
+/// rides the same reads via the `read_signal` bridge verb), and the
+/// entry dies with the component scope on unmount.
+#[test]
+fn robot_watch_signal_reads_live_memo_and_dies_with_scope() {
+    use runtime_vocabulary::glue::__serde_json::json;
+    use runtime_vocabulary::robot::bridge::invoke_command;
+    use runtime_vocabulary::robot::read_watched_by_name;
+
+    let robot = Robot::new();
+    robot.reset();
+    let (h, _) = Harness::mount();
+    {
+        let enter_world = h.world.clone();
+        let settle_world = h.world.clone();
+        runtime_vocabulary::robot::install_driver_env(
+            move |f| enter_world.enter(|| f()),
+            move || settle_world.flush(),
+        );
+    }
+
+    // Seed list: 2 todos, 1 undone → remaining == 1.
+    assert_eq!(read_watched_by_name("remaining"), Some(json!("1")));
+    // The bridge verb serves the same read (robot-test's path).
+    assert_eq!(
+        invoke_command("read_signal", &json!({ "name": "remaining" })).unwrap(),
+        "\"1\""
+    );
+    let list = invoke_command("list_watched_signals", &json!({})).unwrap();
+    assert!(list.contains("\"name\":\"remaining\""), "{list}");
+
+    // Toggle the undone todo through the real handler → memo recomputes.
+    h.press("toggle-1");
+    assert_eq!(
+        read_watched_by_name("remaining"),
+        Some(json!("0")),
+        "watched read sees the post-flush memo value"
+    );
+
+    runtime_vocabulary::robot::clear_driver_env();
+    drop(h);
+    assert_eq!(
+        read_watched_by_name("remaining"),
+        None,
+        "watch entry must die with the component scope (a stale read would hit a freed slot)"
+    );
+}

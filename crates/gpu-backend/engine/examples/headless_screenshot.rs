@@ -36,6 +36,7 @@ fn main() {
             on_file_drop: None,
             on_hover: None,
             is_container: false,
+            preserves_focus: false,
             accessibility: Default::default(),
         }
     }

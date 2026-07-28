@@ -233,6 +233,37 @@ fn PrimsDemo(
     }
 }
 
+/// A `#[method]`-bearing component (P5 robot remainder, same-source):
+/// the macro lifts the nested fns into a `MethodTallyHandle`, fills the
+/// auto-injected `bind_to` prop, and registers the methods with the
+/// robot component registry — invokable by name + JSON args through
+/// `list_components` / `invoke_method` on EITHER core. Bodies use
+/// `set(get() + n)` (not `update`) because the two cores' `update`
+/// closure shapes differ — the one same-source-visible seam.
+#[component]
+fn MethodTally(
+    /// Starting value (static — `reset()` returns to it).
+    #[prop(static, default = 0)]
+    initial: i32,
+) -> Element {
+    let value = signal(initial);
+    /// Add `n` to the tally.
+    #[method]
+    fn bump_by(n: i32) {
+        value.set(value.get() + n);
+    }
+    /// Return the tally to its mounted `initial`.
+    #[method]
+    fn reset() {
+        value.set(initial);
+    }
+    ui! {
+        view(test_id = "method-tally") {
+            text(test_id = "method-tally-val") { "tally: {value}" }
+        }
+    }
+}
+
 /// The root component: a memo, an uncontrolled-input-free controlled
 /// `text_input`, an add handler, a reactive empty-state `if`, and the
 /// keyed list.
@@ -243,6 +274,11 @@ fn TodoApp(
     next_id: Signal<u32>,
 ) -> Element {
     let remaining = memo(move || todos.get().iter().filter(|t| !t.done).count());
+    // Robot watch (P5 remainder): exposes the memo's live value to the
+    // bridge's `read_signal`/`list_watched_signals` verbs (robot-test's
+    // `assert_signal`). New-core prelude routes to the vocabulary
+    // registry; the old-core check leg shims it to a no-op (lib.rs).
+    watch_signal("remaining", remaining);
     ui! {
         Section(title = "Todos", highlighted = true) {
             text(test_id = "remaining") { "{remaining} left" }
@@ -301,6 +337,7 @@ fn TodoApp(
             StyledCard(large = true) {
                 text { "themed card" }
             }
+            MethodTally(initial = 5)
         }
     }
 }

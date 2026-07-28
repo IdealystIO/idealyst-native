@@ -20,6 +20,12 @@ pub mod prelude {
     pub use runtime_vocabulary::glue::{
         memo, signal, Color, Easing, Element, Memo, Ref, Signal, Tokenized, ViewHandle,
     };
+    // The robot watch surface (P5 remainder): this build enables
+    // `runtime-vocabulary/robot`, so the app's `watch_signal` calls
+    // register live entries the bridge's `read_signal` /
+    // `list_watched_signals` verbs (and robot-test's `assert_signal`)
+    // read.
+    pub use runtime_vocabulary::robot::watch_signal;
     // The P3-set primitive value types (`overlay` placement/backdrop,
     // `anchored_overlay` anchor/side, `presence` anims, `flat_list`
     // sizing) — the SAME runtime-core data types on both cores, reached
@@ -47,6 +53,13 @@ pub mod prelude {
         memo, signal, Color, Easing, Element, Ref, Signal, Tokenized, ViewHandle,
     };
     pub use std::rc::Rc;
+
+    /// Same-source shim for the robot watch surface. This old-core
+    /// build is the CHECK-ONLY leg (it never enables
+    /// `runtime-core/robot`, whose real `watch_signal` lives behind
+    /// that gate), so the app's calls compile to nothing here — the
+    /// new-core prelude routes to the live vocabulary registry.
+    pub fn watch_signal<S>(_name: impl Into<String>, _signal: S) {}
 }
 
 #[cfg(any(feature = "new-core", feature = "old-core"))]

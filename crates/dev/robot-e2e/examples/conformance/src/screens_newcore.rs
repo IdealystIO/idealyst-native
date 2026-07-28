@@ -14,8 +14,14 @@
 //!   nested-pressability regression the modal suite exists to catch.
 //!   The COMPONENTS screen (idea-ui Switch/Checkbox/Button) has no
 //!   new-core counterpart yet.
-//! - **`#[method]` is P5-deferred** on the new core (loud macro error):
-//!   the MethodCounter component is omitted; its suite is gated out.
+//! - **`#[method]` LOWERS on the new core** (P5 robot remainder): the
+//!   MethodCounter component is back, same-source in shape but in the
+//!   inline-props form (the new core's `#[method]` contract — the old
+//!   file's explicit-props/`Bindable` form rides the old `Element`),
+//!   and with a REACTIVE label (`move ||`): the old-core file's
+//!   build-time-snapshot label is that suite's pre-existing failure,
+//!   which stays untouched per the migration's do-not-fix-old-core
+//!   rule. Its suite runs on BOTH cores (suites.rs).
 //!
 //! Like the old file, elements the suite asserts against use the
 //! *builder* `.test_id(...)` form where they're built by builders, and
@@ -196,6 +202,9 @@ pub(crate) fn root_page(state: State, nav: NavCell) -> Element {
         confirmed,
         modal_branch,
         ui! { ReflowBox() },
+        // A `#[method]`-bearing component: exercises robot/inspector
+        // method invocation (same placement as the old file).
+        ui! { MethodCounter(initial = 10i32) },
         button("Push detail", push).test_id("push-detail").into_element(),
     ];
 
@@ -272,6 +281,45 @@ fn DelMarker() -> Element {
     ui! {
         text(test_id = "del-marker") { "del" }
     }
+}
+
+// ---------------------------------------------------------------------------
+// MethodCounter — the `#[method]`-bearing component the methods suite
+// drives via `list_components` → `invoke_method` (mirror of screens.rs;
+// module docs cover the two deliberate deltas: inline-props shape and
+// the reactive label).
+// ---------------------------------------------------------------------------
+
+#[component]
+fn MethodCounter(
+    /// Mount-time starting value (static — the suite asserts it).
+    #[prop(static)]
+    initial: i32,
+) -> Element {
+    let value = signal(initial);
+    // Bodies use `set(get() + n)`: the two cores' `update` closure
+    // shapes differ, and this file's methods mirror the old file's
+    // BEHAVIOR, not its core-specific spelling.
+    /// No-arg increment — the inspector's easy manual case.
+    #[method]
+    fn increment() {
+        value.set(value.get() + 1);
+    }
+    #[method]
+    fn reset() {
+        value.set(0);
+    }
+    #[method]
+    fn bump_by(n: i32) {
+        value.set(value.get() + n);
+    }
+
+    // Builder-form tail like the old file; the `#[component]` macro
+    // wraps this root view in the instance link (`__component_root`).
+    let label = text(move || format!("methods: {}", value.get()))
+        .test_id("method-counter-val")
+        .into_element();
+    view(vec![label]).test_id("method-counter").into_element()
 }
 
 /// The pushed detail screen — proves stack push/pop.
