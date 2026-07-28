@@ -2189,6 +2189,19 @@ fn walk_and_deregister_sticky(
     }
 }
 
+impl AndroidBackend {
+    /// The Activity-provided host `ViewGroup` this backend mounts
+    /// under. Crate-internal diagnostic seam — `newcore::
+    /// live_view_count` walks the REAL view hierarchy from here so the
+    /// smoke self-test proves realize/finish attached actual Views
+    /// (the field is module-private to `imp`, so the accessor lives
+    /// here).
+    #[cfg(feature = "new-core")]
+    pub(crate) fn host_root(&self) -> &GlobalRef {
+        &self.root
+    }
+}
+
 /// Install the backend's self-reference. Called once by the host
 /// wrapper after wrapping the backend in `Rc<RefCell<>>`. Without it,
 /// `set_animated_f32` / `set_animated_color` quietly no-op.

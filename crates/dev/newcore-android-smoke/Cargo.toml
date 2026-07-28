@@ -1,0 +1,66 @@
+# newcore-android-smoke — P5 smoke app for the Android backend's
+# NEW-core boot path (`backend_android::newcore::start`). Builds the
+# same small vocabulary-builder tree as `newcore-macos-smoke` /
+# `newcore-web-smoke` (text + button + toggle + a dyn hole + a keyed
+# list + one literal StyleRules) with DIRECT builder calls — no
+# `ui!`/`jsx!` — so it exercises the registry-dispatch render path
+# against real Android Views independent of the macro-lowering work.
+#
+# This is a normal idealyst PROJECT: the CLI-generated JNI wrapper
+# hosts it, and the wrapper's (default-off) `new-core` feature routes
+# `attach` through `newcore::start(backend, |_| {}, scene_app)` instead
+# of `runtime_core::mount(backend, app)`. Build + install + launch on
+# an emulator/device with the checked-in driver (needs ANDROID_HOME +
+# ANDROID_NDK_HOME):
+#
+#   cargo run -p newcore-android-smoke --features launcher --bin launch
+#
+# Self-test (always on): ~2.5 s after boot an `after_ms` timer STAGES a
+# signal write (committed only if the scheduler's post-dispatch flush
+# hook works), then logs
+#   [SMOKE-SELFTEST] committed=true views=<n> verdict=PASS
+# to logcat (tag `idealyst`), with the view count read from the REAL
+# Android view hierarchy over JNI.
+[package]
+name = "newcore-android-smoke"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Smoke app for backend-android-mobile's new-core (Host + caps) boot path — idea-lite migration P5."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# Host-side launcher (build wrapper → APK → adb install → launch).
+# Off by default so the Android cdylib build of this lib never pulls
+# the host tooling crates.
+launcher = ["dep:run-android", "dep:build-ios", "dep:anyhow"]
+
+[[bin]]
+name = "launch"
+path = "src/bin/launch.rs"
+required-features = ["launcher"]
+
+[dependencies]
+runtime-core = { workspace = true }
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
+# Host-side launcher deps (feature-gated).
+run-android = { workspace = true, optional = true }
+build-ios = { workspace = true, optional = true }
+anyhow = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+# `new-core` here (not just on the wrapper) so this lib's self-test can
+# call `backend_android::newcore::live_view_count()`; the generated
+# wrapper's own `--features new-core` unifies with it.
+backend-android-mobile = { workspace = true, features = ["new-core"] }
+log = "0.4"
+
+[package.metadata.idealyst.app]
+name      = "Newcore Smoke"
+bundle_id = "ai.truday.idealyst.newcoresmoke"
+version   = "0.0.1"
+targets   = ["android"]

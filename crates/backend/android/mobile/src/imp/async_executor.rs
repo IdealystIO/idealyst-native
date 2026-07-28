@@ -103,6 +103,14 @@ pub(crate) fn poll_task(id: u64) {
             TASKS.with(|t| t.borrow_mut().insert(id, fut));
         }
     }
+    // Each poll runs author code up to its next `.await` (a resource /
+    // server-call completion that sets signals is the canonical case) —
+    // fire the new-core post-dispatch hook so staged writes commit.
+    // No-op unless `newcore::start` installed the flush driver; fired
+    // for Ready and Pending alike (the final poll before Ready is
+    // exactly where completion writes happen). Mirrors
+    // `backend-web/src/async_executor.rs`.
+    crate::dispatch_hook::fire_dispatch_hook();
 }
 
 /// Waker carrying just the task id. `wake` may fire from ANY thread (e.g. a

@@ -229,7 +229,19 @@ impl Scheduler for AppleScheduler {
         // `RenderLoopDriver` in `backend-ios-core::render_loop`, kept in DEFAULT
         // mode so it still yields to scroll. Different loops, so this cheap tick
         // no longer pays that cost.
-        let state: Rc<RefCell<Box<dyn FnMut() + 'static>>> = Rc::new(RefCell::new(f.take_inner()));
+        //
+        // Post-dispatch flush hook: rAF-loop iterations run author code
+        // (animation ticks that stage new-core writes) — fire the hook
+        // after each iteration so a new-core flush driver commits them.
+        // No-op unless a new-core boot installed the hook (see
+        // `dispatch_hook`); wrapping HERE covers both the CADisplayLink
+        // (iOS/tvOS) and NSTimer (macOS) branches below identically.
+        let mut inner = f.take_inner();
+        let hooked: Box<dyn FnMut() + 'static> = Box::new(move || {
+            inner();
+            crate::dispatch_hook::fire_dispatch_hook();
+        });
+        let state: Rc<RefCell<Box<dyn FnMut() + 'static>>> = Rc::new(RefCell::new(hooked));
 
         #[cfg(any(target_os = "ios", target_os = "tvos"))]
         {
@@ -328,6 +340,19 @@ impl TakeInner for Box<dyn FnMut() + 'static> {
 }
 
 fn after_ms_inner(delay_ms: i32, f: Box<dyn FnOnce() + 'static>) -> NsTimerHandle {
+    // Post-dispatch flush hook: `after_ms` bodies are a primary
+    // author-code surface (debounces / delayed writes that set
+    // signals) — fire the hook after the body so a new-core flush
+    // driver commits the staged writes (see `dispatch_hook`). Wrapped
+    // ONCE here so both delivery paths (the 0-delay libdispatch branch
+    // and the NSTimer branch below) are covered; `after_animation_frame`
+    // routes through here too. Cancellation empties the take-once cell
+    // BEFORE the wrapper runs, so a cancelled task fires neither the
+    // body nor the hook.
+    let f: Box<dyn FnOnce() + 'static> = Box::new(move || {
+        f();
+        crate::dispatch_hook::fire_dispatch_hook();
+    });
     // Convert the FnOnce into a take-once cell wrapped in Rc so the
     // ObjC block (which needs Clone) can hold it.
     let cell: Rc<RefCell<Option<Box<dyn FnOnce() + 'static>>>> =

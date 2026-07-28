@@ -77,3 +77,11 @@ pub mod border;
 /// host-testable, so both backends decline/allow hits identically
 /// (Rule #7).
 pub mod pointer_events_policy;
+
+/// Post-dispatch hook for the new-core flush drivers (idea-lite
+/// migration): a thread-local `fn()` slot the scheduler/executor fire
+/// after timer / frame / future-poll callbacks that may run author
+/// code. No-op default — the old core never installs it. NOT OS-gated:
+/// pure `std` state, host-testable, and the new-core glue in the leaf
+/// backends compiles it on the host for its own unit tests.
+pub mod dispatch_hook;

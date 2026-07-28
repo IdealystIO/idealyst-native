@@ -23,6 +23,21 @@ backend_ios_mobile::install_global_self(&backend); // for AnimatedValue::bind
 Call `runtime_core::mount(backend, app)`, not `render(backend, app())`.
 See `project_mount_vs_render` in memory.
 
+### New core (idea-lite migration, feature `new-core`)
+
+Behind `--features new-core`, `src/newcore.rs` implements
+`runtime_scene::Host` + all 30 `runtime_vocabulary::caps` traits
+directly on `IosBackend` (UFCS delegation onto the same `Backend`
+machinery) and provides the new-core boot,
+`backend_ios::newcore::run_in_view(root_view, register, build)` — the
+new-core body of the CLI wrapper's `ios_main`. Its flush driver is
+dispatch-site glue (author callbacks wrapped at the caps impls) plus
+the `backend_apple_core::dispatch_hook` fired after scheduler
+timers/frames and async-executor polls — no event monitor, no frame
+poll (UIKit has no NSEvent-monitor equivalent and needs none; see the
+module docs). `crates/dev/newcore-ios-smoke` is the live smoke app
+(`host/run-sim.sh` builds + launches it on the simulator).
+
 ## Layout
 
 Layout is driven through [`runtime-layout`](../../../framework/runtime-layout)

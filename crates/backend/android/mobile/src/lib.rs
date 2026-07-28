@@ -43,6 +43,23 @@ mod imp;
 #[cfg(target_os = "android")]
 mod logger;
 
+/// Post-dispatch hook: thread-local `fn()` slot the scheduler /
+/// async-executor fire after invoking a callback that may run author
+/// code. No-op default; `newcore::start` installs the new-core flush
+/// driver here. Compiled unconditionally (mirrors
+/// `backend-web/src/dispatch_hook.rs`) — the slot is a const-init
+/// no-dtor `Cell`, so old-core builds pay one thread-local read per
+/// fire site and zero bionic pthread TLS keys.
+pub mod dispatch_hook;
+
+/// idea-lite new core (P5): `runtime_scene::Host` + the 30
+/// `runtime_vocabulary::caps` traits on `AndroidBackend`, the
+/// `newcore::start` boot path, and the dispatch-site flush driver.
+/// The caps/boot half is android-gated inside the module; the flush
+/// driver + its regression tests compile on the host.
+#[cfg(feature = "new-core")]
+pub mod newcore;
+
 /// Phase-timer wrapper around `runtime_core::debug`'s aggregator.
 /// Zero-cost stub when `debug-stats` is off (the macro expansion is
 /// a let-binding the optimizer elides). Enabled by passing

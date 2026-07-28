@@ -33,6 +33,17 @@ mod portal_policy;
 // any host; the `UIView animateWithDuration:` half is ios-only.
 mod transform_transition_policy;
 
+// idea-lite core migration (iOS mirror of P4a): `runtime_scene::Host` +
+// all 30 `runtime_vocabulary::caps` traits directly on `IosBackend`,
+// the new-core mount path (`newcore::run_in_view`), and its
+// dispatch-site flush driver. Feature-gated only (NOT target-gated as
+// a whole, unlike backend-macos): the flush-driver glue is pure
+// scheduler/world code kept host-compilable so its regression tests
+// run from any host — the UIKit-dependent Host/caps impls and boot
+// path are `cfg(target_os = "ios")` inside the module.
+#[cfg(feature = "new-core")]
+pub mod newcore;
+
 #[cfg(target_os = "ios")]
 pub use imp::{
     install_global_self, mount_screen_in_vc, pin_to_edges, schedule_layout_pass,

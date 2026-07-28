@@ -112,7 +112,21 @@ impl Scheduler for AndroidScheduler {
         // path matches what the iOS scheduler does and what the
         // existing `RenderLoopDriver`s on both platforms accept as
         // "near enough to vsync."
-        Box::new(schedule_runnable(16, f))
+        //
+        // One-shot frame callbacks can run author code that stages
+        // new-core writes (animation ticks) — fire the post-dispatch
+        // hook AFTER the callback. Wrapped HERE (not in the shared
+        // `nativeInvoke` trampoline) because microtasks ride the same
+        // trampoline and must NOT fire the hook — the flush itself is
+        // a microtask and would re-arm forever. See
+        // `crate::dispatch_hook` module docs.
+        Box::new(schedule_runnable(
+            16,
+            Box::new(move || {
+                f();
+                crate::dispatch_hook::fire_dispatch_hook();
+            }),
+        ))
     }
 
     fn after_ms(
@@ -120,7 +134,17 @@ impl Scheduler for AndroidScheduler {
         delay_ms: i32,
         f: Box<dyn FnOnce() + 'static>,
     ) -> Box<dyn ScheduleHandle> {
-        Box::new(schedule_runnable(delay_ms.max(0), f))
+        // Timer callbacks are a primary author-code surface
+        // (`after_ms` bodies that set signals) — the post-dispatch
+        // hook is what commits those writes on the new core. Same
+        // wrap-at-the-impl rationale as `after_animation_frame`.
+        Box::new(schedule_runnable(
+            delay_ms.max(0),
+            Box::new(move || {
+                f();
+                crate::dispatch_hook::fire_dispatch_hook();
+            }),
+        ))
     }
 
     fn raf_loop(&self, f: Box<dyn FnMut() + 'static>) -> Box<dyn ScheduleHandle> {
@@ -134,7 +158,16 @@ impl Scheduler for AndroidScheduler {
         // on drop, and the next scheduled tick checks it before
         // re-posting. Worst case the loop runs one extra tick after
         // cancel — acceptable for a 16ms cadence.
-        Box::new(start_raf_loop(f))
+        //
+        // raf-loop iterations can run author code that stages
+        // new-core writes (frame-paced drag/scroll state) — fire the
+        // post-dispatch hook after every tick (see
+        // `crate::dispatch_hook` module docs).
+        let mut f = f;
+        Box::new(start_raf_loop(Box::new(move || {
+            f();
+            crate::dispatch_hook::fire_dispatch_hook();
+        })))
     }
 }
 

@@ -1331,7 +1331,10 @@ dependencies = [
  "raw-window-handle",
  "runtime-core",
  "runtime-layout",
+ "runtime-scene",
  "runtime-server-shell-native",
+ "runtime-vocabulary",
+ "runtime-world",
 ]
 
 [[package]]
@@ -1405,7 +1408,10 @@ dependencies = [
  "raw-window-handle",
  "runtime-core",
  "runtime-layout",
+ "runtime-scene",
  "runtime-server-shell-native",
+ "runtime-vocabulary",
+ "runtime-world",
 ]
 
 [[package]]
@@ -7260,6 +7266,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
+name = "newcore-android-smoke"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "backend-android-mobile",
+ "build-ios",
+ "log",
+ "run-android",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
+]
+
+[[package]]
 name = "newcore-app"
 version = "0.4.0"
 dependencies = [
@@ -7269,6 +7290,20 @@ dependencies = [
  "runtime-vocabulary",
  "runtime-world",
  "scene-parity",
+]
+
+[[package]]
+name = "newcore-ios-smoke"
+version = "0.4.0"
+dependencies = [
+ "backend-ios-mobile",
+ "objc2 0.5.2",
+ "objc2-foundation 0.2.2",
+ "objc2-ui-kit",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
 ]
 
 [[package]]

@@ -84,6 +84,15 @@ members = [
     "crates/dev/newcore-web-smoke",
     # Smoke app for backend-macos's new-core boot path (idea-lite P4a).
     "crates/dev/newcore-macos-smoke",
+    # Smoke app for backend-ios-mobile's new-core boot path (idea-lite,
+    # iOS mirror of P4a). Staticlib + checked-in Swift shell; see its
+    # host/run-sim.sh for the simulator launch.
+    "crates/dev/newcore-ios-smoke",
+    # Smoke app for backend-android-mobile's new-core boot path
+    # (idea-lite P5). A normal idealyst project hosted by the generated
+    # JNI wrapper's `new-core` feature; `--features launcher --bin
+    # launch` drives the existing build/run tooling end-to-end.
+    "crates/dev/newcore-android-smoke",
     # Integration example for the ui!/#[component] new-core lowering
     # (idea-lite P3a). Featureless (empty) by default on purpose: its
     # `new-core` feature flips runtime-macros' lowering build-graph-wide,

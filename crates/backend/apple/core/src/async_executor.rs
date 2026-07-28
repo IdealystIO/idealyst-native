@@ -88,6 +88,12 @@ fn poll_task(id: u64) {
             TASKS.with(|t| t.borrow_mut().insert(id, fut));
         }
     }
+    // Post-dispatch flush hook: each poll runs author code up to its
+    // next `.await` (resource / server-call continuations that set
+    // signals) — fire so a new-core flush driver commits the staged
+    // writes. No-op unless a new-core boot installed the hook; mirrors
+    // the web executor's per-poll fire (see `dispatch_hook`).
+    crate::dispatch_hook::fire_dispatch_hook();
 }
 
 /// Waker carrying just the task id. `wake` may fire from ANY thread (e.g. an

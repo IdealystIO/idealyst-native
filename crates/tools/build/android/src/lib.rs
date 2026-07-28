@@ -371,6 +371,17 @@ edition = "2021"
 # `JavaVM` so the backend can attach threads on demand.
 crate-type = ["cdylib"]
 
+[features]
+# idea-lite new-core boot (P5). Enabled by passing `new-core` through
+# `BuildOptions.user_features` / `RunOptions.user_features` (the CLI's
+# `--features` plumbing): the attach body below then mounts
+# `{user_name}::scene_app()` through `backend_android::newcore::start`
+# instead of `runtime_core::mount(backend, app)`. Projects that opt in
+# must export `pub fn scene_app() -> runtime_scene::Element` (see
+# `crates/dev/newcore-android-smoke`). Off by default — ordinary
+# projects never compile the new-core branch.
+new-core = ["backend-android-mobile/new-core"]
+
 [dependencies]
 runtime-core = {fcore_dep}
 {user_name} = {{ path = "{user_path}" }}
@@ -461,7 +472,7 @@ pub extern "system" fn Java_{jni}_NativeBridge_attach<'local>(
     context: JObject<'local>,
     root: JObject<'local>,
 ) {{
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{
+    let attach_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{
         let context_global = env.new_global_ref(&context).expect("new_global_ref context");
         let root_global = env.new_global_ref(&root).expect("new_global_ref root");
 
@@ -524,21 +535,50 @@ pub extern "system" fn Java_{jni}_NativeBridge_attach<'local>(
         // `mount` runs `app()` inside the root reactive scope so
         // top-level `effect!` / `signal!` / `Ref::new` calls in
         // `app()` adopt the scope. See `runtime_core::mount` docs.
-        let owner = runtime_core::mount(backend, {lib}::app);
-        OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
+        #[cfg(not(feature = "new-core"))]
+        {{
+            let owner = runtime_core::mount(backend, {lib}::app);
+            OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
+        }}
+
+        // New-core boot (idea-lite migration): mount the project's
+        // `scene_app()` scene tree through the vocabulary registry.
+        // The backend/scheduler/self-handle preamble above is shared —
+        // `newcore::start` owns everything from "backend is wired to
+        // the host ViewGroup" onward and retains the mounted app in
+        // its own slot (torn down by `newcore::stop` in `detach`).
+        #[cfg(feature = "new-core")]
+        backend_android::newcore::start(backend, |_| {{}}, {lib}::scene_app);
 
         log::info!("idealyst: attach complete");
     }}));
+    // A swallowed panic here means "app launches to a blank screen
+    // with NO log line" — the worst debugging surface there is (a
+    // silent no-mount hid a real boot bug during the new-core smoke
+    // bring-up). Log the payload; the process stays alive (unwinding
+    // across the JNI boundary is UB, so we cannot rethrow).
+    if let Err(payload) = attach_result {{
+        let msg = payload
+            .downcast_ref::<&'static str>()
+            .map(|s| s.to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<panic payload not a string>".to_string());
+        log::error!("idealyst: attach PANICKED — nothing was mounted: {{msg}}");
+    }}
 }}
 
 /// Detach the active mount. Drops every signal/effect and releases
-/// the per-element click callbacks.
+/// the per-element click callbacks. (Under `new-core` the OWNER slot
+/// is never populated; `newcore::stop` drops the realized tree, the
+/// flush driver, and the world instead.)
 #[no_mangle]
 pub extern "system" fn Java_{jni}_NativeBridge_detach<'local>(
     _env: JNIEnv<'local>,
     _class: JClass<'local>,
 ) {{
     OWNER.with(|slot| slot.borrow_mut().take());
+    #[cfg(feature = "new-core")]
+    backend_android::newcore::stop();
 }}
 
 /// MainActivity.onConfigurationChanged trampoline. Triggers a
@@ -913,6 +953,10 @@ mod regression_tests {
                 server_bin: None,
                 server_manifest: None,
                 server_port: 3000,
+                // Added by the jobs SDK (b4531004); the fake manifest
+                // has no worker sidecar.
+                worker_bin: None,
+                worker_manifest: None,
                 web: Default::default(),
                 macos: Default::default(),
                 permissions: Default::default(),
@@ -982,6 +1026,46 @@ mod regression_tests {
             user_dep.get("path").is_some(),
             "user-crate dep must be a path dep; got {:?}",
             user_dep,
+        );
+    }
+
+    /// The Local wrapper must carry the (default-off) `new-core`
+    /// feature: forwarding to `backend-android-mobile/new-core`, a
+    /// cfg'd `newcore::start(.., scene_app)` attach branch, and a
+    /// `newcore::stop()` in detach. `RunOptions.user_features =
+    /// ["new-core"]` is how `newcore-android-smoke` boots the new
+    /// core through this exact generated wrapper.
+    #[test]
+    fn local_wrapper_declares_new_core_boot() {
+        let (wrapper_dir, _tmp) = run_generator(BuildMode::Local);
+        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
+        let parsed = parse(&cargo);
+        let feature = parsed
+            .get("features")
+            .and_then(|f| f.get("new-core"))
+            .and_then(|v| v.as_array())
+            .expect("local Android wrapper must declare a `new-core` feature");
+        assert!(
+            feature
+                .iter()
+                .any(|v| v.as_str() == Some("backend-android-mobile/new-core")),
+            "wrapper new-core feature must forward to backend-android-mobile/new-core; got {feature:?}",
+        );
+        let lib_rs = std::fs::read_to_string(wrapper_dir.join("src/lib.rs")).unwrap();
+        assert!(
+            lib_rs.contains("backend_android::newcore::start(backend, |_| {}, demo::scene_app)"),
+            "attach must have the cfg'd new-core mount branch:
+{lib_rs}",
+        );
+        assert!(
+            lib_rs.contains("backend_android::newcore::stop()"),
+            "detach must tear the new-core app down:
+{lib_rs}",
+        );
+        assert!(
+            lib_rs.contains("runtime_core::mount(backend, demo::app)"),
+            "the old-core mount branch must remain the default:
+{lib_rs}",
         );
     }
 
