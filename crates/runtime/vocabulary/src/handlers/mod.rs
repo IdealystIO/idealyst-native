@@ -23,19 +23,35 @@ use crate::prims::{
     ScrollViewPrim, SliderPrim, TextAreaPrim, TextInputPrim, TextPrim, TogglePrim, ViewPrim,
 };
 
+mod graphics;
 mod media;
+mod navigator;
+mod portal;
+mod presence;
 mod text;
 mod view;
+mod virtualizer;
 mod widgets;
 
+pub use graphics::{mount_graphics, register_graphics};
 pub use media::{mount_icon, mount_image, mount_link};
+pub use navigator::{
+    mount_navigator_outlet, mount_stack_navigator, mount_swap_navigator, register_navigator,
+    NavCaps,
+};
+pub use portal::{mount_portal, register_portal};
+pub use presence::{mount_presence, register_presence};
+pub use virtualizer::{mount_virtualizer, register_virtualizer};
 pub use text::{mount_button, mount_text};
 pub use view::{mount_pressable, mount_scroll_view, mount_view};
 pub use widgets::{
     mount_activity_indicator, mount_slider, mount_text_area, mount_text_input, mount_toggle,
 };
 
-/// Install all 13 built-in handlers on `registry`. Backends call this
+/// Install all 17 built-in handlers (the 13 P2 primitives + the P3-set
+/// `virtualizer`, `graphics`, `portal` — which also serves the
+/// `overlay`/`anchored_overlay` compositions — and `presence`) on
+/// `registry`. Backends call this
 /// once at startup (alongside their platform-specific registrations);
 /// [`LegacyBridge`](crate::bridge::LegacyBridge) around any existing
 /// `Backend` satisfies the bound automatically.
@@ -73,6 +89,11 @@ pub fn register_builtins<H: AllCaps + 'static>(registry: &mut Registry<H>) {
     registry.register::<PrimCell<TextAreaPrim>, _>(|cx, p, children| {
         mount_text_area(cx, p.take(), children)
     });
+    register_virtualizer(registry);
+    register_graphics(registry);
+    register_portal(registry);
+    register_presence(registry);
+    register_navigator(registry);
 }
 
 /// Bind a `Value` prop that the `create_*` call did NOT consume: the

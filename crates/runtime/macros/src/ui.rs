@@ -1370,21 +1370,21 @@ fn emit_component(
 
     // `new-core` deferrals: primitives whose subsystems haven't migrated
     // fail loudly with their migration phase (repo rule: no silent scope
-    // cuts). Everything else lowers through the vocabulary glue.
+    // cuts). Everything else lowers through the vocabulary glue —
+    // including `overlay` / `anchored_overlay` / `presence` / `graphics`
+    // / `flat_list`, whose glue wrappers
+    // (`glue::primitives::{overlay,presence,graphics,flat_list}`) landed
+    // with the P3-set handlers; their emissions below retarget unchanged.
     if cfg!(feature = "new-core") {
-        if let Some(tag) = canonical.filter(|t| {
-            matches!(
-                *t,
-                "overlay" | "anchored_overlay" | "presence" | "graphics" | "flat_list" | "web_view"
-            )
-        }) {
-            let msg = format!(
-                "`{tag}` is not yet available on the new core (idea-lite migration): \
-                 overlay/presence/virtualizer/graphics primitives migrate in later phases \
-                 (P3+; see runtime-vocabulary's deferred list). Build without \
-                 `runtime-macros/new-core` or avoid this primitive."
-            );
-            return quote! { ::std::compile_error!(#msg) };
+        if canonical == Some("web_view") {
+            return quote! {
+                ::std::compile_error!(
+                    "`web_view` is not yet available on the new core (idea-lite \
+                     migration: it dispatches through the old-core WebView SDK \
+                     component, which retargets with the SDK layer at P6). Build \
+                     without `runtime-macros/new-core` or avoid this primitive."
+                )
+            };
         }
         if name_str == "CardTabs" {
             return quote! {
@@ -1493,12 +1493,22 @@ fn emit_component(
         if cfg!(feature = "new-core") {
             // Identity / robot registration is a scene-ambient concern
             // that migrates in P5 — refuse rather than drop the id.
+            // Checked 2026-07-28 against the landed P3-set handlers: the
+            // old core's test_id never goes through Backend caps (the
+            // walker's robot module registers it in the core-internal
+            // robot registry), and the vocabulary prims carry no test-id
+            // slot — so there is nothing to lower to yet. Accepting the
+            // attr and dropping the id (the old core's robot-OFF stub
+            // behavior) would make the P5 wiring invisible at call
+            // sites, so the loud refusal stays.
             let _ = &with_disabled;
             quote! {
                 ::std::compile_error!(
                     "`test_id = …` is not yet wired on the new core (idea-lite \
-                     migration: identity/robot registration migrates in P5). Remove \
-                     the prop or build without `runtime-macros/new-core`."
+                     migration: the vocabulary prims carry no identity slot and the \
+                     robot registry itself migrates in P5 — accepting the id now would \
+                     silently drop it). Remove the prop or build without \
+                     `runtime-macros/new-core`."
                 )
             }
         } else {
@@ -2538,15 +2548,28 @@ fn emit_link(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
         };
     }
 
-    // In-app links dispatch through the OLD routing/navigator layer —
-    // a P6 migration. External links work (glue `external_link`).
+    // In-app links stay deferred. Checked 2026-07-28 against the landed
+    // vocabulary navigators (`builders::{swap_navigator,stack_navigator}`
+    // + typed `Route<P>`): the route TYPE maps cleanly, but the old
+    // `link(route, params, children)` resolves its dispatch through the
+    // AMBIENT `NavigatorControl` link-activator (old routing registry —
+    // push-vs-select decided by the enclosing navigator at activation
+    // time). The vocabulary has no ambient link-activator seam: its
+    // `LinkPrim` requires an explicit `.on_activate(...)` for
+    // non-external links, and `SwapNav`/`StackNav` world contexts don't
+    // carry a generic route dispatcher. That seam retargets with the
+    // navigation SDK at P6. External links work (glue `external_link`).
     if cfg!(feature = "new-core") {
         return quote! {
             ::std::compile_error!(
                 "in-app `link(route = …)` is not yet available on the new core \
-                 (idea-lite migration: navigation migrates in P6). \
-                 `link(external = \"https://…\")` works; otherwise build without \
-                 `runtime-macros/new-core`."
+                 (idea-lite migration: the vocabulary navigators exist, but the \
+                 ambient link-activator seam that resolves a route link to the \
+                 enclosing navigator's dispatch lives in the old routing registry \
+                 and retargets with the navigation SDK at P6). \
+                 `link(external = \"https://…\")` works; for in-app navigation use \
+                 the navigator's `on_handle`/injected `SwapNav`/`StackNav` dispatch, \
+                 or build without `runtime-macros/new-core`."
             )
         };
     }
@@ -2784,7 +2807,16 @@ fn emit_flat_list(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 
         .iter()
         .find(|p| p.name == "data")
         .map(|p| p.value.to_token_stream())
-        .unwrap_or_else(|| quote! { ::runtime_core::Signal::new(::std::vec::Vec::new()) });
+        .unwrap_or_else(|| {
+            if cfg!(feature = "new-core") {
+                // `runtime_world::Signal` has no `new`; the glue's
+                // `fresh_signal` mints the empty default (same move as
+                // the text_input/toggle/slider uncontrolled defaults).
+                quote! { ::runtime_vocabulary::glue::fresh_signal(::std::vec::Vec::new()) }
+            } else {
+                quote! { ::runtime_core::Signal::new(::std::vec::Vec::new()) }
+            }
+        });
     let key = props
         .iter()
         .find(|p| p.name == "key")
@@ -3598,18 +3630,24 @@ fn emit_for_children(
     // any static-range matching.
     if cfg!(feature = "new-core") {
         // The virtualizer `for i in count_method(sig)` sugar lowers to
-        // `Element::Virtualizer` + per-row index signals — the
-        // virtualizer contract itself is a later migration phase, so
-        // rather than silently building a static loop, fail with the
-        // status (repo rule: no silent scope cuts).
+        // `Element::Virtualizer` carrying a structured `Derived<usize>`
+        // COUNT binding — generator-backend wire metadata, which is
+        // deferred with the rest of that surface until generator
+        // backends re-land (post-P7). The closure-form `flat_list(...)`
+        // tag DOES lower on the new core; rather than silently building
+        // a static loop here, fail with the status (repo rule: no
+        // silent scope cuts).
         if is_virtualizer_for_shape(pat, iter) {
             return (
                 quote! {
                     ::std::compile_error!(
                         "`for i in count_method(sig)` (the virtualizer for-sugar) is not \
-                         yet available on the new core (idea-lite migration: the \
-                         virtualizer contract migrates with flat_list, P3+). Iterate a \
-                         keyed reactive collection instead: `for item in items_signal, \
+                         available on the new core: it lowers to the structured \
+                         generator-backend count binding (`Derived<usize>` wire \
+                         metadata), deferred until generator backends re-land \
+                         (post-P7). Use the `flat_list(data = …, key = …, size = …, \
+                         render = …)` tag (which works on the new core), or iterate a \
+                         keyed reactive collection: `for item in items_signal, \
                          key = item.id { … }`."
                     )
                 },
@@ -4186,19 +4224,148 @@ mod tests {
         }
 
         /// Deferred surfaces fail loudly, naming their migration phase.
+        /// (The P3-set tags — overlay/anchored_overlay/presence/graphics/
+        /// flat_list — are no longer in this list; their un-deferred
+        /// lowerings are pinned below.)
         #[test]
         fn deferred_primitives_error_with_migration_status() {
             for (body, needle) in [
-                (quote! { overlay { text { "x" } } }, "not yet available on the new core"),
-                (quote! { presence(visible = v) { text { "x" } } }, "not yet available"),
+                (quote! { web_view(src = "https://x") }, "WebView SDK"),
                 (quote! { view(test_id = "t") }, "P5"),
                 (quote! { link(route = HOME) { text { "x" } } }, "P6"),
-                (quote! { for i in count(sig) { text { "r" } } }, "virtualizer"),
+                (quote! { for i in count(sig) { text { "r" } } }, "flat_list"),
             ] {
                 let out = parse_and_emit(body);
                 assert!(out.contains("compile_error"), "{out}");
                 assert!(out.contains(needle), "expected `{needle}` in: {out}");
             }
+        }
+
+        /// `overlay(...) { … }` lowers to the primitives-path chain the
+        /// retarget maps onto `glue::primitives::overlay::overlay` —
+        /// same attr → method mapping as the old core.
+        #[test]
+        fn overlay_tag_lowers_to_overlay_chain() {
+            let out = squash(parse_and_emit(quote! {
+                overlay(
+                    placement = ViewportPlacement::Center,
+                    backdrop = BackdropMode::Dismiss,
+                    on_dismiss = move || open.set(false),
+                    trap_focus = true
+                ) {
+                    text { "modal" }
+                }
+            }));
+            assert!(!out.contains("compile_error"), "{out}");
+            assert!(out.contains("::runtime_core::primitives::overlay::overlay("), "{out}");
+            for chain in [".placement(", ".backdrop(", ".on_dismiss(", ".trap_focus("] {
+                assert!(out.contains(chain), "expected `{chain}` in: {out}");
+            }
+        }
+
+        /// `anchored_overlay` keeps `target` positional (type-enforced)
+        /// and chains the side/align/offset attrs.
+        #[test]
+        fn anchored_overlay_tag_lowers_with_positional_target() {
+            let out = squash(parse_and_emit(quote! {
+                anchored_overlay(
+                    target = anchor,
+                    side = ElementSide::Below,
+                    align = ElementAlign::Start,
+                    offset = 4.0
+                ) {
+                    text { "tip" }
+                }
+            }));
+            assert!(!out.contains("compile_error"), "{out}");
+            assert!(
+                out.contains("::runtime_core::primitives::overlay::anchored_overlay(anchor,"),
+                "{out}"
+            );
+            for chain in [".side(", ".align(", ".offset("] {
+                assert!(out.contains(chain), "expected `{chain}` in: {out}");
+            }
+            // Missing `target` still fails at the macro level.
+            let missing = parse_and_emit(quote! { anchored_overlay { text { "x" } } });
+            assert!(missing.contains("compile_error"), "{missing}");
+            assert!(missing.contains("target"), "{missing}");
+        }
+
+        /// `presence(present = …)` lowers to the child-closure form with
+        /// the present/enter/exit chain.
+        #[test]
+        fn presence_tag_lowers_to_child_closure_chain() {
+            let out = squash(parse_and_emit(quote! {
+                presence(
+                    present = move || open.get(),
+                    enter = PresenceAnim::fade(150, Easing::EaseOut),
+                    exit = PresenceAnim::fade(100, Easing::EaseIn)
+                ) {
+                    text { "toast" }
+                }
+            }));
+            assert!(!out.contains("compile_error"), "{out}");
+            assert!(
+                out.contains("::runtime_core::primitives::presence::presence(move||"),
+                "{out}"
+            );
+            for chain in [".present(", ".enter(", ".exit("] {
+                assert!(out.contains(chain), "expected `{chain}` in: {out}");
+            }
+        }
+
+        /// `graphics(on_ready = …)` lowers with the on_resize/on_lost
+        /// chain.
+        #[test]
+        fn graphics_tag_lowers_with_lifecycle_chain() {
+            let out = squash(parse_and_emit(quote! {
+                graphics(
+                    on_ready = |e| setup(e),
+                    on_resize = |e| resized(e),
+                    on_lost = || lost()
+                )
+            }));
+            assert!(!out.contains("compile_error"), "{out}");
+            assert!(out.contains("::runtime_core::primitives::graphics::graphics("), "{out}");
+            for chain in [".on_resize(", ".on_lost("] {
+                assert!(out.contains(chain), "expected `{chain}` in: {out}");
+            }
+        }
+
+        /// `flat_list(...)` lowers to the typed adapter path (the glue
+        /// ports the old type-erasure onto the closure-form virtualizer)
+        /// with the same `::<_, _, (), _>` turbofish, and layout attrs
+        /// chain through.
+        #[test]
+        fn flat_list_tag_lowers_to_typed_adapter() {
+            let out = squash(parse_and_emit(quote! {
+                flat_list(
+                    data = rows,
+                    key = |_i, t: &Row| t.id,
+                    size = fixed_size(24.0),
+                    render = |_i, t: &Row| row_view(t),
+                    overscan = 2.0,
+                    gap = 4.0
+                )
+            }));
+            assert!(!out.contains("compile_error"), "{out}");
+            assert!(
+                out.contains("::runtime_core::primitives::flat_list::flat_list::<_,_,(),_>(rows,"),
+                "{out}"
+            );
+            for chain in [".overscan(", ".gap("] {
+                assert!(out.contains(chain), "expected `{chain}` in: {out}");
+            }
+        }
+
+        /// A `flat_list` with no `data` mints its empty default through
+        /// the glue (`runtime_world::Signal` has no `new`).
+        #[test]
+        fn flat_list_data_default_uses_fresh_signal() {
+            let out = squash(parse_and_emit(quote! {
+                flat_list(key = |i, _t: &Row| i as u64)
+            }));
+            assert!(out.contains("glue::fresh_signal(::std::vec::Vec::new())"), "{out}");
         }
 
         /// The empty `if` branch stays layout-neutral via the glue

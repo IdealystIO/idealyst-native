@@ -2,7 +2,9 @@
 # NEW-core lowering (idea-lite migration): a small but real app —
 # nested components with static/reactive/defaulted/children props, local
 # signals, a memo, reactive `if`, a keyed `for` with row-local state,
-# and event-handler-driven mutations — whose SOURCE (`src/app.rs`) is
+# and event-handler-driven mutations — plus a P3-set primitive demo
+# (`build_demo`: overlay / anchored_overlay / presence / flat_list, the
+# formerly macro-deferred tags) — whose SOURCE (`src/app.rs`) is
 # core-agnostic and compiles against EITHER core:
 #
 #   cargo test  -p newcore-app --features new-core   # the e2e gate

@@ -22,14 +22,27 @@
 
 use std::cell::RefCell;
 
+mod graphics;
 mod media;
+mod navigator;
+mod portal;
+mod presence;
 mod text;
 mod view;
+mod virtualizer;
 mod widgets;
 
+pub use graphics::GraphicsPrim;
 pub use media::{IconPrim, ImagePrim, LinkPrim};
+pub use navigator::{
+    MountPolicy, NavConfig, NavHandle, NavScreenEntry, NavigatorOutletPrim, ParamsFromSegments,
+    SelectArgs, StackNav, StackNavigatorPrim, StackRetention, SwapNav, SwapNavigatorPrim,
+};
+pub use portal::{PortalPrim, ScreenNav};
+pub use presence::PresencePrim;
 pub use text::{ButtonPrim, TextPrim, TextSourceProp};
 pub use view::{PressablePrim, ScrollViewPrim, ViewPrim};
+pub use virtualizer::VirtualizerPrim;
 pub use widgets::{ActivityIndicatorPrim, SliderPrim, TextAreaPrim, TextInputPrim, TogglePrim};
 
 /// Single-mount wrapper for primitive payloads.
@@ -47,6 +60,17 @@ pub struct PrimCell<T>(RefCell<Option<T>>);
 impl<T> PrimCell<T> {
     pub fn new(payload: T) -> Self {
         PrimCell(RefCell::new(Some(payload)))
+    }
+
+    /// Mutate the (not-yet-mounted) payload in place. Used by the
+    /// navigator handlers' style-override fold
+    /// (`Element::with_style_overrides`'s new-core port): the screen
+    /// ROOT element's payload gets the handler's overlay rules layered
+    /// onto its style prop before realization. No-op after `take`.
+    pub fn with_mut(&self, f: impl FnOnce(&mut T)) {
+        if let Some(payload) = self.0.borrow_mut().as_mut() {
+            f(payload);
+        }
     }
 
     /// Move the payload out for mounting. Panics if already taken.

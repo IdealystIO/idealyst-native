@@ -50,6 +50,163 @@ use runtime_core::{Backend, Color, Easing, StateBits, StyleRules};
 
 use crate::{Mode, PNode, Recorder};
 
+use std::collections::HashMap;
+
+use runtime_core::primitives::navigator::{
+    NavigatorHandle, NavigatorHandler, NavigatorHost, NavigatorRegistry, RegisterNavigator,
+};
+
+// ===========================================================================
+// Queuing microtask scheduler (navigator scenarios)
+// ===========================================================================
+//
+// The old swap/stack handlers defer their author-layout build to a
+// microtask (it re-borrows the backend, so it can't run inside the
+// `create_navigator` borrow). Without an installed scheduler,
+// `schedule_microtask` runs INLINE -> double-borrow panic. So the full-op
+// harness installs a QUEUING scheduler (the SSR backend's pattern) and
+// `FullCx::mount`/`step` drain the queue after each closure - deferred
+// chrome ops land inside the same golden step, deterministically. The
+// queue is thread-local (tests run in parallel threads; the OnceLock
+// scheduler is process-global); non-navigator scenarios queue nothing,
+// so their goldens are unaffected.
+
+mod parity_scheduler {
+    use runtime_core::scheduling::{ScheduleHandle, Scheduler};
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+
+    thread_local! {
+        static QUEUE: RefCell<VecDeque<Box<dyn FnOnce() + 'static>>> =
+            const { RefCell::new(VecDeque::new()) };
+    }
+
+    struct NoopHandle;
+    impl ScheduleHandle for NoopHandle {
+        fn cancel(&mut self) {}
+    }
+
+    // ---- Cancellable one-shot queues (presence scenarios) ----
+    //
+    // `after_animation_frame` / `after_ms` queue their callbacks in
+    // per-kind thread-local queues instead of dropping them, and the
+    // returned handle's cancel-on-drop VACATES the slot — real
+    // `ScheduledTask` semantics, which presence relies on (a cancelled
+    // pending-enter must not fire over a fresh exit state). Scenarios
+    // pump them at explicit step boundaries via [`pump_frames`] /
+    // [`pump_timers`]; scenarios that never pump behave exactly as
+    // before (callback held instead of dropped, zero ops).
+
+    type Slot = std::rc::Rc<RefCell<Option<Box<dyn FnOnce() + 'static>>>>;
+
+    thread_local! {
+        static FRAMES: RefCell<Vec<Slot>> = const { RefCell::new(Vec::new()) };
+        static TIMERS: RefCell<Vec<Slot>> = const { RefCell::new(Vec::new()) };
+    }
+
+    struct SlotHandle(Slot);
+    impl ScheduleHandle for SlotHandle {
+        fn cancel(&mut self) {
+            self.0.borrow_mut().take();
+        }
+    }
+    impl Drop for SlotHandle {
+        fn drop(&mut self) {
+            self.cancel();
+        }
+    }
+
+    fn queue_slot(
+        queue: &'static std::thread::LocalKey<RefCell<Vec<Slot>>>,
+        f: Box<dyn FnOnce() + 'static>,
+    ) -> Box<dyn ScheduleHandle> {
+        let slot: Slot = std::rc::Rc::new(RefCell::new(Some(f)));
+        queue.with(|q| q.borrow_mut().push(slot.clone()));
+        Box::new(SlotHandle(slot))
+    }
+
+    fn pump_queue(queue: &'static std::thread::LocalKey<RefCell<Vec<Slot>>>) {
+        let slots: Vec<Slot> = queue.with(|q| std::mem::take(&mut *q.borrow_mut()));
+        for slot in slots {
+            // Release the slot borrow BEFORE running: a callback may
+            // drop its own spent ScheduledTask, whose cancel re-borrows.
+            let f = slot.borrow_mut().take();
+            if let Some(f) = f {
+                f();
+            }
+        }
+    }
+
+    /// Fire every pending animation-frame callback (one frame elapses).
+    pub(crate) fn pump_frames() {
+        pump_queue(&FRAMES);
+    }
+
+    /// Fire every pending `after_ms` callback (all timers elapse).
+    pub(crate) fn pump_timers() {
+        pump_queue(&TIMERS);
+    }
+
+    struct ParityScheduler;
+    impl Scheduler for ParityScheduler {
+        fn schedule_microtask(&self, f: Box<dyn FnOnce() + 'static>) {
+            QUEUE.with(|q| q.borrow_mut().push_back(f));
+        }
+        fn after_animation_frame(
+            &self,
+            f: Box<dyn FnOnce() + 'static>,
+        ) -> Box<dyn ScheduleHandle> {
+            queue_slot(&FRAMES, f)
+        }
+        fn after_ms(
+            &self,
+            _delay_ms: i32,
+            f: Box<dyn FnOnce() + 'static>,
+        ) -> Box<dyn ScheduleHandle> {
+            queue_slot(&TIMERS, f)
+        }
+        fn raf_loop(&self, _f: Box<dyn FnMut() + 'static>) -> Box<dyn ScheduleHandle> {
+            Box::new(NoopHandle)
+        }
+    }
+
+    pub(crate) fn ensure_installed() {
+        // First install wins process-wide; queueing is per-thread.
+        runtime_core::scheduling::install_scheduler(Box::new(ParityScheduler));
+    }
+
+    /// Run every queued microtask (and any they enqueue) to completion.
+    pub(crate) fn drain() {
+        loop {
+            let next = QUEUE.with(|q| q.borrow_mut().pop_front());
+            match next {
+                Some(task) => task(),
+                None => break,
+            }
+        }
+    }
+}
+
+/// Elapse one animation frame / every pending `after_ms` timer inside a
+/// scenario step (presence: the enter's animate-to-rest fires on the
+/// next frame; the exit's detach-and-teardown fires when its duration
+/// elapses). Exposed for BOTH scenario files — the two sides must pump
+/// at identical step boundaries for the goldens to line up.
+pub fn pump_frames() {
+    parity_scheduler::pump_frames();
+}
+
+pub fn pump_timers() {
+    parity_scheduler::pump_timers();
+}
+
+/// Install the queueing parity scheduler (idempotent; first install wins
+/// process-wide). The NEW-side driver calls this too — both sides must
+/// schedule through the same queues or the pump steps can't line up.
+pub(crate) fn ensure_parity_scheduler() {
+    parity_scheduler::ensure_installed();
+}
+
 // ===========================================================================
 // Arg rendering
 // ===========================================================================
@@ -121,6 +278,34 @@ fn opt_str(v: Option<&str>) -> String {
     }
 }
 
+/// Positioning-intent digest of a [`primitives::portal::PortalTarget`].
+/// The `Anchor` arm renders only the side/align/offset intent — the
+/// `AnchorTarget` itself is an opaque ref (unfilled in scenarios;
+/// `rect()` is `None`), so it carries nothing deterministic to pin.
+fn target_digest(target: &primitives::portal::PortalTarget) -> String {
+    use primitives::portal::PortalTarget as T;
+    match target {
+        T::Viewport(placement) => format!("viewport({placement:?})"),
+        T::Anchor {
+            side,
+            align,
+            offset,
+            ..
+        } => format!("anchor(side={side:?} align={align:?} offset={offset})"),
+        T::Named(name) => format!("named({name})"),
+    }
+}
+
+/// One-line digest of a `PresenceState`: `rest` for the all-`None`
+/// resting state, else the non-`None` fields (derived Debug order).
+fn presence_state_digest(state: &primitives::presence::PresenceState) -> String {
+    if *state == primitives::presence::PresenceState::rest() {
+        "rest".to_string()
+    } else {
+        compact_struct_debug(&format!("{state:?}"))
+    }
+}
+
 // ===========================================================================
 // FullRecorder
 // ===========================================================================
@@ -140,6 +325,22 @@ pub struct FullRecorder {
     /// would (the P3c state-overlay gate). See
     /// [`FullRecorder::state_setter`].
     state_setters: Vec<Rc<dyn Fn(StateBits, bool)>>,
+    /// Captured virtualizer callback bundles, in creation order — the
+    /// scenario drives the visible window through [`VirtSim`] exactly
+    /// as a native recycler would. See [`FullRecorder::virt_sim`].
+    virt_sims: Vec<Rc<VirtSim>>,
+    /// Captured graphics lifecycle closures, in creation order — the
+    /// scenario fires ready/resize/lost as the platform surface would.
+    /// See [`FullRecorder::gfx_sim`].
+    gfx_sims: Vec<Rc<GfxSim>>,
+    /// Navigator handler factories, keyed by presentation TypeId (the
+    /// per-backend `NavigatorRegistry` every real backend embeds).
+    navigator_handlers: NavigatorRegistry<FullRecorder>,
+    /// Live handler instances keyed by their root node id, so
+    /// `navigator_attach_initial` / `make_navigator_handle` /
+    /// `release_navigator` can route to the right instance (the SSR
+    /// backend's `nav_handler_instances` pattern).
+    nav_handler_instances: HashMap<u32, Rc<std::cell::RefCell<Box<dyn NavigatorHandler<FullRecorder>>>>>,
 }
 
 impl FullRecorder {
@@ -149,7 +350,29 @@ impl FullRecorder {
             splice: matches!(mode, Mode::Spliced),
             actions: Vec::new(),
             state_setters: Vec::new(),
+            virt_sims: Vec::new(),
+            gfx_sims: Vec::new(),
+            navigator_handlers: NavigatorRegistry::new(),
+            nav_handler_instances: HashMap::new(),
         }
+    }
+
+    /// The `nth` created virtualizer's platform sim (creation order).
+    pub fn virt_sim(&self, nth: usize) -> Rc<VirtSim> {
+        self.virt_sims
+            .get(nth)
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!("no virtualizer #{nth}; {} were created", self.virt_sims.len())
+            })
+    }
+
+    /// The `nth` created graphics surface's platform sim.
+    pub fn gfx_sim(&self, nth: usize) -> Rc<GfxSim> {
+        self.gfx_sims
+            .get(nth)
+            .cloned()
+            .unwrap_or_else(|| panic!("no graphics #{nth}; {} were created", self.gfx_sims.len()))
     }
 
     /// The `nth` captured interaction-state setter (attach order).
@@ -666,9 +889,328 @@ impl Backend for FullRecorder {
             .push(format!("apply_scroll_view_safe_area_inset {node} {sides:?}"));
     }
 
+    // --- virtualizer (the P3-set port) ---
+
+    /// Captures the callback bundle WITHOUT invoking it: the backend is
+    /// mutably borrowed during `create_*`, so a synchronous window fill
+    /// here would double-borrow on BOTH cores (real backends defer the
+    /// initial fill for the same reason). The scenario drives the
+    /// window through [`VirtSim`] afterwards.
+    fn create_virtualizer(
+        &mut self,
+        callbacks: runtime_core::VirtualizerCallbacks<PNode>,
+        overscan: f32,
+        layout: primitives::virtualizer::VirtualLayout,
+        a11y: &AccessibilityProps,
+    ) -> PNode {
+        let n = self.rec.mint();
+        self.rec.push(format!(
+            "create {n} virtualizer overscan={overscan} layout={layout:?}{}",
+            a11y_suffix(a11y)
+        ));
+        self.virt_sims.push(Rc::new(VirtSim {
+            rec: self.rec.clone(),
+            callbacks,
+            mounted: std::cell::RefCell::new(Vec::new()),
+        }));
+        n
+    }
+
+    fn virtualizer_data_changed(&mut self, node: &PNode) {
+        self.rec.push(format!("virtualizer_data_changed {node}"));
+    }
+
+    fn release_virtualizer(&mut self, node: &PNode) {
+        self.rec.push(format!("release_virtualizer {node}"));
+    }
+
+    // --- graphics (the P3-set port) ---
+
+    fn create_graphics(
+        &mut self,
+        on_ready: primitives::graphics::OnReady,
+        on_resize: primitives::graphics::OnResize,
+        on_lost: primitives::graphics::OnLost,
+        a11y: &AccessibilityProps,
+    ) -> PNode {
+        let n = self.rec.mint();
+        self.rec.push(format!(
+            "create {n} graphics on_ready=<fn> on_resize=<fn> on_lost=<fn>{}",
+            a11y_suffix(a11y)
+        ));
+        self.gfx_sims.push(Rc::new(GfxSim {
+            on_ready: std::cell::RefCell::new(on_ready),
+            on_resize: std::cell::RefCell::new(on_resize),
+            on_lost: std::cell::RefCell::new(on_lost),
+        }));
+        n
+    }
+
+    fn release_graphics(&mut self, node: &PNode) {
+        self.rec.push(format!("release_graphics {node}"));
+    }
+
+    // --- portal + presence (the P3-set port) ---
+
+    fn create_portal(
+        &mut self,
+        target: primitives::portal::PortalTarget,
+        on_dismiss: Option<Rc<dyn Fn()>>,
+        trap_focus: bool,
+        a11y: &AccessibilityProps,
+    ) -> PNode {
+        let n = self.rec.mint();
+        self.rec.push(format!(
+            "create {n} portal target={} on_dismiss={} trap_focus={trap_focus}{}",
+            target_digest(&target),
+            if on_dismiss.is_some() { "<fn>" } else { "none" },
+            a11y_suffix(a11y)
+        ));
+        n
+    }
+
+    fn release_portal(&mut self, node: &PNode) {
+        self.rec.push(format!("release_portal {node}"));
+    }
+
+    fn set_portal_hidden(&mut self, node: &PNode, hidden: bool) {
+        self.rec
+            .push(format!("set_portal_hidden {node} {hidden}"));
+    }
+
+    fn create_presence_placeholder(&mut self, a11y: &AccessibilityProps) -> PNode {
+        let n = self.rec.mint();
+        self.rec.push(format!(
+            "create {n} presence_placeholder{}",
+            a11y_suffix(a11y)
+        ));
+        n
+    }
+
+    fn apply_presence(
+        &mut self,
+        node: &PNode,
+        state: primitives::presence::PresenceState,
+        transition: Option<(u32, Easing)>,
+    ) {
+        let t = match transition {
+            Some((ms, easing)) => format!("{ms}ms {easing:?}"),
+            None => "snap".to_string(),
+        };
+        self.rec.push(format!(
+            "apply_presence {node} {} {t}",
+            presence_state_digest(&state)
+        ));
+    }
+
+    // --- navigator (registry dispatch; the create/attach/release calls
+    //     themselves are UNRECORDED — the walker-visible ops are what
+    //     the dispatched handler does: create_view, apply_style,
+    //     insert/clear, screen builds; same alphabet choice as
+    //     register_stylesheet) ---
+
+    fn create_navigator(
+        &mut self,
+        type_id: std::any::TypeId,
+        _type_name: &'static str,
+        presentation: Rc<dyn std::any::Any>,
+        host: NavigatorHost<Self::Node>,
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        if let Some(factory) = self.navigator_handlers.get(type_id) {
+            let mut handler = factory();
+            let node = handler.init(self, host, presentation);
+            self.nav_handler_instances
+                .insert(node.0, Rc::new(std::cell::RefCell::new(handler)));
+            node
+        } else {
+            panic!("FullRecorder: no navigator handler registered for {type_id:?}")
+        }
+    }
+
+    fn navigator_attach_initial(
+        &mut self,
+        navigator: &Self::Node,
+        screen: Self::Node,
+        scope_id: u64,
+        options: Box<dyn std::any::Any>,
+    ) {
+        if let Some(handler) = self.nav_handler_instances.get(&navigator.0).cloned() {
+            handler.borrow_mut().attach_initial(self, screen, scope_id, options);
+        }
+    }
+
+    fn release_navigator(&mut self, node: &Self::Node) {
+        if let Some(handler) = self.nav_handler_instances.remove(&node.0) {
+            handler.borrow_mut().release(self);
+        }
+    }
+
+    fn make_navigator_handle(&self, node: &Self::Node) -> NavigatorHandle {
+        if let Some(handler) = self.nav_handler_instances.get(&node.0) {
+            handler.borrow().make_handle()
+        } else {
+            // Pre-registration miss: inert handle (trait default shape).
+            struct Noop;
+            impl runtime_core::primitives::navigator::NavigatorOps for Noop {}
+            static NOOP: Noop = Noop;
+            NavigatorHandle::new(Rc::new(()), &NOOP)
+        }
+    }
+
     // --- lifecycle: required but out of alphabet ---
 
     fn finish(&mut self, _root: PNode) {}
+}
+
+impl RegisterNavigator for FullRecorder {
+    fn register_navigator<P, F>(&mut self, factory: F)
+    where
+        P: 'static,
+        F: Fn() -> Box<dyn NavigatorHandler<FullRecorder>> + 'static,
+    {
+        self.navigator_handlers.register::<P, _>(factory);
+    }
+}
+
+// ===========================================================================
+// Platform sims: the recorder-side stand-ins for the native machinery
+// that DRIVES the two lazy primitives (a recycler's window math, a
+// surface's lifecycle events). Shared by both sides — determinism of
+// the sim IS the parity property for callback-driven op streams.
+// ===========================================================================
+
+/// One mounted virtualizer row, as the recorder-backend tracks it.
+/// (The row's node is logged at mount; the sim itself never re-touches
+/// it — placement is outside the recorded contract.)
+struct VMounted {
+    key: u64,
+    scope: u64,
+}
+
+/// A deterministic visible-window simulator over a captured
+/// [`runtime_core::VirtualizerCallbacks`] bundle — the golden suite's
+/// stand-in for the JS scroll handler / UICollectionView / RecyclerView.
+/// Keyed like a real recycler: rows whose key survives a window change
+/// keep their mounted subtree (and therefore their reactive state).
+///
+/// All verbs run OUTSIDE any backend borrow (mount/release re-enter the
+/// backend), and must be invoked with the owning world ambient — the
+/// same contract real backends carry.
+pub struct VirtSim {
+    rec: Recorder,
+    callbacks: runtime_core::VirtualizerCallbacks<PNode>,
+    mounted: std::cell::RefCell<Vec<VMounted>>,
+}
+
+impl VirtSim {
+    /// Set the visible window to `range` (clamped to the current item
+    /// count): release mounted rows whose key left the window (mounted
+    /// order), then mount missing indices (index order). `vsim` lines
+    /// pin the callback traffic — count/key/size queries and the
+    /// mount/release decisions — alongside the real backend ops the
+    /// callbacks emit.
+    pub fn set_window(&self, range: std::ops::Range<usize>) {
+        let count = (self.callbacks.item_count)();
+        let hi = range.end.min(count);
+        let lo = range.start.min(hi);
+        let want: Vec<(usize, u64)> = (lo..hi)
+            .map(|i| (i, (self.callbacks.item_key)(i)))
+            .collect();
+        self.rec.push(format!(
+            "vsim window {lo}..{hi} count={count} keys={:?}",
+            want.iter().map(|(_, k)| *k).collect::<Vec<_>>()
+        ));
+        let mut kept: Vec<VMounted> = Vec::new();
+        for row in self.mounted.borrow_mut().drain(..) {
+            if want.iter().any(|(_, k)| *k == row.key) {
+                kept.push(row);
+            } else {
+                self.rec
+                    .push(format!("vsim release key={} scope={}", row.key, row.scope));
+                (self.callbacks.release_item)(row.scope);
+            }
+        }
+        for (idx, key) in want {
+            if kept.iter().any(|r| r.key == key) {
+                continue;
+            }
+            let size = (self.callbacks.item_size)(idx);
+            let (node, scope) = (self.callbacks.mount_item)(idx);
+            self.rec.push(format!(
+                "vsim mounted idx={idx} key={key} size={size} -> {node} scope={scope}"
+            ));
+            kept.push(VMounted { key, scope });
+        }
+        *self.mounted.borrow_mut() = kept;
+    }
+
+    /// Report a measured size for the `nth` currently-mounted row (in
+    /// mounted order) — Measured mode's backend half.
+    pub fn report_measured(&self, nth: usize, size: f32) {
+        let scope = {
+            let mounted = self.mounted.borrow();
+            let row = mounted
+                .get(nth)
+                .unwrap_or_else(|| panic!("no mounted row #{nth}"));
+            self.rec
+                .push(format!("vsim measured key={} scope={} {size}", row.key, row.scope));
+            row.scope
+        };
+        (self.callbacks.set_measured_size)(scope, size);
+    }
+}
+
+/// A captured graphics surface's lifecycle, fired like the platform
+/// would (SurfaceHolder callbacks, canvas events).
+pub struct GfxSim {
+    on_ready: std::cell::RefCell<primitives::graphics::OnReady>,
+    on_resize: std::cell::RefCell<primitives::graphics::OnResize>,
+    on_lost: std::cell::RefCell<primitives::graphics::OnLost>,
+}
+
+impl GfxSim {
+    /// Deliver `on_ready` with a handle-less dummy surface (author code
+    /// in these scenarios only reads size/scale — real handle plumbing
+    /// is backend territory, outside the mount contract).
+    pub fn fire_ready(&self, size: (u32, u32), scale: f32) {
+        (self.on_ready.borrow_mut())(primitives::graphics::OnReadyEvent {
+            surface: primitives::graphics::GraphicsSurface::new(std::sync::Arc::new(
+                DummySurface,
+            )),
+            size,
+            scale,
+        });
+    }
+
+    pub fn fire_resize(&self, size: (u32, u32), scale: f32) {
+        (self.on_resize.borrow_mut())(primitives::graphics::OnResizeEvent { size, scale });
+    }
+
+    pub fn fire_lost(&self) {
+        (self.on_lost.borrow_mut())();
+    }
+}
+
+/// Surface stand-in: reports `Unavailable` for both raw handles —
+/// enough for lifecycle parity (authors here never create a GPU
+/// context).
+struct DummySurface;
+
+impl raw_window_handle::HasWindowHandle for DummySurface {
+    fn window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        Err(raw_window_handle::HandleError::Unavailable)
+    }
+}
+
+impl raw_window_handle::HasDisplayHandle for DummySurface {
+    fn display_handle(
+        &self,
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+        Err(raw_window_handle::HandleError::Unavailable)
+    }
 }
 
 // ===========================================================================
@@ -695,6 +1237,37 @@ pub const TEST_ICON: IconData = IconData {
     fill_rule: primitives::icon::FillRule::NonZero,
     filled: false,
 };
+
+/// An anchor target for the anchored-overlay scenarios: an UNFILLED
+/// `Ref<ViewHandle>` (no primitive ever binds it, `rect()` stays
+/// `None`). `runtime_core::Ref` is plain shared-slot data, so both
+/// sides construct it identically; only the side/align/offset intent is
+/// digested (see `target_digest`).
+pub fn test_anchor_target() -> primitives::portal::AnchorTarget {
+    primitives::portal::AnchorTarget::from(runtime_core::Ref::<runtime_core::ViewHandle>::new())
+}
+
+/// The presence enter/exit fixtures (fade + rise, distinct durations so
+/// the golden lines tell the two halves apart).
+pub fn presence_enter() -> primitives::presence::PresenceAnim {
+    primitives::presence::PresenceAnim::new(
+        primitives::presence::PresenceState::rest()
+            .opacity(0.0)
+            .translate_y(8.0),
+        200,
+        Easing::EaseOut,
+    )
+}
+
+pub fn presence_exit() -> primitives::presence::PresenceAnim {
+    primitives::presence::PresenceAnim::new(
+        primitives::presence::PresenceState::rest()
+            .opacity(0.0)
+            .translate_y(8.0),
+        150,
+        Easing::EaseIn,
+    )
+}
 
 // --- P3c style-engine fixtures (shared: both sides must resolve to
 //     byte-equal digests; the SHEET types are runtime-core's on both
@@ -816,15 +1389,38 @@ impl FullCx {
         self.backend.borrow().state_setter(nth)
     }
 
+    /// The `nth` virtualizer's platform sim (window driver).
+    pub fn virt_sim(&self, nth: usize) -> Rc<VirtSim> {
+        self.backend.borrow().virt_sim(nth)
+    }
+
+    /// The `nth` graphics surface's platform sim (lifecycle driver).
+    pub fn gfx_sim(&self, nth: usize) -> Rc<GfxSim> {
+        self.backend.borrow().gfx_sim(nth)
+    }
+
+    /// Register the outlet-model navigator SDK handlers on the recorder
+    /// — the OLD side of the navigator parity scenarios drives the REAL
+    /// backend-neutral `SwapHandler`/`StackHandler` through the walker.
+    pub fn register_navigators(&self) {
+        let mut b = self.backend.borrow_mut();
+        swap_navigator::register_generic(&mut *b);
+        stack_navigator::register_generic(&mut *b);
+    }
+
     pub fn mount(&mut self, root: Element) {
         assert!(self.owner.is_none(), "scenario mounted twice");
         let owner = runtime_core::render(self.backend.clone(), root);
         self.owner = Some(owner);
+        // Deferred navigator chrome (the handlers' layout microtask)
+        // runs inside the mount step — see `parity_scheduler`.
+        parity_scheduler::drain();
         self.snap("mount");
     }
 
     pub fn step(&mut self, label: &str, f: impl FnOnce()) {
         f();
+        parity_scheduler::drain();
         self.snap(label);
     }
 
@@ -839,6 +1435,7 @@ impl FullCx {
 /// Run `scenario` in `mode` against the OLD core, returning the
 /// serialized golden text (with header).
 pub fn run_full_scenario(scenario: &FullScenario, mode: Mode) -> String {
+    parity_scheduler::ensure_installed();
     let rec = Recorder::default();
     let backend = Rc::new(RefCell::new(FullRecorder::new(rec.clone(), mode)));
     let mut cx = FullCx {

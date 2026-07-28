@@ -32,7 +32,7 @@ use std::rc::Rc;
 
 use runtime_world::{collect_owned, effect, untrack, Owned};
 
-use crate::element::{DynKind, DynSpec, Element, Key, RetireHook};
+use crate::element::{DynKind, DynSpec, Element, Key};
 use crate::host::Host;
 use crate::registry::Registry;
 
@@ -129,6 +129,48 @@ impl<N> DynLive<N> {
     /// only observable if the driver's first fire panicked).
     pub fn with_current<R>(&self, f: impl FnOnce(Option<&Realized<N>>) -> R) -> R {
         f(self.slot.borrow().realized.as_ref())
+    }
+
+    /// A clonable read handle onto this hole's CURRENT subtree — for
+    /// handlers whose own effects must reach the freshly swapped-in
+    /// nodes after a driver fire (the presence handler's enter-animation
+    /// effect: driver builds the child, then the handler's later-created
+    /// effect applies the pre-paint presence snap to it).
+    pub fn watch(&self) -> DynWatch<N> {
+        DynWatch {
+            slot: Rc::clone(&self.slot),
+        }
+    }
+}
+
+/// Clonable read handle over a Dyn hole's current subtree (see
+/// [`DynLive::watch`]). Holds the slot `Rc`, so it stays valid for the
+/// hole's whole life and returns an empty set after the enclosing
+/// `Realized` starts tearing down.
+pub struct DynWatch<N> {
+    slot: Rc<RefCell<DynSlot<N>>>,
+}
+
+impl<N> Clone for DynWatch<N> {
+    fn clone(&self) -> Self {
+        DynWatch {
+            slot: Rc::clone(&self.slot),
+        }
+    }
+}
+
+impl<N: Clone> DynWatch<N> {
+    /// The top-level nodes of the hole's CURRENT subtree, in order
+    /// (empty before the first build or while the hole is empty). Do not
+    /// call from inside the hole's own build — the slot is published
+    /// after the build returns.
+    pub fn current_nodes(&self) -> Vec<N> {
+        self.slot
+            .borrow()
+            .realized
+            .as_ref()
+            .map(|r| r.collect_nodes())
+            .unwrap_or_default()
     }
 }
 
@@ -230,6 +272,17 @@ impl<'a, H: Host> MountCx<'a, H> {
             .last_mut()
             .expect("realize_children_into called outside a handler invocation")
             .extend(nodes);
+    }
+
+    /// The live children the CURRENT handler invocation has realized so
+    /// far (everything its `realize_children_into` calls appended). Lets
+    /// a handler introspect what it just mounted — e.g. the presence
+    /// handler grabs its hole's [`DynLive::watch`] handle to reach the
+    /// swapped-in child from its animation effect.
+    pub fn realized_children(&self) -> &[LiveNode<H::Node>] {
+        self.frames
+            .last()
+            .expect("realized_children called outside a handler invocation")
     }
 
     /// Realize a detached single-root tree (navigator screens, portal
@@ -529,14 +582,20 @@ fn build_into_anchor<H: Host>(
 // Dyn drivers
 // ============================================================================
 
-/// Hand the swapped-out subtree to the retire hook, or drop it (the
-/// default teardown). Called at the exact point the old scope would drop,
-/// so hook-vs-drop changes teardown TIMING only, never op order.
-fn retire_or_drop<N: 'static>(retire: &mut Option<RetireHook>, old: Realized<N>) {
-    match retire {
-        Some(hook) => hook(Box::new(old)),
-        None => drop(old),
-    }
+/// A swapped-out Dyn subtree, handed to a [`RetireHook`] with its nodes
+/// STILL ATTACHED to `parent`. The hook owns the rest of the teardown:
+/// play the exit animation on `nodes`, then `remove_child(parent, node)`
+/// each and drop `realized` (in that order — the spliced dispose rule:
+/// nodes leave the tree before the scope frees, so a reactive effect in
+/// the old subtree can never fire against a half-detached node).
+///
+/// `parent` is the driver's anchor on the anchored path and the real
+/// parent on the spliced path — either way it is exactly the node the
+/// retired `nodes` are children of.
+pub struct Retired<N> {
+    pub realized: Realized<N>,
+    pub parent: N,
+    pub nodes: Vec<N>,
 }
 
 /// The anchored Dyn driver — port of `when_switch.rs::build_when_closure`
@@ -588,8 +647,23 @@ fn drive_dyn_anchored<H: Host>(
         // handoff: assignment-into-borrowed-slot hazard).
         let old = slot_e.borrow_mut().realized.take();
         if let Some(old) = old {
-            retire_or_drop(&mut retire, old);
-            backend.borrow_mut().clear_children(&anchor_e);
+            match retire.as_mut() {
+                // Retire-owned teardown: nodes stay attached (no
+                // clear_children) while the hook plays the exit
+                // animation; the hook detaches + drops (see `Retired`).
+                Some(hook) => {
+                    let nodes = old.collect_nodes();
+                    hook(Box::new(Retired {
+                        realized: old,
+                        parent: anchor_e.clone(),
+                        nodes,
+                    }));
+                }
+                None => {
+                    drop(old);
+                    backend.borrow_mut().clear_children(&anchor_e);
+                }
+            }
         }
         let realized = match &kind {
             // Plain: the closure runs TRACKED inside the fresh scope —
@@ -646,13 +720,28 @@ fn drive_dyn_spliced<H: Host>(
             // borrow released here, before any teardown runs
         };
         if let Some(old) = old_realized {
-            {
-                let mut b = backend.borrow_mut();
-                for node in &old_nodes {
-                    b.remove_child(&parent, node);
+            match retire.as_mut() {
+                // Retire-owned teardown: skip the eager remove_child —
+                // an exit animation on a detached node is invisible.
+                // The hook removes the nodes and drops the scope when
+                // its animation window closes (see `Retired`).
+                Some(hook) => {
+                    hook(Box::new(Retired {
+                        realized: old,
+                        parent: parent.clone(),
+                        nodes: old_nodes,
+                    }));
+                }
+                None => {
+                    {
+                        let mut b = backend.borrow_mut();
+                        for node in &old_nodes {
+                            b.remove_child(&parent, node);
+                        }
+                    }
+                    drop(old);
                 }
             }
-            retire_or_drop(&mut retire, old);
         }
         // Build detached, then splice every top node at the stable base.
         // (base_index is stable as long as content BEFORE the region is

@@ -50,15 +50,26 @@
 //! | `#[component]` body | probe + reactivity rewrite | + wrapped in `component_scope(move ‖ …)` (run-once, untracked, collected `Owned`) |
 //! | `Reactive<T>` props | `runtime_core::Reactive` | `glue::Reactive` (same API, world-backed; `IntoValue` bridges to builders) |
 //! | empty `if` branch | absolute-positioned `view` via StyleSheet | [`empty_absolute_view`] (same rule) |
+//! | `overlay(...) { … }` | `primitives::overlay::overlay` chain | [`primitives::overlay`] → `builders::overlay` (PortalPrim composition) |
+//! | `anchored_overlay(target=…)` | `…::anchored_overlay(target, kids)` | same names here → `builders::anchored_overlay` |
+//! | `presence(present=…) { … }` | `…::presence(child_fn)` chain | [`primitives::presence`] → `builders::presence` (Dyn retire hook) |
+//! | `graphics(on_ready=…)` | `…::graphics(on_ready)` chain | [`primitives::graphics`] → `builders::graphics` |
+//! | `flat_list(data=…, key=…, …)` | typed `flat_list<T>` over `virtualizer` | [`primitives::flat_list`] — the SAME type-erasing adapter, over `builders::virtualizer` |
 //!
 //! ## Deferred surface (loud, not silent)
 //!
 //! Author constructs that reach an unmigrated subsystem fail to compile
 //! with a message naming the migration status (emitted by the macro
-//! under `new-core`): `overlay` / `anchored_overlay` / `presence` /
-//! `graphics` / `flat_list` / in-app `link(route = …)` / `test_id = …` /
-//! `#[component(lazy)]` / `#[method]` blocks. Everything this module
-//! *does* export is fully functional on the new core.
+//! under `new-core`): in-app `link(route = …)` (the ambient
+//! link-activator seam lives in the old routing registry — navigation
+//! SDK retarget, P6), `test_id = …` (no identity/robot registry on the
+//! new core until P5; the prims carry no test-id slot, so accepting the
+//! attr would silently drop it), `web_view` (old-core SDK component,
+//! P6), the virtualizer `for i in count(sig)` sugar (generator-backend
+//! `Derived<usize>` metadata, post-P7), `#[component(lazy)]` (no
+//! lazy/chunk-mount prim in the vocabulary yet) and `#[method]` blocks
+//! (Ref/robot machinery, P5). Everything this module *does* export is
+//! fully functional on the new core.
 
 use std::rc::Rc;
 
@@ -102,6 +113,24 @@ pub use runtime_core::{
     StateBits, StyleApplication, StyleRules, StyleSheet, TokenEntry, TokenValue, Tokenized,
     Transition, VariantEnum, VariantSet,
 };
+
+// Anchor plumbing for `anchored_overlay(target = …)`: `AnchorTarget`
+// (a shared runtime-core data type the vocabulary's `PortalPrim` reuses)
+// is constructed from a `Ref<ViewHandle>`-style handle slot. `Ref` is
+// old-arena machinery; on the new core only the DETACHED sentinel
+// (`Ref::default()` — allocates nothing, `get()` → `None`, anchor falls
+// back to unresolved positioning) is sanctioned until the P5 identity
+// port wires real anchor filling. Re-exported so a new-core app crate
+// can spell the same `AnchorTarget::from(Ref::default())` an old-core
+// source uses.
+pub use runtime_core::{Ref, ViewHandle};
+
+// The host-scheduling registry (shared infrastructure, not old-core
+// reactivity): new-core drivers and test harnesses install/pump through
+// the same `runtime_core::scheduling` registry the vocabulary handlers
+// schedule against (presence anims, portal anchor tracking). Re-exported
+// so a new-core crate needs no direct runtime-core dependency.
+pub use runtime_core::scheduling;
 
 /// A fresh, world-root-owned signal — used by the macro for the
 /// *uncontrolled* `text_input` / `toggle` / `slider` defaults (the old
@@ -281,6 +310,16 @@ macro_rules! glue_wrapper_common {
         impl ChildList for $wrapper {
             fn append_to(self, out: &mut Vec<Element>) {
                 out.push(self.into_element());
+            }
+        }
+
+        /// Mirror of the old core's `From<Bound<H>> for Element`: the
+        /// authored `.into()` coercion (e.g. a `flat_list` `render`
+        /// closure returning `ui! { … }.into()`) keeps compiling
+        /// source-identically on the new core.
+        impl From<$wrapper> for Element {
+            fn from(w: $wrapper) -> Element {
+                w.into_element()
             }
         }
     };
@@ -676,6 +715,442 @@ pub mod primitives {
         }
 
         glue_wrapper_common!(GlueLink);
+    }
+
+    /// `overlay(children)` / `anchored_overlay(target, children)` — the
+    /// portal compositions. NOTE: unlike the other primitives, the OLD
+    /// core's overlay builders are NOT `Bound<H>` — they're plain
+    /// composition builders with no accessibility setters (the lowering
+    /// hardcodes a default a11y bag on the portal). These wrappers
+    /// mirror that surface exactly: no `a11y_*` methods, `with_style`
+    /// styles the CONTENT WRAPPER (the old `OverlayBuilder::with_style`
+    /// → `content_style` semantics).
+    pub mod overlay {
+        use super::super::*;
+        pub use runtime_core::primitives::overlay::BackdropMode;
+        pub use runtime_core::primitives::portal::{
+            AnchorTarget, ElementAlign, ElementSide, PortalHandle, ViewportPlacement,
+        };
+
+        /// Viewport-anchored overlay (modal, drawer, sheet). Defaults
+        /// mirror the old core: `Center`, `Dismiss` backdrop, trap ON.
+        pub fn overlay(children: Vec<Element>) -> GlueOverlay {
+            GlueOverlay { b: builders::overlay().children(children) }
+        }
+
+        pub struct GlueOverlay {
+            pub(crate) b: builders::OverlayBuilder,
+        }
+
+        impl GlueOverlay {
+            pub fn placement(mut self, p: ViewportPlacement) -> Self {
+                self.b = self.b.placement(p);
+                self
+            }
+
+            pub fn backdrop(mut self, m: BackdropMode) -> Self {
+                self.b = self.b.backdrop(m);
+                self
+            }
+
+            pub fn backdrop_style(mut self, s: impl IntoStyleProp) -> Self {
+                self.b = self.b.backdrop_style(s);
+                self
+            }
+
+            /// No `cycle()` wrap (old core wrapped for born-batched
+            /// semantics): on the staged-commit kernel every write
+            /// stages until the driver flush by design.
+            pub fn on_dismiss(mut self, f: impl Fn() + 'static) -> Self {
+                self.b = self.b.on_dismiss(f);
+                self
+            }
+
+            pub fn trap_focus(mut self, t: bool) -> Self {
+                self.b = self.b.trap_focus(t);
+                self
+            }
+
+            pub fn click_through(mut self, t: bool) -> Self {
+                self.b = self.b.click_through(t);
+                self
+            }
+
+            /// Content-wrapper style (old `OverlayBuilder::with_style`).
+            pub fn with_style(mut self, s: impl IntoStyleProp) -> Self {
+                self.b = self.b.style(s);
+                self
+            }
+
+            /// P2 form of the old `.bind(ref)`.
+            pub fn on_handle(mut self, fill: impl FnOnce(PortalHandle) + 'static) -> Self {
+                self.b = self.b.on_handle(fill);
+                self
+            }
+        }
+
+        impl IntoElement for GlueOverlay {
+            fn into_element(self) -> Element {
+                self.b.build()
+            }
+        }
+
+        impl ChildList for GlueOverlay {
+            fn append_to(self, out: &mut Vec<Element>) {
+                out.push(self.into_element());
+            }
+        }
+
+        impl From<GlueOverlay> for Element {
+            fn from(w: GlueOverlay) -> Element {
+                w.into_element()
+            }
+        }
+
+        /// Element-anchored overlay (popover, tooltip, menu). Defaults
+        /// mirror the old core: `Below`/`Start`, offset 0, NO backdrop,
+        /// trap OFF.
+        pub fn anchored_overlay(target: AnchorTarget, children: Vec<Element>) -> GlueAnchoredOverlay {
+            GlueAnchoredOverlay { b: builders::anchored_overlay(target).children(children) }
+        }
+
+        pub struct GlueAnchoredOverlay {
+            pub(crate) b: builders::AnchoredOverlayBuilder,
+        }
+
+        impl GlueAnchoredOverlay {
+            pub fn side(mut self, s: ElementSide) -> Self {
+                self.b = self.b.side(s);
+                self
+            }
+
+            pub fn align(mut self, a: ElementAlign) -> Self {
+                self.b = self.b.align(a);
+                self
+            }
+
+            pub fn offset(mut self, o: f32) -> Self {
+                self.b = self.b.offset(o);
+                self
+            }
+
+            pub fn backdrop(mut self, m: BackdropMode) -> Self {
+                self.b = self.b.backdrop(m);
+                self
+            }
+
+            pub fn backdrop_style(mut self, s: impl IntoStyleProp) -> Self {
+                self.b = self.b.backdrop_style(s);
+                self
+            }
+
+            pub fn on_dismiss(mut self, f: impl Fn() + 'static) -> Self {
+                self.b = self.b.on_dismiss(f);
+                self
+            }
+
+            pub fn trap_focus(mut self, t: bool) -> Self {
+                self.b = self.b.trap_focus(t);
+                self
+            }
+
+            /// Content-wrapper style.
+            pub fn with_style(mut self, s: impl IntoStyleProp) -> Self {
+                self.b = self.b.style(s);
+                self
+            }
+
+            pub fn on_handle(mut self, fill: impl FnOnce(PortalHandle) + 'static) -> Self {
+                self.b = self.b.on_handle(fill);
+                self
+            }
+        }
+
+        impl IntoElement for GlueAnchoredOverlay {
+            fn into_element(self) -> Element {
+                self.b.build()
+            }
+        }
+
+        impl ChildList for GlueAnchoredOverlay {
+            fn append_to(self, out: &mut Vec<Element>) {
+                out.push(self.into_element());
+            }
+        }
+
+        impl From<GlueAnchoredOverlay> for Element {
+            fn from(w: GlueAnchoredOverlay) -> Element {
+                w.into_element()
+            }
+        }
+    }
+
+    /// `presence(child_fn)` — the animated-lifecycle wrapper.
+    pub mod presence {
+        use super::super::*;
+        pub use runtime_core::primitives::presence::{PresenceAnim, PresenceHandle, PresenceState};
+
+        /// `child` runs once per real mount (present flips true after a
+        /// completed unmount). The macro passes `move || <child expr>`.
+        pub fn presence<E: IntoElement>(child: impl Fn() -> E + 'static) -> GluePresence {
+            GluePresence {
+                b: builders::presence(move || child().into_element()),
+                a11y: AccessibilityProps::default(),
+            }
+        }
+
+        pub struct GluePresence {
+            pub(crate) b: builders::PresenceBuilder,
+            pub(crate) a11y: AccessibilityProps,
+        }
+
+        impl GluePresence {
+            /// The presence predicate. The old surface took a bare
+            /// `Fn() -> bool` closure; `IntoValue<bool>` accepts the
+            /// same closures (plus signals/bools — a superset, same
+            /// observable semantics for the closure form).
+            pub fn present(mut self, present: impl IntoValue<bool>) -> Self {
+                self.b = self.b.present(present);
+                self
+            }
+
+            pub fn enter(mut self, anim: PresenceAnim) -> Self {
+                self.b = self.b.enter(anim);
+                self
+            }
+
+            pub fn exit(mut self, anim: PresenceAnim) -> Self {
+                self.b = self.b.exit(anim);
+                self
+            }
+
+            /// Accepted-and-ignored, mirroring the old core exactly:
+            /// `Element::Presence` carries no style — "styling belongs
+            /// on the child View, not on the Presence node" (see
+            /// `Element::with_style`'s Presence arm). Kept so
+            /// `presence(style = …)` compiles identically on both cores.
+            pub fn with_style(self, _style: impl IntoStyleProp) -> Self {
+                self
+            }
+
+            pub fn accessibility(mut self, a11y: AccessibilityProps) -> Self {
+                self.a11y = a11y;
+                self
+            }
+
+            pub fn a11y_label(mut self, label: impl Into<String>) -> Self {
+                self.a11y.label = Some(label.into());
+                self
+            }
+
+            pub fn a11y_hint(mut self, hint: impl Into<String>) -> Self {
+                self.a11y.hint = Some(hint.into());
+                self
+            }
+
+            pub fn a11y_role(mut self, role: Role) -> Self {
+                self.a11y.role = Some(role);
+                self
+            }
+
+            pub fn a11y_hidden(mut self, hidden: bool) -> Self {
+                self.a11y.hidden = hidden;
+                self
+            }
+
+            pub fn a11y_traits(mut self, traits: AccessibilityTraits) -> Self {
+                self.a11y.traits = traits;
+                self
+            }
+
+            pub fn live_region(mut self, priority: LiveRegionPriority) -> Self {
+                self.a11y.live_region = Some(priority);
+                self
+            }
+
+            /// P2 form of the old `.bind(ref)`.
+            pub fn on_handle(mut self, fill: impl FnOnce(PresenceHandle) + 'static) -> Self {
+                self.b = self.b.on_handle(fill);
+                self
+            }
+        }
+
+        impl IntoElement for GluePresence {
+            fn into_element(self) -> Element {
+                self.b.a11y(self.a11y).build()
+            }
+        }
+
+        impl ChildList for GluePresence {
+            fn append_to(self, out: &mut Vec<Element>) {
+                out.push(self.into_element());
+            }
+        }
+
+        impl From<GluePresence> for Element {
+            fn from(w: GluePresence) -> Element {
+                w.into_element()
+            }
+        }
+    }
+
+    /// `graphics(on_ready)` — the author-driven GPU surface.
+    pub mod graphics {
+        use super::super::*;
+        pub use runtime_core::primitives::graphics::{GraphicsHandle, OnReadyEvent, OnResizeEvent};
+
+        pub fn graphics(on_ready: impl FnMut(OnReadyEvent) + 'static) -> GlueGraphics {
+            GlueGraphics {
+                b: builders::graphics(on_ready),
+                a11y: AccessibilityProps::default(),
+            }
+        }
+
+        pub struct GlueGraphics {
+            pub(crate) b: builders::GraphicsBuilder,
+            pub(crate) a11y: AccessibilityProps,
+        }
+
+        impl GlueGraphics {
+            /// No `cycle()` wrap (old core wrapped for born-batched
+            /// semantics) — staged-commit writes flush with the driver.
+            pub fn on_resize(mut self, f: impl FnMut(OnResizeEvent) + 'static) -> Self {
+                self.b = self.b.on_resize(f);
+                self
+            }
+
+            pub fn on_lost(mut self, f: impl FnMut() + 'static) -> Self {
+                self.b = self.b.on_lost(f);
+                self
+            }
+
+            /// P2 form of the old `.bind(ref)`.
+            pub fn on_handle(mut self, fill: impl FnOnce(GraphicsHandle) + 'static) -> Self {
+                self.b = self.b.on_handle(fill);
+                self
+            }
+        }
+
+        glue_wrapper_common!(GlueGraphics);
+    }
+
+    /// `flat_list(data, key, size, render)` — the typed wrapper over the
+    /// closure-form virtualizer. This is a PORT of the old
+    /// `primitives/flat_list.rs` type-erasure (the old constructor was
+    /// itself just an adapter onto `virtualizer(...)`), targeting the
+    /// P3-set `builders::virtualizer`. `FlatListItemSize` / `fixed_size`
+    /// / `Axis` / `Lanes` are the SAME types as the old core (re-exported),
+    /// so author sources compile identically on both cores.
+    pub mod flat_list {
+        use super::super::*;
+        pub use runtime_core::primitives::flat_list::{fixed_size, FlatListItemSize};
+        pub use runtime_core::primitives::virtualizer::{
+            Axis, ItemKey, ItemSize, Lanes, VirtualizerHandle,
+        };
+
+        /// Same signature as the old `flat_list<T, K, S, R>` (the third
+        /// generic is unused there too — the macro emits `::<_, _, (), _>`).
+        /// Extra `T: PartialEq` bound: `runtime_world::Signal<Vec<T>>`
+        /// only exists for `PartialEq` payloads (guarded staging), so the
+        /// bound is already implied by the `data` argument existing.
+        pub fn flat_list<T, K, S, R>(
+            data: Signal<Vec<T>>,
+            key: K,
+            item_size: FlatListItemSize<T>,
+            render_item: R,
+        ) -> GlueFlatList
+        where
+            T: Clone + PartialEq + 'static,
+            K: Fn(usize, &T) -> ItemKey + 'static,
+            S: 'static,
+            R: Fn(usize, &T) -> Element + 'static,
+        {
+            let _ = std::marker::PhantomData::<S>;
+
+            // World signal handles are Copy — each erased closure gets
+            // its own copy of `data` and reads the current snapshot at
+            // call time (identical to the old adapter).
+            let item_count = move || data.get().len();
+
+            let key = Rc::new(key);
+            let item_key = {
+                let key = key.clone();
+                move |idx: usize| {
+                    let v = data.get();
+                    match v.get(idx) {
+                        Some(item) => key(idx, item),
+                        // Out-of-range sentinel (old adapter's rule):
+                        // don't collide with valid keys on a stale index.
+                        None => u64::MAX - idx as u64,
+                    }
+                }
+            };
+
+            let item_size: ItemSize = match item_size {
+                FlatListItemSize::Known(f) => ItemSize::Known(Rc::new(move |idx| {
+                    let v = data.get();
+                    v.get(idx).map(|item| f(idx, item)).unwrap_or(0.0)
+                })),
+                FlatListItemSize::Measured(f) => ItemSize::Measured(Rc::new(move |idx| {
+                    let v = data.get();
+                    v.get(idx).map(|item| f(idx, item)).unwrap_or(0.0)
+                })),
+            };
+
+            let render = move |idx: usize| -> Element {
+                let v = data.get();
+                match v.get(idx) {
+                    Some(item) => render_item(idx, item),
+                    // Stale index → empty view (old adapter's rule).
+                    None => super::super::view(Vec::new()).into_element(),
+                }
+            };
+
+            GlueFlatList {
+                b: builders::virtualizer(item_count, item_key, item_size, render),
+                a11y: AccessibilityProps::default(),
+            }
+        }
+
+        pub struct GlueFlatList {
+            pub(crate) b: builders::VirtualizerBuilder,
+            pub(crate) a11y: AccessibilityProps,
+        }
+
+        impl GlueFlatList {
+            pub fn overscan(mut self, factor: f32) -> Self {
+                self.b = self.b.overscan(factor);
+                self
+            }
+
+            pub fn axis(mut self, axis: Axis) -> Self {
+                self.b = self.b.axis(axis);
+                self
+            }
+
+            pub fn lanes(mut self, lanes: Lanes) -> Self {
+                self.b = self.b.lanes(lanes);
+                self
+            }
+
+            pub fn spacing(mut self, main: f32, cross: f32) -> Self {
+                self.b = self.b.spacing(main, cross);
+                self
+            }
+
+            pub fn gap(mut self, gap: f32) -> Self {
+                self.b = self.b.gap(gap);
+                self
+            }
+
+            /// P2 form of the old `.bind(ref)`.
+            pub fn on_handle(mut self, fill: impl FnOnce(VirtualizerHandle) + 'static) -> Self {
+                self.b = self.b.on_handle(fill);
+                self
+            }
+        }
+
+        glue_wrapper_common!(GlueFlatList);
     }
 }
 

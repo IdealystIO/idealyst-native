@@ -1,10 +1,10 @@
 # scene-parity FULL-OP NEW-CORE override — scenario `full_release_on_swap`, mode `spliced`
 #
-# Sanctioned divergence (README): teardown release ordering. The old
-# core fires scope-level cleanups LIFO then drops effects in creation
-# order; the new kernel frees collected effects in creation order.
-# Same release SET (every release_text_id / on_node_unstyled), only
-# the interleaving differs, only in teardown windows.
+# Sanctioned kernel-ordering divergences only (README + the
+# FULL_NEWCORE_OVERRIDES docs): teardown release interleaving (old
+# LIFO vs new creation-order effect free — same release SET, only
+# the order within teardown windows) and, where noted, cross-effect
+# firing order across sibling effects (divergence #3).
 # Regenerate: UPDATE_NEWCORE_GOLDENS=1 cargo test -p scene-parity
 
 == mount ==

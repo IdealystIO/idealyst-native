@@ -22,3 +22,11 @@ runtime-world = { workspace = true }
 # LegacyBridge<FullRecorder>, compared against the old walker on the
 # same goldens.
 runtime-vocabulary = { workspace = true }
+# GfxSim's dummy surface provider (graphics lifecycle goldens) — same
+# version runtime-core builds its GraphicsSurface contract against.
+raw-window-handle = "0.6"
+# Navigator parity (old side): the outlet-model swap/stack SDK handlers,
+# registered on the FullRecorder via `register_generic` so the walker's
+# navigator path drives the REAL backend-neutral handlers.
+swap-navigator = { workspace = true }
+stack-navigator = { workspace = true }

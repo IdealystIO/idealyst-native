@@ -90,6 +90,61 @@ pub fn full_new_scenarios() -> Vec<FullNewScenario> {
             modes: &[Mode::Spliced],
             run: full_style_preminted,
         },
+        FullNewScenario {
+            name: "full_virtualizer_lifecycle",
+            modes: &[Mode::Spliced],
+            run: full_virtualizer_lifecycle,
+        },
+        FullNewScenario {
+            name: "full_virtualizer_lane_swap",
+            modes: &[Mode::Anchored, Mode::Spliced],
+            run: full_virtualizer_lane_swap,
+        },
+        FullNewScenario {
+            name: "full_graphics_lifecycle",
+            modes: &[Mode::Anchored, Mode::Spliced],
+            run: full_graphics_lifecycle,
+        },
+        FullNewScenario {
+            name: "full_portal_toggle",
+            modes: &[Mode::Anchored, Mode::Spliced],
+            run: full_portal_toggle,
+        },
+        FullNewScenario {
+            name: "full_overlay_static",
+            modes: &[Mode::Spliced],
+            run: full_overlay_static,
+        },
+        FullNewScenario {
+            name: "full_overlay_toggle",
+            modes: &[Mode::Spliced],
+            run: full_overlay_toggle,
+        },
+        FullNewScenario {
+            name: "full_presence_cycle",
+            modes: &[Mode::Anchored, Mode::Spliced],
+            run: full_presence_cycle,
+        },
+        FullNewScenario {
+            name: "full_presence_bare",
+            modes: &[Mode::Spliced],
+            run: full_presence_bare,
+        },
+        FullNewScenario {
+            name: "nav_swap_select",
+            modes: &[Mode::Spliced],
+            run: nav_swap_select,
+        },
+        FullNewScenario {
+            name: "nav_swap_dispose_evict",
+            modes: &[Mode::Spliced],
+            run: nav_swap_dispose_evict,
+        },
+        FullNewScenario {
+            name: "nav_stack_push_pop",
+            modes: &[Mode::Spliced],
+            run: nav_stack_push_pop,
+        },
     ]
 }
 
@@ -392,5 +447,436 @@ fn full_style_preminted(cx: &mut FullNewCx) {
     );
     cx.step("swap theme (premint driver flushes update_tokens)", || {
         theme::update_tokens(&[surface_token("#f0f0f0")]);
+    });
+}
+
+// ===========================================================================
+// (k) P3-set: virtualizer lifecycle (window sim drives the callbacks)
+// ===========================================================================
+
+fn full_virtualizer_lifecycle(cx: &mut FullNewCx) {
+    use runtime_core::ItemSize;
+    use runtime_vocabulary::builders::virtualizer;
+    use std::rc::Rc;
+
+    let present: Signal<bool> = signal(true);
+    let rows: Signal<usize> = signal(3);
+    let version: Signal<i32> = signal(0);
+    cx.mount(
+        view()
+            .child(dyn_keyed(
+                move || present.get(),
+                move |&on| {
+                    if on {
+                        virtualizer(
+                            move || rows.get(),
+                            |i| i as u64,
+                            ItemSize::Measured(Rc::new(|_| 40.0)),
+                            move |idx| {
+                                text()
+                                    .content(move || format!("item {idx} v{}", version.get()))
+                                    .build()
+                            },
+                        )
+                        .overscan(2.0)
+                        .style(test_rules(120.0, "#334455"))
+                        .build()
+                    } else {
+                        text().content("gone").build()
+                    }
+                },
+            ))
+            .build(),
+    );
+    let sim = cx.virt_sim(0);
+    cx.step("fill window 0..3 (lazy detached row mounts)", {
+        let sim = sim.clone();
+        move || sim.set_window(0..3)
+    });
+    cx.step("bump shared version (live rows update in creation order)", move || {
+        version.set(1)
+    });
+    cx.step("measure row 0 (Measured-mode feedback)", {
+        let sim = sim.clone();
+        move || sim.report_measured(0, 55.0)
+    });
+    cx.step("scroll to 1..3 (row 0 released, its reactivity freed)", {
+        let sim = sim.clone();
+        move || sim.set_window(1..3)
+    });
+    cx.step("bump version again (released row must NOT update)", move || {
+        version.set(2)
+    });
+    cx.step("scroll back to 0..3 (row 0 remounts at measured size 55)", {
+        let sim = sim.clone();
+        move || sim.set_window(0..3)
+    });
+    cx.step("shrink data to 2 rows (one data-changed notification)", move || {
+        rows.set(2)
+    });
+    cx.step("re-window after shrink (row key=2 released)", {
+        let sim = sim.clone();
+        move || sim.set_window(0..3)
+    });
+    cx.step("clear window (remaining rows released)", {
+        let sim = sim.clone();
+        move || sim.set_window(0..0)
+    });
+    cx.step("swap out (unstyle then release_virtualizer)", move || {
+        present.set(false)
+    });
+}
+
+// ===========================================================================
+// (l) P3-set: virtualizer lane-config change (node rebuild via a hole)
+// ===========================================================================
+
+fn full_virtualizer_lane_swap(cx: &mut FullNewCx) {
+    use runtime_core::{Axis, ItemSize, Lanes};
+    use runtime_scene::Element;
+    use runtime_vocabulary::builders::virtualizer;
+    use std::rc::Rc;
+
+    let grid: Signal<bool> = signal(false);
+    fn cells(layouted: bool) -> Element {
+        let b = virtualizer(
+            || 6,
+            |i| i as u64,
+            ItemSize::Known(Rc::new(|_| 100.0)),
+            |_| text().content("cell").build(),
+        );
+        if layouted {
+            b.axis(Axis::Horizontal)
+                .lanes(Lanes::Fixed(3))
+                .spacing(8.0, 4.0)
+                .build()
+        } else {
+            b.build()
+        }
+    }
+    cx.mount(
+        view()
+            .child(dyn_keyed(
+                move || grid.get(),
+                move |&on| cells(on),
+            ))
+            .build(),
+    );
+    cx.step("swap to 3-lane horizontal grid (release then create)", move || {
+        grid.set(true)
+    });
+    cx.step("swap back to vertical list", move || grid.set(false));
+}
+
+// ===========================================================================
+// (m) P3-set: graphics lifecycle
+// ===========================================================================
+
+fn full_graphics_lifecycle(cx: &mut FullNewCx) {
+    use runtime_vocabulary::builders::graphics;
+
+    let present: Signal<bool> = signal(true);
+    let rec = cx.recorder();
+    cx.mount(
+        view()
+            .child(dyn_keyed(
+                move || present.get(),
+                move |&on| {
+                    if on {
+                        let (r1, r2, r3) = (rec.clone(), rec.clone(), rec.clone());
+                        graphics(move |e| {
+                            r1.push(format!(
+                                "author on_ready {}x{} @{}",
+                                e.size.0, e.size.1, e.scale
+                            ))
+                        })
+                        .on_resize(move |e| {
+                            r2.push(format!(
+                                "author on_resize {}x{} @{}",
+                                e.size.0, e.size.1, e.scale
+                            ))
+                        })
+                        .on_lost(move || r3.push("author on_lost".to_string()))
+                        .style(test_rules(100.0, "#202020"))
+                        .build()
+                    } else {
+                        text().content("no canvas").build()
+                    }
+                },
+            ))
+            .build(),
+    );
+    let sim = cx.gfx_sim(0);
+    cx.step("surface ready 640x480 @2", {
+        let sim = sim.clone();
+        move || sim.fire_ready((640, 480), 2.0)
+    });
+    cx.step("resize 800x600 @2", {
+        let sim = sim.clone();
+        move || sim.fire_resize((800, 600), 2.0)
+    });
+    cx.step("surface lost", {
+        let sim = sim.clone();
+        move || sim.fire_lost()
+    });
+    cx.step("swap out (unstyle then release_graphics)", move || {
+        present.set(false)
+    });
+}
+
+// ===========================================================================
+// (P3-set) portal + overlay compositions + presence
+// ===========================================================================
+
+fn full_portal_toggle(cx: &mut FullNewCx) {
+    use runtime_core::primitives::portal::{PortalTarget, ViewportPlacement};
+    use runtime_vocabulary::builders::portal;
+    let open: Signal<bool> = signal(true);
+    cx.mount(
+        view()
+            .child(dyn_keyed(
+                move || open.get(),
+                |&on| {
+                    if on {
+                        portal(PortalTarget::Viewport(ViewportPlacement::Center))
+                            .child(text().content("inside"))
+                            .on_dismiss(|| {})
+                            .trap_focus(true)
+                            .build()
+                    } else {
+                        text().content("closed").build()
+                    }
+                },
+            ))
+            .build(),
+    );
+    cx.step("close (release_portal inside the teardown window)", || {
+        open.set(false)
+    });
+    cx.step("reopen (fresh portal mount)", || open.set(true));
+}
+
+fn full_overlay_static(cx: &mut FullNewCx) {
+    use crate::full::test_anchor_target;
+    use runtime_core::primitives::overlay::BackdropMode;
+    use runtime_core::primitives::portal::{ElementAlign, ElementSide, ViewportPlacement};
+    use runtime_vocabulary::builders::{anchored_overlay, overlay};
+    cx.mount(
+        view()
+            .child(
+                overlay()
+                    .placement(ViewportPlacement::Bottom)
+                    .on_dismiss(|| {})
+                    .backdrop_style(test_rules(40.0, "#00000080"))
+                    .style(test_rules(320.0, "#ffffff"))
+                    .child(text().content("modal body")),
+            )
+            .child(
+                overlay()
+                    .backdrop(BackdropMode::None)
+                    .click_through(true)
+                    .child(text().content("toast")),
+            )
+            .child(
+                anchored_overlay(test_anchor_target())
+                    .side(ElementSide::Above)
+                    .align(ElementAlign::Center)
+                    .offset(4.0)
+                    .child(text().content("tip")),
+            )
+            .build(),
+    );
+}
+
+fn full_overlay_toggle(cx: &mut FullNewCx) {
+    use runtime_vocabulary::builders::overlay;
+    let open: Signal<bool> = signal(true);
+    cx.mount(
+        view()
+            .child(dyn_keyed(
+                move || open.get(),
+                |&on| {
+                    if on {
+                        overlay()
+                            .backdrop_style(test_rules(40.0, "#00000080"))
+                            .on_dismiss(|| {})
+                            .child(text().content("modal body"))
+                            .build()
+                    } else {
+                        text().content("closed").build()
+                    }
+                },
+            ))
+            .build(),
+    );
+    cx.step("close (backdrop unstyle + release_portal in one window)", || {
+        open.set(false)
+    });
+    cx.step("reopen", || open.set(true));
+}
+
+fn full_presence_cycle(cx: &mut FullNewCx) {
+    use crate::full::{presence_enter, presence_exit, pump_frames, pump_timers};
+    use runtime_vocabulary::builders::presence;
+    let open: Signal<bool> = signal(false);
+    cx.mount(
+        view()
+            .child(text().content("before"))
+            .child(
+                presence(|| text().content("card").build())
+                    .present(open)
+                    .enter(presence_enter())
+                    .exit(presence_exit()),
+            )
+            .child(text().content("after"))
+            .build(),
+    );
+    cx.step("show (child mounts, snaps to the enter state pre-paint)", || {
+        open.set(true)
+    });
+    cx.step("frame (animate to rest with the enter transition)", pump_frames);
+    cx.step("hide (exit transform, node still attached)", || {
+        open.set(false)
+    });
+    cx.step("exit elapses (deferred detach + teardown)", pump_timers);
+    cx.step("reshow (fresh child mounts)", || open.set(true));
+}
+
+fn full_presence_bare(cx: &mut FullNewCx) {
+    use runtime_vocabulary::builders::presence;
+    let open: Signal<bool> = signal(true);
+    cx.mount(
+        view()
+            .child(text().content("before"))
+            .child(presence(|| text().content("card").build()).present(open))
+            .child(text().content("after"))
+            .build(),
+    );
+    cx.step("hide (no exit: immediate teardown)", || open.set(false));
+}
+
+// ===========================================================================
+// Navigator scenarios — the vocabulary swap/stack handlers, mirroring
+// the old side's REAL SDK-handler runs. Dispatches stage a command +
+// tick; the step's `world.flush()` runs the driver effect, so the ops
+// land in the same step snapshot as the old side's synchronous dispatch.
+// ===========================================================================
+
+use std::rc::Rc;
+
+use runtime_core::primitives::navigator::Route;
+use runtime_vocabulary::builders::{navigator_outlet, stack_navigator, swap_navigator};
+use runtime_vocabulary::prims::{MountPolicy, NavHandle, StackRetention, SwapNav};
+use runtime_vocabulary::on_teardown;
+use runtime_world::inject;
+
+const NAV_HOME: Route<()> = Route::new("home", "/");
+const NAV_ABOUT: Route<()> = Route::new("about", "/about");
+const NAV_DETAIL: Route<()> = Route::new("detail", "/detail");
+
+fn nav_screen(label: &'static str, width: f32, background: &'static str) -> runtime_scene::Element {
+    // `test_rules` as a Static prop digests identically to the old
+    // side's static sheet (literal rules resolve to themselves) — the
+    // same equivalence the kitchen-sink scenario relies on.
+    view()
+        .style(test_rules(width, background))
+        .child(text().content(label))
+        .build()
+}
+
+fn nav_swap_select(cx: &mut FullNewCx) {
+    let on_select: Rc<std::cell::RefCell<Option<Rc<dyn Fn(&'static str)>>>> =
+        Rc::new(std::cell::RefCell::new(None));
+    let element = {
+        let slot = on_select.clone();
+        swap_navigator(&NAV_HOME)
+            .screen(NAV_HOME, |_| nav_screen("home", 10.0, "#111111"))
+            .screen(NAV_ABOUT, |_| nav_screen("about", 20.0, "#222222"))
+            .layout(move || {
+                let ctx = inject::<SwapNav>().expect("SwapNav provided during layout build");
+                *slot.borrow_mut() = Some(ctx.on_select.clone());
+                view()
+                    .child(text().content("chrome"))
+                    .child(navigator_outlet())
+                    .build()
+            })
+            .build()
+    };
+    cx.mount(element);
+    let select = move |name| {
+        (on_select.borrow().clone().expect("layout ran during mount"))(name)
+    };
+    cx.step("select about (fresh mount + outlet swap)", || select("about"));
+    cx.step("select home (cached re-insert, no creates)", || select("home"));
+    cx.step("select home again (no-op)", || select("home"));
+}
+
+fn nav_swap_dispose_evict(cx: &mut FullNewCx) {
+    let rec = cx.recorder();
+    let on_select: Rc<std::cell::RefCell<Option<Rc<dyn Fn(&'static str)>>>> =
+        Rc::new(std::cell::RefCell::new(None));
+    let element = {
+        let slot = on_select.clone();
+        swap_navigator(&NAV_HOME)
+            .screen(NAV_HOME, move |_| {
+                // Cleanup marker via the probe-effect mapping (README:
+                // the kernel's on_cleanup needs a running effect).
+                let rec = rec.clone();
+                on_teardown(move || rec.note_cleanup("home-screen"));
+                nav_screen("home", 10.0, "#111111")
+            })
+            .screen(NAV_ABOUT, |_| nav_screen("about", 20.0, "#222222"))
+            .mount_policy(MountPolicy::LazyDisposing)
+            .layout(move || {
+                let ctx = inject::<SwapNav>().expect("SwapNav provided during layout build");
+                *slot.borrow_mut() = Some(ctx.on_select.clone());
+                view()
+                    .child(text().content("chrome"))
+                    .child(navigator_outlet())
+                    .build()
+            })
+            .build()
+    };
+    cx.mount(element);
+    let select = move |name| {
+        (on_select.borrow().clone().expect("layout ran during mount"))(name)
+    };
+    cx.step("select about (evicted home releases: cleanup + unstyle)", || {
+        select("about")
+    });
+    cx.step("select home (re-mounts fresh)", || select("home"));
+}
+
+fn nav_stack_push_pop(cx: &mut FullNewCx) {
+    let rec = cx.recorder();
+    let handle_slot: Rc<std::cell::RefCell<Option<NavHandle>>> =
+        Rc::new(std::cell::RefCell::new(None));
+    let element = {
+        let slot = handle_slot.clone();
+        stack_navigator(&NAV_HOME)
+            .screen(NAV_HOME, |_| nav_screen("home", 10.0, "#111111"))
+            .screen(NAV_DETAIL, move |_| {
+                let rec = rec.clone();
+                on_teardown(move || rec.note_cleanup("detail-screen"));
+                nav_screen("detail", 20.0, "#222222")
+            })
+            .retention(StackRetention::Retain)
+            .layout(|| {
+                view()
+                    .child(text().content("header"))
+                    .child(navigator_outlet())
+                    .build()
+            })
+            .on_handle(move |handle| *slot.borrow_mut() = Some(handle))
+            .build()
+    };
+    cx.mount(element);
+    let handle = handle_slot.borrow().clone().expect("handle bound at mount");
+    let push_handle = handle.clone();
+    cx.step("push detail (mount + outlet swap, home retained)", move || {
+        push_handle.push(&NAV_DETAIL, ());
+    });
+    cx.step("pop (release detail FIRST, reveal retained home)", move || {
+        handle.pop();
     });
 }

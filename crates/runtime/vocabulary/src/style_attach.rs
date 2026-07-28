@@ -499,7 +499,7 @@ fn attach_sheet_dynamic<H: StyleServices>(
     let node_for_effect = node.clone();
     // Sheet pin (module docs): holds the latest Rc<StyleSheet> so its
     // registration Weak stays upgradeable for this effect's lifetime.
-    let mut pinned_sheet: Option<Rc<StyleSheet>> = None;
+    let mut _pinned_sheet: Option<Rc<StyleSheet>> = None;
     let _binding = effect(move || {
         // Theme-version subscription — the per-token reads of the old
         // engine go deaf behind the resolution cache; the version
@@ -513,7 +513,7 @@ fn attach_sheet_dynamic<H: StyleServices>(
         if !theme::sheet_is_registered(&app.sheet) {
             theme::ensure_sheet_registered(&backend_for_effect, &app.sheet);
         }
-        pinned_sheet = Some(app.sheet.clone());
+        _pinned_sheet = Some(app.sheet.clone());
 
         if handles_states_natively {
             // Web: resolve base + every overlay axis; the browser does

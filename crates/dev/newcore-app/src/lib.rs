@@ -17,7 +17,18 @@ compile_error!(
 /// The shared authoring surface, resolved per core.
 #[cfg(feature = "new-core")]
 pub mod prelude {
-    pub use runtime_vocabulary::glue::{memo, signal, Color, Element, Memo, Signal, Tokenized};
+    pub use runtime_vocabulary::glue::{
+        memo, signal, Color, Easing, Element, Memo, Ref, Signal, Tokenized, ViewHandle,
+    };
+    // The P3-set primitive value types (`overlay` placement/backdrop,
+    // `anchored_overlay` anchor/side, `presence` anims, `flat_list`
+    // sizing) — the SAME runtime-core data types on both cores, reached
+    // through the glue's mirrored `primitives::…` paths here.
+    pub use runtime_vocabulary::glue::primitives::flat_list::fixed_size;
+    pub use runtime_vocabulary::glue::primitives::overlay::{
+        AnchorTarget, BackdropMode, ElementSide, ViewportPlacement,
+    };
+    pub use runtime_vocabulary::glue::primitives::presence::PresenceAnim;
     // `ui!` emits `::runtime_vocabulary::glue::…` paths under `new-core`;
     // the dispatch traits and coercions are resolved absolutely by the
     // macro, so nothing else needs importing here. `Tokenized`/`Color`
@@ -28,7 +39,13 @@ pub mod prelude {
 
 #[cfg(all(feature = "old-core", not(feature = "new-core")))]
 pub mod prelude {
-    pub use runtime_core::{memo, signal, Color, Element, Signal, Tokenized};
+    pub use runtime_core::primitives::flat_list::fixed_size;
+    pub use runtime_core::primitives::overlay::BackdropMode;
+    pub use runtime_core::primitives::portal::{AnchorTarget, ElementSide, ViewportPlacement};
+    pub use runtime_core::primitives::presence::PresenceAnim;
+    pub use runtime_core::{
+        memo, signal, Color, Easing, Element, Ref, Signal, Tokenized, ViewHandle,
+    };
     pub use std::rc::Rc;
 }
 

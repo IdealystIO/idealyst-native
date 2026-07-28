@@ -1,0 +1,38 @@
+# scene-parity FULL-OP NEW-CORE override — scenario `full_presence_cycle`, mode `spliced`
+#
+# Sanctioned divergences only (README + the FULL_NEWCORE_OVERRIDES
+# docs): teardown release interleaving (#5, old LIFO vs new
+# creation-order effect free — same release SET, only the order
+# within teardown windows); where noted, cross-effect firing order
+# across sibling effects (#3); and, for the presence pairs, the
+# Dyn-driver + retire-hook re-expression (#6 — hole structural
+# path, retire-owned detach; identical apply_presence sequence).
+# Regenerate: UPDATE_NEWCORE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 text "before"
+insert n0 <- n1
+create n2 presence_placeholder
+insert n0 <- n2
+create n3 text "after"
+insert n0 <- n3
+
+== show (child mounts, snaps to the enter state pre-paint) ==
+create n4 text "card"
+insert_at n2 <- n4 @ 0
+apply_presence n4 {opacity: Some(0.0), translate_y: Some(8.0)} snap
+
+== frame (animate to rest with the enter transition) ==
+apply_presence n4 rest 200ms EaseOut
+
+== hide (exit transform, node still attached) ==
+apply_presence n4 {opacity: Some(0.0), translate_y: Some(8.0)} 150ms EaseIn
+
+== exit elapses (deferred detach + teardown) ==
+remove_child n2 -x n4
+
+== reshow (fresh child mounts) ==
+create n5 text "card"
+insert_at n2 <- n5 @ 0
+apply_presence n5 {opacity: Some(0.0), translate_y: Some(8.0)} snap

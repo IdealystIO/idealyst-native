@@ -21,20 +21,36 @@
 //! (`crates/runtime/macros/src/primitives.rs`): `view`, `text`, `button`,
 //! `pressable`, `image`, `icon`, `toggle`, `slider`,
 //! `activity_indicator`, `link`, `scroll_view`, `text_input`,
-//! `text_area`. The remaining tags (`virtualizer`/`flat_list`,
-//! `graphics`, `overlay`/`anchored_overlay`, `presence`, navigator) are
-//! deferred — see the crate docs. (`when` needs no builder: it lowers
-//! to the scene's `dyn_keyed` hole directly.)
+//! `text_area`, plus the P3-set `virtualizer` (`flat_list`'s
+//! type-erased core), `graphics`, `portal` (with the
+//! `overlay`/`anchored_overlay` compositions) and `presence`. (`when`
+//! needs no builder: it lowers to the scene's `dyn_keyed` hole
+//! directly.)
 
 use runtime_scene::{dyn_element, Element};
 use runtime_world::{Memo, ReadSignal, Signal, Value};
 
+mod graphics;
 mod media;
+mod navigator;
+mod portal;
+mod presence;
 mod text;
 mod view;
+mod virtualizer;
 mod widgets;
 
+pub use graphics::{graphics, GraphicsBuilder};
 pub use media::{icon, image, link, IconBuilder, ImageBuilder, LinkBuilder};
+pub use navigator::{
+    navigator_outlet, stack_navigator, swap_navigator, NavigatorOutletBuilder,
+    StackNavigatorBuilder, SwapNavigatorBuilder,
+};
+pub use portal::{
+    anchored_overlay, overlay, portal, AnchoredOverlayBuilder, OverlayBuilder, PortalBuilder,
+};
+pub use presence::{presence, PresenceBuilder};
+pub use virtualizer::{virtualizer, VirtualizerBuilder};
 pub use text::{button, text, ButtonBuilder, TextBuilder};
 pub use view::{
     pressable, scroll_view, view, PressableBuilder, ScrollViewBuilder, ViewBuilder,
@@ -111,6 +127,15 @@ impl_builder_child!(
     ActivityIndicatorBuilder,
     TextInputBuilder,
     TextAreaBuilder,
+    VirtualizerBuilder,
+    GraphicsBuilder,
+    PortalBuilder,
+    OverlayBuilder,
+    AnchoredOverlayBuilder,
+    PresenceBuilder,
+    SwapNavigatorBuilder,
+    StackNavigatorBuilder,
+    NavigatorOutletBuilder,
 );
 
 /// Text-content coercion — the vocabulary's display policy (ports

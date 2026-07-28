@@ -487,9 +487,12 @@ fn plain_dyn_rebuilds_on_every_dependency_change() {
 
 #[test]
 fn retire_hook_intercepts_swapped_out_realized() {
-    // The retire hook (plan §4, presence's future need): the swapped-out
-    // Realized is handed to the hook INSTEAD of dropped — teardown timing
-    // moves to the hook, structural ops are unchanged.
+    // The retire hook (plan §4, the presence contract): the swapped-out
+    // subtree is handed to the hook as a `Retired` with its nodes STILL
+    // ATTACHED — the driver emits NO remove_child/clear_children for it.
+    // The hook owns both detachment and drop timing (an exit animation
+    // on an already-detached node would be invisible, which is the bug
+    // this contract prevents).
     let rig = Rig::new(true);
     let drops = counter();
     let s = rig.world.enter(|| signal(true));
@@ -512,27 +515,71 @@ fn retire_hook_intercepts_swapped_out_realized() {
 
     s.set(false);
     rig.flush();
-    // The structural swap happened…
+    // The incoming branch mounted, but the outgoing node was NOT removed
+    // — detachment now belongs to the hook.
     assert_eq!(
         rig.take_ops(),
-        [
-            "remove_child n0 -x n1",
-            "create n2 off",
-            "insert_at n0 <- n2 @ 0",
-        ]
+        ["create n2 off", "insert_at n0 <- n2 @ 0"],
+        "driver must not detach a retired subtree's nodes"
     );
-    // …but the outgoing subtree's scope is alive in the hook's hands.
+    // …and the outgoing subtree's scope is alive in the hook's hands.
     assert_eq!(drops.get(), 0, "retired scope not dropped by the driver");
     let held = retired
         .borrow_mut()
         .take()
         .expect("hook received the outgoing subtree");
     let held = held
-        .downcast::<Realized<u32>>()
-        .expect("retired payload downcasts to Realized<Node>");
-    assert_eq!(held.collect_nodes(), [1], "the retired tree still knows its nodes");
-    drop(held);
+        .downcast::<Retired<u32>>()
+        .expect("retired payload downcasts to Retired<Node>");
+    let Retired {
+        realized,
+        parent,
+        nodes,
+    } = *held;
+    assert_eq!(parent, 0, "retired parent is the node the old subtree hangs off");
+    assert_eq!(nodes, [1], "the retired package carries the attached nodes");
+    // The hook's teardown: detach first, then drop the scope (the
+    // spliced dispose rule, now the hook's responsibility).
+    rig.backend.borrow_mut().remove_child(&parent, &nodes[0]);
+    assert_eq!(rig.take_ops(), ["remove_child n0 -x n1"]);
+    drop(realized);
     assert_eq!(drops.get(), 1, "dropping the retired Realized is the teardown");
+}
+
+#[test]
+fn retire_hook_anchored_skips_clear_children() {
+    // Anchored counterpart: the driver normally clears the anchor after
+    // dropping the old branch; with a retire hook the anchor is NOT
+    // cleared (the exiting node must keep rendering), and the incoming
+    // branch mounts alongside until the hook detaches the old one.
+    let rig = Rig::new(false);
+    let s = rig.world.enter(|| signal(true));
+    let retired: Rc<RefCell<Option<Box<dyn Any>>>> = Rc::default();
+    let retired_hook = retired.clone();
+    let _shell = rig.realize(v(vec![dyn_keyed(
+        move || s.get(),
+        |&on| t(if on { "on" } else { "off" }),
+    )
+    .with_retire(move |old| {
+        *retired_hook.borrow_mut() = Some(old);
+    })]));
+    rig.take_ops();
+
+    s.set(false);
+    rig.flush();
+    assert_eq!(
+        rig.take_ops(),
+        ["create n3 off", "insert n1 <- n3"],
+        "anchored driver must not clear_children a retired subtree's anchor"
+    );
+    let held = retired
+        .borrow_mut()
+        .take()
+        .expect("hook received the outgoing subtree")
+        .downcast::<Retired<u32>>()
+        .expect("retired payload downcasts to Retired<Node>");
+    assert_eq!(held.parent, 1, "retired parent is the driver's anchor");
+    assert_eq!(held.nodes, [2]);
 }
 
 #[test]

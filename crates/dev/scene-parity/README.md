@@ -179,7 +179,36 @@ re-homed) emit the same sequences as the old walker.
   input-value+secure/button-label), (e) a `when` hole swapping between
   two primitives (handler mounts inside driver rebuilds), (f) resource
   release on a swap-out (`release_text_id`, `on_node_unstyled`) —
-  inside a step, so it's in the goldens despite divergence #4.
+  inside a step, so it's in the goldens despite divergence #4. The
+  P3-set port added (g) `full_virtualizer_lifecycle` (the recycler
+  window sim driving the full callback contract), (h)
+  `full_virtualizer_lane_swap` (VirtualLayout digests + release
+  ordering through a hole swap), (i) `full_graphics_lifecycle`
+  (surface lifecycle events + teardown release), (j)
+  `full_portal_toggle` (raw viewport portal behind a `when`:
+  create_portal args + release_portal inside both dispose orderings),
+  (k) `full_overlay_static` (the overlay compositions' lowering:
+  backdrop-then-content child order, click-through pointer-events:none
+  root, anchored side/align/offset digest), (l) `full_overlay_toggle`
+  (composed backdrop-unstyle + release_portal teardown window), (m)
+  `full_presence_cycle` (enter snap → pumped-frame rest → exit
+  transform → pumped-timer detach+teardown → fresh remount; the
+  parity scheduler queues `after_animation_frame`/`after_ms` in
+  cancellable slots, pumped at explicit step boundaries), and (n)
+  `full_presence_bare` (in-flow unstyled placeholder + no-anim
+  immediate teardown). The navigator port added (o)
+  `nav_swap_select` (swap mount order: root+fill → framework-mounted
+  initial screen → deferred author layout w/ outlet → seat; fresh
+  mount on select, cached re-insert with zero creates on return,
+  same-URL select as a structural no-op), (p) `nav_swap_dispose_evict`
+  (LazyDisposing: evicted screen's release ops inside the step, fresh
+  re-mount on return), and (q) `nav_stack_push_pop` (flow-fill overlay
+  folded into the screen-root digest, push swap with the covered
+  screen retained, pop releasing the popped scope BEFORE the reveal).
+  The old side registers the real swap/stack SDK handlers on the
+  recorder (`RegisterNavigator` + a queuing microtask scheduler whose
+  drain runs the handlers' deferred layout build inside the mount
+  step); the new side runs the vocabulary's `handlers/navigator.rs`.
 - `goldens_full/` — shared goldens, owned by the OLD core
   (`UPDATE_GOLDENS=1` regenerates). `goldens_full_newcore/` — explicit
   new-core overrides for the closed sanctioned set
@@ -245,8 +274,48 @@ same override machinery). ONE new full-op divergence:
    structural ops — only the interleaving WITHIN the teardown window
    differs. A pure ordering artifact of the two teardown mechanisms,
    never a missing or extra backend effect.
-   *Pinned by:* `goldens_full_newcore/full_release_on_swap.{anchored,spliced}.golden`
-   (the only members of `FULL_NEWCORE_OVERRIDES`).
+   *Pinned by:* `goldens_full_newcore/full_release_on_swap.{anchored,spliced}.golden`,
+   and the same class recurs in the P3-set lifecycle scenarios' swap-out
+   windows: `full_graphics_lifecycle.{anchored,spliced}` (release_graphics
+   vs on_node_unstyled), `full_virtualizer_lifecycle.spliced`
+   (release_virtualizer vs on_node_unstyled), and
+   `full_overlay_toggle.spliced` (release_portal vs the backdrop's
+   on_node_unstyled). The virtualizer override
+   additionally carries a FULL-OP instance of structural divergence #3
+   (cross-effect firing order): the old arena notifies the sibling
+   per-row binding effects out of creation order in the shared-signal
+   step, the new kernel in creation order — every live row updates
+   exactly once on both sides, and released rows never do.
+   The NAVIGATOR screen-teardown windows are the same class again
+   (`nav_swap_dispose_evict.spliced`, `nav_stack_push_pop.spliced`): the
+   old screen scope runs its scope-level cleanups (the scenario's
+   `cleanup <screen>` marker) BEFORE effect teardown fires
+   `on_node_unstyled`; the new kernel frees the screen's realize-time
+   effects in creation order and merges the absorbed component scope
+   (which owns the marker probe) after them — marker and unstyle swap
+   places WITHIN the release window, and nothing else moves. The third
+   navigator scenario (`nav_swap_select`) has no teardown window and
+   matches the shared golden byte-for-byte.
+
+6. **Presence re-expressed on the Dyn driver + retire hook.** The old
+   walker's presence arm manages its child directly on the placeholder
+   (plain `insert`, `clear_children` at teardown, scope REUSE on a
+   mid-exit re-present). The new core expresses the mount/unmount swap
+   as a guarded Dyn hole inside the placeholder, with the retire hook
+   owning exit detachment (design §4: "hold the value" instead of
+   "defer the scope drop") — so the child mounts through the hole's
+   structural path (spliced: `insert_at`/`remove_child`; anchored: one
+   extra anchor node inside the placeholder) and a mid-exit re-present
+   builds a FRESH child (crossfade) instead of reusing the exiting
+   scope. Everything backend-visible about presence itself is
+   identical: the placeholder is created bare (in-flow, never styled by
+   the handler), the `apply_presence` sequence (pre-paint snap →
+   next-frame rest → exit transform), and detach-before-scope-drop at
+   the end of the exit window.
+   *Pinned by:* `goldens_full_newcore/full_presence_cycle.{anchored,spliced}.golden`
+   and `full_presence_bare.spliced.golden`.
+
+   All the pairs above are the closed `FULL_NEWCORE_OVERRIDES` set.
 
 ### Known walker-shape facts the full-op goldens pin (worth naming)
 
@@ -268,19 +337,29 @@ same override machinery). ONE new full-op divergence:
 
 ## Excluded from this suite (and why)
 
-- **`presence`** — exit animations need scheduler/time hooks
-  (`after_ms`, animation frames); out of scope for P1 *structural*
-  parity. The retire-hook design (plan §4) is validated in P4 when the
-  presence handler lands on the new contract.
+- **`presence` (STRUCTURAL suite only)** — exit animations need
+  scheduler/time hooks (`after_ms`, animation frames); out of scope for
+  P1 *structural* parity. The FULL-OP suite covers it: the parity
+  scheduler queues frame/timer callbacks in cancellable slots and the
+  presence scenarios pump them at explicit step boundaries
+  (`full_presence_cycle`, `full_presence_bare`; retire-hook behavior on
+  the new core is divergence #6).
 - **Hydration-mode `when`/`switch`** — needs the web backend's
   hydration cursor (`is_hydrating` + adopt semantics); pinned separately
   by `crates/runtime/core/tests/walker/hydration.rs` and gated at P3.
 - **Batched-Repeat fast path** (`execute_batch_with_attach`) — an
   optimization contract of the batching seam, not of the 7 structural
   ops; covered by `crates/runtime/core/tests/walker/batched_repeat.rs`.
-- **Virtualizer** — row mount/release is driven by the platform from
-  scroll/rAF, outside the structural walker; it has its own capability
-  contract (plan §11).
+- **Virtualizer (STRUCTURAL suite only)** — row mount/release is driven
+  by the platform from scroll/rAF, outside the structural walker. Its
+  capability contract (plan §11) IS pinned by the FULL-OP suite: the
+  recorder captures `VirtualizerCallbacks` at `create_virtualizer` and
+  a deterministic window sim (`full::VirtSim`, driven by scenario
+  steps like a real recycler) exercises lazy detached row mounts,
+  keyed release, the measured-size cache, and teardown
+  (`full_virtualizer_lifecycle`, `full_virtualizer_lane_swap`).
+  `graphics` is likewise pinned via captured lifecycle closures
+  (`full::GfxSim`, `full_graphics_lifecycle`).
 
 ## Running
 
@@ -295,9 +374,12 @@ Four test binaries:
 - `goldens_new_core` (new core, the P1 gate): the same 19 pairs against
   the same goldens (modulo the sanctioned divergences above) + the
   registry-mirror check + the override-set sync check.
-- `goldens_full` (old core, FULL-OP): 12 golden comparisons + 1
+- `goldens_full` (old core, FULL-OP): 27 golden comparisons + 1
   registry↔disk check — pins the walker's complete backend-call
-  streams (incl. the four P3c `full_style_*` scenarios).
-- `goldens_full_new` (new core, the P2b/P3c gate): the same 12 pairs
+  streams (incl. the four P3c `full_style_*` scenarios, the P3-set
+  virtualizer/graphics/portal/overlay/presence scenarios, and the
+  three `nav_*` navigator scenarios, which drive the REAL
+  swap-navigator/stack-navigator SDK handlers through the walker).
+- `goldens_full_new` (new core, the P2b/P3c gate): the same 27 pairs
   through the vocabulary handlers + registry-mirror + override-set
   checks.

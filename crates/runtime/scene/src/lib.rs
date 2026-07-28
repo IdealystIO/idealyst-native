@@ -38,5 +38,7 @@ pub use element::{
     RetireHook,
 };
 pub use host::Host;
-pub use realize::{realize, DynLive, KeyedLive, KeyedState, LiveNode, MountCx, Realized};
+pub use realize::{
+    realize, DynLive, DynWatch, KeyedLive, KeyedState, LiveNode, MountCx, Realized, Retired,
+};
 pub use registry::{Handler, Registry};

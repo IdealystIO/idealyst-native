@@ -91,12 +91,24 @@ pub fn component_scope(f: impl FnOnce() -> Element) -> Element {
 // Dyn — the structural hole's spec.
 // ============================================================================
 
-/// A retire hook: receives the swapped-out subtree's boxed
-/// [`Realized<N>`](crate::Realized) (type-erased — `Element` is
-/// node-agnostic; downcast to `Realized<YourNode>`) INSTEAD of the driver
-/// dropping it. The hook owns the teardown timing: presence-style handlers
-/// hold the value while the exit animation plays and drop it in the
-/// `after_ms` task. The driver's structural ops are unchanged either way.
+/// A retire hook: receives the swapped-out subtree as a boxed
+/// [`Retired<N>`](crate::Retired) (type-erased — `Element` is
+/// node-agnostic; downcast to `Retired<YourNode>`) INSTEAD of the driver
+/// tearing it down. The hook owns BOTH halves of the teardown:
+///
+/// - **drop timing** — the hook holds the `Realized` while an exit
+///   animation plays and drops it in the `after_ms` task;
+/// - **structural detachment** — the driver does NOT `remove_child` /
+///   `clear_children` the outgoing nodes; the hook removes them (the
+///   `Retired` carries `parent` + `nodes`) when the animation completes.
+///   Detaching eagerly would defeat the hook's whole purpose: an exit
+///   animation on an already-detached node is invisible (removed from
+///   the DOM / view tree before a single frame renders).
+///
+/// Because the outgoing nodes stay attached while the incoming branch
+/// builds, a retire hole should be the sole child of a dedicated
+/// container (the presence placeholder pattern) so the transient
+/// old+new coexistence can't skew sibling indices.
 pub type RetireHook = Box<dyn FnMut(Box<dyn Any>)>;
 
 /// How a Dyn hole decides and builds. The build closure is invoked by the
@@ -183,8 +195,10 @@ where
 
 impl Element {
     /// Install a retire hook on a `Dyn` hole (see [`RetireHook`]). The
-    /// swapped-out `Realized` is handed to the hook instead of dropped;
-    /// default (no hook) drops immediately.
+    /// swapped-out subtree is handed to the hook (as a boxed
+    /// [`Retired<N>`](crate::Retired)) with its nodes STILL ATTACHED;
+    /// the hook owns detachment + drop timing. Default (no hook): the
+    /// driver detaches and drops immediately.
     ///
     /// Panics on non-`Dyn` elements — retiring is a structural-hole
     /// concept only.

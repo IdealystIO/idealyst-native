@@ -9655,10 +9655,13 @@ dependencies = [
 name = "scene-parity"
 version = "0.4.0"
 dependencies = [
+ "raw-window-handle",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
  "runtime-world",
+ "stack-navigator",
+ "swap-navigator",
 ]
 
 [[package]]

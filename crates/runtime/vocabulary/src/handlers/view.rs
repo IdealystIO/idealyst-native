@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use runtime_scene::{Element, MountCx};
 
-use crate::caps::{InputOps, PressableOps, SafeAreaOps, ScrollOps, StyleOps, ViewOps};
+use crate::caps::{InputOps, PressableOps, SafeAreaOps, ScrollOps, ViewOps};
 use crate::prims::{PressablePrim, ScrollViewPrim, ViewPrim};
 use crate::style_attach::{attach_style, StyleServices};
 

@@ -6,7 +6,7 @@ use runtime_core::primitives::link::LinkConfig;
 use runtime_scene::{Element, MountCx};
 use runtime_world::{effect, Value};
 
-use crate::caps::{AssetOps, IconOps, ImageOps, LinkOps, StyleOps};
+use crate::caps::{AssetOps, IconOps, ImageOps, LinkOps};
 use crate::prims::{IconPrim, ImagePrim, LinkPrim};
 use crate::style_attach::{attach_style, StyleServices};
 

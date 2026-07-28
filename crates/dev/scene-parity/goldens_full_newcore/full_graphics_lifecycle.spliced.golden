@@ -1,0 +1,30 @@
+# scene-parity FULL-OP NEW-CORE override — scenario `full_graphics_lifecycle`, mode `spliced`
+#
+# Sanctioned kernel-ordering divergences only (README + the
+# FULL_NEWCORE_OVERRIDES docs): teardown release interleaving (old
+# LIFO vs new creation-order effect free — same release SET, only
+# the order within teardown windows) and, where noted, cross-effect
+# firing order across sibling effects (divergence #3).
+# Regenerate: UPDATE_NEWCORE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 graphics on_ready=<fn> on_resize=<fn> on_lost=<fn>
+apply_style n1 {background: Some(Literal(Color("#202020"))), width: Some(Literal(Px(100.0)))}
+insert_at n0 <- n1 @ 0
+
+== surface ready 640x480 @2 ==
+author on_ready 640x480 @2
+
+== resize 800x600 @2 ==
+author on_resize 800x600 @2
+
+== surface lost ==
+author on_lost
+
+== swap out (unstyle then release_graphics) ==
+remove_child n0 -x n1
+on_node_unstyled n1
+release_graphics n1
+create n2 text "no canvas"
+insert_at n0 <- n2 @ 0

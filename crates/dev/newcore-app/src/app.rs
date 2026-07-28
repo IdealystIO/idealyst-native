@@ -144,6 +144,89 @@ fn TodoRow(
     }
 }
 
+// ===========================================================================
+// P3-set primitive demo (overlay / anchored_overlay / presence /
+// flat_list) — a second root, mounted by its own e2e tests so the
+// TodoApp op-log assertions stay undisturbed. Core-agnostic like
+// everything else in this file: the tags lower to the old primitives or
+// to the vocabulary glue depending on the build's core.
+// ===========================================================================
+
+/// The demo's root signals, exposed so tests can drive mutations
+/// directly as well as through recorded button handlers.
+pub struct DemoHandle {
+    pub modal_open: Signal<bool>,
+    pub toast_on: Signal<bool>,
+    pub rows: Signal<Vec<Todo>>,
+}
+
+/// Build the P3-set demo tree plus its handle. Must run with the owning
+/// world/scope ambient (tests wrap this in `World::enter`).
+pub fn build_demo() -> (Element, DemoHandle) {
+    let modal_open = signal(false);
+    let toast_on = signal(false);
+    let rows = signal(vec![
+        Todo { id: 1, label: "alpha".to_string(), done: false },
+        Todo { id: 2, label: "beta".to_string(), done: false },
+        Todo { id: 3, label: "gamma".to_string(), done: true },
+    ]);
+    let root = ui! {
+        PrimsDemo(modal_open = modal_open, toast_on = toast_on, rows = rows)
+    };
+    (root, DemoHandle { modal_open, toast_on, rows })
+}
+
+/// Exercises the P3-set tags: a reactive-`if`-gated `overlay` +
+/// `anchored_overlay` pair (modal open/close via authored handlers and
+/// backdrop dismiss), a `presence` with enter/exit fades, and a
+/// `flat_list` over a reactive row signal.
+///
+/// The anchor target is a DETACHED ref (`Ref::default()` — fills
+/// nothing, resolves `None`): real anchor filling is the P5 identity
+/// port; an unresolved anchor exercises the primitive's structure
+/// without it, identically on both cores.
+#[component]
+fn PrimsDemo(
+    modal_open: Signal<bool>,
+    toast_on: Signal<bool>,
+    rows: Signal<Vec<Todo>>,
+) -> Element {
+    let anchor = AnchorTarget::from(Ref::<ViewHandle>::default());
+    ui! {
+        view {
+            button(label = "open-modal", on_click = move || modal_open.set(true))
+            button(label = "toggle-toast", on_click = move || toast_on.set(!toast_on.get()))
+            if modal_open.get() {
+                overlay(
+                    placement = ViewportPlacement::Center,
+                    backdrop = BackdropMode::Dismiss,
+                    on_dismiss = move || modal_open.set(false),
+                    trap_focus = true
+                ) {
+                    text { "modal body" }
+                    button(label = "close-modal", on_click = move || modal_open.set(false))
+                }
+                anchored_overlay(target = anchor.clone(), side = ElementSide::Below) {
+                    text { "anchored tip" }
+                }
+            }
+            presence(
+                present = move || toast_on.get(),
+                enter = PresenceAnim::fade(100, Easing::EaseOut),
+                exit = PresenceAnim::fade(100, Easing::EaseIn)
+            ) {
+                text { "toast body" }
+            }
+            flat_list(
+                data = rows,
+                key = |_i, t: &Todo| t.id as u64,
+                size = fixed_size(24.0),
+                render = |_i, t: &Todo| ui! { text { t.label.clone() } }.into()
+            )
+        }
+    }
+}
+
 /// The root component: a memo, an uncontrolled-input-free controlled
 /// `text_input`, an add handler, a reactive empty-state `if`, and the
 /// keyed list.

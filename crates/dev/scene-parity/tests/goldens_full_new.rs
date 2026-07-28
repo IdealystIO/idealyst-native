@@ -29,6 +29,21 @@ full_golden_new!(full_style_sheet_cohort_spliced, "full_style_sheet_cohort", Mod
 full_golden_new!(full_style_state_overlay_spliced, "full_style_state_overlay", Mode::Spliced);
 full_golden_new!(full_style_signal_class_spliced, "full_style_signal_class", Mode::Spliced);
 full_golden_new!(full_style_preminted_spliced, "full_style_preminted", Mode::Spliced);
+full_golden_new!(full_virtualizer_lifecycle_spliced, "full_virtualizer_lifecycle", Mode::Spliced);
+full_golden_new!(full_virtualizer_lane_swap_anchored, "full_virtualizer_lane_swap", Mode::Anchored);
+full_golden_new!(full_virtualizer_lane_swap_spliced, "full_virtualizer_lane_swap", Mode::Spliced);
+full_golden_new!(full_graphics_lifecycle_anchored, "full_graphics_lifecycle", Mode::Anchored);
+full_golden_new!(full_graphics_lifecycle_spliced, "full_graphics_lifecycle", Mode::Spliced);
+full_golden_new!(full_portal_toggle_anchored, "full_portal_toggle", Mode::Anchored);
+full_golden_new!(full_portal_toggle_spliced, "full_portal_toggle", Mode::Spliced);
+full_golden_new!(full_overlay_static_spliced, "full_overlay_static", Mode::Spliced);
+full_golden_new!(full_overlay_toggle_spliced, "full_overlay_toggle", Mode::Spliced);
+full_golden_new!(full_presence_cycle_anchored, "full_presence_cycle", Mode::Anchored);
+full_golden_new!(full_presence_cycle_spliced, "full_presence_cycle", Mode::Spliced);
+full_golden_new!(full_presence_bare_spliced, "full_presence_bare", Mode::Spliced);
+full_golden_new!(nav_swap_select_spliced, "nav_swap_select", Mode::Spliced);
+full_golden_new!(nav_swap_dispose_evict_spliced, "nav_swap_dispose_evict", Mode::Spliced);
+full_golden_new!(nav_stack_push_pop_spliced, "nav_stack_push_pop", Mode::Spliced);
 
 /// The new-core registry mirrors the old one exactly: same names, same
 /// mode sets, same order.

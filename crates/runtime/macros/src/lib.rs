@@ -352,11 +352,18 @@ fn emit_component(attr: component_attr::ComponentAttr, item: TokenStream) -> Tok
     #[cfg(feature = "new-core")]
     {
         if attr.lazy {
+            // Checked 2026-07-28: P3b (the new-core web backend) landed
+            // WITHOUT lazy chunking — the vocabulary has no lazy/
+            // chunk-mount prim, so `Element::Lazy`'s wasm-split driver
+            // still has no new-core target. Message updated to name the
+            // actual gap rather than a phase that already shipped.
             return syn::Error::new_spanned(
                 &item_fn.sig.ident,
                 "#[component(lazy)] / #[lazy] is not yet available on the new core \
-                 (idea-lite migration: wasm-split chunking retargets in P3b). Build \
-                 without `runtime-macros/new-core` or make the component eager.",
+                 (idea-lite migration: the vocabulary has no lazy/chunk-mount prim — \
+                 the wasm-split chunk driver retargets with the remaining web \
+                 deferred set, alongside hydration). Build without \
+                 `runtime-macros/new-core` or make the component eager.",
             )
             .to_compile_error()
             .into();

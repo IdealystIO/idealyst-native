@@ -10,12 +10,89 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use newcore_app::app::{build_app, AppHandle};
+use newcore_app::app::{build_app, build_demo, AppHandle, DemoHandle, Todo};
+use runtime_vocabulary::glue::scheduling::{install_scheduler, ScheduleHandle, Scheduler};
 use runtime_scene::{realize, Realized, Registry};
 use runtime_vocabulary::LegacyBridge;
 use runtime_world::World;
 use scene_parity::full::FullRecorder;
 use scene_parity::{Mode, PNode, Recorder};
+
+// ===========================================================================
+// Manually pumped scheduler (the vocabulary presence-test pattern):
+// presence enter/exit anims schedule frame + after_ms callbacks; queueing
+// them keeps each step's op-log deterministic. The registry is a
+// process-global first-install-wins, the queues are thread-local — each
+// `#[test]` thread pumps only its own tasks. The TodoApp tests schedule
+// nothing, so installing here changes nothing for them.
+// ===========================================================================
+
+type Queued = Rc<RefCell<Option<Box<dyn FnOnce()>>>>;
+
+thread_local! {
+    static FRAME_QUEUE: RefCell<Vec<Queued>> = const { RefCell::new(Vec::new()) };
+    static TIMER_QUEUE: RefCell<Vec<Queued>> = const { RefCell::new(Vec::new()) };
+}
+
+struct PumpHandle(Queued);
+
+impl ScheduleHandle for PumpHandle {
+    fn cancel(&mut self) {
+        self.0.borrow_mut().take();
+    }
+}
+
+impl Drop for PumpHandle {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
+struct PumpScheduler;
+
+impl Scheduler for PumpScheduler {
+    fn schedule_microtask(&self, f: Box<dyn FnOnce()>) {
+        f();
+    }
+
+    fn after_animation_frame(&self, f: Box<dyn FnOnce()>) -> Box<dyn ScheduleHandle> {
+        let slot: Queued = Rc::new(RefCell::new(Some(f)));
+        FRAME_QUEUE.with(|q| q.borrow_mut().push(slot.clone()));
+        Box::new(PumpHandle(slot))
+    }
+
+    fn after_ms(&self, _delay_ms: i32, f: Box<dyn FnOnce()>) -> Box<dyn ScheduleHandle> {
+        let slot: Queued = Rc::new(RefCell::new(Some(f)));
+        TIMER_QUEUE.with(|q| q.borrow_mut().push(slot.clone()));
+        Box::new(PumpHandle(slot))
+    }
+
+    fn raf_loop(&self, _f: Box<dyn FnMut()>) -> Box<dyn ScheduleHandle> {
+        Box::new(PumpHandle(Rc::new(RefCell::new(None))))
+    }
+}
+
+fn ensure_scheduler() {
+    install_scheduler(Box::new(PumpScheduler)); // first call wins
+}
+
+fn pump(queue: &'static std::thread::LocalKey<RefCell<Vec<Queued>>>) {
+    let tasks: Vec<Queued> = queue.with(|q| std::mem::take(&mut *q.borrow_mut()));
+    for slot in tasks {
+        let f = slot.borrow_mut().take();
+        if let Some(f) = f {
+            f();
+        }
+    }
+}
+
+fn pump_frames() {
+    pump(&FRAME_QUEUE);
+}
+
+fn pump_timers() {
+    pump(&TIMER_QUEUE);
+}
 
 type Bridged = LegacyBridge<FullRecorder>;
 
@@ -306,6 +383,185 @@ fn theme_swap_reapplies_styled_card() {
     assert!(
         log.contains("Token { name: \"color-surface\""),
         "the styled card re-applies on the swap:\n{log}"
+    );
+}
+
+// ===========================================================================
+// P3-set primitives: overlay / anchored_overlay / presence / flat_list
+// (the formerly macro-deferred tags), driven through the same authored
+// path: macro → glue wrappers → builders → prims → handlers → backend.
+// ===========================================================================
+
+struct DemoHarness {
+    rec: Recorder,
+    backend: Rc<RefCell<Bridged>>,
+    world: World,
+    handle: DemoHandle,
+    _realized: Realized<PNode>,
+}
+
+impl DemoHarness {
+    /// Mount the P3-set demo; returns the harness plus the mount-time
+    /// op log. Installs the pumped scheduler first (presence anims).
+    fn mount() -> (DemoHarness, Vec<String>) {
+        ensure_scheduler();
+        let rec = Recorder::default();
+        let backend = Rc::new(RefCell::new(LegacyBridge(FullRecorder::new(
+            rec.clone(),
+            Mode::Spliced,
+        ))));
+        let mut registry: Registry<Bridged> = Registry::new();
+        runtime_vocabulary::register_builtins(&mut registry);
+        let registry = Rc::new(registry);
+        let world = World::new();
+        let (root, handle) = world.enter(build_demo);
+        let realized = world.enter(|| realize(&backend, &registry, root));
+        let mount_ops = rec.take_ops();
+        (
+            DemoHarness { rec, backend, world, handle, _realized: realized },
+            mount_ops,
+        )
+    }
+
+    fn press(&self, label: &str) -> Vec<String> {
+        let fire = self.backend.borrow().0.button_action(label);
+        fire();
+        self.flush()
+    }
+
+    fn flush(&self) -> Vec<String> {
+        self.world.flush();
+        self.rec.take_ops()
+    }
+}
+
+/// Mount gates everything correctly: portals absent while the `if` is
+/// false, the presence placeholder mounted but its child unbuilt while
+/// `present` is false, and the virtualizer created with NO rows (rows
+/// are lazy — the platform window drives them).
+#[test]
+fn demo_mount_gates_portals_presence_and_rows() {
+    let (_h, ops) = DemoHarness::mount();
+    let log = joined(&ops);
+
+    assert!(log.contains("\"open-modal\""), "trigger button:\n{log}");
+    assert!(log.contains("\"toggle-toast\""), "toast button:\n{log}");
+    assert!(!log.contains("portal"), "no portal while the if is false:\n{log}");
+    assert!(log.contains("presence_placeholder"), "presence placeholder:\n{log}");
+    assert!(!log.contains("toast body"), "presence child unbuilt while absent:\n{log}");
+    assert!(log.contains("virtualizer"), "flat_list lowers to a virtualizer:\n{log}");
+    assert!(!log.contains("alpha"), "rows are window-driven, none at mount:\n{log}");
+}
+
+/// The authored open handler mounts BOTH portal compositions (the
+/// centered overlay with its dismissable backdrop, and the anchored
+/// overlay), and the close handler releases them again.
+#[test]
+fn overlay_open_close_mounts_and_releases_both_portals() {
+    let (h, _) = DemoHarness::mount();
+
+    let ops = h.press("open-modal");
+    let log = joined(&ops);
+    assert_eq!(
+        log.matches("portal target=").count(),
+        2,
+        "overlay + anchored_overlay each lower to one portal:\n{log}"
+    );
+    assert!(log.contains("pressable"), "Dismiss backdrop mounts a pressable scrim:\n{log}");
+    assert!(log.contains("\"modal body\""), "overlay content:\n{log}");
+    assert!(log.contains("\"close-modal\""), "overlay button:\n{log}");
+    assert!(log.contains("\"anchored tip\""), "anchored content:\n{log}");
+
+    let ops = h.press("close-modal");
+    let log = joined(&ops);
+    assert_eq!(
+        log.matches("release_portal").count(),
+        2,
+        "closing releases both portals:\n{log}"
+    );
+    assert!(!log.contains("portal target="), "no portal re-created:\n{log}");
+    // The false branch of the gating `if` swaps in the layout-neutral
+    // empty placeholder — the ONLY create the close may produce.
+    assert!(
+        log.contains("{position: Some(Absolute)}"),
+        "false branch is the absolute-positioned empty view:\n{log}"
+    );
+}
+
+/// Presence enter/exit through the authored toggle: flipping on builds
+/// the child and applies the enter fade (from-state now, rest on the
+/// next frame); flipping off applies the exit fade and — only when the
+/// exit's timer elapses — removes the still-attached child (the scene
+/// retire-hook contract: exit anims run on ATTACHED nodes).
+#[test]
+fn presence_toggle_enter_exit_cycle() {
+    let (h, _) = DemoHarness::mount();
+
+    // Enter: child mounts, enter-from state applies, rest is queued.
+    let ops = h.press("toggle-toast");
+    let log = joined(&ops);
+    assert!(log.contains("\"toast body\""), "presence child mounts on flip-on:\n{log}");
+    assert!(log.contains("apply_presence"), "enter anim applies:\n{log}");
+    pump_frames();
+    let log = joined(&h.rec.take_ops());
+    assert!(
+        log.contains("apply_presence") && log.contains("rest"),
+        "animate-to-rest fires on the next frame:\n{log}"
+    );
+
+    // Exit: the fade applies but the child STAYS attached until the
+    // exit duration elapses.
+    let ops = h.press("toggle-toast");
+    let log = joined(&ops);
+    assert!(log.contains("apply_presence"), "exit anim applies:\n{log}");
+    assert!(
+        !log.contains("remove_child"),
+        "child stays attached while the exit runs:\n{log}"
+    );
+    pump_frames();
+    pump_timers();
+    let log = joined(&h.rec.take_ops());
+    assert!(
+        log.contains("remove_child"),
+        "exit completion detaches and drops the child:\n{log}"
+    );
+}
+
+/// The flat_list contract end to end: the platform window mounts rows
+/// (detached, keyed by the authored `key`), and a data edit through the
+/// authored signal notifies the backend exactly once per flush.
+#[test]
+fn flat_list_window_mounts_rows_and_data_edits_notify() {
+    let (h, _) = DemoHarness::mount();
+    let sim = h.backend.borrow().0.virt_sim(0);
+
+    // Rows realize with the world ambient — the documented host-driver
+    // contract for virtualizer callback invocation.
+    h.world.enter(|| sim.set_window(0..2));
+    let log = joined(&h.rec.take_ops());
+    assert!(log.contains("\"alpha\""), "row 0 renders its label:\n{log}");
+    assert!(log.contains("\"beta\""), "row 1 renders its label:\n{log}");
+    assert!(!log.contains("\"gamma\""), "row 2 outside the window:\n{log}");
+    assert!(log.contains("size=24"), "fixed_size(24.0) reaches the sim:\n{log}");
+
+    // Reactive data: appending a row fires the data-changed effect.
+    let mut rows = h.world.enter(|| h.handle.rows.get());
+    rows.push(Todo { id: 4, label: "delta".to_string(), done: false });
+    h.world.enter(|| h.handle.rows.set(rows));
+    let log = joined(&h.flush());
+    assert!(
+        log.contains("virtualizer_data_changed"),
+        "data edit notifies the backend:\n{log}"
+    );
+
+    // The grown window mounts ONLY the new row (keyed reuse of 0/1).
+    h.world.enter(|| sim.set_window(0..4));
+    let log = joined(&h.rec.take_ops());
+    assert!(log.contains("\"gamma\""), "row 2 mounts when windowed in:\n{log}");
+    assert!(log.contains("\"delta\""), "appended row mounts:\n{log}");
+    assert!(
+        !log.contains("\"alpha\""),
+        "windowed-in growth keeps mounted rows (keyed reuse):\n{log}"
     );
 }
 

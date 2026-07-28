@@ -6,7 +6,7 @@ use std::rc::Rc;
 use runtime_scene::{Element, MountCx};
 use runtime_world::Value;
 
-use crate::caps::{ActivityIndicatorOps, SliderOps, StyleOps, TextInputOps, ToggleOps};
+use crate::caps::{ActivityIndicatorOps, SliderOps, TextInputOps, ToggleOps};
 use crate::prims::{ActivityIndicatorPrim, SliderPrim, TextAreaPrim, TextInputPrim, TogglePrim};
 use crate::style_attach::{attach_style, StyleServices};
 

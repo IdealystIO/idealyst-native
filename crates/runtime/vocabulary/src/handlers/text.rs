@@ -3,7 +3,7 @@
 use runtime_scene::{Element, MountCx};
 use runtime_world::{effect, Value};
 
-use crate::caps::{ButtonOps, StyleOps, TextOps};
+use crate::caps::{ButtonOps, TextOps};
 use crate::prims::{ButtonPrim, TextPrim, TextSourceProp};
 use crate::style_attach::{attach_style, on_teardown, StyleServices};
 

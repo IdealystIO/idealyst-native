@@ -38,9 +38,23 @@
 //! **Explicitly deferred to later phases** (per the migration plan's
 //! phasing — documented here so nothing is silently missing):
 //!
-//! - `virtualizer`/`flat_list`, `graphics`, `portal`/overlays,
-//!   `presence`, navigator primitives (P3–P6, each with its own
-//!   contract work);
+//! - `virtualizer`/`flat_list`, `graphics`, `portal` (+ the
+//!   `overlay`/`anchored_overlay` compositions) and `presence` HAVE
+//!   landed (`handlers/{virtualizer,graphics,portal,presence}.rs`) —
+//!   the virtualizer ports the closure path only; generator-backend
+//!   structured bindings stay deferred with the rest of the wire
+//!   metadata (below). Presence is re-expressed on the scene Dyn
+//!   driver's retire hook (see `handlers/presence.rs` for the one
+//!   sanctioned semantic change: mid-exit re-present rebuilds instead
+//!   of reusing the exiting scope). The NAVIGATOR primitives (swap +
+//!   stack + outlet) HAVE landed too (`handlers/navigator.rs`):
+//!   screens are retained `Realized` subtrees, `SwapNav`/`StackNav`
+//!   ride the world context, dispatch commits on the flush; still
+//!   deferred from that port (each with its phase, listed in the
+//!   handler's module docs): web URL sync + deferred initial mount
+//!   (P3), native system-back + native push surfaces (P4/P5), robot
+//!   nav registry (P5), stack per-screen header options + `link(route
+//!   = …)` integration (P6);
 //! - styled-text runs beyond the basic `create_styled_text` path (theme
 //!   re-realization, `JsBinding` fan-out);
 //! - hydration behavior (P3 web);
@@ -63,13 +77,29 @@
 //! that path — each fails compilation under `new-core` with a message
 //! naming its migration phase, never silently:
 //!
-//! - `overlay` / `anchored_overlay` / `presence` / `graphics` /
-//!   `flat_list` tags (their primitives are P3+ deferrals above);
-//! - the virtualizer `for i in count_method(sig)` sugar (virtualizer);
-//! - in-app `link(route = …)` (navigation, P6) — `external = …` works;
-//! - `test_id = …` on primitives (identity/robot registration, P5);
-//! - `#[component(lazy)]` / `#[lazy]` (wasm-split chunking, P3b) and
-//!   `#[method]` blocks (Ref/robot machinery, P5);
+//! - the `overlay` / `anchored_overlay` / `presence` / `graphics` /
+//!   `flat_list` tags NOW LOWER (glue wrappers in
+//!   `glue::primitives::{overlay,presence,graphics,flat_list}` over
+//!   [`builders::overlay`], [`builders::anchored_overlay`],
+//!   [`builders::presence`], [`builders::graphics`],
+//!   [`builders::virtualizer`]); `flat_list` ports the old typed
+//!   adapter onto the closure-form virtualizer;
+//! - the virtualizer `for i in count_method(sig)` sugar stays deferred
+//!   (it lowers to the structured generator-backend `Derived<usize>`
+//!   count binding — wire metadata, post-P7 with the rest);
+//! - in-app `link(route = …)` (the ambient link-activator seam that
+//!   resolves a route link to the enclosing navigator's dispatch lives
+//!   in the old routing registry — navigation SDK retarget, P6);
+//!   `external = …` works;
+//! - `test_id = …` on primitives (identity/robot registration, P5; the
+//!   vocabulary prims carry no test-id slot, so the macro refuses the
+//!   attr rather than silently dropping the id);
+//! - `web_view` (dispatches through the old-core WebView SDK component;
+//!   SDK retarget, P6);
+//! - `#[component(lazy)]` / `#[lazy]` (no lazy/chunk-mount prim in the
+//!   vocabulary yet — `Element::Lazy`'s wasm-split chunk driver
+//!   retargets with the remaining web deferred set) and `#[method]`
+//!   blocks (Ref/robot machinery, P5);
 //! - structured generator-backend bindings (`Derived` metadata,
 //!   `Element::Switch`/`Repeat` batching): lowered instead to the
 //!   equivalent closure forms — same observable reactivity, no wire
@@ -138,8 +168,9 @@ pub mod theme;
 
 pub use bridge::LegacyBridge;
 pub use builders::{
-    activity_indicator, button, icon, image, link, pressable, scroll_view, slider, text, text_area,
-    text_input, toggle, view, SceneChild, TextContent,
+    activity_indicator, anchored_overlay, button, graphics, icon, image, link, navigator_outlet,
+    overlay, portal, presence, pressable, scroll_view, slider, stack_navigator, swap_navigator,
+    text, text_area, text_input, toggle, view, virtualizer, SceneChild, TextContent,
 };
 pub use caps::AllCaps;
 pub use handlers::register_builtins;

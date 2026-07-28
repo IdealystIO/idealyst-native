@@ -1,0 +1,35 @@
+# scene-parity FULL-OP golden — scenario `full_portal_toggle`, mode `anchored`
+#
+# P3-set: a raw viewport portal behind a `when` toggle. Mount pins
+# create_portal(target/on_dismiss/trap_focus) -> child insertion;
+# the close step pins release_portal firing inside the teardown
+# window (anchored: scope-drop [release] then clear; spliced:
+# remove then scope-drop [release]); reopen mounts fresh.
+#
+# Complete backend-call stream (create_*/update_*/apply_style/release_*
+# + the structural ops). Node names are creation-order (n0, n1, ...).
+# Owned by the OLD core; regenerate after an INTENDED walker change
+# with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 anchor
+clear_children n1
+create n2 portal target=viewport(Center) on_dismiss=<fn> trap_focus=true
+create n3 text "inside"
+insert n2 <- n3
+insert n1 <- n2
+insert n0 <- n1
+
+== close (release_portal inside the teardown window) ==
+release_portal n2
+clear_children n1
+create n4 text "closed"
+insert n1 <- n4
+
+== reopen (fresh portal mount) ==
+clear_children n1
+create n5 portal target=viewport(Center) on_dismiss=<fn> trap_focus=true
+create n6 text "inside"
+insert n5 <- n6
+insert n1 <- n5
