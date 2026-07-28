@@ -94,7 +94,12 @@ debug-node-ids = []
 # WebSocket dial-out to a `robot-relay` so a browser app exposes the Robot
 # bridge it can't host itself. Forwards to `runtime-core/robot` for the
 # dispatch core. Off by default; `idealyst dev --web` enables it.
-robot = ["runtime-core/robot"]
+# `runtime-vocabulary?/robot`: when the `new-core` boot path is ALSO
+# compiled, the transport routes verbs to the vocabulary registry for a
+# new-core app (see robot_transport::dispatch_verb) — the `?/` forward
+# turns that registry on without dragging runtime-vocabulary into
+# old-core-only robot builds.
+robot = ["runtime-core/robot", "runtime-vocabulary?/robot"]
 # idea-lite core migration (P3b): the `newcore` module — `runtime_scene::Host`
 # + all 30 `runtime_vocabulary::caps` traits implemented directly on
 # `WebBackend` (UFCS delegation to the existing Backend impl), plus the

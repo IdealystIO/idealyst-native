@@ -3,10 +3,10 @@
 //! The scene sits between the reactive kernel (`runtime-world`) and the
 //! primitive vocabulary (P2): it defines *structure* and nothing else.
 //!
-//! - [`Element`] — the abstract blueprint a component returns: five
-//!   variants (`Item`/`Fragment`/`Dyn`/`Keyed`/`Owned`), of which only
-//!   `Item` ever crosses the platform boundary. Payloads are type-erased;
-//!   the scene never interprets them.
+//! - [`Element`] — the abstract blueprint a component returns: six
+//!   variants (`Item`/`Fragment`/`Dyn`/`Keyed`/`Owned`/`Many`), of which
+//!   only `Item` and `Many` ever cross the platform boundary. Payloads are
+//!   type-erased; the scene never interprets them.
 //! - [`Host`] — the entire structural seam a platform must implement:
 //!   7 methods (`insert`, `insert_many`, `insert_at`, `remove_child`,
 //!   `clear_children`, `create_anchor`, `supports_splice`), extracted
@@ -34,11 +34,11 @@ mod registry;
 mod tests;
 
 pub use element::{
-    component_scope, dyn_element, dyn_keyed, fragment, item, keyed, owned, DynSpec, Element, Key,
-    RetireHook,
+    component_scope, dyn_element, dyn_keyed, fragment, item, keyed, many, owned, DynSpec, Element,
+    Key, RetireHook,
 };
 pub use host::Host;
 pub use realize::{
     realize, DynLive, DynWatch, KeyedLive, KeyedState, LiveNode, MountCx, Realized, Retired,
 };
-pub use registry::{Handler, Registry};
+pub use registry::{Handler, ManyHandler, Registry};

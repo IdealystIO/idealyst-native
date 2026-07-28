@@ -91,9 +91,15 @@
 //!   resolves a route link to the enclosing navigator's dispatch lives
 //!   in the old routing registry — navigation SDK retarget, P6);
 //!   `external = …` works;
-//! - `test_id = …` on primitives (identity/robot registration, P5; the
-//!   vocabulary prims carry no test-id slot, so the macro refuses the
-//!   attr rather than silently dropping the id);
+//! - ~~`test_id = …`~~ — SUPPORTED (P5 identity seam, brought forward):
+//!   every prim the old core's `with_test_id` covers carries a
+//!   `test_id` slot + builder setter, mount handlers register into the
+//!   vocabulary-owned `robot` registry (`src/robot.rs`, behind the
+//!   `robot` Cargo feature), and the macro lowers `test_id = …` to the
+//!   setter on both cores. Still deferred from the robot surface: the
+//!   nav registry, `#[method]` component blocks, and `watch_signal`
+//!   (P5 remainder — see `robot`'s module docs for the bridge-adapter
+//!   contract);
 //! - `web_view` (dispatches through the old-core WebView SDK component;
 //!   SDK retarget, P6);
 //! - `#[component(lazy)]` / `#[lazy]` (no lazy/chunk-mount prim in the
@@ -101,9 +107,15 @@
 //!   retargets with the remaining web deferred set) and `#[method]`
 //!   blocks (Ref/robot machinery, P5);
 //! - structured generator-backend bindings (`Derived` metadata,
-//!   `Element::Switch`/`Repeat` batching): lowered instead to the
+//!   `Element::Switch` wire metadata): lowered instead to the
 //!   equivalent closure forms — same observable reactivity, no wire
-//!   metadata (generator backends re-land post-P7).
+//!   metadata (generator backends re-land post-P7). The static-range
+//!   `Repeat` batching and the f-string `JsBinding` text fast path are
+//!   PORTED (no longer deferred): `Element::Many(RepeatPrim)` +
+//!   `handlers::repeat` drive one `execute_batch_with_attach` FFI on
+//!   batching backends, and `TextSourceProp::JsBinding` +
+//!   `register_reactive_text_binding` + per-signal notifier effects
+//!   (`notify_signal_text_js`) deliver JS-side text fan-out.
 //!
 //! `COVERAGE.md` (crate root) maps every one of the Backend trait's
 //! methods to its Ops trait — nothing is silently unaccounted for.
@@ -163,6 +175,8 @@ pub mod caps;
 pub mod glue;
 pub mod handlers;
 pub mod prims;
+#[cfg(feature = "robot")]
+pub mod robot;
 pub mod style_attach;
 pub mod theme;
 

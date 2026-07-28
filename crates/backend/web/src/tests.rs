@@ -1431,6 +1431,13 @@ fn text_input_create_adopts_ssr_input_during_hydration() {
         "exactly one input in the DOM after hydration; a fresh duplicate would be the \
          original bug's signature",
     );
+
+    // TEST HYGIENE: `WebBackend::hydrate` arms the scheduler's hydration
+    // microtask buffer; only `finish` (never called here) disarms it. A
+    // leaked armed buffer swallows LATER tests' scheduled microtasks —
+    // the `regression_image_on_load_cached_does_not_reenter_borrow`
+    // "deferred on_load must fire" failure under `--features hydrate`.
+    crate::scheduler::end_hydration_buffering();
 }
 
 // ---------------------------------------------------------------------------
@@ -1501,6 +1508,13 @@ fn insert_at_removes_stale_ssr_node_on_divergence_remount() {
         0,
         "the stale SSR nav must not survive anywhere in the mount",
     );
+
+    // TEST HYGIENE: `WebBackend::hydrate` arms the scheduler's hydration
+    // microtask buffer; only `finish` (never called here) disarms it. A
+    // leaked armed buffer swallows LATER tests' scheduled microtasks —
+    // the `regression_image_on_load_cached_does_not_reenter_borrow`
+    // "deferred on_load must fire" failure under `--features hydrate`.
+    crate::scheduler::end_hydration_buffering();
 }
 
 /// Count element children of `el` via the sibling chain (`.children()` /
@@ -1552,6 +1566,13 @@ fn insert_many_removes_stale_ssr_node_on_divergence_remount() {
         0,
         "the stale SSR row must not survive after an insert_many remount resync",
     );
+
+    // TEST HYGIENE: `WebBackend::hydrate` arms the scheduler's hydration
+    // microtask buffer; only `finish` (never called here) disarms it. A
+    // leaked armed buffer swallows LATER tests' scheduled microtasks —
+    // the `regression_image_on_load_cached_does_not_reenter_borrow`
+    // "deferred on_load must fire" failure under `--features hydrate`.
+    crate::scheduler::end_hydration_buffering();
 }
 
 /// REGRESSION TEST — `Element::External` hydration. SSR renders an external
@@ -1683,6 +1704,13 @@ fn create_external_consumes_stale_ssr_host_when_handler_builds_fresh() {
             .unwrap_or(false),
         "cursor must resume at the external's next sibling for clean adoption",
     );
+
+    // TEST HYGIENE: `WebBackend::hydrate` arms the scheduler's hydration
+    // microtask buffer; only `finish` (never called here) disarms it. A
+    // leaked armed buffer swallows LATER tests' scheduled microtasks —
+    // the `regression_image_on_load_cached_does_not_reenter_borrow`
+    // "deferred on_load must fire" failure under `--features hydrate`.
+    crate::scheduler::end_hydration_buffering();
 }
 
 /// COMPLEMENT — a hydration-AWARE external handler (one that adopts the SSR
@@ -1730,6 +1758,13 @@ fn create_external_adopting_handler_reuses_ssr_host() {
         1,
         "exactly one host — the adopted SSR node",
     );
+
+    // TEST HYGIENE: `WebBackend::hydrate` arms the scheduler's hydration
+    // microtask buffer; only `finish` (never called here) disarms it. A
+    // leaked armed buffer swallows LATER tests' scheduled microtasks —
+    // the `regression_image_on_load_cached_does_not_reenter_borrow`
+    // "deferred on_load must fire" failure under `--features hydrate`.
+    crate::scheduler::end_hydration_buffering();
 }
 
 // ---------------------------------------------------------------------------

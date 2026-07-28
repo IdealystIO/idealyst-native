@@ -24,6 +24,10 @@ use crate::style_attach::StyleProp;
 /// - `asset`: registered with the backend BEFORE `create_image` so the
 ///   `asset://{id}` sentinel resolves.
 pub struct ImagePrim {
+    /// Robot/automation anchor (`test_id = …`). Always present so the
+    /// builder setter compiles in every build; read only by the
+    /// `robot`-feature registration in the mount handler.
+    pub test_id: Option<&'static str>,
     pub src: Value<String>,
     pub alt: Value<Option<String>>,
     pub on_load: Option<ImageLoadHandler>,
@@ -41,6 +45,10 @@ pub struct ImagePrim {
 /// `Dyn`) re-applies per fire; `draw_in` snaps to `from` then schedules
 /// the stroke animation on the next microtask.
 pub struct IconPrim {
+    /// Robot/automation anchor (`test_id = …`). Always present so the
+    /// builder setter compiles in every build; read only by the
+    /// `robot`-feature registration in the mount handler.
+    pub test_id: Option<&'static str>,
     pub data: Value<IconData>,
     pub color: Option<Value<Color>>,
     pub stroke: Option<Value<f32>>,

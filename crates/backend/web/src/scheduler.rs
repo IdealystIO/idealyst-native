@@ -128,12 +128,17 @@ impl Scheduler for WebScheduler {
     ) -> Box<dyn ScheduleHandle> {
         let Some(window) = web_sys::window() else {
             f();
+            crate::dispatch_hook::fire_dispatch_hook();
             return Box::new(InertHandle);
         };
         let mut once: Option<Box<dyn FnOnce() + 'static>> = Some(f);
         let closure: Closure<dyn FnMut()> = Closure::new(move || {
             if let Some(g) = once.take() {
                 g();
+                // One-shot frame callbacks can run author code that
+                // stages new-core writes (animation ticks). See
+                // `dispatch_hook` module docs.
+                crate::dispatch_hook::fire_dispatch_hook();
             }
         });
         let handle = match window.request_animation_frame(closure.as_ref().unchecked_ref())
@@ -157,12 +162,18 @@ impl Scheduler for WebScheduler {
     ) -> Box<dyn ScheduleHandle> {
         let Some(window) = web_sys::window() else {
             f();
+            crate::dispatch_hook::fire_dispatch_hook();
             return Box::new(InertHandle);
         };
         let mut once: Option<Box<dyn FnOnce() + 'static>> = Some(f);
         let closure: Closure<dyn FnMut()> = Closure::new(move || {
             if let Some(g) = once.take() {
                 g();
+                // Timer callbacks are a primary author-code surface
+                // (`after_ms` bodies that set signals) — the flush hook
+                // is what commits those writes on the new core. See
+                // `dispatch_hook` module docs.
+                crate::dispatch_hook::fire_dispatch_hook();
             }
         });
         let handle = match window.set_timeout_with_callback_and_timeout_and_arguments_0(
@@ -209,6 +220,10 @@ impl Scheduler for WebScheduler {
                 let mut f_borrow = user_fn.borrow_mut();
                 (&mut *f_borrow)();
             }
+            // rAF-loop iterations can run author code that stages
+            // new-core writes (frame-paced drag/scroll state). See
+            // `dispatch_hook` module docs.
+            crate::dispatch_hook::fire_dispatch_hook();
             let mut s = state.borrow_mut();
             if s.cancelled {
                 return;

@@ -2,9 +2,11 @@
 //! `ui!` + `#[component]` authoring surface: snake_case primitives,
 //! struct-literal components with named/defaulted props, children
 //! blocks, f-string text, reactive closures, a reactive `if`, a keyed
-//! `for` with row-local state, and handler-driven mutations. The crate
-//! feature decides which core it lowers to (see lib.rs); nothing in
-//! this file changes between the two.
+//! `for` with row-local state, and handler-driven mutations — plus
+//! `test_id = ...` identity anchors (the P5 seam: registered in the
+//! vocabulary robot registry on the new core, `Bound::test_id` on the
+//! old). The crate feature decides which core it lowers to (see
+//! lib.rs); nothing in this file changes between the two.
 
 use crate::prelude::*;
 use runtime_macros::{component, stylesheet, ui};
@@ -138,7 +140,11 @@ fn TodoRow(
                 button(label = move || format!("toggle-{}", id), on_click = move || (cb)())
             }
             if let Some(cb) = on_remove {
-                button(label = move || format!("remove-{}", id), on_click = move || (cb)())
+                // Shared across rows on purpose: sibling list rows
+                // sharing one affordance test_id is the find_all /
+                // toHaveCount pattern (duplicate policy: find is
+                // last-wins, find_all returns every row's button).
+                button(label = move || format!("remove-{}", id), test_id = "row-del", on_click = move || (cb)())
             }
         }
     }
@@ -239,13 +245,14 @@ fn TodoApp(
     let remaining = memo(move || todos.get().iter().filter(|t| !t.done).count());
     ui! {
         Section(title = "Todos", highlighted = true) {
-            text { "{remaining} left" }
+            text(test_id = "remaining") { "{remaining} left" }
             text_input(
                 value = draft,
                 on_change = move |s: String| draft.set(s),
-                placeholder = "What next?"
+                placeholder = "What next?",
+                test_id = "draft-input"
             )
-            button(label = "add", on_click = move || {
+            button(label = "add", test_id = "add-btn", on_click = move || {
                 let name = draft.get();
                 if name.is_empty() {
                     return;

@@ -20,6 +20,10 @@ use crate::style_attach::StyleProp;
 /// old walker wires on top is deferred with the style-engine port (see
 /// crate docs' deferred set).
 pub struct ViewPrim {
+    /// Robot/automation anchor (`test_id = …`). Always present so the
+    /// builder setter compiles in every build; read only by the
+    /// `robot`-feature registration in the mount handler.
+    pub test_id: Option<&'static str>,
     pub style: Option<StyleProp>,
     pub safe_area: SafeAreaSides,
     pub on_touch: Option<TouchHandler>,
@@ -38,6 +42,10 @@ pub struct ViewPrim {
 /// pressable is not a native form control, so the callback must be
 /// blocked uniformly — the walker's rationale, ported).
 pub struct PressablePrim {
+    /// Robot/automation anchor (`test_id = …`). Always present so the
+    /// builder setter compiles in every build; read only by the
+    /// `robot`-feature registration in the mount handler.
+    pub test_id: Option<&'static str>,
     pub on_press: Rc<dyn Fn()>,
     pub disabled: Option<Value<bool>>,
     pub preserves_focus: bool,
@@ -51,6 +59,10 @@ pub struct PressablePrim {
 /// (`apply_scroll_view_safe_area_inset`), the one place it diverges from
 /// `view`.
 pub struct ScrollViewPrim {
+    /// Robot/automation anchor (`test_id = …`). Always present so the
+    /// builder setter compiles in every build; read only by the
+    /// `robot`-feature registration in the mount handler.
+    pub test_id: Option<&'static str>,
     pub horizontal: bool,
     pub on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
     pub safe_area: SafeAreaSides,

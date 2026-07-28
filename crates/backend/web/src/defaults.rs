@@ -136,6 +136,14 @@ impl WebBackend {
         let f = js_sys::Function::new_no_args(src);
         let _ = f.call0(&JsValue::NULL);
         self.class_bindings_shim_injected = true;
+        // The shim just WRAPPED `window.__idealystOnSignalChanged`
+        // (text_bindings' handler) with the class dispatcher. Drop any
+        // cached handle `ship_signal_change_to_js` captured BEFORE the
+        // wrap — on the new core a text-binding notifier can fire before
+        // the first class binding registers, and shipping through the
+        // stale pre-wrap handle would bypass class bindings forever
+        // (sclass rows freeze; found by the js-framework-bench gate).
+        self.signal_changed_fn = None;
     }
 
     /// Inject the JS-side stable-node-id shim

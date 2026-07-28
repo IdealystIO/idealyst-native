@@ -22,18 +22,34 @@ use crate::realize::MountCx;
 pub type Handler<H> =
     Rc<dyn Fn(&mut MountCx<'_, H>, Rc<dyn Any>, Vec<Element>) -> <H as Host>::Node>;
 
+/// A type-erased MULTI-NODE mount handler (see [`Element::Many`]): receives
+/// the mount context, the payload, and the REAL parent node, mounts N
+/// sibling nodes into it (batched or per-node — the handler's call), and
+/// returns the resulting live subtree plus the number of top-level nodes it
+/// contributed to `parent` (the child-splice loop's `inserted` accounting;
+/// a following reactive region's base index depends on it).
+pub type ManyHandler<H> = Rc<
+    dyn Fn(
+        &mut MountCx<'_, H>,
+        Rc<dyn Any>,
+        &mut <H as Host>::Node,
+    ) -> (crate::realize::LiveNode<<H as Host>::Node>, usize),
+>;
+
 /// Per-backend registry of primitive handlers keyed by the payload type's
 /// [`TypeId`]. TypeId keying is collision-free by construction: two
 /// unrelated crates' `MapViewProps` types have distinct TypeIds, where a
 /// string-keyed registry would conflict.
 pub struct Registry<H: Host> {
     handlers: FxHashMap<TypeId, Handler<H>>,
+    many_handlers: FxHashMap<TypeId, ManyHandler<H>>,
 }
 
 impl<H: Host> Registry<H> {
     pub fn new() -> Self {
         Registry {
             handlers: FxHashMap::default(),
+            many_handlers: FxHashMap::default(),
         }
     }
 
@@ -63,10 +79,42 @@ impl<H: Host> Registry<H> {
         self.handlers.insert(TypeId::of::<T>(), erased)
     }
 
+    /// Register a MULTI-NODE handler for payload type `T` (dispatched by
+    /// [`Element::Many`]). Same type-erasure discipline as
+    /// [`register`](Self::register); returns any previously registered
+    /// many-handler for `T`.
+    pub fn register_many<T, F>(&mut self, handler: F) -> Option<ManyHandler<H>>
+    where
+        T: 'static,
+        F: Fn(
+                &mut MountCx<'_, H>,
+                &Rc<T>,
+                &mut H::Node,
+            ) -> (crate::realize::LiveNode<H::Node>, usize)
+            + 'static,
+    {
+        let erased: ManyHandler<H> = Rc::new(move |cx, any, parent| {
+            let typed: Rc<T> = any.downcast::<T>().unwrap_or_else(|_| {
+                panic!(
+                    "runtime-scene: Many payload downcast mismatch for the handler registered \
+                     under `{}` — the registry key and the stored closure disagree (scene bug)",
+                    std::any::type_name::<T>()
+                )
+            });
+            handler(cx, &typed, parent)
+        });
+        self.many_handlers.insert(TypeId::of::<T>(), erased)
+    }
+
     /// Look up the handler for `type_id`. Returns a cloned `Rc` so the
     /// caller can release the registry borrow before invoking the handler.
     pub fn get(&self, type_id: TypeId) -> Option<Handler<H>> {
         self.handlers.get(&type_id).cloned()
+    }
+
+    /// Look up the MULTI-NODE handler for `type_id`.
+    pub fn get_many(&self, type_id: TypeId) -> Option<ManyHandler<H>> {
+        self.many_handlers.get(&type_id).cloned()
     }
 
     /// `true` if `T` has a registered handler.

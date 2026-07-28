@@ -19,7 +19,7 @@
 //! `ReadSignal`, or `Memo` lowers to [`Value::Dyn`] (one binding effect).
 //! What is *dropped* is the old core's structured-binding metadata
 //! (`Derived { method, inputs, initial }`, `Element::Switch`,
-//! `Element::Repeat`, the virtualizer `for`-sugar): those carried wire
+//! the virtualizer `for`-sugar): those carried wire
 //! ids for generator backends (Roku) — pure metadata, no runtime
 //! behavior on event-driven backends. Under `new-core` the macro lowers
 //! the same author shapes to the equivalent *closure* forms (same
@@ -45,7 +45,7 @@
 //! | `for x in vec` | `StaticForEach` → `Vec<Element>` | same, glue-side |
 //! | `for x in sig, key=…` | `ReactiveForEach` → `Element::Each` | glue trait → `runtime_scene::keyed` |
 //! | `for i in 0..n.get()` | `each_keyed(EachKey, EachRowBuild)` | same names, mapped onto `runtime_scene::keyed` |
-//! | `for i in 0..3` (static range) | `Element::Repeat` (batched) | type-driven static path (rows built once; batching hint dropped) |
+//! | `for i in 0..3` (static range) | `Element::Repeat` (batched) | `__static_repeat` → `Element::Many(RepeatPrim)` (same batched one-FFI path) |
 //! | `Comp(prop = v)` | `BuildElement` struct literal | same shape against `glue::BuildElement` |
 //! | `#[component]` body | probe + reactivity rewrite | + wrapped in `component_scope(move ‖ …)` (run-once, untracked, collected `Owned`) |
 //! | `Reactive<T>` props | `runtime_core::Reactive` | `glue::Reactive` (same API, world-backed; `IntoValue` bridges to builders) |
@@ -62,14 +62,15 @@
 //! with a message naming the migration status (emitted by the macro
 //! under `new-core`): in-app `link(route = …)` (the ambient
 //! link-activator seam lives in the old routing registry — navigation
-//! SDK retarget, P6), `test_id = …` (no identity/robot registry on the
-//! new core until P5; the prims carry no test-id slot, so accepting the
-//! attr would silently drop it), `web_view` (old-core SDK component,
-//! P6), the virtualizer `for i in count(sig)` sugar (generator-backend
+//! SDK retarget, P6), `web_view` (old-core SDK component, P6), the
+//! virtualizer `for i in count(sig)` sugar (generator-backend
 //! `Derived<usize>` metadata, post-P7), `#[component(lazy)]` (no
 //! lazy/chunk-mount prim in the vocabulary yet) and `#[method]` blocks
-//! (Ref/robot machinery, P5). Everything this module *does* export is
-//! fully functional on the new core.
+//! (Ref/robot machinery, P5). `test_id = …` is NO LONGER deferred: it
+//! lowers to each wrapper's `.test_id(…)` setter (identical to the old
+//! lowering), backed by the vocabulary robot registry (`crate::robot`,
+//! `robot` feature) — the P5 identity seam, brought forward. Everything
+//! this module *does* export is fully functional on the new core.
 
 use std::rc::Rc;
 
@@ -230,6 +231,27 @@ fn one_or_fragment(mut nodes: Vec<Element>) -> Element {
     }
 }
 
+/// The static-range `for` lowering (`for i in 0..n { single-node }`) —
+/// the new-core carrier of the old `Element::Repeat`. Emitted by
+/// `ui!`/`jsx!` under `new-core` with EXACTLY the old macro's
+/// conditions (ident pattern, exclusive both-bound range, single-node
+/// body, non-reactive bounds), so both cores make the same batching
+/// decision for the same author shape. Mounts through the vocabulary's
+/// `repeat` multi-node handler: one `execute_batch_with_attach` FFI on
+/// batching backends (web), per-row mounts + one `insert_many`
+/// elsewhere.
+pub fn __static_repeat(
+    count: usize,
+    row_builder: impl Fn(usize) -> Element + 'static,
+) -> Vec<Element> {
+    vec![runtime_scene::many(crate::prims::PrimCell::new(
+        crate::prims::RepeatPrim {
+            count,
+            row_builder: Box::new(row_builder),
+        },
+    ))]
+}
+
 /// The layout-neutral empty branch: `position: absolute`, so a false
 /// `if` contributes no flex slot (port of the old
 /// `empty_view_primitive` emission — see the overlay-if-toggle memory).
@@ -254,8 +276,40 @@ pub fn empty_absolute_view() -> Element {
 /// `ui!`/`jsx!` attr list recognizes) plus `IntoElement`/`ChildList` to a
 /// glue wrapper. Every wrapper stores `a11y: AccessibilityProps` and
 /// applies it at build through its builder's `.a11y(…)`.
+///
+/// `test_id`: the default arm forwards to the builder's identity slot
+/// (the P5 seam — registered by the mount handler under the `robot`
+/// feature). The `test_id_ignored` arm is for wrappers whose OLD-core
+/// element carries no test_id field (`Link`, the virtualizer behind
+/// `flat_list`): `Bound::test_id` compiled there but `with_test_id`
+/// silently no-opped, and same-source parity means the glue accepts and
+/// drops identically rather than breaking those call sites.
 macro_rules! glue_wrapper_common {
     ($wrapper:ident) => {
+        impl $wrapper {
+            /// Robot/automation anchor (`test_id = …`) — stored on the
+            /// prim's identity slot; the mount handler registers it in
+            /// the robot registry (`robot` feature; inert otherwise).
+            pub fn test_id(mut self, id: &'static str) -> Self {
+                self.b = self.b.test_id(id);
+                self
+            }
+        }
+        glue_wrapper_common!(@common $wrapper);
+    };
+    ($wrapper:ident, test_id_ignored) => {
+        impl $wrapper {
+            /// Accepted-and-dropped, mirroring the old core exactly:
+            /// this primitive's `Element` variant carries no `test_id`
+            /// field there (`with_test_id` no-ops), so the id is
+            /// discarded on both cores. See the macro docs above.
+            pub fn test_id(self, _id: &'static str) -> Self {
+                self
+            }
+        }
+        glue_wrapper_common!(@common $wrapper);
+    };
+    (@common $wrapper:ident) => {
         impl $wrapper {
             /// `style = …` — static `StyleRules` (applied once) or a
             /// rules closure (re-applied on dependency change). See
@@ -714,7 +768,7 @@ pub mod primitives {
             }
         }
 
-        glue_wrapper_common!(GlueLink);
+        glue_wrapper_common!(GlueLink, test_id_ignored);
     }
 
     /// `overlay(children)` / `anchored_overlay(target, children)` — the
@@ -905,6 +959,14 @@ pub mod primitives {
         }
 
         impl GluePresence {
+            /// Robot/automation anchor (`test_id = …`) — forwarded to
+            /// the presence prim's identity slot (registered on the
+            /// placeholder by the mount handler under `robot`).
+            pub fn test_id(mut self, id: &'static str) -> Self {
+                self.b = self.b.test_id(id);
+                self
+            }
+
             /// The presence predicate. The old surface took a bare
             /// `Fn() -> bool` closure; `IntoValue<bool>` accepts the
             /// same closures (plus signals/bools — a superset, same
@@ -1150,7 +1212,7 @@ pub mod primitives {
             }
         }
 
-        glue_wrapper_common!(GlueFlatList);
+        glue_wrapper_common!(GlueFlatList, test_id_ignored);
     }
 }
 
@@ -1372,36 +1434,60 @@ pub fn each_keyed(items: impl Fn() -> Vec<(EachKey, EachRowBuild)> + 'static) ->
 pub enum TextSlotPart {
     /// A literal fragment.
     Lit(&'static str),
-    /// An interpolation slot, already coerced static-or-live by TYPE.
-    Slot(Value<String>),
+    /// An interpolation slot, already classified by TYPE.
+    Slot(TextSlot),
 }
 
-/// The static slot arm: any `Display` value formats once (`Const`).
+/// One interpolation slot — the new-core mirror of
+/// `runtime_core::TextSlot` (sources.rs), tier for tier: a `Display`
+/// value bakes in statically; a signal-backed slot carries its
+/// [`Signal::raw_id`] so JS-binding backends fan out without entering
+/// Rust per fire; an opaque computed slot (a `Reactive::Dynamic` prop —
+/// no signal id) forces the whole text down the effect path.
+pub enum TextSlot {
+    /// Value formatted once at build time.
+    Static(String),
+    /// Signal-backed slot (id + initial + untracked/tracked readers).
+    Live {
+        id: u64,
+        initial: String,
+        /// UNTRACKED read+format — the backend registration contract
+        /// (reactivity flows through the notifier effect, not this).
+        stringify: Rc<dyn Fn() -> String>,
+        /// TRACKED read+format — the per-signal notifier effect's body
+        /// AND the Effect-fallback's per-slot reader.
+        read: Rc<dyn Fn() -> String>,
+    },
+    /// Reactive but with no signal id: whole text → effect path. TRACKED.
+    Computed(Rc<dyn Fn() -> String>),
+}
+
+/// The static slot arm: any `Display` value formats once.
 pub trait StaticTextSlot {
     fn __idealyst_text_slot(
         self,
         fmt: impl Fn(&dyn std::fmt::Display) -> String + 'static,
-    ) -> Value<String>;
+    ) -> TextSlot;
 }
 
 impl<T: std::fmt::Display> StaticTextSlot for T {
     fn __idealyst_text_slot(
         self,
         fmt: impl Fn(&dyn std::fmt::Display) -> String + 'static,
-    ) -> Value<String> {
-        Value::Const(fmt(&self))
+    ) -> TextSlot {
+        TextSlot::Static(fmt(&self))
     }
 }
 
-/// The reactive slot arm: a `Signal` / `ReadSignal` / `Memo` /
-/// `Dynamic` [`Reactive`] slot re-formats on change (`Dyn`). Method
-/// resolution picks this over [`StaticTextSlot`] because the handles
-/// don't implement `Display`.
+/// The reactive slot arm: a `Signal` / `ReadSignal` / `Memo` slot is
+/// LIVE (id-bearing — JS fast path eligible); a `Dynamic` [`Reactive`]
+/// is opaque-computed. Method resolution picks this over
+/// [`StaticTextSlot`] because the handles don't implement `Display`.
 pub trait ReactiveTextSlot {
     fn __idealyst_text_slot(
         self,
         fmt: impl Fn(&dyn std::fmt::Display) -> String + 'static,
-    ) -> Value<String>;
+    ) -> TextSlot;
 }
 
 macro_rules! impl_reactive_text_slot {
@@ -1413,8 +1499,22 @@ macro_rules! impl_reactive_text_slot {
             fn __idealyst_text_slot(
                 self,
                 fmt: impl Fn(&dyn std::fmt::Display) -> String + 'static,
-            ) -> Value<String> {
-                Value::Dyn(Box::new(move || fmt(&self.get())))
+            ) -> TextSlot {
+                let fmt = Rc::new(fmt);
+                let fmt_read = fmt.clone();
+                // Initial computed UNTRACKED at slot construction (the
+                // old core's contract: building an element must not
+                // subscribe the ambient scope).
+                let initial = untrack(|| fmt(&self.get()));
+                TextSlot::Live {
+                    id: self.raw_id(),
+                    initial,
+                    stringify: Rc::new({
+                        let fmt = fmt.clone();
+                        move || untrack(|| fmt(&self.get()))
+                    }),
+                    read: Rc::new(move || fmt_read(&self.get())),
+                }
             }
         }
     )+};
@@ -1426,43 +1526,134 @@ impl<T: std::fmt::Display + Clone + 'static> ReactiveTextSlot for Reactive<T> {
     fn __idealyst_text_slot(
         self,
         fmt: impl Fn(&dyn std::fmt::Display) -> String + 'static,
-    ) -> Value<String> {
+    ) -> TextSlot {
         match self {
-            Reactive::Static(v) => Value::Const(fmt(&v)),
-            Reactive::Dynamic(f) => Value::Dyn(Box::new(move || fmt(&f()))),
+            Reactive::Static(v) => TextSlot::Static(fmt(&v)),
+            Reactive::Dynamic(f) => TextSlot::Computed(Rc::new(move || fmt(&f()))),
         }
     }
 }
 
-/// Assemble the parts: all-`Const` → one `Const` concatenation (a
-/// static literal stays zero-effect); any `Dyn` slot → one `Dyn`
-/// closure re-concatenating on each fire.
-pub fn __idealyst_text_from_parts(parts: Vec<TextSlotPart>) -> Value<String> {
-    let any_dyn = parts
-        .iter()
-        .any(|p| matches!(p, TextSlotPart::Slot(Value::Dyn(_))));
-    if !any_dyn {
-        let mut s = String::new();
-        for p in parts {
-            match p {
-                TextSlotPart::Lit(l) => s.push_str(l),
-                TextSlotPart::Slot(Value::Const(v)) => s.push_str(&v),
-                TextSlotPart::Slot(Value::Dyn(_)) => unreachable!("any_dyn checked"),
+/// The assembled f-string — what [`__idealyst_text_from_parts`] hands to
+/// `text(...)` through the [`TextContent`] seam. The `JsBinding` arm is
+/// the pre-decomposed fast path; consumers that only take a plain value
+/// (button labels) degrade it to `Value::Dyn(compute_fallback)` via
+/// `into_content` — reactivity identical, delivery via effect.
+pub enum AssembledText {
+    Value(Value<String>),
+    JsBinding(crate::prims::JsTextBinding),
+}
+
+impl TextContent for AssembledText {
+    fn into_content(self) -> Value<String> {
+        match self {
+            AssembledText::Value(v) => v,
+            AssembledText::JsBinding(b) => {
+                let compute = b.compute_fallback;
+                Value::Dyn(Box::new(move || compute()))
             }
         }
-        return Value::Const(s);
     }
-    Value::Dyn(Box::new(move || {
+
+    fn into_content_prop(self) -> crate::prims::TextSourceProp {
+        match self {
+            AssembledText::Value(v) => crate::prims::TextSourceProp::Value(v),
+            AssembledText::JsBinding(b) => crate::prims::TextSourceProp::JsBinding(b),
+        }
+    }
+}
+
+/// Assemble f-string pieces into the most capable source the slots allow
+/// — port of `runtime_core::__idealyst_text_from_parts`, tier for tier:
+/// all-static → one `Const` concatenation; any opaque computed slot →
+/// one `Dyn` closure (effect path); live-signal slots only → the
+/// pre-decomposed [`JsTextBinding`](crate::prims::JsTextBinding) (JS
+/// fast path on capable backends, `compute_fallback` effect elsewhere).
+pub fn __idealyst_text_from_parts(parts: Vec<TextSlotPart>) -> AssembledText {
+    let any_computed = parts
+        .iter()
+        .any(|p| matches!(p, TextSlotPart::Slot(TextSlot::Computed(_))));
+    let any_live = parts
+        .iter()
+        .any(|p| matches!(p, TextSlotPart::Slot(TextSlot::Live { .. })));
+
+    if !any_computed && !any_live {
         let mut s = String::new();
         for p in &parts {
             match p {
                 TextSlotPart::Lit(l) => s.push_str(l),
-                TextSlotPart::Slot(Value::Const(v)) => s.push_str(v),
-                TextSlotPart::Slot(Value::Dyn(f)) => s.push_str(&f()),
+                TextSlotPart::Slot(TextSlot::Static(v)) => s.push_str(v),
+                _ => unreachable!("no live/computed slots checked"),
             }
         }
-        s
-    }))
+        return AssembledText::Value(Value::Const(s));
+    }
+
+    if any_computed {
+        // Opaque slot present — effect path for the whole text (tracked
+        // reads inside the closure subscribe it to every live input).
+        let readers: Vec<Rc<dyn Fn() -> String>> = parts
+            .into_iter()
+            .map(|p| -> Rc<dyn Fn() -> String> {
+                match p {
+                    TextSlotPart::Lit(l) => Rc::new(move || l.to_string()),
+                    TextSlotPart::Slot(TextSlot::Static(v)) => Rc::new(move || v.clone()),
+                    TextSlotPart::Slot(TextSlot::Live { read, .. }) => read,
+                    TextSlotPart::Slot(TextSlot::Computed(read)) => read,
+                }
+            })
+            .collect();
+        return AssembledText::Value(Value::Dyn(Box::new(move || {
+            let mut s = String::new();
+            for r in &readers {
+                s.push_str(&r());
+            }
+            s
+        })));
+    }
+
+    // Live slots only: fold static text into the N+1 template parts
+    // around each signal slot (the JsBindingSpec field contract).
+    let mut template_parts: Vec<String> = vec![String::new()];
+    let mut signal_ids: Vec<u64> = Vec::new();
+    let mut initial_values: Vec<String> = Vec::new();
+    let mut stringifiers: Vec<Rc<dyn Fn() -> String>> = Vec::new();
+    let mut tracked_reads: Vec<Rc<dyn Fn() -> String>> = Vec::new();
+    for p in parts {
+        match p {
+            TextSlotPart::Lit(l) => template_parts.last_mut().unwrap().push_str(l),
+            TextSlotPart::Slot(TextSlot::Static(v)) => {
+                template_parts.last_mut().unwrap().push_str(&v)
+            }
+            TextSlotPart::Slot(TextSlot::Live { initial, stringify, read, id }) => {
+                signal_ids.push(id);
+                initial_values.push(initial);
+                stringifiers.push(stringify);
+                tracked_reads.push(read);
+                template_parts.push(String::new());
+            }
+            TextSlotPart::Slot(TextSlot::Computed(_)) => unreachable!("any_computed checked"),
+        }
+    }
+    let fallback_parts = template_parts.clone();
+    let fallback_reads = tracked_reads.clone();
+    AssembledText::JsBinding(crate::prims::JsTextBinding {
+        signal_ids,
+        template_parts,
+        initial_values,
+        compute_fallback: Rc::new(move || {
+            let mut s = String::new();
+            for (i, part) in fallback_parts.iter().enumerate() {
+                s.push_str(part);
+                if let Some(r) = fallback_reads.get(i) {
+                    s.push_str(&r());
+                }
+            }
+            s
+        }),
+        stringifiers,
+        tracked_reads,
+    })
 }
 
 // ============================================================================
@@ -1716,30 +1907,67 @@ mod tests {
     use super::*;
     use runtime_world::World;
 
-    /// Const-vs-Dyn is the load-bearing invariant of the retargeted
+    /// Const-vs-live is the load-bearing invariant of the retargeted
     /// lowering: literals must stay Const (zero effects), signal-reading
-    /// shapes must be Dyn.
+    /// shapes must stay reactive.
     #[test]
     fn fstring_parts_const_when_all_static() {
         let v = __idealyst_text_from_parts(vec![
             TextSlotPart::Lit("a"),
-            TextSlotPart::Slot(Value::Const("b".into())),
+            TextSlotPart::Slot(TextSlot::Static("b".into())),
         ]);
-        assert!(matches!(v, Value::Const(ref s) if s == "ab"));
+        assert!(
+            matches!(v, AssembledText::Value(Value::Const(ref s)) if s == "ab"),
+            "all-static parts fold to one Const"
+        );
     }
 
+    /// Signal slots assemble to the pre-decomposed JS binding (the old
+    /// core's `TextSource::JsBinding` tier): ids in slot order, N+1
+    /// template parts with captured statics folded in, and a
+    /// compute_fallback that renders the whole text.
     #[test]
-    fn fstring_parts_dyn_when_any_slot_is_live() {
+    fn fstring_parts_jsbinding_when_slots_are_live() {
         let world = World::new();
         world.enter(|| {
             let n = signal(1i32);
             let v = __idealyst_text_from_parts(vec![
                 TextSlotPart::Lit("n="),
                 TextSlotPart::Slot(n.__idealyst_text_slot(|d| format!("{d}"))),
+                TextSlotPart::Lit("!"),
             ]);
             match v {
-                Value::Dyn(f) => assert_eq!(f(), "n=1"),
-                Value::Const(_) => panic!("live slot must produce Dyn"),
+                AssembledText::JsBinding(b) => {
+                    assert_eq!(b.signal_ids, vec![n.raw_id()]);
+                    assert_eq!(b.template_parts, vec!["n=".to_string(), "!".to_string()]);
+                    assert_eq!(b.initial_values, vec!["1".to_string()]);
+                    assert_eq!((b.compute_fallback)(), "n=1!");
+                    assert_eq!((b.stringifiers[0])(), "1");
+                    n.set(5);
+                    // Committed via flush in real flows; direct closure
+                    // reads observe staged state per kernel semantics —
+                    // just assert the readers stay callable.
+                    let _ = (b.tracked_reads[0])();
+                }
+                AssembledText::Value(_) => panic!("live slots must produce the JsBinding tier"),
+            }
+        });
+    }
+
+    /// An opaque computed slot (Reactive::Dynamic — no signal id) forces
+    /// the whole text down the effect path (Value::Dyn), old tiering.
+    #[test]
+    fn fstring_parts_dyn_when_any_slot_is_computed() {
+        let world = World::new();
+        world.enter(|| {
+            let r: Reactive<i32> = Reactive::derive(|| 4);
+            let v = __idealyst_text_from_parts(vec![
+                TextSlotPart::Lit("n="),
+                TextSlotPart::Slot(r.__idealyst_text_slot(|d| format!("{d}"))),
+            ]);
+            match v {
+                AssembledText::Value(Value::Dyn(f)) => assert_eq!(f(), "n=4"),
+                _ => panic!("computed slot must force the Dyn effect tier"),
             }
         });
     }
@@ -1747,7 +1975,7 @@ mod tests {
     #[test]
     fn static_slot_formats_once_via_display() {
         let v = 7i32.__idealyst_text_slot(|d| format!("[{d}]"));
-        assert!(matches!(v, Value::Const(ref s) if s == "[7]"));
+        assert!(matches!(v, TextSlot::Static(ref s) if s == "[7]"));
     }
 
     #[test]

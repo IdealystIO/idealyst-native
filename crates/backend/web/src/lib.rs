@@ -42,6 +42,8 @@ mod batch_queue;
 mod introspect;
 #[cfg(feature = "new-core")]
 pub mod newcore;
+#[cfg(all(feature = "new-core", feature = "prim-navigator"))]
+mod newcore_url_sync;
 #[cfg(test)]
 mod tests;
 #[cfg(feature = "async-driver")]
@@ -54,6 +56,7 @@ pub mod dev_transport;
 pub mod robot_transport;
 #[cfg(feature = "robot")]
 mod robot_screenshot;
+pub mod dispatch_hook;
 pub mod drop_deferral;
 pub mod logger;
 mod phase_timer;
@@ -1394,8 +1397,11 @@ impl WebBackend {
     /// Ship a `(signal_id, new_value)` notification to the JS-side
     /// reactive layer. Single FFI hop — JS handles the per-binding
     /// fan-out internally. Called from the notifier closure
-    /// installed by [`Self::register_signal_for_js`].
-    fn ship_signal_change_to_js(&mut self, sid_raw: u64, value: &str) {
+    /// installed by [`Self::register_signal_for_js`], and (pub(crate))
+    /// from the new-core `notify_signal_value_js` capability override
+    /// in `newcore.rs` — world signals have no `Signal::set` JS hook,
+    /// so a vocabulary notifier effect delivers commits instead.
+    pub(crate) fn ship_signal_change_to_js(&mut self, sid_raw: u64, value: &str) {
         use wasm_bindgen::JsValue;
         if self.signal_changed_fn.is_none() {
             let window = web_sys::window().expect("no window");

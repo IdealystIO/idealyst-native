@@ -6,7 +6,7 @@ use std::rc::Rc;
 use runtime_scene::{Element, MountCx};
 use runtime_world::Value;
 
-use crate::caps::{ActivityIndicatorOps, SliderOps, TextInputOps, ToggleOps};
+use crate::caps::{ActivityIndicatorOps, IntrospectionOps, SliderOps, TextInputOps, ToggleOps};
 use crate::prims::{ActivityIndicatorPrim, SliderPrim, TextAreaPrim, TextInputPrim, TogglePrim};
 use crate::style_attach::{attach_style, StyleServices};
 
@@ -20,13 +20,28 @@ use super::{bind_dyn, bind_value, initial_of};
 /// the round-trip is stable) → ref-fill.
 pub fn mount_toggle<H>(cx: &mut MountCx<'_, H>, prim: TogglePrim, _children: Vec<Element>) -> H::Node
 where
-    H: ToggleOps + StyleServices,
+    H: ToggleOps + StyleServices + IntrospectionOps,
 {
     let backend = cx.backend().clone();
     let initial = initial_of(&prim.value);
+    #[cfg(feature = "robot")]
+    let robot_set_toggle = prim.on_change.clone();
     let node = backend
         .borrow_mut()
         .create_toggle(initial, prim.on_change, &prim.a11y);
+    #[cfg(feature = "robot")]
+    let _robot = crate::robot::register_mount(
+        &backend,
+        &node,
+        crate::robot::ElementKind::Toggle,
+        prim.test_id,
+        None,
+        None,
+        crate::robot::MountActions {
+            set_toggle: Some(robot_set_toggle),
+            ..Default::default()
+        },
+    );
     if let Some(style) = prim.style {
         attach_style(&backend, &node, style);
     }
@@ -50,10 +65,15 @@ where
 /// regardless of native step handling.
 pub fn mount_slider<H>(cx: &mut MountCx<'_, H>, prim: SliderPrim, _children: Vec<Element>) -> H::Node
 where
-    H: SliderOps + StyleServices,
+    H: SliderOps + StyleServices + IntrospectionOps,
 {
     let backend = cx.backend().clone();
     let initial = initial_of(&prim.value);
+    // Robot `set_slider` gets the RAW author callback (pre snap-wrap),
+    // mirroring the old `robot_extract_meta`, which read the element's
+    // `on_change` before the walker wrapped it.
+    #[cfg(feature = "robot")]
+    let robot_set_slider = prim.on_change.clone();
     let on_change_snapped: Rc<dyn Fn(f32)> = if let Some(step) = prim.step {
         let user = prim.on_change.clone();
         let min = prim.min;
@@ -71,6 +91,19 @@ where
         prim.step,
         on_change_snapped,
         &prim.a11y,
+    );
+    #[cfg(feature = "robot")]
+    let _robot = crate::robot::register_mount(
+        &backend,
+        &node,
+        crate::robot::ElementKind::Slider,
+        prim.test_id,
+        None,
+        None,
+        crate::robot::MountActions {
+            set_slider: Some(robot_set_slider),
+            ..Default::default()
+        },
     );
     if let Some(style) = prim.style {
         attach_style(&backend, &node, style);
@@ -99,7 +132,7 @@ pub fn mount_activity_indicator<H>(
     _children: Vec<Element>,
 ) -> H::Node
 where
-    H: ActivityIndicatorOps + StyleServices,
+    H: ActivityIndicatorOps + StyleServices + IntrospectionOps,
 {
     let backend = cx.backend().clone();
     let (initial_size, dyn_size) = match prim.size {
@@ -110,6 +143,19 @@ where
         backend
             .borrow_mut()
             .create_activity_indicator(initial_size, prim.color.as_ref(), &prim.a11y);
+    // Passive/visual primitive: no actions, but findable by test_id +
+    // kind so an E2E suite can assert "this rendered" (the old
+    // conformance `static primitives render` regression).
+    #[cfg(feature = "robot")]
+    let _robot = crate::robot::register_mount(
+        &backend,
+        &node,
+        crate::robot::ElementKind::ActivityIndicator,
+        prim.test_id,
+        None,
+        None,
+        crate::robot::MountActions::default(),
+    );
     if let Some(style) = prim.style {
         attach_style(&backend, &node, style);
     }
@@ -141,12 +187,14 @@ pub fn mount_text_input<H>(
     _children: Vec<Element>,
 ) -> H::Node
 where
-    H: TextInputOps + StyleServices,
+    H: TextInputOps + StyleServices + IntrospectionOps,
 {
     let backend = cx.backend().clone();
     let initial_value = initial_of(&prim.value);
     let initial_secure = initial_of(&prim.secure);
     let initial_placeholder = initial_of(&prim.placeholder);
+    #[cfg(feature = "robot")]
+    let robot_set_text = prim.on_change.clone();
     let node = backend.borrow_mut().create_text_input(
         &initial_value,
         initial_placeholder.as_deref(),
@@ -156,6 +204,36 @@ where
         initial_secure,
         &prim.a11y,
     );
+    // Editable inputs also get `focus`/`blur` so the robot can drive
+    // real keyboard focus. Handles are made ON DEMAND from the backend
+    // node at call time (the old walker's exact shape).
+    #[cfg(feature = "robot")]
+    let _robot = {
+        let focus = {
+            let b = backend.clone();
+            let n = node.clone();
+            Rc::new(move || b.borrow().make_text_input_handle(&n).focus()) as Rc<dyn Fn()>
+        };
+        let blur = {
+            let b = backend.clone();
+            let n = node.clone();
+            Rc::new(move || b.borrow().make_text_input_handle(&n).blur()) as Rc<dyn Fn()>
+        };
+        crate::robot::register_mount(
+            &backend,
+            &node,
+            crate::robot::ElementKind::TextInput,
+            prim.test_id,
+            None,
+            None,
+            crate::robot::MountActions {
+                set_text: Some(robot_set_text),
+                focus: Some(focus),
+                blur: Some(blur),
+                ..Default::default()
+            },
+        )
+    };
     if let Some(style) = prim.style {
         attach_style(&backend, &node, style);
     }
@@ -202,10 +280,12 @@ pub fn mount_text_area<H>(
     _children: Vec<Element>,
 ) -> H::Node
 where
-    H: TextInputOps + StyleServices,
+    H: TextInputOps + StyleServices + IntrospectionOps,
 {
     let backend = cx.backend().clone();
     let initial_value = initial_of(&prim.value);
+    #[cfg(feature = "robot")]
+    let robot_set_text = prim.on_change.clone();
     let node = backend.borrow_mut().create_text_area(
         &initial_value,
         prim.placeholder.as_deref(),
@@ -215,6 +295,23 @@ where
         prim.on_change,
         prim.on_key_down,
         &prim.a11y,
+    );
+    // `ElementKind::TextInput`, like the old core: the robot surface
+    // doesn't distinguish single- vs multi-line — `set_text` covers
+    // both, and (also mirroring the old walker) text_area gets NO
+    // focus/blur actions (only `Element::TextInput` was wired there).
+    #[cfg(feature = "robot")]
+    let _robot = crate::robot::register_mount(
+        &backend,
+        &node,
+        crate::robot::ElementKind::TextInput,
+        prim.test_id,
+        None,
+        None,
+        crate::robot::MountActions {
+            set_text: Some(robot_set_text),
+            ..Default::default()
+        },
     );
     if let Some(style) = prim.style {
         attach_style(&backend, &node, style);

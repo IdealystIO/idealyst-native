@@ -88,6 +88,20 @@ pub trait TextOps: Host {
     /// [`register_reactive_text_binding`](Self::register_reactive_text_binding).
     fn release_reactive_text_binding(&mut self, _text_id: u32) {}
 
+    /// NEW-CORE-ONLY channel (the string sibling of
+    /// `StyleOps::notify_signal_value_js` — no old-core counterpart in
+    /// the frozen `Backend` mirror): ship a `(signal_id, formatted
+    /// value)` change to the backend's JS-side binding dispatcher. On
+    /// the old core the arena's `Signal::set` fired the registered JS
+    /// notifier itself; world signals have no write hook, so the text
+    /// handler's per-signal notifier effect (see
+    /// `style_attach::ensure_signal_notifier_installed`) delivers
+    /// commits through this method instead. Default no-op — only
+    /// backends returning `true` from
+    /// [`supports_js_text_bindings`](Self::supports_js_text_bindings)
+    /// need to override.
+    fn notify_signal_text_js(&mut self, _signal_id: u64, _value: &str) {}
+
     /// Imperative-ref handle for a text node. Default: no-op.
     #[allow(unused_variables)]
     fn make_text_handle(&self, node: &Self::Node) -> TextHandle {

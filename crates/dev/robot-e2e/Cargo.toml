@@ -13,5 +13,17 @@ crate-type = ["rlib"]
 # consuming app still declares its OWN `robot` feature so the `ui!` macro
 # emits `test_id` slots in THAT crate's context — see the conformance app's
 # Cargo.toml. Here we just turn the API on unconditionally.
+
+[features]
+# Drive the NEW core's registry (`runtime_vocabulary::robot`) instead of
+# the old walker registry. The two Robot APIs are deliberately mirror-
+# identical (find/click/…, same Element/Query/ElementKind shapes), so
+# the harness source is shared — this feature only swaps the import and
+# adds the new core's settle step (see `settle()` in lib.rs). Non-default
+# for the same reason as newcore-app's: the consuming app decides its
+# core per build.
+new-core = ["dep:runtime-vocabulary", "runtime-vocabulary/robot"]
+
 [dependencies]
 runtime-core = { workspace = true, features = ["robot"] }
+runtime-vocabulary = { workspace = true, optional = true }

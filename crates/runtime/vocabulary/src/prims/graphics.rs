@@ -22,6 +22,10 @@ use crate::style_attach::StyleProp;
 /// staged-commit kernel every write stages until the host driver
 /// flushes, so event batching is structural, not opt-in.
 pub struct GraphicsPrim {
+    /// Robot/automation anchor (`test_id = …`). Always present so the
+    /// builder setter compiles in every build; read only by the
+    /// `robot`-feature registration in the mount handler.
+    pub test_id: Option<&'static str>,
     pub on_ready: OnReady,
     pub on_resize: OnResize,
     pub on_lost: OnLost,

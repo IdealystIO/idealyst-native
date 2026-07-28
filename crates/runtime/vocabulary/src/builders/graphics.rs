@@ -19,6 +19,7 @@ use crate::style_attach::IntoStyleProp;
 pub fn graphics(on_ready: impl FnMut(OnReadyEvent) + 'static) -> GraphicsBuilder {
     GraphicsBuilder {
         prim: GraphicsPrim {
+            test_id: None,
             on_ready: Box::new(on_ready),
             on_resize: Box::new(|_| {}),
             on_lost: Box::new(|| {}),
@@ -56,6 +57,14 @@ impl GraphicsBuilder {
 
     pub fn a11y(mut self, a11y: AccessibilityProps) -> Self {
         self.prim.a11y = a11y;
+        self
+    }
+
+    /// Robot/automation anchor (`test_id = …`): the mount handler
+    /// registers this node under `id` in the vocabulary robot registry
+    /// (`robot` feature; the slot is inert otherwise).
+    pub fn test_id(mut self, id: &'static str) -> Self {
+        self.prim.test_id = Some(id);
         self
     }
 

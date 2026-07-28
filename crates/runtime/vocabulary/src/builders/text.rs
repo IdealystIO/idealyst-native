@@ -19,6 +19,7 @@ use super::TextContent;
 pub fn text() -> TextBuilder {
     TextBuilder {
         prim: TextPrim {
+            test_id: None,
             content: TextSourceProp::Value(Value::Const(String::new())),
             style: None,
             a11y: AccessibilityProps::default(),
@@ -33,9 +34,11 @@ pub struct TextBuilder {
 
 impl TextBuilder {
     /// Set the content — anything printable, static or reactive
-    /// ([`TextContent`] coercion).
+    /// ([`TextContent`] coercion). An f-string assembly
+    /// (`glue::AssembledText`) routes its pre-decomposed `JsBinding`
+    /// through here too.
     pub fn content(mut self, content: impl TextContent) -> Self {
-        self.prim.content = TextSourceProp::Value(content.into_content());
+        self.prim.content = content.into_content_prop();
         self
     }
 
@@ -62,6 +65,14 @@ impl TextBuilder {
         self
     }
 
+    /// Robot/automation anchor (`test_id = …`): the mount handler
+    /// registers this node under `id` in the vocabulary robot registry
+    /// (`robot` feature; the slot is inert otherwise).
+    pub fn test_id(mut self, id: &'static str) -> Self {
+        self.prim.test_id = Some(id);
+        self
+    }
+
     pub fn on_handle(mut self, fill: impl FnOnce(TextHandle) + 'static) -> Self {
         self.prim.ref_fill = Some(Box::new(fill));
         self
@@ -76,6 +87,7 @@ impl TextBuilder {
 pub fn button() -> ButtonBuilder {
     ButtonBuilder {
         prim: ButtonPrim {
+            test_id: None,
             label: Value::Const(String::new()),
             on_press: IntoAction::into_action(|| {}),
             leading_icon: None,
@@ -127,6 +139,14 @@ impl ButtonBuilder {
 
     pub fn a11y(mut self, a11y: AccessibilityProps) -> Self {
         self.prim.a11y = a11y;
+        self
+    }
+
+    /// Robot/automation anchor (`test_id = …`): the mount handler
+    /// registers this node under `id` in the vocabulary robot registry
+    /// (`robot` feature; the slot is inert otherwise).
+    pub fn test_id(mut self, id: &'static str) -> Self {
+        self.prim.test_id = Some(id);
         self
     }
 

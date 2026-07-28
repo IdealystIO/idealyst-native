@@ -158,6 +158,19 @@ pub trait StyleOps: Host {
     /// Release a binding registered via
     /// [`register_reactive_class_binding`](Self::register_reactive_class_binding).
     fn release_reactive_class_binding(&mut self, _binding_id: u32) {}
+
+    /// NEW-CORE-ONLY channel (not part of the frozen 159-method
+    /// `Backend` mirror — no old-core counterpart exists): ship a
+    /// `(signal_id, new_value)` change to the backend's JS-side
+    /// binding dispatcher. On the old core the arena's `Signal::set`
+    /// fires the registered JS notifier itself; world signals have no
+    /// write hook, so the vocabulary's per-signal notifier effect
+    /// (see `style_attach::ensure_signal_notifier`) delivers commits
+    /// through this method instead. Default no-op — only backends
+    /// returning `true` from
+    /// [`supports_js_class_bindings`](Self::supports_js_class_bindings)
+    /// need to override.
+    fn notify_signal_value_js(&mut self, _signal_id: u64, _value: u32) {}
 }
 
 /// Static assets (fonts, images) and typeface families. Serves the

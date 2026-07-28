@@ -104,6 +104,19 @@ pub fn full_scenarios() -> Vec<FullScenario> {
             run: full_release_on_swap,
         },
         FullScenario {
+            name: "full_repeat_fallback",
+            about: &[
+                "A static-range Repeat (3 styled view+text rows sharing ONE",
+                "sheet) inside a `when`, with a static sibling after it. Pins",
+                "the non-batching fallback both cores share: rows build eagerly",
+                "(per-row create/insert/apply), attach with ONE insert_many,",
+                "the trailing sibling inserts after them, and the swap-out",
+                "releases per row (on_node_unstyled) inside the step.",
+            ],
+            modes: &[Mode::Anchored, Mode::Spliced],
+            run: full_repeat_fallback,
+        },
+        FullScenario {
             name: "full_style_sheet_cohort",
             about: &[
                 "P3c: static SHEET applications through the token engine. Tokens",
@@ -493,6 +506,45 @@ fn full_release_on_swap(cx: &mut FullCx) {
         present.set(false)
     });
     cx.step("swap back in (fresh ids minted)", || present.set(true));
+}
+
+// ===========================================================================
+// (f2) static-range Repeat — the shared non-batching fallback
+// ===========================================================================
+
+fn full_repeat_fallback(cx: &mut FullCx) {
+    use crate::full::themed_sheet;
+    let present: Signal<bool> = signal(true);
+    let sheet = themed_sheet();
+    cx.mount(
+        view(vec![when(
+            move || present.get(),
+            {
+                let sheet = sheet.clone();
+                move || {
+                    let sheet = sheet.clone();
+                    view(vec![
+                        runtime_core::Element::Repeat {
+                            count: 3,
+                            row_builder: Box::new(move |i| {
+                                view(vec![text(format!("row {i}")).into_element()])
+                                    .with_style(StyleApplication::new(sheet.clone()))
+                                    .into_element()
+                            }),
+                        },
+                        text("after-rows").into_element(),
+                    ])
+                    .into_element()
+                }
+            },
+            || text("empty").into_element(),
+        )])
+        .into_element(),
+    );
+    cx.step("swap out (rows release per row, inside the step)", || {
+        present.set(false)
+    });
+    cx.step("swap back in (rows rebuild)", || present.set(true));
 }
 
 // ===========================================================================

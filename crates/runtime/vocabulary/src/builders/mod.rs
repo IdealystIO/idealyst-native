@@ -144,6 +144,17 @@ impl_builder_child!(
 /// dynamic through their own `get()`.
 pub trait TextContent {
     fn into_content(self) -> Value<String>;
+
+    /// The full text-source form. Defaults to wrapping
+    /// [`into_content`](Self::into_content); the f-string assembly
+    /// (`glue::AssembledText`) overrides it to surface the pre-decomposed
+    /// `JsBinding` fast path — everything else stays a plain `Value`.
+    fn into_content_prop(self) -> crate::prims::TextSourceProp
+    where
+        Self: Sized,
+    {
+        crate::prims::TextSourceProp::Value(self.into_content())
+    }
 }
 
 impl TextContent for &str {

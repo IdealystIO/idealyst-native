@@ -41,7 +41,20 @@
 //!
 //! [`blur`]: Locator::blur
 
-use runtime_core::robot::{Element, ElementKind, Query, Robot};
+// Core selection: the two Robot APIs are mirror-identical (the
+// vocabulary registry was written to the old registry's exact query/
+// action semantics — see runtime_vocabulary::robot's module docs), so
+// ONE harness source drives either; the feature swaps only the import.
+// `ElementKind` is re-exported so suites written against the harness
+// (`page.get_by_role(ElementKind::Button)`) stay core-agnostic too.
+#[cfg(not(feature = "new-core"))]
+use runtime_core::robot::{Element, Query, Robot};
+#[cfg(not(feature = "new-core"))]
+pub use runtime_core::robot::ElementKind;
+#[cfg(feature = "new-core")]
+use runtime_vocabulary::robot::{Element, Query, Robot};
+#[cfg(feature = "new-core")]
+pub use runtime_vocabulary::robot::ElementKind;
 
 /// Pacing between tests, in ms. Purely cosmetic: it lets the on-screen UI
 /// visibly change and the console stream one test at a time, like watching
@@ -61,6 +74,12 @@ const STEP_PACING_MS: i32 = 180;
 /// still present" flake). Drains run synchronously on the calling (UI)
 /// thread, mirroring what the browser does between tasks.
 fn settle() {
+    // New core: robot ACTIONS already settle themselves (the vocabulary
+    // Robot's driver env flushes staged writes before returning), but
+    // `Page::settle` is also the caller's tool after a DIRECT signal
+    // write — flush that staged work too before draining microtasks.
+    #[cfg(feature = "new-core")]
+    runtime_vocabulary::robot::settle();
     // Drain repeatedly: a deferred unit of work can schedule *another*
     // microtask (e.g. a stack pop's `release_screen` drops a scope, whose
     // `on_cleanup` deregisters robot entries on a follow-up tick). A single

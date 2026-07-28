@@ -22,6 +22,10 @@ use crate::style_attach::StyleProp;
 /// binding (one `update_toggle_value` at mount, then per change);
 /// `on_change` reports native flips upward.
 pub struct TogglePrim {
+    /// Robot/automation anchor (`test_id = …`). Always present so the
+    /// builder setter compiles in every build; read only by the
+    /// `robot`-feature registration in the mount handler.
+    pub test_id: Option<&'static str>,
     pub value: Value<bool>,
     pub on_change: Rc<dyn Fn(bool)>,
     pub style: Option<StyleProp>,
@@ -33,6 +37,10 @@ pub struct TogglePrim {
 /// `on_change` to snap to `step` before dispatch so every backend
 /// produces identical values (the walker's snap, ported).
 pub struct SliderPrim {
+    /// Robot/automation anchor (`test_id = …`). Always present so the
+    /// builder setter compiles in every build; read only by the
+    /// `robot`-feature registration in the mount handler.
+    pub test_id: Option<&'static str>,
     pub value: Value<f32>,
     pub on_change: Rc<dyn Fn(f32)>,
     pub min: f32,
@@ -47,6 +55,10 @@ pub struct SliderPrim {
 /// A `Dyn` size creates at the closure's initial value and resizes in
 /// place (`update_activity_indicator_size`).
 pub struct ActivityIndicatorPrim {
+    /// Robot/automation anchor (`test_id = …`). Always present so the
+    /// builder setter compiles in every build; read only by the
+    /// `robot`-feature registration in the mount handler.
+    pub test_id: Option<&'static str>,
     pub size: Value<ActivityIndicatorSize>,
     pub color: Option<Color>,
     pub style: Option<StyleProp>,
@@ -60,6 +72,10 @@ pub struct ActivityIndicatorPrim {
 /// walker's `Reactive::Dynamic` gate), and the focus notifier installed
 /// after style.
 pub struct TextInputPrim {
+    /// Robot/automation anchor (`test_id = …`). Always present so the
+    /// builder setter compiles in every build; read only by the
+    /// `robot`-feature registration in the mount handler.
+    pub test_id: Option<&'static str>,
     pub value: Value<String>,
     pub on_change: Rc<dyn Fn(String)>,
     pub on_key_down: Option<KeyDownHandler>,
@@ -76,6 +92,10 @@ pub struct TextInputPrim {
 /// Placeholder/wrap/rows are create-time config (the old element carries
 /// them statically); `value` is the controlled signal.
 pub struct TextAreaPrim {
+    /// Robot/automation anchor (`test_id = …`). Always present so the
+    /// builder setter compiles in every build; read only by the
+    /// `robot`-feature registration in the mount handler.
+    pub test_id: Option<&'static str>,
     pub value: Value<String>,
     pub on_change: Rc<dyn Fn(String)>,
     pub on_key_down: Option<KeyDownHandler>,

@@ -25,6 +25,8 @@ full_golden_new!(full_dyn_swap_primitives_anchored, "full_dyn_swap_primitives", 
 full_golden_new!(full_dyn_swap_primitives_spliced, "full_dyn_swap_primitives", Mode::Spliced);
 full_golden_new!(full_release_on_swap_anchored, "full_release_on_swap", Mode::Anchored);
 full_golden_new!(full_release_on_swap_spliced, "full_release_on_swap", Mode::Spliced);
+full_golden_new!(full_repeat_fallback_anchored, "full_repeat_fallback", Mode::Anchored);
+full_golden_new!(full_repeat_fallback_spliced, "full_repeat_fallback", Mode::Spliced);
 full_golden_new!(full_style_sheet_cohort_spliced, "full_style_sheet_cohort", Mode::Spliced);
 full_golden_new!(full_style_state_overlay_spliced, "full_style_state_overlay", Mode::Spliced);
 full_golden_new!(full_style_signal_class_spliced, "full_style_signal_class", Mode::Spliced);

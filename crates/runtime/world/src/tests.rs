@@ -1431,3 +1431,199 @@ fn unscoped_restores_the_collector_stack() {
         assert_eq!(sig_after.get(), 20);
     });
 }
+
+#[test]
+fn raw_id_distinguishes_live_signals_and_slot_reuse() {
+    // `raw_id` feeds external registries (JS binding maps, notifier
+    // dedup): distinct live signals get distinct ids, the low 32 bits
+    // are the slot (u32-truncating consumers stay collision-free among
+    // live signals of one world), and a freed slot's next occupant gets
+    // a DIFFERENT full-width id (generation bits).
+    let world = World::new();
+    world.enter(|| {
+        let a = signal(1u32);
+        let b = signal(2u32);
+        assert_ne!(a.raw_id(), b.raw_id(), "distinct live signals");
+        assert_ne!(
+            a.raw_id() as u32,
+            b.raw_id() as u32,
+            "u32 truncation keeps live-signal uniqueness (slot bits)"
+        );
+
+        // Free `s`'s slot by dropping its collecting scope, then create
+        // a new signal that reuses it: full ids must differ (gen bits).
+        let (first_id, owned) = collect_owned(|| signal(3u32).raw_id());
+        drop(owned);
+        let reused = signal(4u32);
+        if reused.raw_id() as u32 == first_id as u32 {
+            assert_ne!(
+                reused.raw_id(),
+                first_id,
+                "reused slot carries a bumped generation in the id"
+            );
+        }
+    });
+}
+
+/// `raw_id` is one identity per signal SLOT, shared by every handle half
+/// (read half, memo cache) — external registries (JS text bindings, the
+/// notifier dedup table) rely on the halves agreeing.
+#[test]
+fn raw_id_agrees_across_handle_halves() {
+    let world = World::new();
+    world.enter(|| {
+        let s = signal(1);
+        assert_eq!(
+            s.raw_id(),
+            s.read_only().raw_id(),
+            "read half aliases the signal slot"
+        );
+        let m = memo(move || s.get() * 2);
+        assert_eq!(m.raw_id(), m.raw_id(), "memo id is stable");
+        assert_ne!(
+            s.raw_id(),
+            m.raw_id(),
+            "memo cache is its own slot, distinct id"
+        );
+    });
+}
+
+// ============================================================================
+// Dep-reconcile (stable-deps fast path) — regression suite for the
+// pending-frame + diff scheme that replaced unsubscribe-all-upfront.
+// ============================================================================
+
+/// Stable deps across many re-runs keep delivering (the fast path must
+/// not silently drop the subscription it skipped re-creating).
+#[test]
+fn stable_deps_rerun_keeps_delivering() {
+    let world = World::new();
+    world.enter(|| {
+        let a = signal(0);
+        let runs = std::rc::Rc::new(Cell::new(0));
+        let runs_c = runs.clone();
+        let _e = effect(move || {
+            let _ = a.get();
+            runs_c.set(runs_c.get() + 1);
+        });
+        for i in 1..=10 {
+            a.set(i);
+            world.flush();
+        }
+        assert_eq!(runs.get(), 11, "1 initial + 10 committed re-runs");
+    });
+}
+
+/// A dep dropped between runs unsubscribes: bumps of the dropped signal
+/// no longer re-run the effect (the diff's removal half).
+#[test]
+fn conditional_dep_switch_unsubscribes_the_dropped_signal() {
+    let world = World::new();
+    world.enter(|| {
+        let use_a = signal(true);
+        let a = signal(0);
+        let b = signal(0);
+        let runs = std::rc::Rc::new(Cell::new(0));
+        let runs_c = runs.clone();
+        let _e = effect(move || {
+            if use_a.get() {
+                let _ = a.get();
+            } else {
+                let _ = b.get();
+            }
+            runs_c.set(runs_c.get() + 1);
+        });
+        assert_eq!(runs.get(), 1);
+        use_a.set(false); // switch to b
+        world.flush();
+        assert_eq!(runs.get(), 2);
+        a.set(1); // a is no longer a dep
+        world.flush();
+        assert_eq!(runs.get(), 2, "dropped dep must not re-run the effect");
+        b.set(1);
+        world.flush();
+        assert_eq!(runs.get(), 3, "the new dep delivers");
+    });
+}
+
+/// Reading the same signal several times in one run subscribes ONCE
+/// (same-run dedupe lives in the pending frame now).
+#[test]
+fn duplicate_reads_in_one_run_subscribe_once() {
+    let world = World::new();
+    world.enter(|| {
+        let a = signal(0);
+        let runs = std::rc::Rc::new(Cell::new(0));
+        let runs_c = runs.clone();
+        let _e = effect(move || {
+            let _ = a.get() + a.get() + a.get();
+            runs_c.set(runs_c.get() + 1);
+        });
+        a.set(1);
+        world.flush();
+        assert_eq!(runs.get(), 2, "one commit → one re-run, not three");
+    });
+}
+
+/// A dep freed (and its slot reused) INSIDE the effect body must not
+/// leave a subscription against the slot's new occupant — the gen rides
+/// in the pending frame exactly for this window.
+#[test]
+fn dep_slot_reuse_inside_body_does_not_subscribe_new_occupant() {
+    let world = World::new();
+    world.enter(|| {
+        // The doomed signal lives in its own Owned so the effect body can
+        // free it after reading it.
+        let (doomed, owned) = collect_owned(|| signal(7));
+        let owned = std::cell::RefCell::new(Some(owned));
+        let replacement: std::rc::Rc<Cell<Option<Signal<i32>>>> =
+            std::rc::Rc::new(Cell::new(None));
+        let replacement_c = replacement.clone();
+        let runs = std::rc::Rc::new(Cell::new(0));
+        let runs_c = runs.clone();
+        let _e = effect(move || {
+            runs_c.set(runs_c.get() + 1);
+            if let Some(owned) = owned.borrow_mut().take() {
+                let _ = doomed.get(); // read, then free within the same run
+                drop(owned);
+                // Reuse the freed slot immediately (world-root-owned).
+                replacement_c.set(Some(untrack(|| signal(100))));
+            }
+        });
+        assert_eq!(runs.get(), 1);
+        let replacement = replacement.get().expect("created in first run");
+        replacement.set(101);
+        world.flush();
+        assert_eq!(
+            runs.get(),
+            1,
+            "the reused slot's new occupant must not wake the effect"
+        );
+    });
+}
+
+/// Growing fan-out under repeated shared-signal commits stays correct:
+/// every subscriber re-runs exactly once per commit (the shape the
+/// stable-deps path optimizes — N effects on one signal).
+#[test]
+fn shared_signal_fan_out_reruns_each_subscriber_once_per_commit() {
+    let world = World::new();
+    world.enter(|| {
+        let shared = signal(0u32);
+        let total = std::rc::Rc::new(Cell::new(0usize));
+        let mut effects = Vec::new();
+        for _ in 0..50 {
+            let total_c = total.clone();
+            effects.push(effect(move || {
+                let _ = shared.get();
+                total_c.set(total_c.get() + 1);
+            }));
+        }
+        assert_eq!(total.get(), 50);
+        for i in 1..=3 {
+            shared.set(i);
+            world.flush();
+        }
+        assert_eq!(total.get(), 50 + 3 * 50, "once per subscriber per commit");
+    });
+}

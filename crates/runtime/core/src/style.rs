@@ -1884,7 +1884,11 @@ impl StyleSheet {
     /// sheets with no `state` blocks. Used by
     /// `resolve_state_overlays` to skip per-call iteration of the
     /// full variants map.
-    pub(crate) fn state_axes(&self) -> &[(crate::StateBits, VariantAxis)] {
+    /// Pub (was crate-private) for the new-core vocabulary's overlay
+    /// resolution: scanning `variant_keys()` per call allocates the full
+    /// key list per styled node per fire — the cached slice is the
+    /// empty-slice fast path the old walker used.
+    pub fn state_axes(&self) -> &[(crate::StateBits, VariantAxis)] {
         &self.state_axes
     }
 
@@ -1893,7 +1897,8 @@ impl StyleSheet {
     /// common case of sheets with no `breakpoint` blocks. Used by
     /// `resolve_breakpoint_overlays` to skip per-call iteration of the
     /// full variants map. Parallel to [`Self::state_axes`].
-    pub(crate) fn breakpoint_axes(&self) -> &[(crate::Breakpoint, VariantAxis)] {
+    /// Pub for the same reason as [`Self::state_axes`].
+    pub fn breakpoint_axes(&self) -> &[(crate::Breakpoint, VariantAxis)] {
         &self.breakpoint_axes
     }
 
@@ -1903,7 +1908,8 @@ impl StyleSheet {
     /// blocks. Used by `resolve_container_overlays` to skip per-call
     /// iteration of the full variants map. Parallel to
     /// [`Self::breakpoint_axes`].
-    pub(crate) fn container_axes(&self) -> &[(f32, VariantAxis)] {
+    /// Pub for the same reason as [`Self::state_axes`].
+    pub fn container_axes(&self) -> &[(f32, VariantAxis)] {
         &self.container_axes
     }
 
@@ -3470,6 +3476,25 @@ pub fn pregenerate(sheet: &StyleSheet) -> Vec<Rc<StyleRules>> {
         .into_iter()
         .map(|(_, rc)| rc)
         .collect()
+}
+
+/// [`pregenerate`] + SEED the sheet's pointer-keyed resolution fast
+/// path — the same `insert_variant` population `ensure_registered_with`
+/// performs. For EXTERNAL registration tables (the new core's per-world
+/// sheet registry in `runtime-vocabulary`) that re-implement the
+/// registration prologue outside this module: without the seed, every
+/// `resolve()` for a registered sheet takes the slow `ResolutionKey`
+/// path (variant-map clone + hash per call) AND returns content-equal
+/// but pointer-distinct `Rc<StyleRules>`, defeating the backends'
+/// pointer-keyed class caches (`mint_style_class_ptr_hit`) — measured
+/// at ~2× the whole batched-repeat enqueue loop on the
+/// js-framework-bench create_10k gate.
+pub fn pregenerate_and_seed(sheet: &Rc<StyleSheet>) -> Vec<Rc<StyleRules>> {
+    let keyed = pregenerate_keyed(sheet);
+    for (variants, rc) in &keyed {
+        sheet.insert_variant(variants.clone(), rc.clone());
+    }
+    keyed.into_iter().map(|(_, rc)| rc).collect()
 }
 
 /// Same as `pregenerate` but also returns the `VariantSet` each rule

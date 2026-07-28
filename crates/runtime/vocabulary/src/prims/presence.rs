@@ -13,6 +13,10 @@ use runtime_scene::Element;
 /// animation halves (`None` = mount/unmount without animation, exactly
 /// like the old core).
 pub struct PresencePrim {
+    /// Robot/automation anchor (`test_id = …`). Always present so the
+    /// builder setter compiles in every build; read only by the
+    /// `robot`-feature registration in the mount handler.
+    pub test_id: Option<&'static str>,
     /// Deferred child constructor — built fresh on every mount, inside
     /// the subtree's own scope (the old walker's `untrack`ed child
     /// build, now the guarded Dyn build).

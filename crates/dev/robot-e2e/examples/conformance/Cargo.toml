@@ -6,7 +6,10 @@ license.workspace = true
 description = "Cross-platform conformance app: mounts the framework's primitives, idea-ui components, and navigators in deliberately weird configurations, each tagged with a stable test_id, and drives them with an in-app robot-e2e suite. Run it on any backend to get a pass/fail verdict on the framework core."
 
 [lib]
-crate-type = ["rlib"]
+# `cdylib` for the new-core web build (`wasm-pack build --target web -- \
+# --no-default-features --features new-core,robot`); the CLI's old-core
+# builds keep consuming the rlib through their generated wrapper.
+crate-type = ["rlib", "cdylib"]
 
 [features]
 # `robot` MUST be a default feature: the `ui!` macro's
@@ -14,8 +17,41 @@ crate-type = ["rlib"]
 # without it the lowered primitives omit their `test_id` slots and the whole
 # suite is blind. It also pulls the `robot-e2e` harness + turns on the real
 # Robot API. `--no-default-features` still builds a plain, untested app.
-default = ["robot"]
-robot = ["runtime-core/robot", "idea-ui/robot", "dep:robot-e2e"]
+default = ["robot", "old-core"]
+robot = ["runtime-core/robot", "idea-ui?/robot", "dep:robot-e2e"]
+
+# The two cores — SAME-SOURCE dual-core app (the newcore-app pattern):
+# exactly one per build; `old-core` is the default (CLI builds are
+# unchanged), `new-core` is the idea-lite migration build:
+#
+#   cargo check -p conformance                                        # old core
+#   cargo check -p conformance --no-default-features \
+#       --features new-core,robot                                     # new core
+#
+# `new-core` is NON-default on purpose: it forwards to
+# `runtime-macros/new-core`, and proc-macro features unify across a
+# build graph (see runtime-macros/Cargo.toml). The old-core surface
+# (idea-ui components, the class stack-navigator SDK) is old-core-only —
+# those crates' own `ui!` call sites cannot lower to the new core yet —
+# so its screens/suites are gated out of new-core builds and reported as
+# blocked, never stubbed.
+old-core = ["dep:idea-ui", "dep:stack-navigator"]
+new-core = [
+    "dep:runtime-macros",
+    "runtime-macros/new-core",
+    "dep:runtime-vocabulary",
+    "runtime-vocabulary/robot",
+    "dep:runtime-world",
+    "robot-e2e?/new-core",
+    "backend-web/new-core",
+    # The web host's robot surface: `newcore::start` installs the
+    # vocabulary Robot driver env (queries enter the world, actions
+    # settle via flush_sync) behind backend-web's `robot` feature —
+    # without it the in-app suite's actions stage writes that never
+    # commit.
+    "backend-web/robot",
+    "dep:wasm-bindgen",
+]
 
 # `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
 # (build-runtime-server). Pulls `dev-server` + the navigators' recorder
@@ -24,14 +60,18 @@ sidecar = ["dep:dev-server", "stack-navigator/runtime-server"]
 
 [dependencies]
 runtime-core = { workspace = true }
-idea-ui = { workspace = true }
+runtime-macros = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
+runtime-world = { workspace = true, optional = true }
+idea-ui = { workspace = true, optional = true }
 icons-lucide = { workspace = true }
-stack-navigator = { workspace = true }
+stack-navigator = { workspace = true, optional = true }
 robot-e2e = { workspace = true, optional = true }
 dev-server = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
+wasm-bindgen = { version = "0.2", optional = true }
 
 [target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
 backend-ios-mobile = { workspace = true }

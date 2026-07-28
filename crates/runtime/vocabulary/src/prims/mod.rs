@@ -27,6 +27,7 @@ mod media;
 mod navigator;
 mod portal;
 mod presence;
+mod repeat;
 mod text;
 mod view;
 mod virtualizer;
@@ -40,7 +41,8 @@ pub use navigator::{
 };
 pub use portal::{PortalPrim, ScreenNav};
 pub use presence::PresencePrim;
-pub use text::{ButtonPrim, TextPrim, TextSourceProp};
+pub use repeat::RepeatPrim;
+pub use text::{ButtonPrim, JsTextBinding, TextPrim, TextSourceProp};
 pub use view::{PressablePrim, ScrollViewPrim, ViewPrim};
 pub use virtualizer::VirtualizerPrim;
 pub use widgets::{ActivityIndicatorPrim, SliderPrim, TextAreaPrim, TextInputPrim, TogglePrim};

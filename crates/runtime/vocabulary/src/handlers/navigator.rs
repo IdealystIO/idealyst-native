@@ -42,12 +42,22 @@
 //! re-framed on every apply-frames pass cannot recur from this layer,
 //! because a cached screen simply isn't reachable from any live root.
 //!
+//! # URL sync (conformance wave)
+//!
+//! Platform-URL synchronization is a SEAM here, not an implementation:
+//! a URL-bearing host installs a [`url_sync::UrlSyncService`] and both
+//! navigators register with it at mount, hook every dispatch
+//! (`before_command`, history writes while the outlet still shows the
+//! outgoing screen) and every driver commit (`after_commit`, scroll
+//! restore/reset). The web implementation lives in backend-web's
+//! `newcore_url_sync` (installed by `newcore::start`); hosts without
+//! URLs install nothing and the hooks vanish. Deep links need no seam:
+//! the handlers already `peek_initial_path()`, which the web boot seeds
+//! from `location.pathname` — `defer_initial_mount` is unnecessary on
+//! the new core because the seed happens before the synchronous mount.
+//!
 //! # What is intentionally NOT ported here (each returns with its phase)
 //!
-//! - Web URL sync (`enable_url_sync`, pushState/popstate, scroll
-//!   restore) — backend-web substrate, P3.
-//! - `defer_initial_mount` (web reads the platform URL before mounting) —
-//!   rides the same P3 work.
 //! - Native system-back routing (`on_system_back`) and the iOS/Android
 //!   native push surfaces — P4/P5 backend work.
 //! - Robot nav registry / back-stack snapshots — identity/robot port, P5.
@@ -356,13 +366,182 @@ fn match_path(
 }
 
 // ===========================================================================
+// URL-sync seam — the backend-installed platform-URL service
+// ===========================================================================
+
+/// Platform-URL synchronization seam (the new-core counterpart of the
+/// old `NavigatorControl::enable_url_sync` opt-in). The handlers are
+/// backend-neutral and never touch a URL themselves; a URL-bearing host
+/// (backend-web's new-core boot) installs a [`UrlSyncService`] and every
+/// navigator mounted afterwards registers with it. Hosts without URLs
+/// install nothing and the seam is invisible — exactly the old
+/// provider-model behavior (only web ever touched a URL).
+pub mod url_sync {
+    use super::*;
+
+    /// Which navigator flavor registered — decides how the service
+    /// translates a browser-back into commands (`Select` for the
+    /// depth-less swap, `Pop`(s) for a stack), the role the old
+    /// `build_link_command` played.
+    #[derive(Copy, Clone, PartialEq, Eq, Debug)]
+    pub enum NavSyncKind {
+        Swap,
+        Stack,
+    }
+
+    /// Coarse post-commit classification — mirror of the old
+    /// `url_sync::CommandKind`, computed by the driver BEFORE the
+    /// command moves into the commit match.
+    #[derive(Copy, Clone, PartialEq, Eq, Debug)]
+    pub enum CommittedKind {
+        /// Push / Select / Replace / Reset — a fresh screen now shows.
+        Forward,
+        Pop,
+        Other,
+    }
+
+    impl CommittedKind {
+        pub(super) fn of(cmd: &NavCommand) -> Self {
+            match cmd {
+                NavCommand::Push { .. }
+                | NavCommand::Select { .. }
+                | NavCommand::Replace { .. }
+                | NavCommand::Reset { .. } => CommittedKind::Forward,
+                NavCommand::Pop => CommittedKind::Pop,
+                NavCommand::Custom(_) => CommittedKind::Other,
+            }
+        }
+    }
+
+    /// Everything one navigator hands the service at mount.
+    pub struct NavSyncRegistration {
+        pub kind: NavSyncKind,
+        /// This navigator's base prefix ("" for the root).
+        pub base: String,
+        /// Full hierarchical path of the CONFIGURED initial screen.
+        pub initial_full_path: String,
+        /// Committed active full path at registration (deep-link aware).
+        pub active_path: String,
+        /// Back-stack depth at registration (swap: always 1). Lets the
+        /// service seed browser history for a cold-start deep link whose
+        /// stack synthesized an index entry below.
+        pub depth: usize,
+        /// Hierarchical prefix resolver: full path →
+        /// `(route, params, unconsumed remainder)`.
+        pub resolve_entry:
+            Rc<dyn Fn(&str) -> Option<(&'static str, Box<dyn Any>, String)>>,
+        /// The handler-safe STAGED dispatch (composes this navigator's
+        /// base onto navigator-relative command URLs). Safe to call from
+        /// a platform event — commands commit on the next flush.
+        pub dispatch: Rc<dyn Fn(NavCommand)>,
+        /// The outlet node, type-erased (`Rc<dyn Any>` around the
+        /// backend's `Node`). A web service downcasts it to read/write
+        /// the outlet's scroll offset for back-restore; `None`able in
+        /// spirit — services must tolerate a foreign node type.
+        pub outlet: Rc<dyn Any>,
+    }
+
+    /// The service a URL-bearing host installs. All methods run on the
+    /// UI thread.
+    pub trait UrlSyncService {
+        /// A navigator mounted. `None` ⇒ the service declines (e.g. no
+        /// platform URL surface) and no further hooks fire for it.
+        fn register(&self, reg: NavSyncRegistration) -> Option<u64>;
+        /// Runs at DISPATCH time with the base-composed command, before
+        /// it is staged — the outlet still shows the outgoing screen, so
+        /// scroll snapshots see it (old `before_command` contract).
+        ///
+        /// Returns `true` when this dispatch is the service's own echo
+        /// (popstate reconciliation): the driver must then SKIP
+        /// [`after_commit`] for the command. The old core checked a
+        /// RECONCILING flag at commit time, which was synchronous with
+        /// dispatch; the new core commits on a later flush, so the flag
+        /// would be stale by then — the suppress bit captures it at the
+        /// only moment it is valid.
+        ///
+        /// [`after_commit`]: UrlSyncService::after_commit
+        fn before_command(&self, id: u64, cmd: &NavCommand) -> bool;
+        /// Runs in the driver right after the handler committed a
+        /// command — the outlet shows the new screen (old
+        /// `after_command` contract: forward = scroll-to-top, pop =
+        /// history bookkeeping + scroll restore).
+        fn after_commit(&self, id: u64, kind: CommittedKind);
+        /// Navigator teardown.
+        fn deregister(&self, id: u64);
+    }
+
+    thread_local! {
+        static SERVICE: RefCell<Option<Rc<dyn UrlSyncService>>> =
+            const { RefCell::new(None) };
+    }
+
+    /// Install the host's URL-sync service (idempotent replace). Called
+    /// once at boot by a URL-bearing host, BEFORE the app mounts.
+    pub fn install_url_sync_service(service: Rc<dyn UrlSyncService>) {
+        SERVICE.with(|s| *s.borrow_mut() = Some(service));
+    }
+
+    /// Remove the installed service (host teardown / tests).
+    pub fn clear_url_sync_service() {
+        SERVICE.with(|s| *s.borrow_mut() = None);
+    }
+
+    pub(super) fn service() -> Option<Rc<dyn UrlSyncService>> {
+        SERVICE.with(|s| s.borrow().clone())
+    }
+}
+
+use url_sync::{CommittedKind, NavSyncKind, NavSyncRegistration};
+
+/// The per-navigator sync half the dispatch closure and driver share:
+/// the service id arrives only after registration (end of mount), while
+/// both closures are built earlier — the cell decouples them.
+#[derive(Clone, Default)]
+struct SyncSlot {
+    id: Rc<std::cell::Cell<Option<u64>>>,
+}
+
+impl SyncSlot {
+    /// Dispatch-time hook. Returns the suppress-after bit (see
+    /// [`url_sync::UrlSyncService::before_command`]).
+    fn before(&self, cmd: &NavCommand) -> bool {
+        match (url_sync::service(), self.id.get()) {
+            (Some(svc), Some(id)) => svc.before_command(id, cmd),
+            _ => false,
+        }
+    }
+
+    /// Commit-time hook (driver).
+    fn after(&self, kind: CommittedKind) {
+        if let (Some(svc), Some(id)) = (url_sync::service(), self.id.get()) {
+            svc.after_commit(id, kind);
+        }
+    }
+
+    /// Register with the installed service (if any) and arm teardown.
+    fn register(&self, reg: NavSyncRegistration) {
+        if let Some(svc) = url_sync::service() {
+            if let Some(id) = svc.register(reg) {
+                self.id.set(Some(id));
+                crate::style_attach::on_teardown(move || {
+                    if let Some(svc) = url_sync::service() {
+                        svc.deregister(id);
+                    }
+                });
+            }
+        }
+    }
+}
+
+// ===========================================================================
 // Command channel — queue + tick + driver effect
 // ===========================================================================
 
 /// The handler-safe dispatch half: commands queue here (plain interior
-/// state), and the tick signal wakes the driver on the next flush.
+/// state), and the tick signal wakes the driver on the next flush. The
+/// per-command bool is the URL-sync suppress-after bit (`SyncSlot`).
 struct CommandChannel {
-    queue: Rc<RefCell<VecDeque<NavCommand>>>,
+    queue: Rc<RefCell<VecDeque<(NavCommand, bool)>>>,
     tick: Signal<u64>,
 }
 
@@ -371,8 +550,8 @@ impl CommandChannel {
     /// the queue is plain interior state and `tick.update` is
     /// handle-routed. Two dispatches in one window compose (tick +2 →
     /// one driver wake draining both, in order).
-    fn dispatch(&self, cmd: NavCommand) {
-        self.queue.borrow_mut().push_back(cmd);
+    fn dispatch(&self, cmd: NavCommand, suppress_sync_after: bool) {
+        self.queue.borrow_mut().push_back((cmd, suppress_sync_after));
         self.tick.update(|n| n + 1);
     }
 }
@@ -577,6 +756,9 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
     // core stages writes; creating-then-setting would leave chrome's
     // first build reading the configured initial).
     let (initial_route, initial_params, initial_path) = resolve_initial(&prim.config, &base);
+    // The CONFIGURED initial's full path (vs the resolved, possibly
+    // deep-linked `initial_path`) — the URL-sync registration needs both.
+    let initial_cfg_full = join_path(&base, prim.config.initial_path);
 
     // Nav-state mirror. Created inside the handler ⇒ collected into the
     // navigator's Realized ⇒ freed exactly at navigator teardown. This
@@ -604,14 +786,17 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
     });
 
     // The handler-safe dispatch: compose base, pre-write the mirror,
-    // queue for the driver.
+    // URL-sync before-hook (history write), queue for the driver.
+    let sync = SyncSlot::default();
     let dispatch: Rc<dyn Fn(NavCommand)> = {
         let channel = channel.clone();
         let base = base.clone();
+        let sync = sync.clone();
         Rc::new(move |cmd| {
             let cmd = compose_url(&base, cmd);
             mirror_command(&cmd, active_route, active_path);
-            channel.dispatch(cmd);
+            let suppress = sync.before(&cmd);
+            channel.dispatch(cmd, suppress);
         })
     };
 
@@ -621,11 +806,13 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         let shared = shared.clone();
         let queue = channel.queue.clone();
         let tick = channel.tick;
+        let sync = sync.clone();
         let _driver = effect(move || {
             let _ = tick.get(); // subscribe; first run sees an empty queue
             loop {
                 let next = queue.borrow_mut().pop_front();
-                let Some(cmd) = next else { break };
+                let Some((cmd, suppress_sync)) = next else { break };
+                let kind = CommittedKind::of(&cmd);
                 match cmd {
                     NavCommand::Select { name, url, params, state } => {
                         shared.select(name, &url, params, state);
@@ -634,6 +821,9 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
                     // are ignored, never a panic (the old tab-handler
                     // panic regression, ported as a comment-guard).
                     _ => {}
+                }
+                if !suppress_sync {
+                    sync.after(kind);
                 }
             }
             // Centralized post-navigation layout guarantee — the old
@@ -722,6 +912,32 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
     shared.show_in_outlet(&initial.node);
     shared.mounted.borrow_mut().insert(key.clone(), initial);
     *shared.active.borrow_mut() = Some((initial_route, key));
+
+    // URL sync: register with the host's service (no-op when none is
+    // installed — non-URL platforms). After seat, so the registration's
+    // committed state (active path, outlet) is real.
+    {
+        let resolve = {
+            let screens = shared.screens.clone();
+            let base = base.clone();
+            Rc::new(move |path: &str| resolve_entry(&screens, &base, path))
+                as Rc<dyn Fn(&str) -> Option<(&'static str, Box<dyn Any>, String)>>
+        };
+        let outlet_erased: Rc<dyn Any> = match shared.outlet.borrow().clone() {
+            Some(node) => Rc::new(node),
+            None => Rc::new(()),
+        };
+        sync.register(NavSyncRegistration {
+            kind: NavSyncKind::Swap,
+            base: base.clone(),
+            initial_full_path: initial_cfg_full,
+            active_path: initial_path.clone(),
+            depth: 1,
+            resolve_entry: resolve,
+            dispatch: dispatch.clone(),
+            outlet: outlet_erased,
+        });
+    }
 
     // The chrome Realized must live as long as the navigator: park it on
     // a teardown probe owned by the navigator's Realized.
@@ -973,13 +1189,16 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         queue: Rc::new(RefCell::new(VecDeque::new())),
         tick: signal(0u64),
     });
+    let sync = SyncSlot::default();
     let dispatch: Rc<dyn Fn(NavCommand)> = {
         let channel = channel.clone();
         let base = base.clone();
+        let sync = sync.clone();
         Rc::new(move |cmd| {
             let cmd = compose_url(&base, cmd);
             mirror_command(&cmd, active_route, active_path);
-            channel.dispatch(cmd);
+            let suppress = sync.before(&cmd);
+            channel.dispatch(cmd, suppress);
         })
     };
 
@@ -987,11 +1206,13 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         let shared = shared.clone();
         let queue = channel.queue.clone();
         let tick = channel.tick;
+        let sync = sync.clone();
         let _driver = effect(move || {
             let _ = tick.get();
             loop {
                 let next = queue.borrow_mut().pop_front();
-                let Some(cmd) = next else { break };
+                let Some((cmd, suppress_sync)) = next else { break };
+                let kind = CommittedKind::of(&cmd);
                 match cmd {
                     NavCommand::Push { name, params, state, url } => {
                         shared.push(name, params, state, url)
@@ -1006,6 +1227,9 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
                     // A stack never receives Select; ignore (old
                     // dispatcher contract).
                     NavCommand::Select { .. } | NavCommand::Custom(_) => {}
+                }
+                if !suppress_sync {
+                    sync.after(kind);
                 }
             }
             H::schedule_layout_pass();
@@ -1052,7 +1276,32 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         backend.borrow_mut().insert(&mut parent, layout_root);
     }
     *shared.outlet.borrow_mut() = outlet;
-    shared.seat_initial(initial_route, initial_path, initial);
+    shared.seat_initial(initial_route, initial_path.clone(), initial);
+
+    // URL sync registration — after seat, so `depth` reflects any
+    // synthesized deep-link back-stack (the service's history seed).
+    {
+        let resolve = {
+            let screens = shared.screens.clone();
+            let base = base.clone();
+            Rc::new(move |path: &str| resolve_entry(&screens, &base, path))
+                as Rc<dyn Fn(&str) -> Option<(&'static str, Box<dyn Any>, String)>>
+        };
+        let outlet_erased: Rc<dyn Any> = match shared.outlet.borrow().clone() {
+            Some(node) => Rc::new(node),
+            None => Rc::new(()),
+        };
+        sync.register(NavSyncRegistration {
+            kind: NavSyncKind::Stack,
+            base: base.clone(),
+            initial_full_path: shared.initial_path.clone(),
+            active_path: initial_path,
+            depth: shared.stack.borrow().len(),
+            resolve_entry: resolve,
+            dispatch: dispatch.clone(),
+            outlet: outlet_erased,
+        });
+    }
 
     crate::style_attach::on_teardown(move || drop(chrome));
 

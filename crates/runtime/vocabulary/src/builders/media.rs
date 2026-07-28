@@ -22,6 +22,7 @@ pub fn image() -> ImageBuilder {
     ImageBuilder {
         src: None,
         prim: ImagePrim {
+            test_id: None,
             src: Value::Const(String::new()),
             alt: Value::Const(None),
             on_load: None,
@@ -89,6 +90,14 @@ impl ImageBuilder {
         self
     }
 
+    /// Robot/automation anchor (`test_id = …`): the mount handler
+    /// registers this node under `id` in the vocabulary robot registry
+    /// (`robot` feature; the slot is inert otherwise).
+    pub fn test_id(mut self, id: &'static str) -> Self {
+        self.prim.test_id = Some(id);
+        self
+    }
+
     pub fn on_handle(mut self, fill: impl FnOnce(ImageHandle) + 'static) -> Self {
         self.prim.ref_fill = Some(Box::new(fill));
         self
@@ -111,6 +120,7 @@ pub fn icon() -> IconBuilder {
         stroke: None,
         draw_in: None,
         style: None,
+        test_id: None,
         a11y: AccessibilityProps::default(),
         ref_fill: None,
     }
@@ -122,6 +132,7 @@ pub struct IconBuilder {
     stroke: Option<Value<f32>>,
     draw_in: Option<StrokeAnimation>,
     style: Option<crate::style_attach::StyleProp>,
+    test_id: Option<&'static str>,
     a11y: AccessibilityProps,
     ref_fill: Option<Box<dyn FnOnce(IconHandle)>>,
 }
@@ -180,6 +191,14 @@ impl IconBuilder {
         self
     }
 
+    /// Robot/automation anchor (`test_id = …`): the mount handler
+    /// registers this node under `id` in the vocabulary robot registry
+    /// (`robot` feature; the slot is inert otherwise).
+    pub fn test_id(mut self, id: &'static str) -> Self {
+        self.test_id = Some(id);
+        self
+    }
+
     pub fn on_handle(mut self, fill: impl FnOnce(IconHandle) + 'static) -> Self {
         self.ref_fill = Some(Box::new(fill));
         self
@@ -192,6 +211,7 @@ impl IconBuilder {
             stroke: self.stroke,
             draw_in: self.draw_in,
             style: self.style,
+            test_id: self.test_id,
             a11y: self.a11y,
             ref_fill: self.ref_fill,
         };

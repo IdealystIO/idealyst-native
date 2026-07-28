@@ -1415,11 +1415,10 @@ fn emit_component(
             } else if supports_disabled && p.name == "disabled" && disabled.is_none() {
                 disabled = Some(p);
             } else if p.name == "test_id" && test_id.is_none() {
-                // Robot/automation anchor. Maps to the always-present
-                // `Element::with_test_id` (not the robot-gated builder
-                // `.test_id`), so it works on every primitive and never depends
-                // on the `robot` feature being on at macro-expansion time.
-                // Without this, `view(test_id = …)` silently dropped the id.
+                // Robot/automation anchor. Lowers to the always-present
+                // `.test_id(…)` builder on both cores (never depends on the
+                // `robot` feature being on at macro-expansion time). Without
+                // this, `view(test_id = …)` silently dropped the id.
                 test_id = Some(p);
             } else if is_a11y_attr(&p.name.to_string()) {
                 // `accessibility`, `a11y_label`, `a11y_role`, … attach as
@@ -1486,35 +1485,17 @@ fn emit_component(
         with_style
     };
 
-    // Robot/automation `test_id`. The `Bound::test_id` builder is always
-    // present (it just stores the id; only the registry that reads it is
-    // `robot`-gated), so emitting it never depends on the feature.
+    // Robot/automation `test_id`. The `.test_id` builder is always
+    // present on BOTH cores (it just stores the id; only the registry
+    // that reads it is `robot`-gated), so one emission serves both
+    // lowerings: old core = `Bound::test_id` → `Element::with_test_id`;
+    // new core = the same tokens land on the glue wrapper's `.test_id`
+    // forwarding into the vocabulary prim's identity slot, which the
+    // mount handlers register into `runtime_vocabulary::robot` (the P5
+    // identity seam, un-deferred).
     let with_test_id = if let Some(p) = test_id_prop.first() {
-        if cfg!(feature = "new-core") {
-            // Identity / robot registration is a scene-ambient concern
-            // that migrates in P5 — refuse rather than drop the id.
-            // Checked 2026-07-28 against the landed P3-set handlers: the
-            // old core's test_id never goes through Backend caps (the
-            // walker's robot module registers it in the core-internal
-            // robot registry), and the vocabulary prims carry no test-id
-            // slot — so there is nothing to lower to yet. Accepting the
-            // attr and dropping the id (the old core's robot-OFF stub
-            // behavior) would make the P5 wiring invisible at call
-            // sites, so the loud refusal stays.
-            let _ = &with_disabled;
-            quote! {
-                ::std::compile_error!(
-                    "`test_id = …` is not yet wired on the new core (idea-lite \
-                     migration: the vocabulary prims carry no identity slot and the \
-                     robot registry itself migrates in P5 — accepting the id now would \
-                     silently drop it). Remove the prop or build without \
-                     `runtime-macros/new-core`."
-                )
-            }
-        } else {
-            let v = &p.value;
-            quote! { (#with_disabled).test_id(#v) }
-        }
+        let v = &p.value;
+        quote! { (#with_disabled).test_id(#v) }
     } else {
         with_disabled
     };
@@ -3718,13 +3699,15 @@ fn emit_for_children(
     // multi-node body would need a wrapper View — refused, since
     // children are a flat vector. Multi-node / non-range loops fall
     // through to the type-driven path below.
-    // `Element::Repeat` is an old-core batching container (walker
-    // expands it via `insert_many`). Under `new-core` a static range
-    // falls through to the type-driven path below (a `Range` is
-    // `IntoIterator`) — identical rows, built once; only the
-    // DocumentFragment-batching hint is lost (a web-backend
-    // optimization, revisited at P3b).
-    if !cfg!(feature = "new-core") && body.len() == 1 {
+    //
+    // Under `new-core` the SAME author shape (same recognition
+    // conditions — `try_emit_for_repeat` is shared) lowers to
+    // `glue::__static_repeat` → `Element::Many(RepeatPrim)`, mounted by
+    // the vocabulary's `repeat` multi-node handler: the one-FFI
+    // `execute_batch_with_attach` fast path on batching backends (web),
+    // per-row mounts + one `insert_many` elsewhere. Both cores make the
+    // SAME batching decision for the same tree (scene-parity contract).
+    if body.len() == 1 {
         let body_expr = emit_block_as_primitive(body);
         if let Some(repeat) = try_emit_for_repeat(pat, iter, &body_expr) {
             return (repeat, false);
@@ -3975,6 +3958,21 @@ fn try_emit_for_repeat(
     // to `start + __i`, where `__i` is the closure's `usize` parameter
     // (always 0..count). This preserves the original visible semantics
     // of `for i in 5..10 { use(i) }` inside the row builder.
+    if cfg!(feature = "new-core") {
+        // Same recognition, glue-side lowering: `__static_repeat`
+        // returns a one-element `Vec<Element>` carrying the
+        // `Element::Many(RepeatPrim)` payload — the ChildList shape the
+        // old `::std::vec![Element::Repeat { … }]` emission has.
+        return Some(quote! {
+            ::runtime_core::__static_repeat(
+                (#end - #start) as usize,
+                move |__i: usize| {
+                    let #ident = (#start) + __i;
+                    ::runtime_core::IntoElement::into_element(#body_expr)
+                },
+            )
+        });
+    }
     Some(quote! {
         ::std::vec![
             ::runtime_core::Element::Repeat {
@@ -4200,15 +4198,36 @@ mod tests {
             assert!(!out.contains("Action{"), "{out}");
         }
 
-        /// A static range loop must fall through to the type-driven
-        /// static path (no `Element::Repeat` construction).
+        /// A static range loop lowers to the glue's `__static_repeat`
+        /// (→ `Element::Many(RepeatPrim)`, the batched-Repeat port) —
+        /// same recognition conditions as the old core's
+        /// `Element::Repeat`, so both cores make the same batching
+        /// decision for the same author shape.
         #[test]
-        fn static_range_for_falls_through_to_type_driven() {
+        fn static_range_for_lowers_to_static_repeat() {
             let out = squash(parse_and_emit(quote! {
                 view { for i in 0..3 { text { "row" } } }
             }));
             assert!(!out.contains("Element::Repeat"), "{out}");
-            assert!(out.contains("__idealyst_for_each"), "{out}");
+            // NB: `__idealyst_for_each` still appears in the emission's
+            // dead `__ui_recover` shadow, so assert the POSITIVE form
+            // (the live expression is the `__static_repeat` call).
+            assert!(out.contains("__static_repeat((3-0)asusize"), "{out}");
+        }
+
+        /// The repeat recognition is EXACTLY the old core's: inclusive
+        /// ranges, non-ident patterns, and non-range iterables fall
+        /// through to the type-driven static path.
+        #[test]
+        fn non_repeat_static_loops_fall_through_to_type_driven() {
+            for body in [
+                quote! { view { for i in 0..=3 { text { "row" } } } },
+                quote! { view { for item in items { text { "row" } } } },
+            ] {
+                let out = squash(parse_and_emit(body));
+                assert!(!out.contains("__static_repeat"), "{out}");
+                assert!(out.contains("__idealyst_for_each"), "{out}");
+            }
         }
 
         /// Literal-armed reactive `match` must use the closure `switch`
@@ -4226,18 +4245,39 @@ mod tests {
         /// Deferred surfaces fail loudly, naming their migration phase.
         /// (The P3-set tags — overlay/anchored_overlay/presence/graphics/
         /// flat_list — are no longer in this list; their un-deferred
-        /// lowerings are pinned below.)
+        /// lowerings are pinned below. `test_id = …` left this list with
+        /// the P5 identity seam — see `test_id_lowers_to_builder_setter`.)
         #[test]
         fn deferred_primitives_error_with_migration_status() {
             for (body, needle) in [
                 (quote! { web_view(src = "https://x") }, "WebView SDK"),
-                (quote! { view(test_id = "t") }, "P5"),
                 (quote! { link(route = HOME) { text { "x" } } }, "P6"),
                 (quote! { for i in count(sig) { text { "r" } } }, "flat_list"),
             ] {
                 let out = parse_and_emit(body);
                 assert!(out.contains("compile_error"), "{out}");
                 assert!(out.contains(needle), "expected `{needle}` in: {out}");
+            }
+        }
+
+        /// `test_id = …` is UN-deferred (P5 identity seam): it lowers to
+        /// the same `.test_id(…)` chain as the old core — the retarget
+        /// lands it on the glue wrapper's setter, which stores the id on
+        /// the vocabulary prim's identity slot for handler-side robot
+        /// registration. Regression: this was a loud compile_error while
+        /// the prims had no identity slot.
+        #[test]
+        fn test_id_lowers_to_builder_setter() {
+            for body in [
+                quote! { view(test_id = "t") { text { "x" } } },
+                quote! { text(test_id = "t") { "x" } },
+                quote! { button(label = "go", test_id = "t", on_click = move || {}) },
+                quote! { scroll_view(test_id = "t") { text { "x" } } },
+                quote! { toggle(test_id = "t", value = v, on_change = move |_| {}) },
+            ] {
+                let out = squash(parse_and_emit(body));
+                assert!(!out.contains("compile_error"), "{out}");
+                assert!(out.contains(".test_id(\"t\")"), "{out}");
             }
         }
 

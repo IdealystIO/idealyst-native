@@ -71,6 +71,11 @@ pub fn full_new_scenarios() -> Vec<FullNewScenario> {
             run: full_release_on_swap,
         },
         FullNewScenario {
+            name: "full_repeat_fallback",
+            modes: &[Mode::Anchored, Mode::Spliced],
+            run: full_repeat_fallback,
+        },
+        FullNewScenario {
             name: "full_style_sheet_cohort",
             modes: &[Mode::Spliced],
             run: full_style_sheet_cohort,
@@ -340,6 +345,47 @@ fn full_release_on_swap(cx: &mut FullNewCx) {
         present.set(false)
     });
     cx.step("swap back in (fresh ids minted)", || present.set(true));
+}
+
+// ===========================================================================
+// (f2) static-range Repeat — the shared non-batching fallback
+// ===========================================================================
+
+fn full_repeat_fallback(cx: &mut FullNewCx) {
+    use crate::full::themed_sheet;
+    use runtime_core::StyleApplication;
+    use runtime_vocabulary::glue::__static_repeat;
+    let present: Signal<bool> = signal(true);
+    let sheet = themed_sheet();
+    cx.mount(
+        view()
+            .child(dyn_keyed(
+                move || present.get(),
+                {
+                    let sheet = sheet.clone();
+                    move |&on| {
+                        if on {
+                            let sheet = sheet.clone();
+                            let mut children = __static_repeat(3, move |i| {
+                                view()
+                                    .style(StyleApplication::new(sheet.clone()))
+                                    .child(text().content(format!("row {i}")))
+                                    .build()
+                            });
+                            children.push(text().content("after-rows").build());
+                            view().children(children).build()
+                        } else {
+                            text().content("empty").build()
+                        }
+                    }
+                },
+            ))
+            .build(),
+    );
+    cx.step("swap out (rows release per row, inside the step)", || {
+        present.set(false)
+    });
+    cx.step("swap back in (rows rebuild)", || present.set(true));
 }
 
 // ===========================================================================

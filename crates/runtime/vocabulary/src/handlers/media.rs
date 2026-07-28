@@ -6,7 +6,7 @@ use runtime_core::primitives::link::LinkConfig;
 use runtime_scene::{Element, MountCx};
 use runtime_world::{effect, Value};
 
-use crate::caps::{AssetOps, IconOps, ImageOps, LinkOps};
+use crate::caps::{AssetOps, IconOps, ImageOps, IntrospectionOps, LinkOps};
 use crate::prims::{IconPrim, ImagePrim, LinkPrim};
 use crate::style_attach::{attach_style, StyleServices};
 
@@ -21,7 +21,7 @@ use super::{bind_dyn, bind_value, initial_of};
 /// unconditional effect) → `Dyn` alt binding → ref-fill.
 pub fn mount_image<H>(cx: &mut MountCx<'_, H>, prim: ImagePrim, _children: Vec<Element>) -> H::Node
 where
-    H: ImageOps + StyleServices + AssetOps,
+    H: ImageOps + StyleServices + AssetOps + IntrospectionOps,
 {
     let backend = cx.backend().clone();
     if let Some(asset) = prim.asset {
@@ -37,6 +37,16 @@ where
     let node = backend
         .borrow_mut()
         .create_image(&initial_src, initial_alt.as_deref(), &prim.a11y);
+    #[cfg(feature = "robot")]
+    let _robot = crate::robot::register_mount(
+        &backend,
+        &node,
+        crate::robot::ElementKind::Image,
+        prim.test_id,
+        None,
+        None,
+        crate::robot::MountActions::default(),
+    );
     if let Some(style) = prim.style {
         attach_style(&backend, &node, style);
     }
@@ -82,7 +92,7 @@ where
 /// walker).
 pub fn mount_icon<H>(cx: &mut MountCx<'_, H>, prim: IconPrim, _children: Vec<Element>) -> H::Node
 where
-    H: IconOps + StyleServices,
+    H: IconOps + StyleServices + IntrospectionOps,
 {
     let backend = cx.backend().clone();
     let (initial_data, dyn_data) = match prim.data {
@@ -97,6 +107,18 @@ where
     let node = backend
         .borrow_mut()
         .create_icon(&initial_data, initial_color.as_ref(), &prim.a11y);
+    // Passive/visual primitive: no actions, but findable by test_id +
+    // kind (see `mount_activity_indicator`).
+    #[cfg(feature = "robot")]
+    let _robot = crate::robot::register_mount(
+        &backend,
+        &node,
+        crate::robot::ElementKind::Icon,
+        prim.test_id,
+        None,
+        None,
+        crate::robot::MountActions::default(),
+    );
     if let Some(style) = prim.style {
         attach_style(&backend, &node, style);
     }
@@ -158,7 +180,7 @@ where
 /// first fire at mount) → ref-fill.
 pub fn mount_link<H>(cx: &mut MountCx<'_, H>, prim: LinkPrim, children: Vec<Element>) -> H::Node
 where
-    H: LinkOps + StyleServices,
+    H: LinkOps + StyleServices + IntrospectionOps,
 {
     let backend = cx.backend().clone();
     let initial_url = initial_of(&prim.url);
@@ -175,6 +197,8 @@ where
              footgun"
         ),
     };
+    #[cfg(feature = "robot")]
+    let robot_click = on_activate.clone();
     let config = LinkConfig {
         route: "",
         url: initial_url,
@@ -182,6 +206,23 @@ where
         on_activate,
     };
     let mut node = backend.borrow_mut().create_link(config, &prim.a11y);
+    // Links register WITHOUT a test_id (`LinkPrim` carries no slot —
+    // the old core's `Element::Link` has none either; `with_test_id`
+    // silently no-ops there, and the glue setter mirrors that). The
+    // robot's `click` is the same activation the backend wires on tap.
+    #[cfg(feature = "robot")]
+    let _robot = crate::robot::register_mount(
+        &backend,
+        &node,
+        crate::robot::ElementKind::Link,
+        None,
+        None,
+        None,
+        crate::robot::MountActions {
+            click: Some(robot_click),
+            ..Default::default()
+        },
+    );
     cx.realize_children_into(&mut node, children);
     if let Some(style) = prim.style {
         attach_style(&backend, &node, style);

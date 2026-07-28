@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>conformance — new core</title>
+    <style>
+      /* Same mount conventions as the CLI-generated web shells. */
+      html, body, #app { height: 100%; margin: 0; }
+      body { background: #f7f8fb; font-family: system-ui, sans-serif; }
+      #app { display: flex; flex-direction: column; }
+      #app > * { flex: 1 1 auto; min-height: 0; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      // Built by:
+      //   wasm-pack build --target web --dev crates/dev/robot-e2e/examples/conformance \
+      //       --out-dir pkg-newcore -- --no-default-features --features new-core,robot
+      // Served from the example dir; the in-app robot-e2e suite auto-runs
+      // ~1s after mount and prints [E2E-RESULT] to this console.
+      import init from "./pkg-newcore/conformance.js";
+      init();
+    </script>
+  </body>
+</html>

@@ -26,6 +26,7 @@ use crate::style_attach::IntoStyleProp;
 pub fn toggle() -> ToggleBuilder {
     ToggleBuilder {
         prim: TogglePrim {
+            test_id: None,
             value: Value::Const(false),
             on_change: Rc::new(|_| {}),
             style: None,
@@ -60,6 +61,14 @@ impl ToggleBuilder {
         self
     }
 
+    /// Robot/automation anchor (`test_id = …`): the mount handler
+    /// registers this node under `id` in the vocabulary robot registry
+    /// (`robot` feature; the slot is inert otherwise).
+    pub fn test_id(mut self, id: &'static str) -> Self {
+        self.prim.test_id = Some(id);
+        self
+    }
+
     pub fn on_handle(mut self, fill: impl FnOnce(ToggleHandle) + 'static) -> Self {
         self.prim.ref_fill = Some(Box::new(fill));
         self
@@ -74,6 +83,7 @@ impl ToggleBuilder {
 pub fn slider() -> SliderBuilder {
     SliderBuilder {
         prim: SliderPrim {
+            test_id: None,
             value: Value::Const(0.0),
             on_change: Rc::new(|_| {}),
             min: 0.0,
@@ -125,6 +135,14 @@ impl SliderBuilder {
         self
     }
 
+    /// Robot/automation anchor (`test_id = …`): the mount handler
+    /// registers this node under `id` in the vocabulary robot registry
+    /// (`robot` feature; the slot is inert otherwise).
+    pub fn test_id(mut self, id: &'static str) -> Self {
+        self.prim.test_id = Some(id);
+        self
+    }
+
     pub fn on_handle(mut self, fill: impl FnOnce(SliderHandle) + 'static) -> Self {
         self.prim.ref_fill = Some(Box::new(fill));
         self
@@ -139,6 +157,7 @@ impl SliderBuilder {
 pub fn activity_indicator() -> ActivityIndicatorBuilder {
     ActivityIndicatorBuilder {
         prim: ActivityIndicatorPrim {
+            test_id: None,
             size: Value::Const(ActivityIndicatorSize::default()),
             color: None,
             style: None,
@@ -179,6 +198,14 @@ impl ActivityIndicatorBuilder {
         self
     }
 
+    /// Robot/automation anchor (`test_id = …`): the mount handler
+    /// registers this node under `id` in the vocabulary robot registry
+    /// (`robot` feature; the slot is inert otherwise).
+    pub fn test_id(mut self, id: &'static str) -> Self {
+        self.prim.test_id = Some(id);
+        self
+    }
+
     pub fn on_handle(mut self, fill: impl FnOnce(ActivityIndicatorHandle) + 'static) -> Self {
         self.prim.ref_fill = Some(Box::new(fill));
         self
@@ -193,6 +220,7 @@ impl ActivityIndicatorBuilder {
 pub fn text_input() -> TextInputBuilder {
     TextInputBuilder {
         prim: TextInputPrim {
+            test_id: None,
             value: Value::Const(String::new()),
             on_change: Rc::new(|_| {}),
             on_key_down: None,
@@ -274,6 +302,14 @@ impl TextInputBuilder {
         self
     }
 
+    /// Robot/automation anchor (`test_id = …`): the mount handler
+    /// registers this node under `id` in the vocabulary robot registry
+    /// (`robot` feature; the slot is inert otherwise).
+    pub fn test_id(mut self, id: &'static str) -> Self {
+        self.prim.test_id = Some(id);
+        self
+    }
+
     pub fn on_handle(mut self, fill: impl FnOnce(TextInputHandle) + 'static) -> Self {
         self.prim.ref_fill = Some(Box::new(fill));
         self
@@ -289,6 +325,7 @@ impl TextInputBuilder {
 pub fn text_area() -> TextAreaBuilder {
     TextAreaBuilder {
         prim: TextAreaPrim {
+            test_id: None,
             value: Value::Const(String::new()),
             on_change: Rc::new(|_| {}),
             on_key_down: None,
@@ -350,6 +387,14 @@ impl TextAreaBuilder {
 
     pub fn a11y(mut self, a11y: AccessibilityProps) -> Self {
         self.prim.a11y = a11y;
+        self
+    }
+
+    /// Robot/automation anchor (`test_id = …`): the mount handler
+    /// registers this node under `id` in the vocabulary robot registry
+    /// (`robot` feature; the slot is inert otherwise).
+    pub fn test_id(mut self, id: &'static str) -> Self {
+        self.prim.test_id = Some(id);
         self
     }
 

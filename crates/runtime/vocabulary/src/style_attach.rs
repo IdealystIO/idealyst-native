@@ -20,9 +20,10 @@
 //!   interaction-state merge, breakpoint/container folds
 //!   (`attach_style_reactive`).
 //! - **`SignalClass`** — `signal_class!`-style discrete class selection.
-//!   Ported on the **fallback** (per-node effect) path on every backend
-//!   — see [`signal_class`] for why the old JS fan-out cannot fire for
-//!   world signals yet (bench-gate note).
+//!   JS fast path on `supports_js_class_bindings` backends (per-value
+//!   minted classes + one per-signal notifier effect — see
+//!   [`signal_class`]); per-node-effect fallback elsewhere and for
+//!   post-construction-wrapped specs.
 //! - **`Preminted`** — a build-time-minted class stamped via
 //!   `attach_html_class`; no `StyleRules` work, state overlays ship as
 //!   pseudo-class CSS in the same asset (walker `Preminted` arm).
@@ -44,7 +45,7 @@
 //!   FIRST, `on_node_unstyled` second.
 //! - **Registration fast path** (`is_registered`): steady-state
 //!   re-fires skip `ensure_registered_with`'s sweep/flush prologue.
-//! - **Default-font fill** (`with_default_text_font`): a resolved rule
+//! - **Default-font fill** (`fill_default_text_font`): a resolved rule
 //!   with no `font_family` inherits the per-world theme font at apply
 //!   time on every backend (native has no CSS inheritance).
 //!
@@ -59,13 +60,14 @@
 //! - **Native breakpoint re-fire**: overlays merge against
 //!   `current_breakpoint()`'s VALUE, but a bucket flip does not re-fire
 //!   world effects (old-core signal). Web is complete (`@media` CSS).
-//! - **JS class-binding fan-out**: see [`signal_class`].
-//! - **State-overlay CSS order**: state overlays resolve in AXIS-NAME
-//!   order (`variant_keys()` is a BTreeMap walk) rather than the old
-//!   engine's declaration order — visible only to a `handles_states_natively`
-//!   backend when two simultaneously-active states set the same
-//!   property. Canonical order (focused < hovered < pressed) matches
-//!   the common intent; revisit if a golden catches it.
+//! - **JS TEXT-binding fan-out** (`register_reactive_text_binding`):
+//!   still deferred with the macro's structured f-string lowering; the
+//!   CLASS-binding fan-out is ported (see [`signal_class`]).
+//! - **State-overlay CSS order**: resolved from the sheet's CACHED
+//!   axis slice in DECLARATION order — the old engine's order (this
+//!   was briefly axis-name order via a `variant_keys()` scan; the scan
+//!   also allocated the full key list per node per fire and was
+//!   replaced by the cached slice for the bench gate).
 
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -116,16 +118,34 @@ pub enum StyleProp {
 /// counterpart of `runtime_core::SignalClassSpec`, built over a
 /// `runtime_world` signal by [`signal_class`].
 pub struct SignalClassProp {
-    /// The discrete values the signal takes (kept for the future JS
-    /// fast-path port; the fallback path doesn't consult them).
+    /// The discrete values the signal takes (the JS fast path ships
+    /// them to the backend's binding registry; the fallback path
+    /// doesn't consult them).
     pub values: Vec<u32>,
-    /// Pre-built application per value — kept alive for the binding's
-    /// lifetime so their sheets aren't dead-Weak-swept (the old spec's
-    /// `_kept_apps` contract).
+    /// Pre-built application per value (parallel to `values`) — kept
+    /// alive for the binding's lifetime so their sheets aren't
+    /// dead-Weak-swept (the old spec's `_kept_apps` contract), and
+    /// minted into per-value classes on the JS fast path.
     pub apps: Vec<StyleApplication>,
     /// Tracked read producing the application for the CURRENT value;
-    /// runs inside the binding effect.
+    /// runs inside the binding effect (fallback path).
     pub compute: Rc<dyn Fn() -> StyleApplication>,
+    /// The Rc `compute` was CONSTRUCTED as. The JS fast path requires
+    /// `Rc::ptr_eq(compute, pristine_compute)`: a wrapper layered onto
+    /// `compute` afterwards (the navigator's `fold_style_overrides`
+    /// wraps it with screen style overrides) invalidates the
+    /// pre-built `apps` table, and minting stale apps would silently
+    /// drop the overrides — such specs take the (correct, per-node
+    /// effect) fallback instead.
+    pub pristine_compute: Rc<dyn Fn() -> StyleApplication>,
+    /// The driving signal's [`runtime_world::Signal::raw_id`] — keys
+    /// the backend's JS binding registry and the per-world notifier
+    /// dedup table.
+    pub signal_id: u64,
+    /// Untracked-safe read of the signal's current `u32` value (the
+    /// backend's `value_reader`; also the notifier effect's tracked
+    /// read).
+    pub read_value: Rc<dyn Fn() -> u32>,
 }
 
 /// Build a [`StyleProp::SignalClass`] from a world `Signal`, its
@@ -133,17 +153,17 @@ pub struct SignalClassProp {
 /// once per value at construction, same as the old
 /// `runtime_core::signal_class`).
 ///
-/// ## Divergence, documented (bench-gate risk)
-///
-/// The old core's web fast path installed a **pure-JS dispatcher**
-/// (`register_reactive_class_binding` + a notifier fired from the OLD
-/// arena's `Signal::set`). World signals never fire that notifier —
-/// there is no JS-side write hook in the new kernel yet — so this path
-/// always uses the *fallback* shape the old core used on non-JS
-/// backends: one per-node binding effect that re-resolves and
-/// re-applies on each signal write. Observable behavior (the class
-/// swap) is identical; the shared-cohort fan-out optimization returns
-/// with the P3 bench work (a world-signal write-notifier channel).
+/// On a backend with `supports_js_class_bindings` (web), the attach
+/// takes the ported **JS fast path**: per-value classes are minted at
+/// mount, ONE per-signal notifier effect ships commits across the FFI,
+/// and the JS dispatcher swaps classes on every subscribed node —
+/// zero per-node Rust work per fire (the old walker's
+/// `attach_style_signal_class`, rebuilt on a world-effect notifier
+/// because world signals have no `Signal::set` JS write hook). Other
+/// backends — and specs whose `compute` was wrapped after
+/// construction (see [`SignalClassProp::pristine_compute`]) — use the
+/// per-node binding-effect fallback, the shape the old core used on
+/// non-JS backends.
 pub fn signal_class<F, V>(signal: Signal<V>, values: &[u32], mapping: F) -> StyleProp
 where
     F: Fn(u32) -> StyleApplication + 'static,
@@ -159,7 +179,10 @@ where
     StyleProp::SignalClass(SignalClassProp {
         values: values.to_vec(),
         apps,
-        compute,
+        compute: compute.clone(),
+        pristine_compute: compute,
+        signal_id: signal.raw_id(),
+        read_value: Rc::new(move || u32::from(signal.get())),
     })
 }
 
@@ -304,6 +327,16 @@ pub fn attach_style<H: StyleServices>(
         StyleProp::Sheet(app) => attach_sheet_static(backend, node, app),
         StyleProp::SheetDynamic(f) => attach_sheet_dynamic(backend, node, f),
         StyleProp::SignalClass(spec) => {
+            // JS fast path (web): pre-minted per-value classes + JS-side
+            // fan-out — only when the spec is PRISTINE (a wrapped
+            // `compute` means the apps table no longer reflects the
+            // rendered style; minting it would drop the wrapper's
+            // overrides — navigator screen-style overlays).
+            if backend.borrow().supports_js_class_bindings()
+                && Rc::ptr_eq(&spec.compute, &spec.pristine_compute)
+            {
+                return attach_signal_class_js(backend, node, spec);
+            }
             // Fallback shape (see `signal_class`): the whole spec moves
             // into the closure so `apps` stays alive, pinning the
             // per-value sheets against the dead-Weak sweep — the old
@@ -367,6 +400,123 @@ fn noop_setter() -> Rc<dyn Fn(StateBits, bool)> {
 }
 
 // ===========================================================================
+// SignalClass JS fast path (port of walker/style.rs
+// `attach_style_signal_class`, world-notifier edition)
+// ===========================================================================
+
+/// Per-world dedup table for signal→JS notifier effects (world context,
+/// like `ThemeCtx`). One entry per signal id; entries live for the
+/// world's lifetime — the notifier effect is world-root-owned
+/// (`unscoped`), because it serves EVERY node ever bound to the signal,
+/// not the first node's subtree (a collected effect would die with that
+/// subtree while later-bound nodes lived on — the same regression class
+/// the theme driver documents).
+///
+/// SHARED between the class-binding path and the text-binding path: the
+/// old core allowed at most ONE JS notifier per signal (the first
+/// registrant's stringifier wins; both dispatchers tap the same
+/// `__idealystOnSignalChanged` value cache), and two notifier effects
+/// for one signal would double-ship every commit.
+#[derive(Clone, Default)]
+struct SignalNotifiers(Rc<RefCell<std::collections::HashSet<u64>>>);
+
+/// First-registrant-wins install seam for the per-signal JS notifier
+/// effect: if `signal_id` has no notifier in this world yet, run
+/// `install` (which must create the world-root effect); otherwise do
+/// nothing. The effect's FIRST run happens synchronously at creation —
+/// i.e. BEFORE the caller registers its binding — which seeds the
+/// JS-side signal-value cache so the binding's registration-time
+/// initial paint resolves (the old core relied on a prior
+/// `register_signal_for_js` write for that seed).
+pub(crate) fn ensure_signal_notifier_installed(signal_id: u64, install: impl FnOnce()) {
+    let registry = match runtime_world::inject::<SignalNotifiers>() {
+        Some(r) => r,
+        None => {
+            let r = SignalNotifiers::default();
+            runtime_world::provide(r.clone());
+            r
+        }
+    };
+    if !registry.0.borrow_mut().insert(signal_id) {
+        return;
+    }
+    install();
+}
+
+/// Ensure ONE world-root effect exists for `signal_id` that ships the
+/// signal's committed value to the backend's JS CLASS dispatcher
+/// (`StyleOps::notify_signal_value_js`).
+fn ensure_signal_notifier<H: StyleServices>(
+    backend: &Rc<RefCell<H>>,
+    signal_id: u64,
+    read_value: Rc<dyn Fn() -> u32>,
+) {
+    ensure_signal_notifier_installed(signal_id, || {
+        let b = backend.clone();
+        runtime_world::unscoped(|| {
+            let _notifier = effect(move || {
+                // Tracked read: re-fires on every committed change of the
+                // signal; one FFI hop fans out to every JS-side subscriber.
+                let value = read_value();
+                b.borrow_mut().notify_signal_value_js(signal_id, value);
+            });
+        });
+    });
+}
+
+/// The JS fast path: mint one class per declared value, register the
+/// (signal → value → class) table with the backend's JS dispatcher,
+/// ensure the per-signal notifier, release on teardown. Zero per-node
+/// Rust work per signal fire.
+fn attach_signal_class_js<H: StyleServices>(
+    backend: &Rc<RefCell<H>>,
+    node: &H::Node,
+    spec: SignalClassProp,
+) -> Rc<dyn Fn(StateBits, bool)> {
+    theme::ensure_theme_driver(backend);
+
+    // Mint per-value classes. Registration first — mint_class_for_app
+    // resolves against registered sheets (same ordering as the old
+    // walker's ensure_registered_with → mint sequence).
+    let mut class_names: Vec<String> = Vec::with_capacity(spec.apps.len());
+    for app in &spec.apps {
+        theme::ensure_sheet_registered(backend, &app.sheet);
+        let class = backend.borrow_mut().mint_class_for_app(app).expect(
+            "mint_class_for_app returned None for a SignalClass app — backends that \
+             support JS class bindings must mint fresh classes for dynamic override content",
+        );
+        class_names.push(class);
+    }
+
+    // Notifier BEFORE binding registration (seeds the JS value cache —
+    // see ensure_signal_notifier).
+    ensure_signal_notifier(backend, spec.signal_id, spec.read_value.clone());
+
+    let class_refs: Vec<&str> = class_names.iter().map(|s| s.as_str()).collect();
+    let binding_id = backend.borrow_mut().register_reactive_class_binding(
+        node,
+        spec.signal_id,
+        &spec.values,
+        &class_refs,
+        spec.read_value.clone(),
+    );
+
+    // Teardown: release the JS-side binding; the moved-in `apps` keep
+    // the per-value sheets registration-pinned for the node's lifetime
+    // (the old guard's `_kept_apps`).
+    let b = backend.clone();
+    let apps = spec.apps;
+    on_teardown(move || {
+        let _pin = &apps;
+        b.borrow_mut().release_reactive_class_binding(binding_id);
+    });
+
+    // Same no-op state setter the static path returns — state overlays
+    // aren't part of the SignalClass abstraction (old walker parity).
+    noop_setter()
+}
+
+// ===========================================================================
 // P2 dynamic resolved-rules path (unchanged behavior, now returns setter)
 // ===========================================================================
 
@@ -427,10 +577,16 @@ fn attach_sheet_static<H: StyleServices>(
     // Make sure the per-world theme driver is alive before registering.
     theme::ensure_theme_driver(backend);
 
+    // Capture the ctx ONCE per node: the apply below, the cohort
+    // reapply closure, and the teardown all use it — the per-call
+    // `inject` world-context lookup is measurable at bulk-create scale
+    // (10k rows × registration check per apply, the bench-gate work).
+    let ctx = theme::theme_ctx();
+
     // Inline first apply (identical work to the dynamic effect's first
     // run, minus the effect). No container ancestor tracking on the new
     // core yet, so container overlays resolve at width 0 (module docs).
-    apply_sheet(backend, node, &app, handles_states_natively);
+    apply_sheet(backend, node, &app, handles_states_natively, &ctx);
 
     // Enroll in the per-world cohort: ONE shared driver re-applies on
     // theme change instead of N per-node effects (`theme_cohort`
@@ -440,22 +596,23 @@ fn attach_sheet_static<H: StyleServices>(
     let node_for_cohort = node.clone();
     let app = Rc::new(app);
     let app_for_cohort = app.clone();
+    let ctx_for_cohort = ctx.clone();
     let cohort_id = theme::cohort_register(Rc::new(move || {
         apply_sheet(
             &backend_for_cohort,
             &node_for_cohort,
             &app_for_cohort,
             handles_states_natively,
+            &ctx_for_cohort,
         );
     }));
 
     // Teardown: cohort unregister FIRST, then on_node_unstyled — the
     // old `StyleHandle::drop` order. The `app` Rc rides in the closure
     // so the sheet stays pinned (registration Weak upgradeable) for the
-    // node's lifetime. The ThemeCtx is captured NOW (ambient world
+    // node's lifetime. The ThemeCtx was captured above (ambient world
     // available) because the teardown itself runs from a plain drop,
     // outside `World::enter` (see `ThemeCtx::cohort_unregister`).
-    let ctx = theme::theme_ctx();
     let b = backend.clone();
     let n = node.clone();
     on_teardown(move || {
@@ -486,6 +643,13 @@ fn attach_sheet_dynamic<H: StyleServices>(
     theme::ensure_theme_driver(backend);
     let handles_states_natively = backend.borrow().handles_states_natively();
 
+    // Captured ONCE per node; the binding effect below re-fires per
+    // dependency change and must not pay a world-context `inject` per
+    // version read / registration check / font fill (3 lookups per
+    // node per fire — measured on the js-framework-bench shared-signal
+    // style fan-out).
+    let ctx = theme::theme_ctx();
+
     // Per-node active interaction states — event-driven backends only
     // (web pre-emits pseudo-class CSS; skipping the slot is the same
     // saving the old path took).
@@ -501,16 +665,18 @@ fn attach_sheet_dynamic<H: StyleServices>(
     // registration Weak stays upgradeable for this effect's lifetime.
     let mut _pinned_sheet: Option<Rc<StyleSheet>> = None;
     let _binding = effect(move || {
+        #[cfg(feature = "debug-stats")]
+        let _t_effect = runtime_core::debug::now_micros();
         // Theme-version subscription — the per-token reads of the old
         // engine go deaf behind the resolution cache; the version
         // signal never does (old `tokens_version_signal` rationale).
-        let _ = theme::version_signal().get();
+        let _ = ctx.version().get();
 
         let app = style();
 
         // Registration fast path: steady-state re-fires skip the
         // sweep/flush prologue (`is_registered` contract).
-        if !theme::sheet_is_registered(&app.sheet) {
+        if !ctx.sheet_is_registered(&app.sheet) {
             theme::ensure_sheet_registered(&backend_for_effect, &app.sheet);
         }
         _pinned_sheet = Some(app.sheet.clone());
@@ -519,16 +685,35 @@ fn attach_sheet_dynamic<H: StyleServices>(
             // Web: resolve base + every overlay axis; the browser does
             // the state/breakpoint/container switching in CSS. NOT
             // subscribed to the states signal — CSS owns transitions.
-            let base = with_default_text_font(resolve_style(&app));
+            #[cfg(feature = "debug-stats")]
+            let _t_resolve = runtime_core::debug::now_micros();
+            let base = fill_default_text_font(resolve_style(&app), ctx.default_text_font());
             let state_overlays = resolve_state_overlays(&app);
             let bp_overlays = resolve_breakpoint_overlays(&app);
             let cq_overlays = resolve_container_overlays(&app);
+            #[cfg(feature = "debug-stats")]
+            runtime_core::debug::record_apply_phase(
+                "nc_sheet_dyn_resolve",
+                runtime_core::debug::now_micros().saturating_sub(_t_resolve),
+            );
+            #[cfg(feature = "debug-stats")]
+            let _t_apply = runtime_core::debug::now_micros();
             backend_for_effect.borrow_mut().apply_styled_variants(
                 &node_for_effect,
                 &base,
                 &state_overlays,
                 &bp_overlays,
                 &cq_overlays,
+            );
+            #[cfg(feature = "debug-stats")]
+            runtime_core::debug::record_apply_phase(
+                "nc_sheet_dyn_apply",
+                runtime_core::debug::now_micros().saturating_sub(_t_apply),
+            );
+            #[cfg(feature = "debug-stats")]
+            runtime_core::debug::record_apply_phase(
+                "nc_sheet_dyn_effect_total",
+                runtime_core::debug::now_micros().saturating_sub(_t_effect),
             );
         } else {
             // Event-driven: merge active state axes into the variant
@@ -546,7 +731,7 @@ fn attach_sheet_dynamic<H: StyleServices>(
             // old-core node with no container ancestor.
             let cq_overlays = resolve_container_overlays(&app);
             let resolved = merge_active_containers(resolved, &cq_overlays, 0.0);
-            let resolved = with_default_text_font(resolved);
+            let resolved = fill_default_text_font(resolved, ctx.default_text_font());
             backend_for_effect
                 .borrow_mut()
                 .apply_style(&node_for_effect, &resolved);
@@ -573,15 +758,21 @@ fn attach_sheet_dynamic<H: StyleServices>(
 /// Resolve + apply one sheet application — port of `apply_one`
 /// (walker/style.rs), shared by the mount-time apply and the cohort
 /// reapply closure.
-fn apply_sheet<H: StyleServices>(
+pub(crate) fn apply_sheet<H: StyleServices>(
     backend: &Rc<RefCell<H>>,
     node: &H::Node,
     app: &StyleApplication,
     handles_states_natively: bool,
+    ctx: &theme::ThemeCtx,
 ) {
-    theme::ensure_sheet_registered(backend, &app.sheet);
+    // Registration fast path (bulk-create hot spot): only pay the
+    // sweep/flush prologue when the sheet is genuinely unregistered —
+    // 10k identical rows hit this once, not 10k times.
+    if !ctx.sheet_is_registered(&app.sheet) {
+        theme::ensure_sheet_registered(backend, &app.sheet);
+    }
     if handles_states_natively {
-        let base = with_default_text_font(resolve_style(app));
+        let base = fill_default_text_font(resolve_style(app), ctx.default_text_font());
         let state_overlays = resolve_state_overlays(app);
         let bp_overlays = resolve_breakpoint_overlays(app);
         let cq_overlays = resolve_container_overlays(app);
@@ -598,7 +789,7 @@ fn apply_sheet<H: StyleServices>(
         let resolved = merge_active_breakpoints(base, &bp_overlays);
         let cq_overlays = resolve_container_overlays(app);
         let resolved = merge_active_containers(resolved, &cq_overlays, 0.0);
-        let resolved = with_default_text_font(resolved);
+        let resolved = fill_default_text_font(resolved, ctx.default_text_font());
         backend.borrow_mut().apply_style(node, &resolved);
     }
 }
@@ -610,38 +801,34 @@ fn apply_sheet<H: StyleServices>(
 // so the vocabulary scans `variant_keys()` by the reserved prefixes).
 // ===========================================================================
 
-/// Map a variant axis name to its `StateBits` flag (the `stylesheet!`
-/// macro's `__state_<name>` namespace; mirrors runtime-core's private
-/// `state_axis_bit`).
-fn state_axis_bit(axis: &str) -> Option<StateBits> {
-    match axis {
-        "__state_hovered" => Some(StateBits::HOVERED),
-        "__state_pressed" => Some(StateBits::PRESSED),
-        "__state_focused" => Some(StateBits::FOCUSED),
-        "__state_disabled" => Some(StateBits::DISABLED),
-        _ => None,
-    }
-}
-
-/// The sheet's declared state-overlay axes (axis-name order — see the
-/// module docs' order note).
+/// The sheet's declared state-overlay axes — the CACHED per-sheet
+/// slice (empty for the common no-`state`-block case). Scanning
+/// `variant_keys()` here allocated the full key list per styled node
+/// per fire — measured in the repeat enqueue loop at bulk-create
+/// scale (the old walker always read the cached slice).
 fn sheet_state_axes(sheet: &Rc<StyleSheet>) -> Vec<(StateBits, String)> {
-    sheet
-        .variant_keys()
-        .into_iter()
-        .filter_map(|(axis, _value)| state_axis_bit(&axis).map(|bit| (bit, axis)))
+    let cached = sheet.state_axes();
+    if cached.is_empty() {
+        return Vec::new();
+    }
+    cached
+        .iter()
+        .map(|(bit, axis)| (*bit, axis.clone()))
         .collect()
 }
 
 /// Resolve each declared state overlay against the application's
 /// variants + theme: `(bits, fully resolved rules)` pairs a
-/// natively-handling backend emits as pseudo-class CSS.
-fn resolve_state_overlays(app: &StyleApplication) -> Vec<(StateBits, Rc<StyleRules>)> {
-    let axes = sheet_state_axes(&app.sheet);
+/// natively-handling backend emits as pseudo-class CSS. Reads the
+/// sheet's cached axis slice — allocation-free when no `state` blocks
+/// are declared.
+pub(crate) fn resolve_state_overlays(app: &StyleApplication) -> Vec<(StateBits, Rc<StyleRules>)> {
+    let axes = app.sheet.state_axes();
     if axes.is_empty() {
         return Vec::new();
     }
-    axes.into_iter()
+    axes.to_vec()
+        .into_iter()
         .map(|(bit, axis)| {
             let state_app = app.clone().with(axis, "on");
             (bit, resolve_style(&state_app))
@@ -649,19 +836,20 @@ fn resolve_state_overlays(app: &StyleApplication) -> Vec<(StateBits, Rc<StyleRul
         .collect()
 }
 
-/// Breakpoint analog — `(bucket, fully resolved rules)` sorted
-/// ascending by rank (the mobile-first min-width cascade both consumers
-/// stack in order).
+/// Breakpoint analog — `(bucket, fully resolved rules)`; the cached
+/// axis slice is already in declaration order and the walker sorted by
+/// rank, preserved here.
 fn resolve_breakpoint_overlays(app: &StyleApplication) -> Vec<(Breakpoint, Rc<StyleRules>)> {
-    let mut out: Vec<(Breakpoint, Rc<StyleRules>)> = app
-        .sheet
-        .variant_keys()
+    let axes = app.sheet.breakpoint_axes();
+    if axes.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<(Breakpoint, Rc<StyleRules>)> = axes
+        .to_vec()
         .into_iter()
-        .filter_map(|(axis, _value)| {
-            Breakpoint::from_axis_name(&axis).map(|bp| {
-                let bp_app = app.clone().with(axis, "on");
-                (bp, resolve_style(&bp_app))
-            })
+        .map(|(bp, axis)| {
+            let bp_app = app.clone().with(axis, "on");
+            (bp, resolve_style(&bp_app))
         })
         .collect();
     out.sort_by_key(|(bp, _)| bp.rank());
@@ -671,15 +859,16 @@ fn resolve_breakpoint_overlays(app: &StyleApplication) -> Vec<(Breakpoint, Rc<St
 /// Container-query analog — `(min-width threshold px, fully resolved
 /// rules)` sorted ascending by threshold.
 fn resolve_container_overlays(app: &StyleApplication) -> Vec<(f32, Rc<StyleRules>)> {
-    let mut out: Vec<(f32, Rc<StyleRules>)> = app
-        .sheet
-        .variant_keys()
+    let axes = app.sheet.container_axes();
+    if axes.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<(f32, Rc<StyleRules>)> = axes
+        .to_vec()
         .into_iter()
-        .filter_map(|(axis, _value)| {
-            runtime_core::container_axis_threshold(&axis).map(|threshold| {
-                let cq_app = app.clone().with(axis, "on");
-                (threshold, resolve_style(&cq_app))
-            })
+        .map(|(threshold, axis)| {
+            let cq_app = app.clone().with(axis, "on");
+            (threshold, resolve_style(&cq_app))
         })
         .collect();
     out.sort_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -738,13 +927,199 @@ fn merge_active_containers(
 
 /// Fill an absent `font_family` with the PER-WORLD theme default (old
 /// `with_default_text_font`; clones only when it actually fills).
-fn with_default_text_font(rules: Rc<StyleRules>) -> Rc<StyleRules> {
+/// Takes the font by VALUE from the caller's captured `ThemeCtx`
+/// (`ctx.default_text_font()`) so hot paths don't pay a world-context
+/// `inject` per call.
+fn fill_default_text_font(
+    rules: Rc<StyleRules>,
+    default_font: Option<runtime_core::FontFamily>,
+) -> Rc<StyleRules> {
     if rules.font_family.is_none() {
-        if let Some(font) = theme::default_text_font() {
+        if let Some(font) = default_font {
             let mut owned = (*rules).clone();
             owned.font_family = Some(font);
             return Rc::new(owned);
         }
     }
     rules
+}
+
+// ===========================================================================
+// Tests — the SignalClass JS fast path (the fallback path is covered by
+// the scene-parity goldens; recorders report no JS-binding support).
+// ===========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use runtime_core::accessibility::AccessibilityProps;
+    use runtime_scene::Host;
+    use runtime_world::{collect_owned, World};
+
+    /// Minimal StyleServices host recording the JS-binding surface.
+    #[derive(Default)]
+    struct JsHost {
+        registered: Vec<(u64, Vec<u32>, Vec<String>)>,
+        released: Vec<u32>,
+        notified: Vec<(u64, u32)>,
+        minted: usize,
+        next_binding: u32,
+    }
+
+    impl Host for JsHost {
+        type Node = u32;
+        fn insert(&mut self, _p: &mut u32, _c: u32) {}
+        fn insert_at(&mut self, _p: &mut u32, _c: u32, _i: usize) {}
+        fn remove_child(&mut self, _p: &u32, _c: &u32) {}
+        fn clear_children(&mut self, _n: &u32) {}
+        fn create_anchor(&mut self) -> u32 {
+            0
+        }
+        fn supports_splice(&self) -> bool {
+            true
+        }
+    }
+    impl crate::caps::ViewOps for JsHost {
+        fn create_view(&mut self, _a11y: &AccessibilityProps) -> u32 {
+            0
+        }
+    }
+    impl crate::caps::DocumentOps for JsHost {}
+    impl crate::caps::AssetOps for JsHost {}
+    impl crate::caps::AppEnvOps for JsHost {}
+    impl crate::caps::StyleOps for JsHost {
+        fn apply_style(&mut self, _node: &u32, _style: &Rc<StyleRules>) {}
+        fn supports_js_class_bindings(&self) -> bool {
+            true
+        }
+        fn mint_class_for_app(&mut self, _app: &StyleApplication) -> Option<String> {
+            self.minted += 1;
+            Some(format!("iy-test-{}", self.minted))
+        }
+        fn register_reactive_class_binding(
+            &mut self,
+            _node: &u32,
+            signal_id: u64,
+            values: &[u32],
+            classes: &[&str],
+            _value_reader: Rc<dyn Fn() -> u32>,
+        ) -> u32 {
+            self.registered.push((
+                signal_id,
+                values.to_vec(),
+                classes.iter().map(|s| s.to_string()).collect(),
+            ));
+            self.next_binding += 1;
+            self.next_binding
+        }
+        fn release_reactive_class_binding(&mut self, binding_id: u32) {
+            self.released.push(binding_id);
+        }
+        fn notify_signal_value_js(&mut self, signal_id: u64, value: u32) {
+            self.notified.push((signal_id, value));
+        }
+    }
+
+    fn test_app(v: u32) -> StyleApplication {
+        // One cached sheet for the whole test module (mirrors
+        // `stylesheet!` output); per-value apps differ by override.
+        fn sheet() -> Rc<StyleSheet> {
+            static KEY: u8 = 0;
+            runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
+                Rc::new(StyleSheet::r#static(StyleRules::default()))
+            })
+        }
+        let mut rules = StyleRules::default();
+        rules.opacity = Some(runtime_core::Tokenized::Literal(if v == 0 { 0.25 } else { 0.75 }));
+        StyleApplication::new(sheet()).with_overrides(rules)
+    }
+
+    /// The named bench-gate risk: a shared signal driving N
+    /// signal-class nodes must fan out through ONE per-signal notifier
+    /// (one `notify_signal_value_js` per commit), not N per-node
+    /// effects. Also proves: per-value classes minted per node,
+    /// binding registered with the signal's raw id, seeding first-run
+    /// notify BEFORE registration, release on teardown, and notifier
+    /// dedup across nodes.
+    #[test]
+    fn signal_class_js_fast_path_single_notifier_fan_out() {
+        let world = World::new();
+        let backend = Rc::new(RefCell::new(JsHost::default()));
+        let (sig, owned) = world.enter(|| {
+            let sig = runtime_world::signal(0u32);
+            let ((), owned) = collect_owned(|| {
+                for node in 0..3u32 {
+                    let StyleProp::SignalClass(spec) =
+                        signal_class(sig, &[0, 1], test_app)
+                    else {
+                        panic!("signal_class builds a SignalClass prop")
+                    };
+                    let _setter = attach_style(&backend, &node, StyleProp::SignalClass(spec));
+                }
+            });
+            (sig, owned)
+        });
+
+        {
+            let b = backend.borrow();
+            assert_eq!(b.registered.len(), 3, "one binding per node");
+            assert_eq!(b.minted, 6, "two classes minted per node");
+            for (sid, values, classes) in &b.registered {
+                assert_eq!(*sid, sig.raw_id());
+                assert_eq!(values, &vec![0, 1]);
+                assert_eq!(classes.len(), 2);
+            }
+            // Seeding: the notifier's creation run shipped the initial
+            // value ONCE (deduped across the three nodes), before any
+            // registration could rely on it.
+            assert_eq!(b.notified, vec![(sig.raw_id(), 0)]);
+        }
+
+        // One commit → exactly ONE notify, regardless of node count.
+        world.enter(|| sig.set(1));
+        world.flush();
+        assert_eq!(
+            backend.borrow().notified.last(),
+            Some(&(sig.raw_id(), 1)),
+            "commit shipped the new value"
+        );
+        assert_eq!(
+            backend.borrow().notified.len(),
+            2,
+            "shared-signal fan-out is ONE notify per commit, not per node"
+        );
+
+        // Teardown releases every binding.
+        drop(owned);
+        let released = backend.borrow().released.clone();
+        assert_eq!(released.len(), 3, "each node's binding released");
+    }
+
+    /// A spec whose `compute` was wrapped after construction (the
+    /// navigator's `fold_style_overrides` shape) must NOT take the JS
+    /// fast path — the pre-built apps table no longer reflects the
+    /// rendered style, and minting it would drop the folded overrides.
+    #[test]
+    fn regression_folded_signal_class_skips_js_fast_path() {
+        let world = World::new();
+        let backend = Rc::new(RefCell::new(JsHost::default()));
+        world.enter(|| {
+            let sig = runtime_world::signal(0u32);
+            let StyleProp::SignalClass(mut spec) = signal_class(sig, &[0, 1], test_app)
+            else {
+                panic!("signal_class builds a SignalClass prop")
+            };
+            // Wrap compute the way handlers/navigator.rs does.
+            let inner = spec.compute.clone();
+            spec.compute = Rc::new(move || inner());
+            let ((), _owned) = collect_owned(|| {
+                let node = 7u32;
+                let _setter = attach_style(&backend, &node, StyleProp::SignalClass(spec));
+            });
+            assert!(
+                backend.borrow().registered.is_empty(),
+                "folded spec must take the per-node-effect fallback, not the JS binding"
+            );
+        });
+    }
 }

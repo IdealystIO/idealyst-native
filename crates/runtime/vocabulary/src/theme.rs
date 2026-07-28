@@ -262,6 +262,32 @@ impl ThemeCtx {
     pub fn token_value(&self, name: &str) -> Option<TokenValue> {
         self.state.borrow().values.get(name).cloned()
     }
+
+    /// The world's theme VERSION signal (Copy handle) — for per-fire
+    /// hot paths that captured the ctx at attach time (same rationale
+    /// as [`Self::sheet_is_registered`]). Equivalent to the free
+    /// `version_signal()` minus the per-call `inject`.
+    pub(crate) fn version(&self) -> Signal<u64> {
+        self.version
+    }
+
+    /// Ctx-based [`sheet_is_registered`] — for per-fire hot paths
+    /// (style binding effects) that captured the ctx at attach time:
+    /// skips the per-call `inject` world-context lookup the free fn
+    /// pays (measured: 3 context lookups per node per fire on the
+    /// dynamic style path — the js-framework-bench gate work).
+    pub(crate) fn sheet_is_registered(&self, sheet: &Rc<StyleSheet>) -> bool {
+        self.state
+            .borrow()
+            .registrations
+            .contains_key(&(Rc::as_ptr(sheet) as usize))
+    }
+
+    /// Ctx-based [`default_text_font`] — same hot-path rationale as
+    /// [`Self::sheet_is_registered`].
+    pub(crate) fn default_text_font(&self) -> Option<FontFamily> {
+        self.state.borrow().default_text_font.clone()
+    }
 }
 
 /// Install the initial token set for the ambient world. Values are
@@ -419,11 +445,6 @@ pub(crate) fn sheet_is_registered(sheet: &Rc<StyleSheet>) -> bool {
 ///    reference (`register_asset` per face + `register_typeface`,
 ///    deduped per world), then `register_stylesheet`.
 ///
-/// Divergence from the old function, documented: the pregen rules are
-/// NOT seeded into runtime-core's resolution cache (`insert_variant` is
-/// crate-private there), so the first `resolve_style` per
-/// (sheet, variants) recomputes instead of hitting the pregen `Rc`.
-/// Purely a first-touch cost; the backend still dedups by content key.
 pub(crate) fn ensure_sheet_registered<H: StyleOps + AssetOps + AppEnvOps>(
     backend: &Rc<RefCell<H>>,
     sheet: &Rc<StyleSheet>,
@@ -460,8 +481,12 @@ pub(crate) fn ensure_sheet_registered<H: StyleOps + AssetOps + AppEnvOps>(
     }
 
     // Pregenerate outside any borrow (sheet closures are arbitrary
-    // author code).
-    let rules: Rc<Vec<Rc<StyleRules>>> = Rc::new(runtime_core::pregenerate(sheet));
+    // author code). The SEEDING variant also populates the sheet's
+    // pointer-keyed resolve fast path — without it every
+    // `resolve_style` on this sheet takes the slow ResolutionKey path
+    // and returns pointer-distinct rules, defeating backends'
+    // pointer-keyed class caches (the create_10k bench-gate residual).
+    let rules: Rc<Vec<Rc<StyleRules>>> = Rc::new(runtime_core::pregenerate_and_seed(sheet));
 
     // Typeface registration BEFORE the sheet ships (old
     // `ensure_typefaces_registered_with` contract: every `apply_style`

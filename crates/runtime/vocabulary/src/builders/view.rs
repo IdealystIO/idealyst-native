@@ -20,6 +20,7 @@ use super::SceneChild;
 pub fn view() -> ViewBuilder {
     ViewBuilder {
         prim: ViewPrim {
+            test_id: None,
             style: None,
             safe_area: SafeAreaSides::NONE,
             on_touch: None,
@@ -100,6 +101,14 @@ impl ViewBuilder {
     }
 
     /// Receive the imperative-ref handle at mount (P2 form of `.bind`).
+    /// Robot/automation anchor (`test_id = …`): the mount handler
+    /// registers this node under `id` in the vocabulary robot registry
+    /// (`robot` feature; the slot is inert otherwise).
+    pub fn test_id(mut self, id: &'static str) -> Self {
+        self.prim.test_id = Some(id);
+        self
+    }
+
     pub fn on_handle(mut self, fill: impl FnOnce(ViewHandle) + 'static) -> Self {
         self.prim.ref_fill = Some(Box::new(fill));
         self
@@ -114,6 +123,7 @@ impl ViewBuilder {
 pub fn pressable(on_press: impl Fn() + 'static) -> PressableBuilder {
     PressableBuilder {
         prim: PressablePrim {
+            test_id: None,
             on_press: Rc::new(on_press),
             disabled: None,
             preserves_focus: false,
@@ -161,6 +171,14 @@ impl PressableBuilder {
         self
     }
 
+    /// Robot/automation anchor (`test_id = …`): the mount handler
+    /// registers this node under `id` in the vocabulary robot registry
+    /// (`robot` feature; the slot is inert otherwise).
+    pub fn test_id(mut self, id: &'static str) -> Self {
+        self.prim.test_id = Some(id);
+        self
+    }
+
     pub fn on_handle(mut self, fill: impl FnOnce(PressableHandle) + 'static) -> Self {
         self.prim.ref_fill = Some(Box::new(fill));
         self
@@ -175,6 +193,7 @@ impl PressableBuilder {
 pub fn scroll_view() -> ScrollViewBuilder {
     ScrollViewBuilder {
         prim: ScrollViewPrim {
+            test_id: None,
             horizontal: false,
             on_scroll: None,
             safe_area: SafeAreaSides::NONE,
@@ -225,6 +244,14 @@ impl ScrollViewBuilder {
 
     pub fn a11y(mut self, a11y: AccessibilityProps) -> Self {
         self.prim.a11y = a11y;
+        self
+    }
+
+    /// Robot/automation anchor (`test_id = …`): the mount handler
+    /// registers this node under `id` in the vocabulary robot registry
+    /// (`robot` feature; the slot is inert otherwise).
+    pub fn test_id(mut self, id: &'static str) -> Self {
+        self.prim.test_id = Some(id);
         self
     }
 

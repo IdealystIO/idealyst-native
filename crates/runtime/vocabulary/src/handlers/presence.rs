@@ -44,7 +44,7 @@ use runtime_core::scheduling::{after_animation_frame, after_ms, ScheduledTask};
 use runtime_scene::{dyn_keyed, fragment, Element, LiveNode, MountCx, Registry, Retired};
 use runtime_world::effect;
 
-use crate::caps::PresenceOps;
+use crate::caps::{IntrospectionOps, PresenceOps};
 use crate::prims::{PresencePrim, PrimCell};
 
 /// Mount a `presence`.
@@ -54,7 +54,7 @@ pub fn mount_presence<H>(
     _children: Vec<Element>,
 ) -> H::Node
 where
-    H: PresenceOps,
+    H: PresenceOps + IntrospectionOps,
 {
     let backend = cx.backend().clone();
     // The placeholder is created bare and NEVER styled by the handler:
@@ -67,6 +67,23 @@ where
     let mut placeholder = backend
         .borrow_mut()
         .create_presence_placeholder(&prim.a11y);
+
+    // Identity/robot registration on the PLACEHOLDER (the old core
+    // registered `Element::Presence` itself): registered before the
+    // hole realizes so the initially-present child links as its child.
+    // Children built on later `present` flips run inside the driver
+    // effect (empty parent stack) and surface via the snapshot orphan
+    // rule, same as the old core.
+    #[cfg(feature = "robot")]
+    let _robot = crate::robot::register_mount(
+        &backend,
+        &placeholder,
+        crate::robot::ElementKind::Presence,
+        prim.test_id,
+        None,
+        None,
+        crate::robot::MountActions::default(),
+    );
 
     let present = prim.present;
     let enter = prim.enter;
@@ -219,7 +236,7 @@ where
 /// separately for backends assembling a custom registry.
 pub fn register_presence<H>(registry: &mut Registry<H>)
 where
-    H: PresenceOps + 'static,
+    H: PresenceOps + IntrospectionOps + 'static,
 {
     registry.register::<PrimCell<PresencePrim>, _>(|cx, p, children| {
         mount_presence(cx, p.take(), children)

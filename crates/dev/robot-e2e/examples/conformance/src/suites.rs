@@ -7,16 +7,24 @@
 //! mounts on `set_toggle` is visible to the assertion on the next line), so
 //! no explicit waits are needed.
 
-use robot_e2e::{expect, flow, run_suites, suite, test, Page};
-use runtime_core::robot::ElementKind;
+use robot_e2e::{expect, flow, run_suites, suite, test, ElementKind, Page};
 
 /// Entry point scheduled from `app()` ~1s after mount.
+///
+/// Dual-core: the first three suites are identical on both cores (same
+/// tests, same `test_id`s). The idea-ui suite (idea-ui is old-core-only
+/// until the SDK retarget, P6) and the `#[method]` suite (P5 seam)
+/// exist only on the old core — BLOCKED on new-core, not weakened; the
+/// per-core totals differ accordingly and the conformance report names
+/// the seams.
 pub(crate) fn run_all() {
     run_suites(vec![
         primitives_suite(),
         modal_suite(),
         navigation_suite(),
+        #[cfg(feature = "old-core")]
         idea_ui_suite(),
+        #[cfg(feature = "old-core")]
         component_methods_suite(),
     ]);
 }
@@ -116,6 +124,7 @@ fn modal_suite() -> robot_e2e::Suite {
     )
 }
 
+#[cfg(feature = "old-core")]
 fn idea_ui_suite() -> robot_e2e::Suite {
     // idea-ui "as a key implementor": its Switch/Checkbox/Button forward a
     // `test_id` to their root primitive (idea-ui `robot` feature), so the
@@ -165,6 +174,7 @@ fn navigation_suite() -> robot_e2e::Suite {
 /// `list_components` → `invoke_method` path the MCP server and the Inspector
 /// use. Also asserts the element↔component link the macro/walker establish
 /// (so the Inspector can resolve a selected element to its methods).
+#[cfg(feature = "old-core")]
 fn component_methods_suite() -> robot_e2e::Suite {
     use runtime_core::robot::{invoke_method, list_components};
 

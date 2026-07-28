@@ -28,6 +28,7 @@ mod media;
 mod navigator;
 mod portal;
 mod presence;
+mod repeat;
 mod text;
 mod view;
 mod virtualizer;
@@ -39,8 +40,12 @@ pub use navigator::{
     mount_navigator_outlet, mount_stack_navigator, mount_swap_navigator, register_navigator,
     NavCaps,
 };
+/// The platform-URL synchronization seam a URL-bearing host installs
+/// (see `navigator::url_sync`).
+pub use navigator::url_sync as nav_url_sync;
 pub use portal::{mount_portal, register_portal};
 pub use presence::{mount_presence, register_presence};
+pub use repeat::{mount_repeat, register_repeat};
 pub use virtualizer::{mount_virtualizer, register_virtualizer};
 pub use text::{mount_button, mount_text};
 pub use view::{mount_pressable, mount_scroll_view, mount_view};
@@ -94,6 +99,7 @@ pub fn register_builtins<H: AllCaps + 'static>(registry: &mut Registry<H>) {
     register_portal(registry);
     register_presence(registry);
     register_navigator(registry);
+    register_repeat(registry);
 }
 
 /// Bind a `Value` prop that the `create_*` call did NOT consume: the

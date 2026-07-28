@@ -45,6 +45,19 @@ pub enum Element {
     /// [`Realized`](crate::Realized) at realize time and lives exactly as
     /// long as the subtree stays realized.
     Owned { element: Box<Element>, owned: Owned },
+    /// A **multi-node** primitive: one payload that mounts N sibling
+    /// nodes directly into the enclosing parent through a
+    /// [`register_many`](crate::Registry::register_many) handler. This is
+    /// the scene seam for the old core's `Element::Repeat` (the static
+    /// `for i in 0..n` lowering): the handler gets parent access, so a
+    /// batching backend can collapse the whole expansion into one FFI
+    /// round-trip instead of N per-node mounts.
+    ///
+    /// Children-list ONLY, exactly like the old `Repeat`: it stands for
+    /// N sibling nodes, never a single subtree root, so realizing one as
+    /// a detached root (navigator screen, keyed row root, spliced hole
+    /// root) panics — the same contract the old walker enforced.
+    Many { data: Box<dyn Any> },
 }
 
 /// A primitive item: typed payload + children. The payload's `TypeId` is
@@ -59,6 +72,15 @@ pub fn item(data: impl Any, children: Vec<Element>) -> Element {
 /// Siblings with no node of their own.
 pub fn fragment(children: Vec<Element>) -> Element {
     Element::Fragment(children)
+}
+
+/// A multi-node primitive item (see [`Element::Many`]): the payload's
+/// `TypeId` dispatches to the handler registered via
+/// [`register_many`](crate::Registry::register_many).
+pub fn many(data: impl Any) -> Element {
+    Element::Many {
+        data: Box::new(data),
+    }
 }
 
 /// Attach a component body's collected scope to its returned element —

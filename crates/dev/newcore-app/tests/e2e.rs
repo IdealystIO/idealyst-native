@@ -585,3 +585,102 @@ fn hover_flip_applies_the_state_overlay() {
         "hover release restores the base digest:\n{log}"
     );
 }
+
+// ===========================================================================
+// P5 identity seam: the authored `test_id = ...` anchors drive the app
+// through the vocabulary robot registry — the same find/act surface the
+// conformance app's robot bridge will adapt (see
+// runtime_vocabulary::robot's module docs for the transport contract).
+// ===========================================================================
+
+use runtime_vocabulary::robot::{Query, Robot};
+
+/// `test_id = ...` on the authored source registers at mount, and the
+/// robot's `click` drives the REAL add handler end to end (signal
+/// mutations + a structural insert on flush) — identical behavior to
+/// the backend-recorded `press()` path.
+#[test]
+fn robot_finds_by_test_id_and_clicks_the_real_handler() {
+    let robot = Robot::new();
+    robot.reset();
+    let (h, _) = Harness::mount();
+
+    let input = robot
+        .find(Query::test_id("draft-input"))
+        .expect("text_input registered under its authored test_id");
+    // type_text routes to the authored on_change (the controlled write).
+    h.world.enter(|| robot.type_text(&input, "from robot").unwrap());
+    h.flush();
+    assert_eq!(h.handle.draft.get(), "from robot");
+
+    let add = robot.find(Query::test_id("add-btn")).expect("button registered");
+    h.world.enter(|| robot.click(&add).unwrap());
+    let ops = h.flush();
+    let log = joined(&ops);
+    assert!(log.contains("\"[ ] from robot\""), "row mounted via robot drive:\n{log}");
+    assert_eq!(h.handle.next_id.get(), 4);
+}
+
+/// Duplicate test_id across keyed rows: `find_all` returns one hit per
+/// row (the toHaveCount pattern), and a keyed-row removal deregisters
+/// exactly that row's entry — registration follows the row's lifetime,
+/// not the list's.
+#[test]
+fn robot_row_affordances_count_and_deregister_with_their_rows() {
+    let robot = Robot::new();
+    robot.reset();
+    let (h, _) = Harness::mount();
+
+    assert_eq!(robot.find_all(Query::test_id("row-del")).len(), 2);
+
+    // Remove row 2 through its own affordance (find is last-wins; both
+    // rows' buttons are returned by find_all, so pick by clicking each
+    // until the list shrinks — here: the recorded handler for clarity).
+    h.press("remove-2");
+    assert_eq!(
+        robot.find_all(Query::test_id("row-del")).len(),
+        1,
+        "the removed row's registry entry must deregister with it"
+    );
+
+    // Empty the list entirely: the branch swap to the empty state drops
+    // the remaining row's entries too.
+    h.press("remove-1");
+    assert_eq!(robot.find_all(Query::test_id("row-del")).len(), 0);
+}
+
+/// The reactive `remaining` text reports its LIVE label through the
+/// registry (label_fn), so a robot assertion sees post-toggle state.
+#[test]
+fn robot_reads_live_reactive_label() {
+    let robot = Robot::new();
+    robot.reset();
+    let (h, _) = Harness::mount();
+
+    h.world.enter(|| {
+        let t = robot.find(Query::test_id("remaining")).expect("text registered");
+        assert_eq!(t.label.as_deref(), Some("1 left"));
+    });
+    h.press("toggle-1");
+    h.world.enter(|| {
+        let t = robot.find(Query::test_id("remaining")).unwrap();
+        assert_eq!(t.label.as_deref(), Some("0 left"), "label_fn resolves live");
+    });
+}
+
+/// Full-app unmount clears the registry — no stale entries survive the
+/// realized subtree (regression guard at app scope; the vocabulary
+/// suite pins the branch-level case).
+#[test]
+fn robot_registry_empties_on_app_unmount() {
+    let robot = Robot::new();
+    robot.reset();
+    let (h, _) = Harness::mount();
+    assert!(robot.find(Query::test_id("add-btn")).is_some());
+    drop(h);
+    assert!(
+        robot.find(Query::test_id("add-btn")).is_none(),
+        "unmount must deregister"
+    );
+    assert!(robot.elements().is_empty(), "no stale entries after unmount");
+}

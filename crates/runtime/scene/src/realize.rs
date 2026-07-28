@@ -308,6 +308,20 @@ impl<'a, H: Host> MountCx<'a, H> {
         }
     }
 
+    /// Realize one element DETACHED (no parent splice) with everything it
+    /// creates owned by the AMBIENT collector — i.e. by the enclosing
+    /// subtree's `Realized`, unlike [`realize_detached`](Self::realize_detached)
+    /// which returns a separately-owned `Realized`. This is the
+    /// [`ManyHandler`](crate::registry::ManyHandler) fallback seam: a
+    /// many-handler builds each row detached through the normal registry
+    /// path, then attaches all top nodes in one `insert_many`, and the
+    /// rows' effects/cleanups die with the enclosing subtree exactly as
+    /// per-node-mounted children would.
+    pub fn realize_in_place(&mut self, element: Element) -> LiveNode<H::Node> {
+        let element = self.unwrap_owned(element);
+        self.realize_element_detached(element)
+    }
+
     // --- internal walk ---
 
     /// Peel `Element::Owned` wrappers, banking their scopes for the merge.
@@ -341,6 +355,25 @@ impl<'a, H: Host> MountCx<'a, H> {
                     // directly into `parent`, sharing the SAME counter.
                     let nested = self.splice_children(parent, sub, inserted);
                     out.push(LiveNode::Fragment(nested));
+                }
+                Element::Many { data } => {
+                    // Multi-node primitive: the handler mounts N siblings
+                    // directly into the REAL parent (batched or per-node
+                    // — its call) and reports how many top-level nodes it
+                    // contributed, so a reactive region after it captures
+                    // the correct absolute base index.
+                    let type_id = (*data).type_id();
+                    let handler = self.registry.get_many(type_id).unwrap_or_else(|| {
+                        panic!(
+                            "runtime-scene: no MANY handler registered for item payload \
+                             ({type_id:?}) — register one via Registry::register_many before \
+                             realizing"
+                        )
+                    });
+                    let payload: Rc<dyn Any> = Rc::from(data);
+                    let (live, count) = handler(self, payload, parent);
+                    *inserted += count;
+                    out.push(live);
                 }
                 other => out.push(self.realize_placed(parent, other, inserted)),
             }
@@ -410,6 +443,7 @@ impl<'a, H: Host> MountCx<'a, H> {
                 }
             }
             Element::Fragment(_) => unreachable!("fragments are handled by splice_children"),
+            Element::Many { .. } => unreachable!("Many items are handled by splice_children"),
             Element::Owned { .. } => unreachable!("owned wrappers are peeled by unwrap_owned"),
         }
     }
@@ -443,6 +477,16 @@ impl<'a, H: Host> MountCx<'a, H> {
                     drive_keyed_anchored(self.backend, self.registry, items, render);
                 LiveNode::Keyed(KeyedLive::Anchored { anchor, slot })
             }
+            // Mirrors the old walker's `Element::Repeat` standalone-root
+            // panic (walker.rs): a Many stands for N sibling nodes, so it
+            // can only appear inside a children list, never as the root
+            // of a subtree.
+            Element::Many { .. } => panic!(
+                "Element::Many encountered as a standalone subtree root. Many is a \
+                 children-list primitive (the static `for` repeat lowering) — it stands \
+                 for N sibling nodes, so it must appear inside a parent's children list, \
+                 not as a branch/screen/row root. Wrap it in a view."
+            ),
             Element::Owned { .. } => unreachable!("owned wrappers are peeled by unwrap_owned"),
         }
     }

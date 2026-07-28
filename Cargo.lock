@@ -1612,6 +1612,10 @@ dependencies = [
  "idea-ui",
  "lol_alloc",
  "runtime-core",
+ "runtime-macros",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -2460,7 +2464,11 @@ dependencies = [
  "idea-ui",
  "robot-e2e",
  "runtime-core",
+ "runtime-macros",
+ "runtime-vocabulary",
+ "runtime-world",
  "stack-navigator",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -9232,6 +9240,7 @@ name = "robot-e2e"
 version = "0.4.0"
 dependencies = [
  "runtime-core",
+ "runtime-vocabulary",
 ]
 
 [[package]]

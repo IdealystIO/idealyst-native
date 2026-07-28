@@ -28,6 +28,10 @@ default = []
 new-core = [
     "runtime-macros/new-core",
     "dep:runtime-vocabulary",
+    # The P5 identity seam: `test_id = ...` in src/app.rs registers into
+    # the vocabulary robot registry, and tests/e2e.rs drives the app
+    # through `runtime_vocabulary::robot::Robot` (find/click/type_text).
+    "runtime-vocabulary/robot",
     "dep:runtime-scene",
     "dep:runtime-world",
     "dep:scene-parity",

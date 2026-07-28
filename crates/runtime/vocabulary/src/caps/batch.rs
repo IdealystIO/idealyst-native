@@ -8,6 +8,14 @@ use runtime_scene::Host;
 /// `insert_many` for the frozen `execute_batch_with_attach` default.
 pub trait BatchOps: Host {
     /// Opt-in flag for the batched-Repeat path.
+    ///
+    /// CONTRACT for opting in: `ApplyStyleStatic` handling must not
+    /// allocate PER-NODE style state (it stamps the shared
+    /// `mint_style_class` class only — that cap's "without touching any
+    /// node" rule). Batched rows receive no `on_node_unstyled` at
+    /// teardown — the repeat handler's bulk teardown releases the shared
+    /// cohort entry and nothing per row — so per-node allocations made
+    /// here would leak.
     fn supports_batched_repeat(&self) -> bool {
         false
     }

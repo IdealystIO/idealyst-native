@@ -216,5 +216,15 @@ pub fn main() {
     }
     console_error_panic_hook::set_once();
     backend_web::install_logger();
-    backend_web::newcore::start(app);
+    // Same prerendered/fresh dispatch as the CLI wrapper's `start_local`:
+    // hydrate.html ships `#app` with server-shaped DOM (adopted in place —
+    // no flash, no rebuild); index.html ships it empty (fresh CSR boot).
+    // `newcore::hydrate` performs the same check internally and falls back
+    // to `start`; the explicit branch here just makes the smoke's two
+    // entry pages self-documenting.
+    if backend_web::page_is_prerendered("#app") {
+        backend_web::newcore::hydrate(app);
+    } else {
+        backend_web::newcore::start(app);
+    }
 }

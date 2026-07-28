@@ -44,6 +44,13 @@ impl Host for TestHost {
             .push(format!("insert n{parent} <- n{child}"));
     }
 
+    fn insert_many(&mut self, parent: &mut u32, children: Vec<u32>) {
+        let kids: Vec<String> = children.iter().map(|c| format!("n{c}")).collect();
+        self.ops
+            .borrow_mut()
+            .push(format!("insert_many n{parent} <- [{}]", kids.join(", ")));
+    }
+
     fn insert_at(&mut self, parent: &mut u32, child: u32, index: usize) {
         self.ops
             .borrow_mut()
@@ -75,6 +82,10 @@ struct V;
 struct T(String);
 /// A payload nobody registers (miss diagnostics).
 struct Unregistered;
+/// Multi-node payload (`Element::Many`): N sibling leaf rows.
+struct Rep(usize);
+/// A Many payload nobody registers (miss diagnostics).
+struct UnregisteredMany;
 /// A payload whose handler exercises `MountCx::realize_detached`.
 struct Portal {
     content: RefCell<Option<Element>>,
@@ -119,6 +130,21 @@ impl Rig {
             let pair = cx.realize_detached(content);
             *p.grabbed.borrow_mut() = Some(pair);
             cx.backend().borrow_mut().create("portal-host")
+        });
+        // Multi-node payload: `count` leaf rows realized in place
+        // (ambient-collector-owned) and attached with ONE insert_many —
+        // the vocabulary repeat handler's fallback shape.
+        registry.register_many::<Rep, _>(|cx, p, parent| {
+            let mut lives = Vec::with_capacity(p.0);
+            let mut nodes = Vec::with_capacity(p.0);
+            for i in 0..p.0 {
+                let live = cx.realize_in_place(t(&format!("row{i}")));
+                nodes.extend(live.collect_nodes());
+                lives.push(live);
+            }
+            let count = nodes.len();
+            cx.backend().borrow_mut().insert_many(parent, nodes);
+            (LiveNode::Fragment(lives), count)
         });
         Rig {
             world: World::new(),
@@ -914,4 +940,80 @@ fn realize_detached_returns_single_root_and_owning_realized() {
     s.set(2);
     rig.flush();
     assert_eq!(runs.get(), 2, "released screens stop reacting");
+}
+
+// ============================================================================
+// Many — the multi-node primitive (static-repeat seam)
+// ============================================================================
+
+/// A Many in a children list mounts its siblings through the registered
+/// many-handler and advances the splice counter by its node count, so a
+/// reactive region AFTER it captures the correct absolute base index.
+#[test]
+fn many_counts_toward_following_region_base_index() {
+    let rig = Rig::new(true);
+    let s = rig.world.enter(|| signal(0));
+    let realized = rig.realize(v(vec![
+        many(Rep(2)),
+        dyn_keyed(move || s.get(), |_| t("tail")),
+    ]));
+    assert_eq!(
+        rig.take_ops(),
+        vec![
+            "create n0 view",
+            "create n1 row0",
+            "create n2 row1",
+            "insert_many n0 <- [n1, n2]",
+            // The spliced hole after the Many bases at 2, not 0.
+            "create n3 tail",
+            "insert_at n0 <- n3 @ 2",
+        ],
+        "many contributes its count to the threaded inserted counter"
+    );
+    drop(realized);
+}
+
+/// In-place rows are owned by the ENCLOSING subtree: dropping the
+/// Realized retires their effects/cleanups like per-node children.
+#[test]
+fn many_rows_die_with_the_enclosing_realized() {
+    let rig = Rig::new(true);
+    let (realized, ran) = rig.world.enter(|| {
+        let ran = counter();
+        let ran_c = ran.clone();
+        let realized = realize(
+            &rig.backend,
+            &rig.registry,
+            v(vec![many(Rep(1)), {
+                // A probe effect collected by the same realization.
+                let _ = effect(move || {
+                    ran_c.set(ran_c.get() + 1);
+                });
+                t("static")
+            }]),
+        );
+        (realized, ran)
+    });
+    assert_eq!(ran.get(), 1);
+    drop(realized);
+    // Owned dropped — nothing left alive to re-fire (smoke: no panic on
+    // world drop; the row LiveNodes were folded into the same tree).
+}
+
+/// A Many with no registered many-handler is a loud panic naming the
+/// registration seam.
+#[test]
+#[should_panic(expected = "no MANY handler registered")]
+fn many_without_handler_panics() {
+    let rig = Rig::new(true);
+    let _ = rig.realize(v(vec![many(UnregisteredMany)]));
+}
+
+/// A Many as a detached subtree root mirrors the old walker's
+/// `Element::Repeat` standalone-root panic.
+#[test]
+#[should_panic(expected = "standalone subtree root")]
+fn many_as_detached_root_panics() {
+    let rig = Rig::new(true);
+    let _ = rig.realize(many(Rep(2)));
 }

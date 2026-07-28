@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use runtime_scene::{Element, MountCx};
 
-use crate::caps::{InputOps, PressableOps, SafeAreaOps, ScrollOps, ViewOps};
+use crate::caps::{InputOps, IntrospectionOps, PressableOps, SafeAreaOps, ScrollOps, ViewOps};
 use crate::prims::{PressablePrim, ScrollViewPrim, ViewPrim};
 use crate::style_attach::{attach_style, StyleServices};
 
@@ -27,10 +27,22 @@ use super::bind_value;
 ///   with the style engine.
 pub fn mount_view<H>(cx: &mut MountCx<'_, H>, prim: ViewPrim, children: Vec<Element>) -> H::Node
 where
-    H: ViewOps + InputOps + StyleServices + SafeAreaOps,
+    H: ViewOps + InputOps + StyleServices + SafeAreaOps + IntrospectionOps,
 {
     let backend = cx.backend().clone();
     let mut node = backend.borrow_mut().create_view(&prim.a11y);
+    // Identity/robot registration: BEFORE children realize, so they
+    // link to this view on the parent stack (guard pops on scope exit).
+    #[cfg(feature = "robot")]
+    let _robot = crate::robot::register_mount(
+        &backend,
+        &node,
+        crate::robot::ElementKind::View,
+        prim.test_id,
+        None,
+        None,
+        crate::robot::MountActions::default(),
+    );
     if prim.is_container {
         // Before children, so descendants build inside the containment
         // context (walker `build_view` ordering).
@@ -82,8 +94,13 @@ pub fn mount_pressable<H>(
     children: Vec<Element>,
 ) -> H::Node
 where
-    H: PressableOps + InputOps + StyleServices,
+    H: PressableOps + InputOps + StyleServices + IntrospectionOps,
 {
+    // Robot `click` gets the RAW author callback (pre press-block wrap),
+    // mirroring the old walker's `robot_extract_meta`, which read the
+    // element's `on_click` before the build wrapped it.
+    #[cfg(feature = "robot")]
+    let robot_click = prim.on_press.clone();
     let (on_press, press_block): (Rc<dyn Fn()>, Option<Rc<Cell<bool>>>) = if prim.disabled.is_some()
     {
         let flag = Rc::new(Cell::new(false));
@@ -101,6 +118,19 @@ where
 
     let backend = cx.backend().clone();
     let mut node = backend.borrow_mut().create_pressable(on_press, &prim.a11y);
+    #[cfg(feature = "robot")]
+    let _robot = crate::robot::register_mount(
+        &backend,
+        &node,
+        crate::robot::ElementKind::Pressable,
+        prim.test_id,
+        None,
+        None,
+        crate::robot::MountActions {
+            click: Some(robot_click),
+            ..Default::default()
+        },
+    );
     cx.realize_children_into(&mut node, children);
     let state_setter = prim
         .style
@@ -142,12 +172,34 @@ pub fn mount_scroll_view<H>(
     children: Vec<Element>,
 ) -> H::Node
 where
-    H: ScrollOps + SafeAreaOps + StyleServices,
+    H: ScrollOps + SafeAreaOps + StyleServices + IntrospectionOps,
 {
     let backend = cx.backend().clone();
     let mut node = backend
         .borrow_mut()
         .create_scroll_view(prim.horizontal, prim.on_scroll, &prim.a11y);
+    // Robot `set_scroll` routes through the scroll HANDLE (whose ops
+    // take no backend borrow), NOT `set_node_scroll` under a live
+    // `borrow_mut`: native scroll writes fire scroll notifications
+    // synchronously (AppKit `reflectScrolledClipView:`), whose reactive
+    // effects re-borrow the backend to re-style — a held borrow aborts
+    // with "RefCell already borrowed" (the old walker's exact rule).
+    #[cfg(feature = "robot")]
+    let _robot = {
+        let handle = backend.borrow().make_scroll_view_handle(&node);
+        crate::robot::register_mount(
+            &backend,
+            &node,
+            crate::robot::ElementKind::ScrollView,
+            prim.test_id,
+            None,
+            None,
+            crate::robot::MountActions {
+                set_scroll: Some(Rc::new(move |x, y| handle.scroll_to(x, y))),
+                ..Default::default()
+            },
+        )
+    };
     cx.realize_children_into(&mut node, children);
     if let Some(style) = prim.style {
         attach_style(&backend, &node, style);

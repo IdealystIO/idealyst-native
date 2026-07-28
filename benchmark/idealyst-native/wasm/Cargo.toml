@@ -14,19 +14,53 @@ crate-type = ["cdylib", "rlib"]
 # `performance.now()` reads around every backend op skew numbers
 # a few percent at hierarchy scale. Flip it ON when profiling:
 #
-#     default = ["debug-stats"]
+#     default = ["old-core", "debug-stats"]
 #
 # When ON, the variant's `bench_stats_json()` returns a `phases`
 # object with per-phase aggregated timings; the variant's
 # index.html dumps a `console.table` of them after each suite run.
 # Procedure: see CLAUDE.md §6 ("Profiling the framework").
-default = []
-debug-stats = ["runtime-core/debug-stats", "backend-web/debug-stats"]
+default = ["old-core"]
+debug-stats = [
+    "runtime-core/debug-stats",
+    "backend-web/debug-stats",
+    # New-core hot-path timers (repeat batch, dynamic-sheet effect);
+    # `?/` so the old-core graph doesn't pull the vocabulary in.
+    "runtime-vocabulary?/debug-stats",
+]
+
+# One core per BUILD (idea-lite migration, same discipline as
+# crates/dev/newcore-app): `new-core` flips runtime-macros' lowering for
+# the whole build graph (proc-macro features unify), so it must never be
+# a default in a graph that also contains old-core-only crates. This
+# crate is a wasm-pack LEAF — each variant is its own graph:
+#
+#   old core (default):  wasm-pack build --target web --release
+#   new core:            wasm-pack build --target web --release \
+#                          -- --no-default-features --features new-core
+#
+# `old-core` gates the idea-ui dependency (install_theme/set_theme +
+# ThemeTokens): idea-ui is authored against the old core, and pulling it
+# into a new-core graph would retarget ITS ui! call sites too and break
+# the build. The new-core variant themes through
+# `runtime_vocabulary::theme` directly.
+old-core = ["dep:idea-ui"]
+new-core = [
+    "runtime-macros/new-core",
+    "backend-web/new-core",
+    "dep:runtime-world",
+    "dep:runtime-scene",
+    "dep:runtime-vocabulary",
+]
 
 [dependencies]
 runtime-core = { workspace = true }
-idea-ui = { workspace = true }
+runtime-macros = { workspace = true }
+idea-ui = { workspace = true, optional = true }
 backend-web = { workspace = true }
+runtime-world = { workspace = true, optional = true }
+runtime-scene = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
 wasm-bindgen = "0.2"
 console_error_panic_hook = "0.1"
 # Smaller allocator for the wasm target. The default `dlmalloc` pulls

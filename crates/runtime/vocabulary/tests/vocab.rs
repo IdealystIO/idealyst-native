@@ -33,6 +33,9 @@ struct Mini {
     slider_changes: Rc<RefCell<Vec<Rc<dyn Fn(f32)>>>>,
     /// on_click callbacks the backend received (pressable block test).
     press_handlers: Rc<RefCell<Vec<Rc<dyn Fn()>>>>,
+    /// Per-test opt-in for the batched-Repeat path (the repeat-handler
+    /// suite flips it; everything else stays on the fallback default).
+    batched_repeat: Rc<Cell<bool>>,
 }
 
 impl Mini {
@@ -103,6 +106,32 @@ impl Backend for Mini {
         self.mint("pressable")
     }
 
+    // --- P5 identity-seam surface: the robot-registry tests mount
+    //     text_input / scroll_view, whose Backend DEFAULTS panic
+    //     (`missing_primitive_placeholder` -> `create_external`) ---
+
+    fn create_text_input(
+        &mut self,
+        _initial_value: &str,
+        _placeholder: Option<&str>,
+        _on_change: Rc<dyn Fn(String)>,
+        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        _on_blur: Option<runtime_core::primitives::text_input::BlurHandler>,
+        _secure: bool,
+        _a11y: &AccessibilityProps,
+    ) -> u32 {
+        self.mint("text_input")
+    }
+
+    fn create_scroll_view(
+        &mut self,
+        _horizontal: bool,
+        _on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
+        _a11y: &AccessibilityProps,
+    ) -> u32 {
+        self.mint("scroll_view")
+    }
+
     fn set_disabled(&mut self, node: &u32, disabled: bool) {
         self.log
             .borrow_mut()
@@ -161,6 +190,55 @@ impl Backend for Mini {
             .push(format!("insert n{parent} <- n{child}"));
     }
 
+    fn insert_many(&mut self, parent: &mut u32, children: Vec<u32>) {
+        let kids: Vec<String> = children.iter().map(|c| format!("n{c}")).collect();
+        self.log
+            .borrow_mut()
+            .push(format!("insert_many n{parent} <- [{}]", kids.join(", ")));
+    }
+
+    // --- batched-Repeat surface (repeat-handler suite) ---
+
+    fn supports_batched_repeat(&self) -> bool {
+        self.batched_repeat.get()
+    }
+
+    fn execute_batch(&mut self, batch: runtime_core::BackendBatch) -> Vec<u32> {
+        use runtime_core::BatchOp;
+        let mut nodes: Vec<u32> = Vec::with_capacity(batch.node_count as usize);
+        let mut digest: Vec<String> = Vec::new();
+        for op in &batch.ops {
+            match op {
+                BatchOp::CreateView { local_id } => {
+                    digest.push(format!("cv#{local_id}"));
+                }
+                BatchOp::CreateText { local_id, content } => {
+                    digest.push(format!("ct#{local_id}{content:?}"));
+                }
+                BatchOp::ApplyStyleStatic { node, class_name, .. } => {
+                    digest.push(format!("style#{node}={class_name}"));
+                }
+                BatchOp::Insert { parent, child } => {
+                    digest.push(format!("ins#{parent}<-#{child}"));
+                }
+            }
+        }
+        for _ in 0..batch.node_count {
+            nodes.push(self.next);
+            self.next += 1;
+        }
+        self.log.borrow_mut().push(format!(
+            "execute_batch nodes={} ops=[{}]",
+            batch.node_count,
+            digest.join(" ")
+        ));
+        nodes
+    }
+
+    fn mint_style_class(&mut self, style: &Rc<StyleRules>) -> Option<String> {
+        Some(format!("mint-w{}", width_of(style)))
+    }
+
     fn clear_children(&mut self, node: &u32) {
         self.log.borrow_mut().push(format!("clear_children n{node}"));
     }
@@ -216,6 +294,7 @@ struct Harness {
     state_setters: Rc<RefCell<Vec<Rc<dyn Fn(StateBits, bool)>>>>,
     slider_changes: Rc<RefCell<Vec<Rc<dyn Fn(f32)>>>>,
     press_handlers: Rc<RefCell<Vec<Rc<dyn Fn()>>>>,
+    batched_repeat: Rc<Cell<bool>>,
 }
 
 fn harness() -> Harness {
@@ -223,12 +302,14 @@ fn harness() -> Harness {
     let state_setters = Rc::new(RefCell::new(Vec::new()));
     let slider_changes = Rc::new(RefCell::new(Vec::new()));
     let press_handlers = Rc::new(RefCell::new(Vec::new()));
+    let batched_repeat = Rc::new(Cell::new(false));
     let backend = Rc::new(RefCell::new(LegacyBridge(Mini {
         log: log.clone(),
         next: 0,
         state_setters: state_setters.clone(),
         slider_changes: slider_changes.clone(),
         press_handlers: press_handlers.clone(),
+        batched_repeat: batched_repeat.clone(),
     })));
     let mut registry = Registry::new();
     register_builtins(&mut registry);
@@ -240,6 +321,7 @@ fn harness() -> Harness {
         state_setters,
         slider_changes,
         press_handlers,
+        batched_repeat,
     }
 }
 
@@ -970,4 +1052,486 @@ fn default_text_font_fills_absent_font_family() {
         Some(runtime_core::FontFamily::System("Test Sans".into()))
     );
     let _ = h.take_log();
+}
+
+// ===========================================================================
+// P5 identity seam: the vocabulary robot registry (`--features robot`)
+//
+// Registries are thread-local and the test runner gives each #[test] its
+// own thread, so these tests are isolated by construction (reset() is
+// defensive). Queries that resolve reactive labels run inside
+// `world.enter` — new-core signal reads need the ambient world (the
+// bridge-adapter contract documented in `robot`'s module docs).
+// ===========================================================================
+
+#[cfg(feature = "robot")]
+mod robot_registry {
+    use super::*;
+    use runtime_scene::dyn_keyed;
+    use runtime_vocabulary::builders::{scroll_view, text_input};
+    use runtime_vocabulary::robot::{ElementKind, Query, Robot, RobotError};
+
+    /// Mount registers every identity-bearing prim; lookup by test_id
+    /// resolves the RIGHT node — clicking the found button fires that
+    /// button's author handler and nobody else's.
+    #[test]
+    fn register_on_mount_and_lookup_returns_the_right_node() {
+        let robot = Robot::new();
+        robot.reset();
+        let h = harness();
+        let hits_a = Rc::new(Cell::new(0));
+        let hits_b = Rc::new(Cell::new(0));
+        let (ha, hb) = (hits_a.clone(), hits_b.clone());
+        let _realized = h.world.enter(|| {
+            realize(
+                &h.backend,
+                &h.registry,
+                view()
+                    .test_id("root")
+                    .child(
+                        button()
+                            .label("a")
+                            .on_press(move || ha.set(ha.get() + 1))
+                            .test_id("btn-a")
+                            .build(),
+                    )
+                    .child(
+                        button()
+                            .label("b")
+                            .on_press(move || hb.set(hb.get() + 1))
+                            .test_id("btn-b")
+                            .build(),
+                    )
+                    .build(),
+            )
+        });
+
+        let root = robot.find(Query::test_id("root")).expect("root registered");
+        assert_eq!(root.kind, ElementKind::View);
+        let a = robot.find(Query::test_id("btn-a")).expect("btn-a registered");
+        assert_eq!(a.kind, ElementKind::Button);
+        assert_eq!(a.label.as_deref(), Some("a"));
+
+        // Parenting: both buttons are the root view's children.
+        let kids = robot.children_of(&root);
+        assert_eq!(kids.len(), 2, "root links its two button children");
+        assert_eq!(robot.parent_of(&a).map(|p| p.id), Some(root.id));
+
+        // The click routes to the RIGHT handler.
+        robot.click(&a).expect("click available on a button");
+        assert_eq!((hits_a.get(), hits_b.get()), (1, 0));
+
+        // A text with no click reports ActionNotAvailable, not a panic.
+        assert_eq!(
+            robot.click(&root),
+            Err(RobotError::ActionNotAvailable("click")),
+        );
+        robot.reset();
+    }
+
+    /// Regression: unmount (dropping the realized subtree) must remove
+    /// every registry entry. A stale entry after teardown is the
+    /// classic robot-registry bug (phantom live roots in snapshots).
+    #[test]
+    fn regression_unmount_deregisters_entries() {
+        let robot = Robot::new();
+        robot.reset();
+        let h = harness();
+        let realized = h.world.enter(|| {
+            realize(
+                &h.backend,
+                &h.registry,
+                view()
+                    .test_id("gone-root")
+                    .child(text().content("x").test_id("gone-text").build())
+                    .build(),
+            )
+        });
+        assert_eq!(robot.count(None), 2);
+        drop(realized);
+        assert!(robot.find(Query::test_id("gone-root")).is_none());
+        assert!(robot.find(Query::test_id("gone-text")).is_none());
+        assert_eq!(robot.count(None), 0, "no stale entries after unmount");
+        robot.reset();
+    }
+
+    /// Regression: a reactive branch swap (`dyn_keyed`) deregisters the
+    /// OLD branch's entries and registers the new branch's — the
+    /// scene-level analogue of the old walker's when-branch-swap
+    /// deregistration.
+    #[test]
+    fn regression_branch_swap_deregisters_old_branch() {
+        let robot = Robot::new();
+        robot.reset();
+        let h = harness();
+        let (flag, root) = h.world.enter(|| {
+            let flag = signal(false);
+            let root = dyn_keyed(
+                move || flag.get(),
+                |&on| {
+                    if on {
+                        view().test_id("branch-b").build()
+                    } else {
+                        view().test_id("branch-a").build()
+                    }
+                },
+            );
+            (flag, root)
+        });
+        let _realized = h.world.enter(|| realize(&h.backend, &h.registry, root));
+        assert!(robot.find(Query::test_id("branch-a")).is_some());
+        assert!(robot.find(Query::test_id("branch-b")).is_none());
+
+        h.world.enter(|| flag.set(true));
+        h.world.flush();
+        assert!(
+            robot.find(Query::test_id("branch-a")).is_none(),
+            "old branch entry must deregister on swap"
+        );
+        assert!(robot.find(Query::test_id("branch-b")).is_some());
+        robot.reset();
+    }
+
+    /// Duplicate-id policy through the REAL mount path (old-core
+    /// mirror): `find` is last-wins, `find_all` returns every holder —
+    /// sibling rows sharing one affordance test_id is a core E2E
+    /// pattern (`getByTestId(...).toHaveCount(n)`).
+    #[test]
+    fn duplicate_test_id_find_last_wins_find_all_scans() {
+        let robot = Robot::new();
+        robot.reset();
+        let h = harness();
+        let _realized = h.world.enter(|| {
+            realize(
+                &h.backend,
+                &h.registry,
+                view()
+                    .child(text().content("one").test_id("row-del").build())
+                    .child(text().content("two").test_id("row-del").build())
+                    .build(),
+            )
+        });
+        assert_eq!(robot.find_all(Query::test_id("row-del")).len(), 2);
+        let last = robot.find(Query::test_id("row-del")).expect("find resolves");
+        assert_eq!(last.label.as_deref(), Some("two"), "find is last-wins");
+        robot.reset();
+    }
+
+    /// Reactive text reports its LIVE label (label_fn), not the value
+    /// frozen at mount — the old registry's staleness rule, ported.
+    #[test]
+    fn reactive_text_label_stays_live() {
+        let robot = Robot::new();
+        robot.reset();
+        let h = harness();
+        let content = h.world.enter(|| signal("before".to_string()));
+        let _realized = h.world.enter(|| {
+            realize(
+                &h.backend,
+                &h.registry,
+                text()
+                    .content(move || content.get())
+                    .test_id("live-text")
+                    .build(),
+            )
+        });
+        h.world.enter(|| {
+            let found = robot.find(Query::test_id("live-text")).unwrap();
+            assert_eq!(found.label.as_deref(), Some("before"));
+        });
+        h.world.enter(|| content.set("after".to_string()));
+        h.world.flush();
+        h.world.enter(|| {
+            let found = robot.find(Query::test_id("live-text")).unwrap();
+            assert_eq!(
+                found.label.as_deref(),
+                Some("after"),
+                "label_fn must resolve the live value"
+            );
+            assert!(robot.find(Query::label("after")).is_some());
+        });
+        robot.reset();
+    }
+
+    /// Control verbs route to the author callbacks the handler holds:
+    /// type_text → text_input on_change, set_toggle → toggle on_change,
+    /// set_slider → RAW (pre-snap) slider on_change; scroll views carry
+    /// a set_scroll action (handle-routed).
+    #[test]
+    fn control_actions_route_to_author_callbacks() {
+        let robot = Robot::new();
+        robot.reset();
+        let h = harness();
+        let typed = Rc::new(RefCell::new(String::new()));
+        let toggled = Rc::new(Cell::new(false));
+        let slid = Rc::new(Cell::new(0.0f32));
+        let (t1, t2, t3) = (typed.clone(), toggled.clone(), slid.clone());
+        let _realized = h.world.enter(|| {
+            realize(
+                &h.backend,
+                &h.registry,
+                view()
+                    .child(
+                        text_input()
+                            .value("")
+                            .on_change(move |v| *t1.borrow_mut() = v)
+                            .test_id("field")
+                            .build(),
+                    )
+                    .child(
+                        toggle()
+                            .value(false)
+                            .on_change(move |v| t2.set(v))
+                            .test_id("switch")
+                            .build(),
+                    )
+                    .child(
+                        slider()
+                            .value(0.0)
+                            .on_change(move |v| t3.set(v))
+                            .test_id("amount")
+                            .build(),
+                    )
+                    .child(scroll_view().test_id("scroller").build())
+                    .build(),
+            )
+        });
+
+        let field = robot.find(Query::test_id("field")).unwrap();
+        assert_eq!(field.kind, ElementKind::TextInput);
+        robot.type_text(&field, "hello").unwrap();
+        assert_eq!(&*typed.borrow(), "hello");
+
+        let switch = robot.find(Query::test_id("switch")).unwrap();
+        robot.set_toggle(&switch, true).unwrap();
+        assert!(toggled.get());
+
+        let amount = robot.find(Query::test_id("amount")).unwrap();
+        robot.set_slider(&amount, 0.7).unwrap();
+        assert_eq!(slid.get(), 0.7);
+
+        let scroller = robot.find(Query::test_id("scroller")).unwrap();
+        assert_eq!(scroller.kind, ElementKind::ScrollView);
+        // The action exists and routes through the scroll handle (Mini
+        // implements no scroll ops — the default handle is a no-op, so
+        // availability is the observable contract here).
+        robot.set_scroll(&scroller, 0.0, 10.0).unwrap();
+        robot.reset();
+    }
+}
+
+// ===========================================================================
+// Repeat (Element::Many) — the batched-Repeat port
+// ===========================================================================
+
+mod repeat_handler {
+    //! Pins the two mount paths of `handlers/repeat.rs` and the
+    //! semantics the bench-gate rules require: batching must not change
+    //! teardown order (cleanup fires per styled row), theme-cohort
+    //! membership (one bulk entry re-applying every row), or the
+    //! fallback's per-row reactive behavior.
+
+    use super::*;
+    use runtime_vocabulary::glue::__static_repeat;
+
+    /// One repeat of `count` styled rows (view + const text), the
+    /// batchable shape. ONE shared sheet across rows (the `stylesheet!`
+    /// shape — a per-row fresh sheet would re-register per row).
+    fn styled_rows(count: usize) -> runtime_scene::Element {
+        let sheet = themed_sheet();
+        view()
+            .children(__static_repeat(count, move |i| {
+                view()
+                    .style(StyleApplication::new(sheet.clone()))
+                    .children(vec![text().content(format!("row {i}")).build()])
+                    .build()
+            }))
+            .build()
+    }
+
+    /// Batching backend: the whole expansion is ONE `execute_batch`
+    /// (+ one bulk attach) — no per-node create calls.
+    #[test]
+    fn batched_repeat_is_one_execute_batch() {
+        let h = harness();
+        h.batched_repeat.set(true);
+        let realized = h.world.enter(|| {
+            realize(&h.backend, &h.registry, styled_rows(3))
+        });
+        let log = h.take_log();
+        // Parent view mints first (n0), then the batch materializes
+        // n1..n9 (3 rows × view+text + minted class per row), then the
+        // default `execute_batch_with_attach` attaches row tops.
+        assert_eq!(log[0], "create n0 view");
+        assert!(
+            log[1].starts_with("register_stylesheet"),
+            "sheet registers once for the whole expansion: {log:?}"
+        );
+        assert_eq!(
+            log[2],
+            "execute_batch nodes=6 ops=[cv#0 ct#1\"row 0\" ins#0<-#1 \
+             style#0=mint-wLiteral(Px(100.0)) cv#2 ct#3\"row 1\" ins#2<-#3 \
+             style#2=mint-wLiteral(Px(100.0)) cv#4 ct#5\"row 2\" ins#4<-#5 \
+             style#4=mint-wLiteral(Px(100.0))]",
+            "one FFI batch for all rows, old-core op order (view, children, \
+             insert, style): {log:?}"
+        );
+        assert_eq!(
+            log[3], "insert_many n0 <- [n1, n3, n5]",
+            "row tops attach in one insert_many: {log:?}"
+        );
+        assert_eq!(log.len(), 4, "no per-node create/apply calls: {log:?}");
+
+        // Teardown: the cohort entry unregisters (backend-invisible) and
+        // NOTHING per row — batched rows carry no per-node backend style
+        // state (`mint_style_class` touches no node; `ApplyStyleStatic`
+        // stamps the shared class), so the old core's "for symmetry"
+        // per-row `on_node_unstyled` loop is deliberately dropped (it
+        // was N no-ops costing one FFI each — the teardown bench-gate
+        // residual; see the repeat handler + `BatchOps` contract).
+        drop(realized);
+        assert_eq!(
+            h.take_log(),
+            Vec::<String>::new(),
+            "bulk teardown emits no per-row backend calls"
+        );
+    }
+
+    /// The bulk cohort entry re-applies every batched row on a theme
+    /// swap (old `register_static_cohort_batch` contract).
+    #[test]
+    fn batched_rows_share_one_cohort_entry_that_reapplies() {
+        let h = harness();
+        h.batched_repeat.set(true);
+        let world = h.world.clone();
+        let _realized = world.enter(|| {
+            theme::install_tokens(&[surface("#111")]);
+            realize(&h.backend, &h.registry, styled_rows(2))
+        });
+        h.take_log();
+        world.enter(|| theme::update_tokens(&[surface("#222")]));
+        world.flush();
+        let log = h.take_log();
+        assert_eq!(log[0], "update_tokens [\"color-surface\"]");
+        assert_eq!(
+            log[1..],
+            vec![
+                "apply_style n1 width=Literal(Px(100.0))".to_string(),
+                "apply_style n3 width=Literal(Px(100.0))".to_string(),
+            ][..],
+            "one bulk cohort entry re-applies every row: {log:?}"
+        );
+    }
+
+    /// A non-batchable row (reactive text) sends the WHOLE expansion to
+    /// the fallback: per-row mounts + one insert_many, and the reactive
+    /// binding still works post-mount (batching must not change
+    /// semantics).
+    #[test]
+    fn fallback_repeat_mounts_per_row_and_stays_reactive() {
+        let h = harness();
+        h.batched_repeat.set(true); // backend supports it; the SHAPE bails
+        let world = h.world.clone();
+        let (realized, label) = world.enter(|| {
+            let label = signal(String::from("a"));
+            let realized = realize(
+                &h.backend,
+                &h.registry,
+                view()
+                    .children(__static_repeat(2, move |_i| {
+                        view()
+                            .style(px(50.0))
+                            .children(vec![text().content(move || label.get()).build()])
+                            .build()
+                    }))
+                    .build(),
+            );
+            (realized, label)
+        });
+        let log = h.take_log();
+        assert_eq!(
+            log,
+            vec![
+                "create n0 view".to_string(),
+                // Row 1: per-node mounts (raw-rules style is NOT the
+                // batchable sheet shape — same bail as the old core).
+                "create n1 view".to_string(),
+                "create n2 text \"\"".to_string(),
+                "update_text n2 \"a\"".to_string(),
+                "insert n1 <- n2".to_string(),
+                "apply_style n1 width=Literal(Px(50.0))".to_string(),
+                // Row 2.
+                "create n3 view".to_string(),
+                "create n4 text \"\"".to_string(),
+                "update_text n4 \"a\"".to_string(),
+                "insert n3 <- n4".to_string(),
+                "apply_style n3 width=Literal(Px(50.0))".to_string(),
+                // One batched attach for all row tops (old fallback).
+                "insert_many n0 <- [n1, n3]".to_string(),
+            ],
+            "fallback: full per-row mounts, one insert_many"
+        );
+
+        // Reactive text updates post-mount.
+        world.enter(|| label.set("b".to_string()));
+        world.flush();
+        assert_eq!(
+            h.take_log(),
+            vec![
+                "update_text n2 \"b\"".to_string(),
+                "update_text n4 \"b\"".to_string(),
+            ],
+            "fallback rows keep live bindings"
+        );
+
+        // Per-row cleanups fire on teardown (styled rows release).
+        drop(realized);
+        assert_eq!(
+            h.take_log(),
+            vec![
+                "on_node_unstyled n1".to_string(),
+                "on_node_unstyled n3".to_string(),
+            ],
+            "fallback teardown fires per row"
+        );
+    }
+
+    /// Backend without batch support: same fallback even for the
+    /// batchable shape.
+    #[test]
+    fn non_batching_backend_takes_fallback_for_batchable_shape() {
+        let h = harness();
+        assert!(!h.batched_repeat.get());
+        let _realized = h.world.enter(|| {
+            realize(&h.backend, &h.registry, styled_rows(1))
+        });
+        let log = h.take_log();
+        assert!(
+            log.iter().any(|l| l.starts_with("create n")),
+            "per-node mounts: {log:?}"
+        );
+        assert!(
+            !log.iter().any(|l| l.starts_with("execute_batch")),
+            "no batch call: {log:?}"
+        );
+        assert!(
+            log.iter().any(|l| l.starts_with("insert_many")),
+            "row tops still attach via insert_many: {log:?}"
+        );
+    }
+
+    /// Empty repeat: zero backend calls (old walker's early-out).
+    #[test]
+    fn empty_repeat_is_free() {
+        let h = harness();
+        h.batched_repeat.set(true);
+        let _realized = h.world.enter(|| {
+            realize(
+                &h.backend,
+                &h.registry,
+                view().children(__static_repeat(0, |_i| unreachable!())).build(),
+            )
+        });
+        assert_eq!(h.take_log(), vec!["create n0 view".to_string()]);
+    }
 }

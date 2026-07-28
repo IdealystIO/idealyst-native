@@ -2,14 +2,14 @@
 
 use runtime_scene::{Element, MountCx, Registry};
 
-use crate::caps::GraphicsOps;
+use crate::caps::{GraphicsOps, IntrospectionOps};
 use crate::prims::{GraphicsPrim, PrimCell};
 use crate::style_attach::{attach_style, on_teardown, StyleServices};
 
 /// Register the `graphics` handler (called from `register_builtins`).
 pub fn register_graphics<H>(registry: &mut Registry<H>)
 where
-    H: GraphicsOps + StyleServices + 'static,
+    H: GraphicsOps + StyleServices + IntrospectionOps + 'static,
 {
     registry.register::<PrimCell<GraphicsPrim>, _>(|cx, p, children| {
         mount_graphics(cx, p.take(), children)
@@ -36,12 +36,23 @@ pub fn mount_graphics<H>(
     _children: Vec<Element>,
 ) -> H::Node
 where
-    H: GraphicsOps + StyleServices,
+    H: GraphicsOps + StyleServices + IntrospectionOps,
 {
     let backend = cx.backend().clone();
     let node = backend
         .borrow_mut()
         .create_graphics(prim.on_ready, prim.on_resize, prim.on_lost, &prim.a11y);
+    // Passive/visual primitive: findable by test_id + kind, no actions.
+    #[cfg(feature = "robot")]
+    let _robot = crate::robot::register_mount(
+        &backend,
+        &node,
+        crate::robot::ElementKind::Graphics,
+        prim.test_id,
+        None,
+        None,
+        crate::robot::MountActions::default(),
+    );
     if let Some(style) = prim.style {
         attach_style(&backend, &node, style);
     }

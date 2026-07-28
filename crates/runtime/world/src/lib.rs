@@ -84,6 +84,19 @@ struct Tls {
     /// tracked read subscribes the TOP entry — and only if that effect lives
     /// in the signal's world; see `maybe_subscribe` for why.
     effect_stack: Vec<(WorldId, u32, u32)>,
+    /// Per-running-effect dependency collection frames, parallel to
+    /// `effect_stack`. A tracked read appends `(signal_slot, signal_gen)`
+    /// to the TOP frame; the run's end RECONCILES the frame against the
+    /// effect's previous dep set (`reconcile_deps`). This is the
+    /// stable-deps fast path: an effect whose reads are identical run to
+    /// run (the overwhelmingly common shape — style bindings, text
+    /// bindings) touches NO subscriber list on re-run. The old scheme
+    /// (unsubscribe-all upfront via `retain`, re-subscribe via
+    /// `contains`) was O(subscribers) per operation — quadratic for N
+    /// same-signal subscribers per commit, measured as the dominant cost
+    /// of the js-framework-bench shared-style fan-out (1k effects × 1k
+    /// entry scans).
+    pending_deps: Vec<Vec<(u32, u32)>>,
     /// In-flight ownership collectors (see [`collect_owned`]), innermost
     /// last. Signal/effect creations register into the top collector; with
     /// none active they are world-root-owned.
@@ -102,6 +115,7 @@ thread_local! {
         next_world: 1,
         enter_stack: Vec::new(),
         effect_stack: Vec::new(),
+        pending_deps: Vec::new(),
         collectors: Vec::new(),
         untrack_depth: 0,
         flush_depth: 0,
@@ -441,11 +455,17 @@ struct EffectData {
     f: RefCell<Box<dyn FnMut()>>,
     /// Dedup flag: already collected into the current flush round?
     queued: Cell<bool>,
-    /// Reverse edges: every signal slot (of this effect's own world —
-    /// subscriptions are always intra-world) subscribed during the latest
-    /// run, so the next run can unsubscribe before re-collecting exactly
-    /// what it reads — not the union of all historical runs.
-    deps: RefCell<Vec<u32>>,
+    /// Reverse edges: every `(signal_slot, signal_gen)` (of this effect's
+    /// own world — subscriptions are always intra-world) subscribed as of
+    /// the latest run. The INVARIANT is exact correspondence: this list is
+    /// precisely the set of subscriber entries carrying this effect's key
+    /// (modulo slots since freed, whose gen mismatch makes them inert).
+    /// `reconcile_deps` diffs the next run's collected reads against it —
+    /// identical sequences (stable deps) skip all subscriber-list work.
+    /// The gen rides along so a reconcile after the body freed-and-reused
+    /// a dep's slot can never subscribe to (or unsubscribe from) the
+    /// slot's NEW occupant.
+    deps: RefCell<Vec<(u32, u32)>>,
     /// Cleanups registered via `on_cleanup()` (or returned from the body)
     /// during the latest run. Run before the next re-run, or at teardown —
     /// whichever comes first.
@@ -559,11 +579,15 @@ fn free_effect(arena: &WorldArena, slot: u32, gen: u32) {
         data
     };
     {
-        let deps: Vec<u32> = data.deps.borrow_mut().drain(..).collect();
+        let deps: Vec<(u32, u32)> = data.deps.borrow_mut().drain(..).collect();
         let mut signals = arena.signals.borrow_mut();
-        for dep in deps {
+        for (dep, dep_gen) in deps {
             if let Some(s) = signals.get_mut(dep as usize) {
-                s.subscribers.retain(|&(es, eg)| !(es == slot && eg == gen));
+                // Gen check: a since-freed-and-reused slot's NEW occupant
+                // never held this subscription (free_signal cleared it).
+                if s.gen == dep_gen {
+                    s.subscribers.retain(|&(es, eg)| !(es == slot && eg == gen));
+                }
             }
         }
     }
@@ -751,44 +775,35 @@ fn read_signal<T: PartialEq + 'static, R>(
 /// B's flush's business. Cross-world dataflow is expressed by a B-effect
 /// *writing* A-signals (stages into A), never by cross-world subscriptions.
 fn maybe_subscribe(arena: &WorldArena, world: WorldId, slot: u32, gen: u32) {
-    let top = TLS.with(|t| {
-        let t = t.borrow();
+    let _ = arena;
+    // Record the read into the running effect's PENDING frame only — no
+    // subscriber list is touched here. `reconcile_deps` (at the run's
+    // end) turns the collected frame into subscription adds/removes by
+    // diff; a dep set identical to the previous run's does zero work.
+    // This also makes the tracked-read hot path allocation- and
+    // arena-borrow-free (the old scheme paid an O(subscribers)
+    // `contains` per first read of each signal).
+    TLS.with(|t| {
+        let mut t = t.borrow_mut();
         if t.untrack_depth > 0 {
-            None
-        } else {
-            t.effect_stack.last().copied()
+            return;
+        }
+        let Some(&(eworld, _eslot, _egen)) = t.effect_stack.last() else {
+            return;
+        };
+        if eworld != world {
+            return; // cross-world read: never subscribes
+        }
+        let frame = t
+            .pending_deps
+            .last_mut()
+            .expect("pending frame exists whenever an effect is on the stack");
+        // Same-run dedupe (the old subscribers.contains role) — frames
+        // are small (an effect's distinct reads), so the scan is cheap.
+        if !frame.contains(&(slot, gen)) {
+            frame.push((slot, gen));
         }
     });
-    let Some((eworld, eslot, egen)) = top else { return };
-    if eworld != world {
-        return; // cross-world read: never subscribes
-    }
-    let added = {
-        let mut signals = arena.signals.borrow_mut();
-        let Some(s) = signals.get_mut(slot as usize) else { return };
-        if s.gen != gen || s.data.is_none() {
-            return; // stale/mid-op: the read itself will produce the diagnostic
-        }
-        if s.subscribers.contains(&(eslot, egen)) {
-            false
-        } else {
-            s.subscribers.push((eslot, egen));
-            true
-        }
-    };
-    if added {
-        // Remember the reverse edge so the effect's next run (or free) can
-        // unsubscribe before re-collecting.
-        let data = {
-            let effects = arena.effects.borrow();
-            effects
-                .get(eslot as usize)
-                .and_then(|e| if e.gen == egen { e.data.clone() } else { None })
-        };
-        if let Some(data) = data {
-            data.deps.borrow_mut().push(slot);
-        }
-    }
 }
 
 /// Stage a value (last-write-wins) and enqueue the signal for commit at the
@@ -966,10 +981,33 @@ impl<T: PartialEq + 'static> Signal<T> {
     pub fn write_only(&self) -> WriteSignal<T> {
         WriteSignal { world: self.world, slot: self.slot, gen: self.gen, _marker: PhantomData }
     }
+
+    /// A stable `u64` identity for EXTERNAL registries (JS-side binding
+    /// maps, notifier dedup tables). Packs `world:8 | gen:24 | slot:32`
+    /// — the low 32 bits are the slot, so consumers that truncate to
+    /// `u32` (the web backend's JS signal-change dispatcher does) still
+    /// get per-live-signal uniqueness within one world; the generation
+    /// bits let a full-width consumer distinguish a freed-and-reused
+    /// slot from its previous occupant. This is an identity KEY, not a
+    /// capability — it cannot be turned back into a handle.
+    pub fn raw_id(&self) -> u64 {
+        ((self.world as u64 & 0xff) << 56)
+            | ((self.gen as u64 & 0xff_ffff) << 32)
+            | self.slot as u64
+    }
 }
 
 impl<T: PartialEq + 'static> ReadSignal<T> {
     impl_read_ops!();
+
+    /// Same identity KEY as [`Signal::raw_id`] (a read half aliases its
+    /// signal's slot, so the ids agree) — external registries (JS text
+    /// bindings, notifier dedup) key read-only slots by it too.
+    pub fn raw_id(&self) -> u64 {
+        ((self.world as u64 & 0xff) << 56)
+            | ((self.gen as u64 & 0xff_ffff) << 32)
+            | self.slot as u64
+    }
 }
 
 impl<T: PartialEq + 'static> WriteSignal<T> {
@@ -1016,39 +1054,89 @@ pub fn effect<C: IntoCleanup>(f: impl FnMut() -> C + 'static) -> Effect {
 /// semantics; regression: `effect_created_inside_untrack_still_tracks`.
 fn run_effect(arena: &Rc<WorldArena>, data: &Rc<EffectData>) {
     run_cleanups(data);
-    {
-        let deps: Vec<u32> = data.deps.borrow_mut().drain(..).collect();
-        let mut signals = arena.signals.borrow_mut();
-        for dep in deps {
-            if let Some(s) = signals.get_mut(dep as usize) {
-                s.subscribers.retain(|&(es, eg)| !(es == data.slot && eg == data.gen));
-            }
-        }
-    }
+    // NB: the previous subscriptions are deliberately NOT torn down here.
+    // Reads collect into a fresh pending frame; `reconcile_deps` after the
+    // body diffs it against the old set — identical deps (the stable-deps
+    // steady state) touch no subscriber list at all. See `Tls::pending_deps`.
     let saved_untrack = with_tls(|t| {
         t.enter_stack.push(arena.id);
         t.effect_stack.push((arena.id, data.slot, data.gen));
+        t.pending_deps.push(Vec::new());
         std::mem::replace(&mut t.untrack_depth, 0)
     });
     struct Guard {
         saved_untrack: u32,
+        /// Set once the body returned normally; a panic unwind pops the
+        /// frames and DISCARDS the pending deps — the old subscriptions
+        /// stay installed and stay consistent with `EffectData::deps`.
+        completed: bool,
     }
     impl Drop for Guard {
         fn drop(&mut self) {
+            if self.completed {
+                return; // popped explicitly on the normal path
+            }
             let saved = self.saved_untrack;
             let _ = TLS.try_with(|t| {
                 let mut t = t.borrow_mut();
                 t.enter_stack.pop();
                 t.effect_stack.pop();
+                t.pending_deps.pop();
                 t.untrack_depth = saved;
             });
         }
     }
-    let _guard = Guard { saved_untrack };
+    let mut guard = Guard { saved_untrack, completed: false };
     // The body borrow is held across the run; a re-entrant run of the SAME
     // effect is impossible by construction (only flush runs effects, and a
     // world's flush cannot re-enter itself — see the reentrant-flush guard).
     (data.f.borrow_mut())();
+    guard.completed = true;
+    let new_deps = with_tls(|t| {
+        t.enter_stack.pop();
+        t.effect_stack.pop();
+        t.untrack_depth = guard.saved_untrack;
+        t.pending_deps.pop().expect("pending frame pushed above")
+    });
+    reconcile_deps(arena, data, new_deps);
+}
+
+/// Swap an effect's dependency set to `new_deps`, adjusting subscriber
+/// lists by DIFF. The fast path — `new_deps` identical to the previous
+/// run's (stable closures read the same signals in the same order) —
+/// does nothing. Otherwise: entries only in the old set unsubscribe
+/// (`retain`), entries only in the new set subscribe (plain `push` — the
+/// `deps` invariant guarantees the effect isn't already in those lists,
+/// so no O(subscribers) `contains` scan is needed).
+fn reconcile_deps(arena: &WorldArena, data: &EffectData, new_deps: Vec<(u32, u32)>) {
+    let mut old = data.deps.borrow_mut();
+    if *old == new_deps {
+        return;
+    }
+    let mut signals = arena.signals.borrow_mut();
+    for &(slot, dep_gen) in old.iter() {
+        if !new_deps.contains(&(slot, dep_gen)) {
+            if let Some(s) = signals.get_mut(slot as usize) {
+                if s.gen == dep_gen {
+                    s.subscribers
+                        .retain(|&(es, eg)| !(es == data.slot && eg == data.gen));
+                }
+            }
+        }
+    }
+    for &(slot, dep_gen) in new_deps.iter() {
+        if !old.contains(&(slot, dep_gen)) {
+            if let Some(s) = signals.get_mut(slot as usize) {
+                // Gen + occupancy check: the body may have freed (and a
+                // successor reused) a slot AFTER reading it — never
+                // subscribe to the new occupant.
+                if s.gen == dep_gen && s.data.is_some() {
+                    s.subscribers.push((data.slot, data.gen));
+                }
+            }
+        }
+    }
+    *old = new_deps;
 }
 
 /// Run `f` with dependency tracking suspended: signal reads inside subscribe
@@ -1557,6 +1645,13 @@ impl<T: PartialEq + 'static> Memo<T> {
     /// Tracked borrow-read — same semantics as [`Signal::with`].
     pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
         self.value.with(f)
+    }
+
+    /// The identity KEY of the memo's cache signal (see
+    /// [`Signal::raw_id`]) — lets external registries (JS text-binding
+    /// tables) subscribe a memo slot exactly like a plain signal.
+    pub fn raw_id(&self) -> u64 {
+        self.value.raw_id()
     }
 }
 

@@ -355,6 +355,7 @@ fn lower_overlay_portal(
         // without a wrapper closure — same move as the old lowering.
         portal_children.push(item(
             PrimCell::new(PressablePrim {
+                test_id: None,
                 on_press,
                 disabled: None,
                 preserves_focus: false,

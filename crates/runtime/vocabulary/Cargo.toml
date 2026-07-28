@@ -20,6 +20,21 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# The new-core element identity / robot registry (`src/robot.rs`):
+# mount handlers register every identity-bearing primitive for the
+# automation surface (find-by-test_id, tap, type_text, snapshot, …).
+# OFF by default, mirroring runtime-core's `robot` gate — the `test_id`
+# slots always exist (so `ui! { view(test_id = …) }` compiles in every
+# build), only the per-mount registration overhead is gated.
+robot = []
+
+# Phase-timer instrumentation for the new-core mount/style hot paths
+# (repeat batch, dynamic-sheet effect). Same discipline as the other
+# crates' debug-stats (CLAUDE.md §6): OFF by default, counters land in
+# runtime-core's thread-local phase map, zero code when off.
+debug-stats = ["runtime-core/debug-stats"]
+
 [dependencies]
 # SANCTIONED, migration-transitional (see lib.rs): the frozen Backend
 # signatures reference runtime-core's prop/data types (StyleRules,
