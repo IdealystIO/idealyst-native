@@ -310,9 +310,15 @@ pub fn TableCell(props: TableCellProps) -> Element {
     // `IntoStyleSource` resolves on the call (not on a `Box<dyn>`,
     // which the trait doesn't support).
     if header {
-        bound.with_style(TableHeadCell()).into_element()
+        // `.into_style_application()` (→ `StyleSource::Static`), NOT the
+        // bare builder: a clickable row's hover highlight re-derives the
+        // cell's `StyleApplication` from the built element
+        // (`apply_row_hover_style`), which a `--premint` build's opaque
+        // `Preminted` class can't provide. Cells are compose-happy by
+        // design, so they deliberately stay on the live engine.
+        bound.with_style(TableHeadCell().into_style_application()).into_element()
     } else {
-        bound.with_style(TableBodyCell()).into_element()
+        bound.with_style(TableBodyCell().into_style_application()).into_element()
     }
 }
 

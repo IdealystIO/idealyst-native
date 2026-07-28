@@ -4,6 +4,14 @@ members = [
     # Runtime — platform-agnostic upper half (above the Backend Interface).
     "crates/runtime/core",
     "crates/runtime/macros",
+    # New reactive kernel (idea-lite core migration, P0): worlds, staged
+    # commits, derivation-class flush. Parallel to runtime-core until the
+    # migration's parity gates pass.
+    "crates/runtime/world",
+    # New scene core (idea-lite core migration, P1): Element/realize/Host/
+    # Registry + the Dyn/Keyed structural drivers, on the runtime-world
+    # kernel. Parity-gated by crates/dev/scene-parity.
+    "crates/runtime/scene",
     "crates/runtime/reactive/arena",
     "crates/runtime/reactive/refs",
     "crates/runtime/layout",
@@ -67,6 +75,7 @@ members = [
     "crates/dev/robot-test",
     "crates/dev/robot-test-macros",
     "crates/dev/native-parity",
+    "crates/dev/scene-parity",
 
     # MCP — project-aware catalog + stdio server (catalog + Robot tools).
     "crates/mcp/catalog",
@@ -322,6 +331,8 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 runtime-core = { path = "crates/runtime/core" }
+runtime-world = { path = "crates/runtime/world" }
+runtime-scene = { path = "crates/runtime/scene" }
 # Fast non-cryptographic integer hasher (rustc's own FxHash). Used in the
 # reactive core's hot-path collections keyed by internal Signal/Effect ids,
 # which are never attacker-controlled — SipHash's DoS-resistance is pure

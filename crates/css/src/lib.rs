@@ -1037,6 +1037,55 @@ fn push_decl(out: &mut String, name: &str, value: &str) {
 /// matters beyond size: class names are minted from this output, so a
 /// byte change splits web/SSR class identity.
 pub fn rules_to_css_with_shadow(rules: &StyleRules, shadow_kind: ShadowKind) -> String {
+    rules_to_css_impl(rules, shadow_kind, true)
+}
+
+/// DELTA lowering for premint arm/overlay rules: identical to
+/// [`rules_to_css`] except the `flex-direction: column` framework
+/// default is NEVER pinned — only an explicit `flex_direction` emits.
+///
+/// Why: the pin is a decision about the element's MERGED rules. A full
+/// per-node rule (live minting) pins correctly because it *is* the
+/// merge; a delta rule that happens to set a flex-container prop (`gap`,
+/// `align_items`) but no direction would pin `column` from later in the
+/// source order and stomp an explicit `row` contributed by the base or
+/// a sibling axis — the "Stack rows collapse to columns" premint bug.
+/// The framework default is instead supplied per sheet by a
+/// specificity-(0,0,0) rule (`:where(.iy-<hash>) { flex-direction:
+/// column }`, see the premint dump), which loses to every explicit
+/// direction from any layer regardless of order. The `display: flex`
+/// auto-promotion stays: any layer contributing a flex prop makes the
+/// merged set flex-promoted, and repeated `display: flex` declarations
+/// are idempotent.
+pub fn rules_to_css_delta(rules: &StyleRules) -> String {
+    rules_to_css_impl(rules, ShadowKind::Box, false)
+}
+
+/// `true` when this rules layer, applied to an element, makes it a flex
+/// container under [`rules_to_css`]'s lowering — explicit
+/// `display: flex`, or the auto-promotion (any flex-container property
+/// with `display` unset). The premint dump uses this to scope the
+/// framework's `flex-direction: column` default to exactly the layers
+/// that promote (see `rules_to_css_delta` for why the pin can't live in
+/// the delta rule itself).
+pub fn flex_promoted(rules: &StyleRules) -> bool {
+    match rules.display {
+        Some(runtime_core::DisplayKind::Flex) => true,
+        Some(_) => false,
+        None => {
+            rules.flex_direction.is_some()
+                || rules.flex_wrap.is_some()
+                || rules.justify_content.is_some()
+                || rules.align_items.is_some()
+                || rules.align_content.is_some()
+                || rules.gap.is_some()
+                || rules.row_gap.is_some()
+                || rules.column_gap.is_some()
+        }
+    }
+}
+
+fn rules_to_css_impl(rules: &StyleRules, shadow_kind: ShadowKind, pin_flex_direction: bool) -> String {
     use runtime_core::{Color, Length, Tokenized};
 
     /// One property's value slot. Borrowing tags defer formatting to the
@@ -1086,13 +1135,13 @@ pub fn rules_to_css_with_shadow(rules: &StyleRules, shadow_kind: ShadowKind) -> 
         }
         Some(runtime_core::DisplayKind::Flex) => {
             push_decl(&mut out, "display", "flex");
-            if rules.flex_direction.is_none() {
+            if pin_flex_direction && rules.flex_direction.is_none() {
                 push_decl(&mut out, "flex-direction", "column");
             }
         }
         None if uses_flex => {
             push_decl(&mut out, "display", "flex");
-            if rules.flex_direction.is_none() {
+            if pin_flex_direction && rules.flex_direction.is_none() {
                 push_decl(&mut out, "flex-direction", "column");
             }
         }

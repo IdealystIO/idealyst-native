@@ -1,0 +1,39 @@
+# scene-parity golden — scenario `each_multi_node_rows`, mode `spliced`
+#
+# Keyed rows whose body is TWO flat sibling nodes (a fragment
+# row). Append builds both nodes and insert_at's them at
+# consecutive indices; reverse repositions every node of every
+# row in target order — the per-row `nodes` vec (not one node)
+# is the reconciler's accounting unit.
+#
+# Structural ops only. Node names are creation-order (n0, n1, ...);
+# `cleanup <label>` lines are scenario-registered on_cleanup markers
+# pinning dispose ordering. Regenerate after an INTENDED behavior
+# change with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 text "header"
+insert n0 <- n1
+create n2 text "r1-a"
+create n3 text "r1-b"
+create n4 text "r2-a"
+create n5 text "r2-b"
+insert_at n0 <- n2 @ 1
+insert_at n0 <- n3 @ 2
+insert_at n0 <- n4 @ 3
+insert_at n0 <- n5 @ 4
+
+== append row 3 -> [1,2,3] ==
+create n6 text "r3-a"
+create n7 text "r3-b"
+insert_at n0 <- n6 @ 5
+insert_at n0 <- n7 @ 6
+
+== reverse -> [3,2,1] ==
+insert_at n0 <- n6 @ 1
+insert_at n0 <- n7 @ 2
+insert_at n0 <- n4 @ 3
+insert_at n0 <- n5 @ 4
+insert_at n0 <- n2 @ 5
+insert_at n0 <- n3 @ 6

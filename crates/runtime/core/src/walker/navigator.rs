@@ -709,7 +709,11 @@ fn attach_slot_style<B: Backend + 'static>(
             // (the only part with resolvable rules) go through the slot
             // channel so they compose with the navigator's own slot CSS.
             let b = backend.borrow();
-            b.attach_html_class(node, &class);
+            // Per-segment stamp — same multi-class contract as the
+            // walker's Preminted arm (see `walker::style::attach_style`).
+            for cls in class.split_whitespace() {
+                b.attach_html_class(node, cls);
+            }
             drop(b);
             if let Some(rules) = overrides {
                 backend

@@ -164,6 +164,20 @@ impl WebBackend {
         if self.font_face_rule_indices.contains_key(&id) {
             return;
         }
+        // Preminted-CSS dedup: a `--premint` bundle ships this family's
+        // `@font-face` rules inside the linked premint stylesheet, and a
+        // LIVE sheet that still references the typeface (reactive
+        // styles, overrides) re-registers it here at runtime. A second
+        // `@font-face` for the same URL makes the browser fetch the font
+        // file AGAIN (the same double-fetch this fn's rule-string set
+        // guards against below — but that set can only see rules WE
+        // inserted, not ones that arrived via a `<link>`). The
+        // document's `FontFaceSet` indexes every declared face
+        // regardless of origin, so ask it.
+        if document_declares_family(family_name) {
+            self.font_face_rule_indices.insert(id, Vec::new());
+            return;
+        }
         let mut rule_indices = Vec::with_capacity(faces.len());
         for face in faces {
             let Some(url) = self.asset_urls.get(&face.asset) else {
@@ -220,6 +234,44 @@ impl WebBackend {
             self.delete_rule(idx);
         }
     }
+}
+
+/// `true` when the document already declares a `@font-face` for
+/// `family` — from ANY origin, including the preminted `<link>`
+/// stylesheet the runtime never inserted rules into. Uses the
+/// CSS Font Loading API's `document.fonts` set; the `family()` value
+/// may come back quoted, so compare with quotes stripped.
+fn document_declares_family(family: &str) -> bool {
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        return false;
+    };
+    // Primary: the `data-iy-font-families` attribute the CLI stamps on
+    // the premint `<link>`. Attributes are readable the moment the tag
+    // parses — unlike the stylesheet's rules or the FontFaceSet below,
+    // which only reflect the file AFTER its async load completes and so
+    // race wasm boot (observed as double-fetched font files).
+    if let Ok(Some(link)) = doc.query_selector("link[data-iy-font-families]") {
+        if let Some(attr) = link.get_attribute("data-iy-font-families") {
+            if attr.split(',').any(|f| f == family) {
+                return true;
+            }
+        }
+    }
+    // Secondary: the document's FontFaceSet — covers hand-rolled setups
+    // that link a premint stylesheet without the attribute (only
+    // reliable once the sheet has loaded).
+    let fonts = doc.fonts();
+    let Ok(Some(iter)) = js_sys::try_iter(&fonts) else {
+        return false;
+    };
+    for entry in iter.flatten() {
+        let face: web_sys::FontFace = entry.into();
+        let fam = face.family();
+        if fam.trim_matches('"').trim_matches('\'') == family {
+            return true;
+        }
+    }
+    false
 }
 
 /// Insert an at-rule (`@font-face`, `@keyframes`, etc.) into the

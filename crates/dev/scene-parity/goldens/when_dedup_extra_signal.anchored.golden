@@ -1,0 +1,29 @@
+# scene-parity golden — scenario `when_dedup_extra_signal`, mode `anchored`
+#
+# A `when` predicate reads an EXTRA signal beyond the boolean
+# (a `version` tick). Bumping the tick re-fires the Effect but the
+# boolean is unchanged -> the last_active dedup guard must skip the
+# teardown/rebuild entirely (zero structural ops). Without the
+# guard the branch's gesture nodes would be recreated mid-press.
+# The following bool flip proves the effect is still live.
+#
+# Structural ops only. Node names are creation-order (n0, n1, ...);
+# `cleanup <label>` lines are scenario-registered on_cleanup markers
+# pinning dispose ordering. Regenerate after an INTENDED behavior
+# change with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 anchor
+clear_children n1
+create n2 text "on"
+insert n1 <- n2
+insert n0 <- n1
+
+== bump version (boolean unchanged — expect NO rebuild) ==
+(no structural ops)
+
+== set show = false (boolean changed — rebuild proves effect alive) ==
+clear_children n1
+create n3 text "off"
+insert n1 <- n3

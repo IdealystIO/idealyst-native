@@ -1,0 +1,39 @@
+# scene-parity golden — scenario `each_append`, mode `anchored`
+#
+# Keyed list [1,2,3] between static header/footer siblings;
+# append 4. Spliced: the reconciler builds ONLY the new row and
+# insert_at's it at base_index+3; survivors emit nothing.
+# Anchored: the no-splice fallback is a FULL rebuild —
+# clear_children(anchor) + rebuild every row (per-row state lost).
+#
+# Structural ops only. Node names are creation-order (n0, n1, ...);
+# `cleanup <label>` lines are scenario-registered on_cleanup markers
+# pinning dispose ordering. Regenerate after an INTENDED behavior
+# change with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 text "header"
+insert n0 <- n1
+create n2 anchor
+clear_children n2
+create n3 text "row-1"
+insert n2 <- n3
+create n4 text "row-2"
+insert n2 <- n4
+create n5 text "row-3"
+insert n2 <- n5
+insert n0 <- n2
+create n6 text "footer"
+insert n0 <- n6
+
+== append 4 -> [1,2,3,4] ==
+clear_children n2
+create n7 text "row-1"
+insert n2 <- n7
+create n8 text "row-2"
+insert n2 <- n8
+create n9 text "row-3"
+insert n2 <- n9
+create n10 text "row-4"
+insert n2 <- n10

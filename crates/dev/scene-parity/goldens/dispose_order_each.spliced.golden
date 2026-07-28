@@ -1,0 +1,25 @@
+# scene-parity golden — scenario `dispose_order_each`, mode `spliced`
+#
+# Dispose ordering for keyed-row unmount (each.rs `unmount`):
+# the removed row's nodes are remove_child'd BEFORE its scope
+# drops (so a reactive effect in the row can't fire against a
+# half-detached node) — the golden shows remove_child, THEN the
+# row's `cleanup` marker.
+#
+# Structural ops only. Node names are creation-order (n0, n1, ...);
+# `cleanup <label>` lines are scenario-registered on_cleanup markers
+# pinning dispose ordering. Regenerate after an INTENDED behavior
+# change with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 text "row-1"
+create n2 text "row-2"
+create n3 text "row-3"
+insert_at n0 <- n1 @ 0
+insert_at n0 <- n2 @ 1
+insert_at n0 <- n3 @ 2
+
+== remove middle row (nodes out BEFORE scope drop) ==
+remove_child n0 -x n2
+cleanup row-2

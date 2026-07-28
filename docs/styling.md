@@ -330,7 +330,7 @@ shared naming scheme:
    which flips each `stylesheet!` builder's `into_style_source` to a
    fast path: an all-constant application (plain variant values, no
    overrides, nothing reactive) returns
-   `StyleSource::Preminted { class }`. The walker stamps the class on
+   `StyleSource::Preminted { class }`. The walker stamps the classes on
    the node and stops — no `StyleRules`, no resolution, no rule
    minting. State overlays (`state hovered { … }`), breakpoints, and
    container queries ship as pseudo-class/`@media`/`@container` rules
@@ -339,9 +339,41 @@ shared naming scheme:
 Class names derive from an FNV-1a hash of each sheet's source text,
 computed inside the macro — the dump build and the shipped build agree
 byte-for-byte with no manifest or build coordination between them.
-One `-<value>` segment per variant axis is appended in declaration
-order (an unset axis contributes its `#[default]` arm's name, or `_`
-when the axis has none).
+
+### The delta model
+
+Emission is **per layer, not per combination**: the dump writes the
+sheet's base as `.iy-<hash>`, and each variant arm as its own DELTA
+rule `.iy-<hash>-<axis>-<value>` containing only that arm's
+properties. The runtime stamps one class per selected axis (an unset
+axis contributes its `#[default]` arm's class, or nothing when the
+axis declares none), and the browser's cascade performs the merge the
+resolver does live. CSS size is therefore the *sum* of a sheet's arms
+rather than their cartesian product — on the website this is the
+difference between 3 MB / 5,068 rules (per-combo) and 116 KB / 430
+rules.
+
+The equivalence rests on two facts, both load-bearing:
+
+- **Every emitted selector has specificity (0,1,0)** — single classes,
+  state pseudo-classes wrapped in `:where()` (which contributes no
+  specificity), and `@media`/`@container` preludes (which never do).
+  Equal-specificity rules cascade by source order per property, which
+  is exactly `StyleRules::merge`'s later-wins.
+- **Source order mirrors the resolver's merge order**, which iterates
+  variant axes alphabetically (`BTreeMap`): the `__bp_*` < `__cq_*` <
+  `__state_*` overlay prefixes sort before every lowercase author
+  axis, so emission is base → breakpoints (rank ascending) →
+  containers (threshold ascending) → states → author axes. This also
+  reproduces the live web backend's cross-rule outcomes (a variant arm
+  beats a state overlay on conflicting properties; a state overlay
+  beats a breakpoint overlay) — verified by the A/B computed-style
+  harness against the live engine on the full website.
+
+Compound variants (`StyleSheet::compound`, a runtime-only API the
+`stylesheet!` grammar cannot express) have no delta encoding; the dump
+rejects a sheet carrying them, which cannot occur for macro-registered
+sheets.
 
 ### What stays on the live engine
 
@@ -354,9 +386,19 @@ can't prove the CSS at build time:
 - **Shadow-carrying sheets** — `shadow` lowers as `text-shadow` on
   text and `box-shadow` on boxes, and a class name carries no
   node-kind information.
-- **Non-literal `font_family`** — a `Typeface` needs `@font-face` +
-  face-asset registration, which rides sheet registration; only
-  string-literal (system) fonts premint.
+- **A `font_family` the build can't prove constant** — a call like
+  `active_font_family()` can vary at runtime. String literals (system
+  stacks) and path/`&`-reference expressions (`&INTER` — a `static`
+  `Typeface`, constant by construction) DO premint: the dump emits the
+  family's `@font-face` rules into the same `.css` with served-file
+  URLs, standing in for the runtime `register_typeface` that sheet
+  registration would have performed. The `<link>` carries a
+  `data-iy-font-families` attribute listing the shipped families, and
+  the web backend's runtime registration skips those — an attribute
+  rather than a stylesheet/`FontFaceSet` probe because those race the
+  link's async load against wasm boot and double-fetch the files.
+  `Embedded`-bytes faces have no build-time URL and are skipped with a
+  dump warning (use a bundled source for preminted fonts).
 
 Fallback is per-application and silent: the same build can serve one
 `Card()` preminted and another `Card().padding(sig)` live.
@@ -407,6 +449,15 @@ Cargo.toml for the unification caveat.
   its own wiring.
 - Only `stylesheet!` *builder* applications premint. A plain
   `Rc<StyleSheet>` passed directly (e.g. `card_style()`) stays live.
+- A component that COMPOSES or INTROSPECTS a builder's styles (merging
+  an inherited color onto a label sheet, re-deriving a cell's
+  application to layer a hover) must call the builder's
+  `into_style_application()` instead of `into_style_source()`: under
+  premint the latter returns an opaque class, and pattern-matching it
+  as `Static` panics. `into_style_application()` names the requirement
+  in its type — composition needs the live engine, so anything derived
+  from it stays live-minted (idea-ui's `Tag`/`Alert` label coloring and
+  `Table`'s clickable-row cells work this way).
 - Native backends never see either cfg — they keep the full rules
   closures and the apply-time default-font fill. The observable
   styling is identical everywhere; premint changes only *when* the

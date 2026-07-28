@@ -9341,6 +9341,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "runtime-scene"
+version = "0.4.0"
+dependencies = [
+ "runtime-world",
+ "rustc-hash 2.1.2",
+]
+
+[[package]]
 name = "runtime-server-shell-native"
 version = "0.4.0"
 dependencies = [
@@ -9349,6 +9357,13 @@ dependencies = [
  "serde_json",
  "tungstenite 0.24.0",
  "wire",
+]
+
+[[package]]
+name = "runtime-world"
+version = "0.4.0"
+dependencies = [
+ "rustc-hash 2.1.2",
 ]
 
 [[package]]
@@ -9580,6 +9595,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b53b0a5db882a8e2fdaae0a43f7b39e7e9082389e978398bdf223a55b581248"
 dependencies = [
  "regex",
+]
+
+[[package]]
+name = "scene-parity"
+version = "0.4.0"
+dependencies = [
+ "runtime-core",
+ "runtime-scene",
+ "runtime-world",
 ]
 
 [[package]]

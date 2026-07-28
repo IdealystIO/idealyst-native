@@ -319,7 +319,18 @@ pub(super) fn attach_style<B: Backend + 'static>(
             // host-state flush that normally rides registration (theme
             // tokens → CSS vars, app background, …) needs its own driver.
             install_premint_host_driver(backend);
-            backend.borrow().attach_html_class(node, &class);
+            // One stamp per whitespace-separated segment: the builder
+            // assembles `iy-<hash>` plus one `iy-<hash>-<axis>-<value>`
+            // class per selected axis (delta model — the `.css` carries
+            // one rule per arm and the browser cascade merges). Split
+            // here so backends keep a single-class contract
+            // (`classList.add` rejects strings containing spaces).
+            {
+                let b = backend.borrow();
+                for cls in class.split_whitespace() {
+                    b.attach_html_class(node, cls);
+                }
+            }
             if let Some(rules) = overrides {
                 // Runtime slot overrides layer a normal static application
                 // on top of the preminted class. Only this path touches

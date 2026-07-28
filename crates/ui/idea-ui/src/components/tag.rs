@@ -25,7 +25,7 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, resolve_style, ui, Color, Element, IdealystSchema, IntoElement, IntoStyleSource,
+    component, resolve_style, ui, Color, Element, IdealystSchema, IntoElement,
     Reactive, StyleApplication, StyleRules, StyleSheet, Tokenized,
 };
 
@@ -44,12 +44,13 @@ use crate::stylesheets::{TagClose, TagLabel};
 /// `Typography` uses (color lives on the text node). The merged
 /// `Tokenized` values keep their token references, so theme swaps still
 /// re-resolve in bulk via the cohort.
-fn with_inherited_color(text_style: impl IntoStyleSource, color: Tokenized<Color>) -> Rc<StyleSheet> {
-    let app = match text_style.into_style_source() {
-        runtime_core::StyleSource::Static(a) => a,
-        // The label sheets are constant builders → always Static.
-        _ => unreachable!("label style sheets are static"),
-    };
+// Takes the APPLICATION (`Builder().into_style_application()`), not an
+// `impl IntoStyleSource`: under `--premint` a constant builder's
+// `into_style_source` returns an opaque `Preminted` class, which
+// panicked the old `match Static` here (the website's Tag crash).
+// Composition needs the live engine by definition, so this helper's
+// input names that requirement in its type.
+fn with_inherited_color(app: StyleApplication, color: Tokenized<Color>) -> Rc<StyleSheet> {
     let mut rules = (*resolve_style(&app)).clone();
     rules.color = Some(color);
     Rc::new(StyleSheet::r#static(rules))
@@ -169,7 +170,7 @@ pub fn Tag(props: &TagProps) -> Element {
             .into_element()
     } else {
         let label_style: Rc<StyleSheet> = match fg.clone() {
-            Some(c) => with_inherited_color(TagLabel(), c),
+            Some(c) => with_inherited_color(TagLabel().into_style_application(), c),
             None => TagLabel::sheet(),
         };
         ui! { text(style = label_style) { label } }

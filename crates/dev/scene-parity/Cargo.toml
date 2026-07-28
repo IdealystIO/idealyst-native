@@ -1,0 +1,20 @@
+[package]
+name = "scene-parity"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# P1 exit-gate harness for the idea-lite core migration: a recording
+# Backend + scenario suite that pins the EXACT structural-op sequences
+# the current walker emits (see README.md). The future `runtime-scene`
+# core must reproduce these golden files on the same scenarios.
+#
+# Dev/test utility crate — nothing shipped depends on it.
+
+[dependencies]
+runtime-core = { workspace = true }
+# The new-core harness mode: the same scenarios re-targeted at the P1
+# scene core, checked against the SAME goldens (modulo the README's
+# sanctioned divergences).
+runtime-scene = { workspace = true }
+runtime-world = { workspace = true }

@@ -281,7 +281,13 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         // the rules before first paint anyway, and pkg/ is immutable
         // so it caches like the wasm.
         if let Some(css_name) = &fp.premint_css {
-            inject_premint_css_link(&staged.join("index.html"), css_name)?;
+            let css = fs::read_to_string(staged_pkg.join(css_name))
+                .with_context(|| format!("read staged {css_name}"))?;
+            inject_premint_css_link(
+                &staged.join("index.html"),
+                css_name,
+                &premint_font_families(&css),
+            )?;
         }
         // Rewrite the staged `index.html` to preload the project's
         // declared fonts. Has to run BEFORE `gzip_bundle` (which
@@ -545,13 +551,44 @@ pub fn default_index_html(title: &str, lib_name: &str) -> String {
 /// Splice the preminted stylesheet `<link>` into the staged
 /// `index.html` head. Same read-modify-write shape as the font-preload
 /// injector below; runs before gzip for the same reason.
-fn inject_premint_css_link(index_path: &Path, css_name: &str) -> Result<()> {
+///
+/// `font_families` (comma-joined) rides a `data-iy-font-families`
+/// attribute on the link: the web backend's runtime `register_typeface`
+/// reads it to skip families whose `@font-face` already ships in this
+/// stylesheet. The attribute — not the parsed stylesheet or the
+/// document's `FontFaceSet` — because those race the `<link>`'s async
+/// load against wasm boot (observed: 4 fonts double-fetched); a DOM
+/// attribute is readable the instant the tag is parsed.
+fn inject_premint_css_link(index_path: &Path, css_name: &str, font_families: &str) -> Result<()> {
     let html = fs::read_to_string(index_path)
         .with_context(|| format!("read {}", index_path.display()))?;
-    let snippet = format!("\n    <link rel=\"stylesheet\" href=\"pkg/{css_name}\">");
+    let families_attr = if font_families.is_empty() {
+        String::new()
+    } else {
+        format!(" data-iy-font-families=\"{font_families}\"")
+    };
+    let snippet =
+        format!("\n    <link rel=\"stylesheet\" href=\"pkg/{css_name}\"{families_attr}>");
     let out = inject_into_head(html, &snippet);
     fs::write(index_path, out).with_context(|| format!("write {}", index_path.display()))?;
     Ok(())
+}
+
+/// The unique `@font-face` family names in an emitted premint
+/// stylesheet, comma-joined in appearance order. Scans for the exact
+/// prefix `css::font_face_css` emits — the dump and this parser share
+/// that format by construction.
+fn premint_font_families(css: &str) -> String {
+    let mut seen: Vec<&str> = Vec::new();
+    for chunk in css.split("@font-face{font-family:\"").skip(1) {
+        if let Some(end) = chunk.find('"') {
+            let fam = &chunk[..end];
+            if !seen.contains(&fam) {
+                seen.push(fam);
+            }
+        }
+    }
+    seen.join(",")
 }
 
 fn inject_font_preloads_into_staged_index(index_path: &Path, paths: &[String]) -> Result<()> {

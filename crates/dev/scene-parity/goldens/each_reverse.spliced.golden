@@ -1,0 +1,29 @@
+# scene-parity golden — scenario `each_reverse`, mode `spliced`
+#
+# Keyed list [1,2,3] -> [3,2,1]: a real reorder (survivor old
+# positions not monotonic) repositions EVERY row node via
+# insert_at in target order (DOM insertBefore move semantics),
+# building nothing and removing nothing.
+#
+# Structural ops only. Node names are creation-order (n0, n1, ...);
+# `cleanup <label>` lines are scenario-registered on_cleanup markers
+# pinning dispose ordering. Regenerate after an INTENDED behavior
+# change with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 text "header"
+insert n0 <- n1
+create n2 text "row-1"
+create n3 text "row-2"
+create n4 text "row-3"
+insert_at n0 <- n2 @ 1
+insert_at n0 <- n3 @ 2
+insert_at n0 <- n4 @ 3
+create n5 text "footer"
+insert n0 <- n5
+
+== reverse -> [3,2,1] ==
+insert_at n0 <- n4 @ 1
+insert_at n0 <- n3 @ 2
+insert_at n0 <- n2 @ 3

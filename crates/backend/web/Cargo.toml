@@ -160,6 +160,8 @@ features = [
     "File",
     "FileList",
     "Document",
+    "FontFace",
+    "FontFaceSet",
     "DocumentFragment",
     "DomRect",
     "DomTokenList",

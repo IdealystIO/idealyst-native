@@ -105,6 +105,36 @@ fn with_style_overrides_composes_onto_preminted() {
     );
 }
 
+/// Multi-class stamps (the delta model: base + one class per selected
+/// axis, space-separated) split into one `attach_html_class` call per
+/// segment — `classList.add` on web rejects strings containing spaces,
+/// so a joined stamp would throw and style nothing.
+#[test]
+fn regression_multiclass_preminted_stamps_each_segment() {
+    let rt = TestRuntime::new();
+    let root = ui! { view { text { "hi" } } }.into_element().with_style(
+        StyleSource::Preminted {
+            class: "iy-abc iy-abc-tone-danger iy-abc-size-lg".into(),
+            overrides: None,
+        },
+    );
+    let _owner = rt.render(root);
+
+    let events = rt.events();
+    let stamped: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::AttachHtmlClass { class, .. } => Some(class.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        stamped,
+        vec!["iy-abc", "iy-abc-tone-danger", "iy-abc-size-lg"],
+        "each segment must stamp separately, in order; events: {events:#?}"
+    );
+}
+
 /// The premint host driver: a fully-preminted app performs NO sheet
 /// registrations, so the host-state flush that normally rides
 /// `ensure_registered_with` (theme tokens, app background, default

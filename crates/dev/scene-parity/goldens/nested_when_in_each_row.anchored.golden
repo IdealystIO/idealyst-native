@@ -1,0 +1,103 @@
+# scene-parity golden — scenario `nested_when_in_each_row`, mode `anchored`
+#
+# A `when` inside each keyed row (row = view[text, when]).
+# Toggling the shared flag rebuilds each row's branch IN PLACE
+# (in row-creation order) with no row remount; appending a row
+# builds a fresh nested when; removing a row tears its when down
+# with the row scope, so later flag flips only fire survivors.
+#
+# Structural ops only. Node names are creation-order (n0, n1, ...);
+# `cleanup <label>` lines are scenario-registered on_cleanup markers
+# pinning dispose ordering. Regenerate after an INTENDED behavior
+# change with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 anchor
+clear_children n1
+create n2 view
+create n3 text "row-1"
+insert n2 <- n3
+create n4 anchor
+clear_children n4
+create n5 text "inner-on"
+insert n4 <- n5
+insert n2 <- n4
+insert n1 <- n2
+create n6 view
+create n7 text "row-2"
+insert n6 <- n7
+create n8 anchor
+clear_children n8
+create n9 text "inner-on"
+insert n8 <- n9
+insert n6 <- n8
+insert n1 <- n6
+insert n0 <- n1
+
+== toggle inner flag (both rows rebuild branch in place) ==
+clear_children n4
+create n10 text "inner-off"
+insert n4 <- n10
+clear_children n8
+create n11 text "inner-off"
+insert n8 <- n11
+
+== append row 3 ==
+clear_children n1
+create n12 view
+create n13 text "row-1"
+insert n12 <- n13
+create n14 anchor
+clear_children n14
+create n15 text "inner-off"
+insert n14 <- n15
+insert n12 <- n14
+insert n1 <- n12
+create n16 view
+create n17 text "row-2"
+insert n16 <- n17
+create n18 anchor
+clear_children n18
+create n19 text "inner-off"
+insert n18 <- n19
+insert n16 <- n18
+insert n1 <- n16
+create n20 view
+create n21 text "row-3"
+insert n20 <- n21
+create n22 anchor
+clear_children n22
+create n23 text "inner-off"
+insert n22 <- n23
+insert n20 <- n22
+insert n1 <- n20
+
+== remove row 1 (its inner when dies with the row scope) ==
+clear_children n1
+create n24 view
+create n25 text "row-2"
+insert n24 <- n25
+create n26 anchor
+clear_children n26
+create n27 text "inner-off"
+insert n26 <- n27
+insert n24 <- n26
+insert n1 <- n24
+create n28 view
+create n29 text "row-3"
+insert n28 <- n29
+create n30 anchor
+clear_children n30
+create n31 text "inner-off"
+insert n30 <- n31
+insert n28 <- n30
+insert n1 <- n28
+
+== toggle inner flag again (only surviving rows fire) ==
+clear_children n26
+create n32 text "inner-on"
+insert n26 <- n32
+clear_children n30
+create n33 text "inner-on"
+insert n30 <- n33

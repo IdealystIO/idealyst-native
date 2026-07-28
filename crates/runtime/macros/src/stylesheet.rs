@@ -553,17 +553,36 @@ fn sheet_has_shadow(decl: &StyleSheetDecl) -> bool {
     any_rules_block(decl, |b| b.fields.iter().any(|(name, _)| name == "shadow"))
 }
 
-/// `true` if any rules block sets `font_family` to something other than
-/// a string literal — see the premint-eligibility note in [`emit`].
+/// `true` if any rules block sets `font_family` to a value the premint
+/// pipeline can't prove constant — see the premint-eligibility note in
+/// [`emit`].
+///
+/// Premintable font values:
+/// - a string literal (`"ui-monospace, …"` → `FontFamily::System`,
+///   needs no registration), and
+/// - a path or `&`-reference expression (`&INTER`, `theme::MONO`) — a
+///   reference to a `static`/`const` `Typeface`, constant by
+///   construction. The dump build emits the family's `@font-face`
+///   rules (with served-file URLs) into the preminted `.css`, standing
+///   in for the runtime `register_typeface` that sheet registration
+///   would have performed.
+///
+/// Everything else (a call like `active_font_family()`, a method
+/// chain, a conditional) can vary at runtime, so the sheet stays on
+/// the live-minting path.
 fn sheet_has_dynamic_font(decl: &StyleSheetDecl) -> bool {
+    fn constant_font_expr(expr: &Expr) -> bool {
+        match expr {
+            Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(_), .. }) => true,
+            Expr::Path(_) => true,
+            Expr::Reference(r) => constant_font_expr(&r.expr),
+            _ => false,
+        }
+    }
     any_rules_block(decl, |b| {
-        b.fields.iter().any(|(name, expr)| {
-            name == "font_family"
-                && !matches!(
-                    expr,
-                    Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(_), .. })
-                )
-        })
+        b.fields
+            .iter()
+            .any(|(name, expr)| name == "font_family" && !constant_font_expr(expr))
     })
 }
 
@@ -583,23 +602,6 @@ fn any_rules_block(decl: &StyleSheetDecl, pred: impl Fn(&RulesBlock) -> bool) ->
 /// `runtime_core::premint`).
 fn emit_premint_registration(decl: &StyleSheetDecl, base_class: &str) -> TokenStream2 {
     let stylesheet_fn = format_ident!("{}_style", snake_case(&decl.name));
-    let axes = decl.variants.iter().map(|axis| {
-        let axis_name = axis.axis.to_string();
-        let values = axis.arms.iter().map(|a| a.name.to_string());
-        let default_value = axis
-            .arms
-            .iter()
-            .find(|a| a.is_default)
-            .map(|a| a.name.to_string())
-            .unwrap_or_else(|| "_".to_string());
-        quote! {
-            ::runtime_core::premint::PremintAxis {
-                name: #axis_name,
-                values: &[#(#values),*],
-                default_value: #default_value,
-            }
-        }
-    });
     quote! {
         // The `#[cfg]` sits on the INNER static, not on this const:
         // when a cfg strips an item, the lint level for
@@ -619,7 +621,6 @@ fn emit_premint_registration(decl: &StyleSheetDecl, base_class: &str) -> TokenSt
                 ::runtime_core::premint::PremintSheet {
                     base_class: #base_class,
                     sheet: #stylesheet_fn,
-                    axes: &[#(#axes),*],
                 };
         };
     }
@@ -1130,21 +1131,39 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
     let vis = &decl.vis;
     let entry_fn = name; // `Card()` returns `Card` — see free function below.
     let stylesheet_fn = format_ident!("{}_style", snake_case(name));
-    // Per-axis (field ident, default segment) for premint class assembly.
-    let premint_axis_fields: Vec<_> = decl
-        .variants
-        .iter()
-        .map(|axis| format_ident!("__v_{}", axis.axis))
-        .collect();
-    let premint_axis_defaults: Vec<String> = decl
+    // Per-axis class-segment assembly for the premint branch. One class
+    // per SELECTED axis (`<base>-<axis>-<value>`, space-separated after
+    // the base class): the dump emits each arm as a standalone DELTA
+    // rule in the resolver's merge order, and the CSS source-order
+    // cascade reproduces `StyleSheet::resolve`'s later-wins merge — so
+    // CSS size is the sum of arms, not their cartesian product. An
+    // unset axis contributes its `#[default]` arm's class (same rules
+    // resolution as an explicit default selection), or nothing when the
+    // axis declares no default (no arm active ⇒ no delta to apply).
+    let premint_axis_pushes: Vec<TokenStream2> = decl
         .variants
         .iter()
         .map(|axis| {
-            axis.arms
-                .iter()
-                .find(|a| a.is_default)
-                .map(|a| a.name.to_string())
-                .unwrap_or_else(|| "_".to_string())
+            let f = format_ident!("__v_{}", axis.axis);
+            let seg_prefix = format!(" {}-{}-", base_class, axis.axis);
+            match axis.arms.iter().find(|a| a.is_default) {
+                Some(d) => {
+                    let dname = d.name.to_string();
+                    quote! {
+                        __class.push_str(#seg_prefix);
+                        __class.push_str(match self.#f.as_ref() {
+                            ::std::option::Option::Some(g) => g(),
+                            ::std::option::Option::None => #dname,
+                        });
+                    }
+                }
+                None => quote! {
+                    if let ::std::option::Option::Some(g) = self.#f.as_ref() {
+                        __class.push_str(#seg_prefix);
+                        __class.push_str(g());
+                    }
+                },
+            }
         })
         .collect();
     let premint_override_fields: Vec<_> = decl
@@ -1208,7 +1227,7 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
     // Resolution closure body for IntoStyleSource. Reads each closure
     // (which may subscribe to a Signal) and applies to the
     // StyleApplication.
-    let axis_applies = decl.variants.iter().map(|axis| {
+    let axis_applies: Vec<TokenStream2> = decl.variants.iter().map(|axis| {
         let axis_str = axis.axis.to_string();
         let f = format_ident!("__v_{}", axis.axis);
         quote! {
@@ -1216,8 +1235,8 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
                 __app = __app.with(#axis_str, g());
             }
         }
-    });
-    let override_applies = decl.overrides.iter().map(|o| {
+    }).collect();
+    let override_applies: Vec<TokenStream2> = decl.overrides.iter().map(|o| {
         let f = format_ident!("__o_{}", o.name);
         let method = format_ident!("override_{}", o.name);
         quote! {
@@ -1225,7 +1244,7 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
                 __app = __app.#method(g());
             }
         }
-    });
+    }).collect();
 
     // Emitted only for premint-eligible sheets (see `sheet_has_shadow`);
     // ineligible sheets compile to the live path with no cfg block at all.
@@ -1242,13 +1261,7 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
                 let __any_override = false #(|| self.#premint_override_fields.is_some())*;
                 if !self.__reactive && !__any_override {
                     let mut __class = ::std::string::String::from(#base_class);
-                    #(
-                        __class.push('-');
-                        __class.push_str(match self.#premint_axis_fields.as_ref() {
-                            ::std::option::Option::Some(g) => g(),
-                            ::std::option::Option::None => #premint_axis_defaults,
-                        });
-                    )*
+                    #(#premint_axis_pushes)*
                     return ::runtime_core::StyleSource::Preminted {
                         class: ::std::borrow::Cow::Owned(__class),
                         overrides: ::std::option::Option::None,
@@ -1288,6 +1301,23 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
 
             #(#axis_setters)*
             #(#override_setters)*
+
+            /// The live-engine `StyleApplication` this builder describes —
+            /// for components that COMPOSE or INTROSPECT resolved styles
+            /// (merge an inherited color onto a label sheet, layer a
+            /// reactive hover onto a cell) rather than hand the style
+            /// straight to a node. Deliberately bypasses the premint fast
+            /// path: composition requires the resolution engine, so
+            /// anything derived from this stays live-minted even in
+            /// `--premint` builds. Reactive setter inputs are read ONCE
+            /// here (no subscription) — reactive callers stay on
+            /// `into_style_source`.
+            pub fn into_style_application(self) -> ::runtime_core::StyleApplication {
+                let mut __app = ::runtime_core::StyleApplication::new(#stylesheet_fn());
+                #(#axis_applies)*
+                #(#override_applies)*
+                __app
+            }
         }
 
         impl ::std::default::Default for #name {

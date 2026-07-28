@@ -1,0 +1,23 @@
+# runtime-scene — the scene core of the idea-lite core migration (P1).
+#
+# Five-variant `Element` (Item/Fragment/Dyn/Keyed/Owned), `realize` into a
+# live tree, the 7-method `Host` structural seam, the TypeId-keyed handler
+# `Registry` that replaces both the walker's primitive dispatch and
+# `Element::External`, and the Dyn/Keyed structural drivers ported from the
+# old walker (when_switch/dynamic/each) with their invariants intact.
+#
+# The scene knows nothing about styling, text, a11y, or any concrete
+# primitive — that is the vocabulary's job (P2). Exit gate: the golden
+# structural-op sequences in crates/dev/scene-parity.
+
+[package]
+name = "runtime-scene"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+runtime-world = { workspace = true }
+# Registry map keyed by payload TypeId — internal, never attacker-controlled
+# (same rationale as runtime-world's use).
+rustc-hash = { workspace = true }

@@ -2028,6 +2028,88 @@ impl StyleSheet {
     pub fn axis_default(&self, axis: &str) -> Option<&VariantValue> {
         self.variants.get(axis).and_then(|d| d.default.as_ref())
     }
+
+    // -----------------------------------------------------------------
+    // Premint delta introspection (style-dump builds only)
+    // -----------------------------------------------------------------
+
+    /// The base rules alone, with declared defaults filled into the
+    /// variant set the closure receives. Premint-dump only: the dump
+    /// emits this once per sheet as the `.iy-<hash>` rule; every arm is
+    /// emitted separately as a DELTA rule and the CSS cascade performs
+    /// the merge [`resolve`](Self::resolve) does at runtime.
+    #[cfg(feature = "style-dump")]
+    pub fn premint_base(&self) -> StyleRules {
+        (self.base)(&self.effective_variants(&VariantSet::default()))
+    }
+
+    /// One arm's rules ALONE (not merged onto base) — the delta the
+    /// premint dump emits as `.iy-<hash>-<axis>-<value>` (regular axes)
+    /// or as a pseudo/`@media`/`@container` rule (`__state_*` /
+    /// `__bp_*` / `__cq_*` axes, value `"on"`). Arms in the
+    /// `stylesheet!` grammar never read the variant set (their theme
+    /// binding is enforced-unused), so passing the defaults-filled
+    /// empty set is exact.
+    #[cfg(feature = "style-dump")]
+    pub fn premint_delta(&self, axis: &str, value: &str) -> Option<StyleRules> {
+        let vs = self.effective_variants(&VariantSet::default());
+        self.variants
+            .get(axis)
+            .and_then(|def| def.values.get(value))
+            .map(|f| f(&vs))
+    }
+
+    /// The REGULAR variant axes (author `variant` blocks — state /
+    /// breakpoint / container axes excluded), in the same
+    /// alphabetical-`BTreeMap` order [`resolve`](Self::resolve) merges
+    /// them in. The premint dump emits axis-delta rules in exactly this
+    /// order and the runtime stamps one class per axis, so the CSS
+    /// source-order cascade reproduces the resolver's later-wins merge.
+    /// Each entry is `(axis, declared values, default value)`.
+    #[cfg(feature = "style-dump")]
+    pub fn premint_variant_axes(&self) -> Vec<(String, Vec<String>, Option<String>)> {
+        self.variants
+            .iter()
+            .filter(|(axis, _)| !axis.starts_with("__"))
+            .map(|(axis, def)| {
+                (
+                    axis.clone(),
+                    def.values.keys().cloned().collect(),
+                    def.default.clone(),
+                )
+            })
+            .collect()
+    }
+
+    /// Style-dump-visible re-exports of the overlay-axis lists (the
+    /// crate-internal accessors the walker uses). Orders are
+    /// load-bearing: states in declaration order (matches
+    /// `resolve_state_overlays` → live web's rule order); breakpoints /
+    /// containers get sorted by the dump (rank / threshold ascending,
+    /// matching the walker's resolvers).
+    #[cfg(feature = "style-dump")]
+    pub fn premint_state_axes(&self) -> &[(crate::StateBits, VariantAxis)] {
+        self.state_axes()
+    }
+
+    #[cfg(feature = "style-dump")]
+    pub fn premint_breakpoint_axes(&self) -> &[(crate::Breakpoint, VariantAxis)] {
+        self.breakpoint_axes()
+    }
+
+    #[cfg(feature = "style-dump")]
+    pub fn premint_container_axes(&self) -> &[(f32, VariantAxis)] {
+        self.container_axes()
+    }
+
+    /// `true` when the sheet declares runtime-API compound variants —
+    /// which the premint delta model cannot express (the `stylesheet!`
+    /// grammar never emits them, so macro-registered sheets are always
+    /// compound-free; this is the dump's defensive check).
+    #[cfg(feature = "style-dump")]
+    pub fn has_compounds(&self) -> bool {
+        !self.compounds.is_empty()
+    }
 }
 
 /// Map a variant axis name to its `StateBits` flag, or `None` if

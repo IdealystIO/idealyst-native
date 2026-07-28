@@ -36,7 +36,7 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, resolve_style, ui, Color, Element, IdealystSchema, IntoElement, IntoStyleSource,
+    component, resolve_style, ui, Color, Element, IdealystSchema, IntoElement,
     Reactive, StyleApplication, StyleRules, StyleSheet, Tokenized,
 };
 
@@ -51,11 +51,10 @@ use crate::stylesheets::{AlertBody, AlertContent, AlertTitle, TagClose};
 /// iOS/Android. Stamping the resolved `color` on the text node makes
 /// every backend match web — the pattern `Typography` uses. Tokens are
 /// preserved, so theme swaps still re-resolve in bulk.
-fn with_inherited_color(text_style: impl IntoStyleSource, color: Tokenized<Color>) -> Rc<StyleSheet> {
-    let app = match text_style.into_style_source() {
-        runtime_core::StyleSource::Static(a) => a,
-        _ => unreachable!("label style sheets are static"),
-    };
+// Takes the APPLICATION (`Builder().into_style_application()`) — see the
+// identical helper in `tag.rs` for why (`--premint` made
+// `into_style_source` opaque for constant builders).
+fn with_inherited_color(app: StyleApplication, color: Tokenized<Color>) -> Rc<StyleSheet> {
     let mut rules = (*resolve_style(&app)).clone();
     rules.color = Some(color);
     Rc::new(StyleSheet::r#static(rules))
@@ -207,7 +206,7 @@ pub fn Alert(props: AlertProps) -> Element {
             .into_element()
     } else {
         let title_style: Rc<StyleSheet> = match fg.clone() {
-            Some(c) => with_inherited_color(AlertTitle(), c),
+            Some(c) => with_inherited_color(AlertTitle().into_style_application(), c),
             None => AlertTitle::sheet(),
         };
         ui! { text(style = title_style) { title } }
@@ -221,7 +220,7 @@ pub fn Alert(props: AlertProps) -> Element {
         )
     } else {
         let body_style: Rc<StyleSheet> = match fg.clone() {
-            Some(c) => with_inherited_color(AlertBody(), c),
+            Some(c) => with_inherited_color(AlertBody().into_style_application(), c),
             None => AlertBody::sheet(),
         };
         crate::components::optional_reactive_text(props.body.clone(), body_style)
