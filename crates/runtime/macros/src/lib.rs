@@ -47,6 +47,8 @@ mod recipe_emit;
 #[cfg(feature = "catalog")]
 mod scope_emit;
 mod methods_block;
+#[cfg(feature = "new-core")]
+mod new_core;
 mod path_analysis;
 mod primitives;
 mod props_attr;
@@ -58,6 +60,16 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::parse_macro_input;
 use syn::ItemFn;
+
+/// Final post-processing for every entry point that emits core paths:
+/// under the `new-core` feature the assembled expansion is retargeted at
+/// `::runtime_vocabulary::glue` (see [`new_core`]); otherwise it passes
+/// through byte-identical.
+fn finish(out: proc_macro2::TokenStream) -> TokenStream {
+    #[cfg(feature = "new-core")]
+    let out = new_core::retarget(out);
+    out.into()
+}
 
 /// `#[derive(IdealystSchema)]` — registers a props struct's per-field
 /// information into the MCP catalog. Used alongside `#[component]`
@@ -187,8 +199,8 @@ pub fn ui(input: TokenStream) -> TokenStream {
     // in a dead-but-typed position so the IDE stays useful while typing.
     let input: proc_macro2::TokenStream = input.into();
     match syn::parse2::<ui::Ui>(input.clone()) {
-        Ok(parsed) => ui::emit(parsed, &input).into(),
-        Err(err) => ui::emit_recovery(input, &err).into(),
+        Ok(parsed) => finish(ui::emit(parsed, &input)),
+        Err(err) => finish(ui::emit_recovery(input, &err)),
     }
 }
 
@@ -221,8 +233,8 @@ pub fn jsx(input: TokenStream) -> TokenStream {
     // (it walks raw tokens), so `jsx!` reuses `ui::emit_recovery`.
     let input: proc_macro2::TokenStream = input.into();
     match syn::parse2::<jsx::Jsx>(input.clone()) {
-        Ok(parsed) => jsx::emit(parsed, &input).into(),
-        Err(err) => ui::emit_recovery(input, &err).into(),
+        Ok(parsed) => finish(jsx::emit(parsed, &input)),
+        Err(err) => finish(ui::emit_recovery(input, &err)),
     }
 }
 
@@ -295,7 +307,7 @@ pub fn stylesheet(input: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_attribute]
 pub fn props(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    props_attr::emit(item.into()).into()
+    finish(props_attr::emit(item.into()))
 }
 
 #[proc_macro_attribute]
@@ -325,6 +337,31 @@ pub fn lazy_component(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 fn emit_component(attr: component_attr::ComponentAttr, item: TokenStream) -> TokenStream {
     let mut item_fn = parse_macro_input!(item as ItemFn);
+    // `new-core` deferrals — loud, named, never silent (repo rule: an
+    // unmigrated feature must fail with its migration status).
+    #[cfg(feature = "new-core")]
+    {
+        if attr.lazy {
+            return syn::Error::new_spanned(
+                &item_fn.sig.ident,
+                "#[component(lazy)] / #[lazy] is not yet available on the new core \
+                 (idea-lite migration: wasm-split chunking retargets in P3b). Build \
+                 without `runtime-macros/new-core` or make the component eager.",
+            )
+            .to_compile_error()
+            .into();
+        }
+        if methods_block::has_method_fns(&item_fn) {
+            return syn::Error::new_spanned(
+                &item_fn.sig.ident,
+                "#[method] blocks are not yet available on the new core (idea-lite \
+                 migration: the Ref/robot handle machinery migrates in P5). Build \
+                 without `runtime-macros/new-core` or drop the #[method] fns.",
+            )
+            .to_compile_error()
+            .into();
+        }
+    }
     // `strict-docs`: require a doc comment on the component fn. Computed
     // from the original attrs before any rewrite; emitted alongside the
     // component so the error points at the fn name. Empty when the
@@ -421,6 +458,17 @@ fn emit_component(attr: component_attr::ComponentAttr, item: TokenStream) -> Tok
     };
     reactivity::rewrite(&mut item_fn);
 
+    // NEW-core body semantics: a component runs ONCE, untracked, with
+    // every signal/effect it creates collected into an `Owned` scope
+    // attached to the returned element (idea-lite's `component_scope`;
+    // handbook §6/§9). The wrap targets `::runtime_core::component_scope`
+    // and the retarget pass maps it to
+    // `runtime_vocabulary::glue::component_scope`. Only bodies returning
+    // bare `Element` are wrapped — richer return types (`Bindable<H>`,
+    // …) can't flow through the `FnOnce() -> Element` collector.
+    #[cfg(feature = "new-core")]
+    wrap_component_body_new_core(&mut item_fn);
+
     // Bracket the body with a build probe so the runtime knows "a
     // component body is executing" — that's what powers the dev-build
     // untracked-build-read diagnostic (the hoisted-snapshot trap:
@@ -492,7 +540,7 @@ fn emit_component(attr: component_attr::ComponentAttr, item: TokenStream) -> Tok
     #[cfg(not(feature = "hot-reload"))]
     let item_fn = quote! { #item_fn };
 
-    TokenStream::from(quote! {
+    finish(quote! {
         #strict_doc_err
         #strict_naming_err
         #methods_extra
@@ -501,6 +549,33 @@ fn emit_component(attr: component_attr::ComponentAttr, item: TokenStream) -> Tok
         #mcp_registration
         #external_registration
     })
+}
+
+/// Wrap a component fn's body in `component_scope(move || { … })` — the
+/// new-core run-once/untracked/collected contract. Applies only when the
+/// declared return type is bare `Element` (same token-level check as
+/// `reactivity::returns_primitive`).
+#[cfg(feature = "new-core")]
+fn wrap_component_body_new_core(item_fn: &mut ItemFn) {
+    let ty = match &item_fn.sig.output {
+        syn::ReturnType::Type(_, ty) => ty,
+        syn::ReturnType::Default => return,
+    };
+    let normalized: String = quote::quote!(#ty)
+        .to_string()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    if !matches!(
+        normalized.as_str(),
+        "Element" | "runtime_core::Element" | "::runtime_core::Element"
+    ) {
+        return;
+    }
+    let block = &item_fn.block;
+    item_fn.block = syn::parse_quote!({
+        ::runtime_core::component_scope(move || #block)
+    });
 }
 
 /// Split a fully-rewritten component fn into an inner impl + outer

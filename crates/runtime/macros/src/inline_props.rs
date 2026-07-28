@@ -228,6 +228,18 @@ fn emit_glue(item_fn: &ItemFn, fields: &[Field], attr: &ComponentAttr) -> TokenS
             // `.into()` pinned by the field type — the same coercion
             // `#[component(default(...))]` and the `ui!` call site apply.
             Some(expr) => quote! { #name: (#expr).into(), },
+            // `new-core`: `runtime_world`'s signal handles have no
+            // `Default` (the old core's detached-sentinel Default can't
+            // be reproduced for a foreign type). A signal-typed prop's
+            // struct-update base mints a fresh default-valued signal in
+            // the ambient scope instead (`glue::__default_signal_prop`,
+            // reached through the retargeted path). Divergence, on
+            // purpose and documented (glue docs): OMITTING a required
+            // signal prop reads a fresh default-valued signal here,
+            // where the old core panicked on first read.
+            None if cfg!(feature = "new-core") && is_signal_handle_type(&f.ty) => {
+                quote! { #name: ::runtime_core::__default_signal_prop(), }
+            }
             None => quote! { #name: ::core::default::Default::default(), },
         }
     });
@@ -284,6 +296,19 @@ fn emit_glue(item_fn: &ItemFn, fields: &[Field], attr: &ComponentAttr) -> TokenS
             }
         }
     }
+}
+
+/// Syntactic check: is this prop type one of the reactive HANDLE types
+/// (`Signal<T>` / `ReadSignal<T>` / `WriteSignal<T>`, optionally
+/// qualified)? Same heuristic class as `props_attr::should_wrap` — a
+/// type alias hiding a handle slips through and surfaces as a normal
+/// `Default` bound error.
+fn is_signal_handle_type(ty: &Type) -> bool {
+    let Type::Path(tp) = ty else { return false };
+    tp.path
+        .segments
+        .last()
+        .is_some_and(|seg| matches!(seg.ident.to_string().as_str(), "Signal" | "ReadSignal" | "WriteSignal"))
 }
 
 /// Accumulated `#[prop(...)]` overrides for one parameter. Multiple
@@ -448,6 +473,33 @@ mod tests {
         let sig = squash(quote! { #item_fn });
         assert!(sig.contains("size:u8"), "{sig}");
         assert!(!sig.contains("prop"), "the #[prop] attr must be stripped: {sig}");
+    }
+
+    /// Signal-typed props can't use `Default::default()` on the new
+    /// core (`runtime_world::Signal` has no Default); the glue helper
+    /// mints the struct-update base instead.
+    #[cfg(feature = "new-core")]
+    #[test]
+    fn new_core_signal_props_default_via_glue_helper() {
+        let (_, glue) = expand(quote! {
+            fn Foo(value: Signal<i32>, out: WriteSignal<bool>) -> Element { body() }
+        });
+        let glue = glue.unwrap();
+        assert_eq!(glue.matches("__default_signal_prop").count(), 2, "{glue}");
+        assert!(!glue.contains("value:::core::default::Default::default()"), "{glue}");
+    }
+
+    /// …and on the OLD core the plain `Default::default()` base is
+    /// unchanged (the old `Signal` has the detached-sentinel Default).
+    #[cfg(not(feature = "new-core"))]
+    #[test]
+    fn old_core_signal_props_default_via_default_impl() {
+        let (_, glue) = expand(quote! {
+            fn Foo(value: Signal<i32>) -> Element { body() }
+        });
+        let glue = glue.unwrap();
+        assert!(glue.contains("value:::core::default::Default::default()"), "{glue}");
+        assert!(!glue.contains("__default_signal_prop"), "{glue}");
     }
 
     #[test]

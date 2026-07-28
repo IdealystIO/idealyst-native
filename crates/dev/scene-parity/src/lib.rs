@@ -26,6 +26,12 @@
 //! - [`check`] — runs a scenario in a given [`Mode`] and diffs the
 //!   serialized steps against `goldens/<name>.<mode>.golden`. Regenerate
 //!   with `UPDATE_GOLDENS=1 cargo test -p scene-parity`.
+//!
+//! The FULL-OP suite (P2b exit gate) lives in [`full`]/[`full_new`] +
+//! [`scenarios_full`]/[`scenarios_full_new`]: a recorder that logs the
+//! COMPLETE backend-call stream (create/update/style/release calls, not
+//! just structure), pinning the vocabulary handlers against the walker.
+//! See README §"The FULL-OP suite".
 
 use std::cell::RefCell;
 use std::fmt;
@@ -37,6 +43,11 @@ use runtime_core::{Backend, Element, Owner, StyleRules};
 
 mod scenarios;
 pub use scenarios::scenarios;
+
+pub mod full;
+pub mod full_new;
+pub mod scenarios_full;
+pub mod scenarios_full_new;
 
 pub mod new_core;
 pub mod scenarios_new;
@@ -72,14 +83,14 @@ pub struct Recorder {
 }
 
 impl Recorder {
-    fn mint(&self) -> PNode {
+    pub(crate) fn mint(&self) -> PNode {
         let mut inner = self.inner.borrow_mut();
         let id = inner.next_id;
         inner.next_id += 1;
         PNode(id)
     }
 
-    fn push(&self, op: String) {
+    pub(crate) fn push(&self, op: String) {
         self.inner.borrow_mut().ops.push(op);
     }
 

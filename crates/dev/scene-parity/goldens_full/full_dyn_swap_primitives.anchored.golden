@@ -1,0 +1,32 @@
+# scene-parity FULL-OP golden — scenario `full_dyn_swap_primitives`, mode `anchored`
+#
+# A `when` hole swapping between two DIFFERENT primitives
+# (button <-> toggle), proving primitive mount sequences run
+# inside driver rebuilds: the incoming branch's create + initial
+# write-backs land between the driver's structural ops, in the
+# P1-pinned dispose orderings (anchored: scope-drop then clear;
+# spliced: remove then scope-drop).
+#
+# Complete backend-call stream (create_*/update_*/apply_style/release_*
+# + the structural ops). Node names are creation-order (n0, n1, ...).
+# Owned by the OLD core; regenerate after an INTENDED walker change
+# with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 anchor
+clear_children n1
+create n2 button "Act" on_click=<fn>
+insert n1 <- n2
+insert n0 <- n1
+
+== swap to toggle (create+initial write-back inside rebuild) ==
+clear_children n1
+create n3 toggle true on_change=<fn>
+update_toggle_value n3 true
+insert n1 <- n3
+
+== swap back to button ==
+clear_children n1
+create n4 button "Act" on_click=<fn>
+insert n1 <- n4

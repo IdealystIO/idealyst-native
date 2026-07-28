@@ -1,0 +1,45 @@
+# newcore-app — P3a integration proof for the `ui!` / `#[component]`
+# NEW-core lowering (idea-lite migration): a small but real app —
+# nested components with static/reactive/defaulted/children props, local
+# signals, a memo, reactive `if`, a keyed `for` with row-local state,
+# and event-handler-driven mutations — whose SOURCE (`src/app.rs`) is
+# core-agnostic and compiles against EITHER core:
+#
+#   cargo test  -p newcore-app --features new-core   # the e2e gate
+#   cargo check -p newcore-app --features old-core   # same-source proof
+#
+# The features are NON-default on purpose: `new-core` forwards to
+# `runtime-macros/new-core`, and proc-macro features unify across a
+# build graph — a default-on feature here would flip the lowering for
+# every ui! consumer in any workspace-wide build (see the feature's
+# docs in runtime-macros/Cargo.toml). With no features this crate
+# compiles to an empty lib.
+[package]
+name = "newcore-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Integration example: ui! + #[component] authored app on the new core (idea-lite P3a)."
+
+[features]
+default = []
+new-core = [
+    "runtime-macros/new-core",
+    "dep:runtime-vocabulary",
+    "dep:runtime-scene",
+    "dep:runtime-world",
+    "dep:scene-parity",
+]
+old-core = ["dep:runtime-core"]
+
+[dependencies]
+runtime-macros = { workspace = true }
+runtime-core = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
+runtime-scene = { workspace = true, optional = true }
+runtime-world = { workspace = true, optional = true }
+# The mock-host machinery (FullRecorder + LegacyBridge) the e2e tests
+# mount against. A normal (optional) dependency rather than a dev-dep
+# because dev-deps can't be optional and the crate must stay empty with
+# no features.
+scene-parity = { path = "../scene-parity", optional = true }

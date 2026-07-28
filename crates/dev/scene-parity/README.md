@@ -1,4 +1,4 @@
-# scene-parity — structural-op golden records (P1 exit gate)
+# scene-parity — structural-op golden records (P1 exit gate) + full-op golden records (P2b exit gate)
 
 This crate is the **exit gate for phase P1** of the idea-lite core
 migration (`~/.claude/plans/idea-lite-core-migration.md`, §10): it pins
@@ -22,9 +22,10 @@ the walker port is considered done.
 | `clear_children n`               | `clear_children`          | `clear_children`  |
 
 Prop/style/handler calls (`update_text`, `apply_style`,
-`install_touch_handler`, …) are deliberately **not** recorded — they are
-P2's (capability-trait) concern, and excluding them keeps these goldens
-stable across styling churn in the old core.
+`install_touch_handler`, …) are deliberately **not** recorded in the
+STRUCTURAL suite — they are P2's (capability-trait) concern, and
+excluding them keeps these goldens stable across styling churn in the
+old core. The **FULL-OP suite** (below) is where they are pinned.
 
 `cleanup <label>` lines are markers fired by `on_cleanup` hooks the
 scenarios register inside branch/row scopes. They pin **dispose
@@ -153,6 +154,93 @@ anchored-vs-spliced **opposite** dispose orderings (anchored: scope-drop
 THEN `clear_children`; spliced: `remove_child` THEN scope-drop), full
 per-step sequences — is the contract.
 
+## The FULL-OP suite (P2b exit gate)
+
+The second suite pins the **complete backend-call streams** —
+`create_*` / `update_*` / `apply_style` / handler installs /
+`release_*` alongside the structural ops — proving the vocabulary's
+generic handlers (`runtime-vocabulary/src/handlers/`, the walker
+re-homed) emit the same sequences as the old walker.
+
+- `src/full.rs` — `FullRecorder` (a full-op recording
+  `runtime_core::Backend`; args rendered compactly + deterministically:
+  closures as `<fn>`, `StyleRules` as a one-line non-`None`-fields
+  digest, default `AccessibilityProps` omitted), the old-side `FullCx`
+  driver + golden comparison, shared prop fixtures.
+- `src/full_new.rs` — the new-side driver: the SAME `FullRecorder`
+  wrapped in `runtime_vocabulary::LegacyBridge` (the bridge supplies
+  `Host` + all capability traits by delegating to the recorder's
+  Backend methods), a `Registry` populated by `register_builtins`, and
+  `runtime_scene::realize` with a per-step `world.flush()`.
+- `src/scenarios_full.rs` / `src/scenarios_full_new.rs` — the same six
+  logical trees on both sides: (a) a static kitchen sink with all 13 P2
+  primitives + static styles, (b) reactive text, (c) reactive style
+  rules, (d) per-primitive prop updates (toggle/slider/image-src/
+  input-value+secure/button-label), (e) a `when` hole swapping between
+  two primitives (handler mounts inside driver rebuilds), (f) resource
+  release on a swap-out (`release_text_id`, `on_node_unstyled`) —
+  inside a step, so it's in the goldens despite divergence #4.
+- `goldens_full/` — shared goldens, owned by the OLD core
+  (`UPDATE_GOLDENS=1` regenerates). `goldens_full_newcore/` — explicit
+  new-core overrides for the closed sanctioned set
+  (`full_new::FULL_NEWCORE_OVERRIDES`; `UPDATE_NEWCORE_GOLDENS=1`).
+- `tests/goldens_full.rs` / `tests/goldens_full_new.rs` — one test per
+  (scenario, mode) on each side + registry/override sync checks.
+
+### The full-op recorded alphabet (and what's outside it)
+
+`FullRecorder` overrides exactly the Backend methods both P2 mount
+paths model; unrecorded methods stay at the trait default. Deliberately
+OUTSIDE the alphabet (this is an alphabet choice, like the structural
+suite's 7-op choice — not a divergence):
+
+- `register_stylesheet` / `unregister_stylesheet` / `install_tokens` /
+  `update_tokens` / `apply_default_text_font` — sheet-registration +
+  token services of the old style engine. P2's `StyleProp` carries
+  *resolved* rules (no sheets); the sheet model and its registration
+  calls migrate with the P3 style-policy work and get their own gate
+  then.
+- `WireBindingOps` notes — declarative wire backends only; the
+  scenarios' opaque closures skip them on the old side too.
+- `finish` / `run_layout` / `set_page_metadata` / robot /
+  introspection — host-lifecycle plumbing outside the mount contract.
+
+### Full-op sanctioned divergences
+
+The structural suite's divergences 1–4 carry over (same normalization,
+same override machinery). ONE new full-op divergence:
+
+5. **Teardown release ordering (LIFO vs creation order).** On a subtree
+   swap-out the old core's `Scope::drop` fires scope-level cleanups
+   LIFO (so two bound texts release ids in REVERSE creation order),
+   then drops effects in creation order; `runtime-world`'s `Owned` drop
+   frees collected effects in creation order, running each's cleanups
+   as it goes. The release SET is identical — every `release_text_id`,
+   every `on_node_unstyled`, at the same point relative to the
+   structural ops — only the interleaving WITHIN the teardown window
+   differs. A pure ordering artifact of the two teardown mechanisms,
+   never a missing or extra backend effect.
+   *Pinned by:* `goldens_full_newcore/full_release_on_swap.{anchored,spliced}.golden`
+   (the only members of `FULL_NEWCORE_OVERRIDES`).
+
+### Known walker-shape facts the full-op goldens pin (worth naming)
+
+- Controlled widgets (toggle/slider/text-input/text-area) and `image`
+  `src` emit ONE initial `update_*` at mount — the controlled
+  write-back / unconditional-effect's first fire. Static
+  text/button-label/link-url/image-alt emit none.
+- A `Dyn` button label / icon color / activity size creates the widget
+  at the closure's initial value AND emits one `update_*` at mount
+  (the walker computes the initial, then the effect's first fire
+  re-applies).
+- Reactive text takes the batched-id fast path when the backend offers
+  it (`create_text_with_id` → `update_text_by_id` → `release_text_id`
+  on teardown); otherwise `create_text("")` + `update_text` per fire.
+- The dynamic style path emits `apply_style` + `attach_states` at
+  mount, then exactly one `apply_style` per dependency change; the
+  static path emits one `apply_style`, no `attach_states`, and
+  `on_node_unstyled` at teardown (both paths).
+
 ## Excluded from this suite (and why)
 
 - **`presence`** — exit animations need scheduler/time hooks
@@ -175,10 +263,15 @@ per-step sequences — is the contract.
 cargo test -p scene-parity
 ```
 
-41 tests across two binaries:
+Four test binaries:
 
-- `goldens` (old core): 19 golden comparisons + 1 registry↔disk sync
-  check — pins the walker byte-for-byte.
+- `goldens` (old core, structural): 19 golden comparisons + 1
+  registry↔disk sync check — pins the walker byte-for-byte.
 - `goldens_new_core` (new core, the P1 gate): the same 19 pairs against
   the same goldens (modulo the sanctioned divergences above) + the
   registry-mirror check + the override-set sync check.
+- `goldens_full` (old core, FULL-OP): 8 golden comparisons + 1
+  registry↔disk check — pins the walker's complete backend-call
+  streams.
+- `goldens_full_new` (new core, the P2b gate): the same 8 pairs through
+  the vocabulary handlers + registry-mirror + override-set checks.

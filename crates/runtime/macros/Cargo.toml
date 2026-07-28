@@ -14,6 +14,22 @@ rust-version = "1.88"
 proc-macro = true
 
 [features]
+# idea-lite core migration (P3a): retarget `ui!` / `jsx!` / `#[component]`
+# / `#[props]` output at the NEW core — `runtime_scene::Element` +
+# `runtime_vocabulary` builders + `runtime_world` reactivity — instead of
+# `runtime_core`. The authoring surface is unchanged; consumer crates must
+# depend on `runtime-vocabulary` (the emission targets
+# `::runtime_vocabulary::glue::…`). See src/new_core.rs.
+#
+# UNIFICATION HAZARD (documented, real): proc-macro crates are compiled
+# once per build graph, so any crate enabling this feature flips the
+# lowering for EVERY crate compiled in the same cargo invocation. Never
+# enable it from a crate that participates in default workspace builds —
+# opt-in crates (e.g. crates/dev/newcore-app) keep it behind their own
+# non-default feature and are built with explicit `--features`. The
+# per-crate story only becomes clean when the old core is deleted (P7).
+new-core = []
+
 # Forwarded from runtime-core's debug-stats. Toggles whether
 # `#[component]` emits enter/exit instrumentation calls into the
 # generated component function bodies. When off, the macro emits

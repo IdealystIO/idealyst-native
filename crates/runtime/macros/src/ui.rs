@@ -1368,6 +1368,35 @@ fn emit_component(
     let is_primitive = canonical.is_some();
     let supports_disabled = canonical == Some("button");
 
+    // `new-core` deferrals: primitives whose subsystems haven't migrated
+    // fail loudly with their migration phase (repo rule: no silent scope
+    // cuts). Everything else lowers through the vocabulary glue.
+    if cfg!(feature = "new-core") {
+        if let Some(tag) = canonical.filter(|t| {
+            matches!(
+                *t,
+                "overlay" | "anchored_overlay" | "presence" | "graphics" | "flat_list" | "web_view"
+            )
+        }) {
+            let msg = format!(
+                "`{tag}` is not yet available on the new core (idea-lite migration): \
+                 overlay/presence/virtualizer/graphics primitives migrate in later phases \
+                 (P3+; see runtime-vocabulary's deferred list). Build without \
+                 `runtime-macros/new-core` or avoid this primitive."
+            );
+            return quote! { ::std::compile_error!(#msg) };
+        }
+        if name_str == "CardTabs" {
+            return quote! {
+                ::std::compile_error!(
+                    "`CardTabs` ui! sugar is not yet available on the new core \
+                     (idea-lite migration: it dispatches through the old `cardtabs!` \
+                     invocation macro). Build without `runtime-macros/new-core`."
+                )
+            };
+        }
+    }
+
     let (style_prop, disabled_prop, test_id_prop, a11y_props, other_props): (
         Vec<&Prop>,
         Vec<&Prop>,
@@ -1461,8 +1490,21 @@ fn emit_component(
     // present (it just stores the id; only the registry that reads it is
     // `robot`-gated), so emitting it never depends on the feature.
     let with_test_id = if let Some(p) = test_id_prop.first() {
-        let v = &p.value;
-        quote! { (#with_disabled).test_id(#v) }
+        if cfg!(feature = "new-core") {
+            // Identity / robot registration is a scene-ambient concern
+            // that migrates in P5 — refuse rather than drop the id.
+            let _ = &with_disabled;
+            quote! {
+                ::std::compile_error!(
+                    "`test_id = …` is not yet wired on the new core (idea-lite \
+                     migration: identity/robot registration migrates in P5). Remove \
+                     the prop or build without `runtime-macros/new-core`."
+                )
+            }
+        } else {
+            let v = &p.value;
+            quote! { (#with_disabled).test_id(#v) }
+        }
     } else {
         with_disabled
     };
@@ -1749,7 +1791,25 @@ fn emit_text(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     if let Some(kids) = children {
         if kids.len() == 1 {
             if let UiNode::Expr(expr) = &kids[0] {
-                if let Some(structured) = try_emit_derived_call::<String>(expr) {
+                // Path (1) under `new-core`: the SAME author shape
+                // (`text { label(sig) }`) lowers to the equivalent
+                // reactive closure — `Derived`'s wire metadata (method
+                // name + signal ids) is generator-backend (Roku) data
+                // with no runtime behavior on event-driven backends,
+                // deferred with the rest of that surface (see
+                // runtime-vocabulary's deferred list). Observable
+                // reactivity is identical: the closure reads each
+                // signal arg via `.get()`, exactly what `Derived`'s
+                // `compute` did.
+                if cfg!(feature = "new-core") {
+                    if let Some(call) = reactive_call_with_gets(expr) {
+                        return quote! {
+                            ::runtime_core::text(
+                                move || ::std::format!("{}", #call)
+                            )
+                        };
+                    }
+                } else if let Some(structured) = try_emit_derived_call::<String>(expr) {
                     return quote! {
                         ::runtime_core::text(
                             ::runtime_core::TextSource::Bound(#structured)
@@ -1994,6 +2054,22 @@ fn is_reactive_call_shape(expr: &Expr) -> bool {
     })
 }
 
+/// `new-core` counterpart of the structured lowerings: for the same
+/// "reactive call" shape (`method(sig_a, sig_b)` — single-segment fn,
+/// every arg a bare signal path), return the call rewritten to read each
+/// arg (`method((sig_a).get(), (sig_b).get())`). The caller wraps it in
+/// whatever closure form the construct needs. Returns `None` for any
+/// other shape (the caller falls through to its non-structured paths).
+fn reactive_call_with_gets(expr: &Expr) -> Option<TokenStream2> {
+    if !is_reactive_call_shape(expr) {
+        return None;
+    }
+    let Expr::Call(call) = expr else { return None };
+    let func = &call.func;
+    let get_args = call.args.iter().map(|a| quote! { (#a).get() });
+    Some(quote! { #func( #(#get_args),* ) })
+}
+
 /// Per-type hooks for `try_emit_derived_call`. `String` wraps the
 /// call in `format!("{}", _)` so authors don't have to make their
 /// `#[method]` return `String` directly; `bool` passes through
@@ -2117,7 +2193,24 @@ fn emit_button(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
     //   3. `on_click = closure_expression` — opaque coercion via IntoAction
     let on_click = match props.iter().find(|p| p.name == "on_click") {
         Some(p) => {
-            if let Some(action) = try_emit_structured_action(&p.value, p.arrow_target.as_ref()) {
+            if cfg!(feature = "new-core") {
+                // Structured `Action` carries wire metadata (method
+                // name, signal ids) for generator backends — deferred.
+                // The same author shape (`on_click = method(sig)` /
+                // `… => out`) lowers to the equivalent fire closure:
+                // args read at press time, result written to the output
+                // signal, exactly what `Action::fire` did.
+                if let Some(call) = reactive_call_with_gets(&p.value) {
+                    match p.arrow_target.as_ref() {
+                        Some(out) => quote! { move || { (#out).set(#call); } },
+                        None => quote! { move || { #call; } },
+                    }
+                } else {
+                    p.value.to_token_stream()
+                }
+            } else if let Some(action) =
+                try_emit_structured_action(&p.value, p.arrow_target.as_ref())
+            {
                 action
             } else {
                 p.value.to_token_stream()
@@ -2239,7 +2332,15 @@ fn emit_text_input(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2
         .iter()
         .find(|p| p.name == "value")
         .map(|p| p.value.to_token_stream())
-        .unwrap_or_else(|| quote! { ::runtime_core::Signal::new(::std::string::String::new()) });
+        .unwrap_or_else(|| {
+            if cfg!(feature = "new-core") {
+                // `runtime_world::Signal` has no `new`; the glue's
+                // `fresh_signal` mints the uncontrolled default.
+                quote! { ::runtime_vocabulary::glue::fresh_signal(::std::string::String::new()) }
+            } else {
+                quote! { ::runtime_core::Signal::new(::std::string::String::new()) }
+            }
+        });
     let on_change = props
         .iter()
         .find(|p| p.name == "on_change")
@@ -2268,7 +2369,13 @@ fn emit_toggle(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
         .iter()
         .find(|p| p.name == "value")
         .map(|p| p.value.to_token_stream())
-        .unwrap_or_else(|| quote! { ::runtime_core::Signal::new(false) });
+        .unwrap_or_else(|| {
+            if cfg!(feature = "new-core") {
+                quote! { ::runtime_vocabulary::glue::fresh_signal(false) }
+            } else {
+                quote! { ::runtime_core::Signal::new(false) }
+            }
+        });
     let on_change = props
         .iter()
         .find(|p| p.name == "on_change")
@@ -2304,7 +2411,13 @@ fn emit_slider(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
         .iter()
         .find(|p| p.name == "value")
         .map(|p| p.value.to_token_stream())
-        .unwrap_or_else(|| quote! { ::runtime_core::Signal::new(0.0f32) });
+        .unwrap_or_else(|| {
+            if cfg!(feature = "new-core") {
+                quote! { ::runtime_vocabulary::glue::fresh_signal(0.0f32) }
+            } else {
+                quote! { ::runtime_core::Signal::new(0.0f32) }
+            }
+        });
     let on_change = props
         .iter()
         .find(|p| p.name == "on_change")
@@ -2425,6 +2538,18 @@ fn emit_link(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
         };
     }
 
+    // In-app links dispatch through the OLD routing/navigator layer —
+    // a P6 migration. External links work (glue `external_link`).
+    if cfg!(feature = "new-core") {
+        return quote! {
+            ::std::compile_error!(
+                "in-app `link(route = …)` is not yet available on the new core \
+                 (idea-lite migration: navigation migrates in P6). \
+                 `link(external = \"https://…\")` works; otherwise build without \
+                 `runtime-macros/new-core`."
+            )
+        };
+    }
     let route = props
         .iter()
         .find(|p| p.name == "route")
@@ -2800,6 +2925,11 @@ fn emit_user(name: &Ident, props: &[Prop], children: Option<&[UiNode]>) -> Token
 /// real (When-swappable) node that contributes nothing to layout when the
 /// branch is absent, so a false `if` is truly weightless.
 fn empty_view_primitive() -> TokenStream2 {
+    if cfg!(feature = "new-core") {
+        // Same rule, glue-side constructor (the old emission constructs
+        // a `StyleSheet`, which is old-core style machinery).
+        return quote! { ::runtime_vocabulary::glue::empty_absolute_view() };
+    }
     quote! {
         ::runtime_core::IntoElement::into_element(
             ::runtime_core::view(::std::vec::Vec::new()).with_style(
@@ -2871,7 +3001,19 @@ fn emit_if(
     if matches!(cond, Expr::Let(_)) {
         return emit_plain_if(cond, then_body, else_body, ctx);
     }
-    if let Some(structured_cond) = try_emit_derived_call::<bool>(cond) {
+    if cfg!(feature = "new-core") {
+        // Structured `Derived<bool>` is generator-backend metadata —
+        // lower the same shape to the equivalent reactive closure
+        // (see the `new-core` note in `emit_text`).
+        if let Some(call) = reactive_call_with_gets(cond) {
+            let then_expr = emit_block_as_primitive(then_body);
+            let else_expr =
+                else_body.map(emit_block_as_primitive).unwrap_or_else(empty_view_primitive);
+            return quote! {
+                ::runtime_core::when(move || #call, move || #then_expr, move || #else_expr)
+            };
+        }
+    } else if let Some(structured_cond) = try_emit_derived_call::<bool>(cond) {
         let then_expr = emit_block_as_primitive(then_body);
         let else_expr = else_body.map(emit_block_as_primitive).unwrap_or_else(empty_view_primitive);
         return quote! {
@@ -3144,8 +3286,14 @@ fn emit_match(scrutinee: &Expr, arms: &[MatchArm], ctx: Ctx) -> TokenStream2 {
     //      `if key(state)`). Lower to `runtime_core::switch(..)` — one
     //      Element per arm.
     //   3. Plain Rust `match` — no reactivity. Flattens in children-slot.
-    if let Some(structured) = try_emit_structured_match(scrutinee, arms) {
-        return structured;
+    // Under `new-core` the structured `Element::Switch` (literal-armed
+    // Roku metadata) is skipped: the reactive-call fallback below claims
+    // the same shape and rewrites `key(state)` → `key((state).get())`,
+    // so observable reactivity is identical.
+    if !cfg!(feature = "new-core") {
+        if let Some(structured) = try_emit_structured_match(scrutinee, arms) {
+            return structured;
+        }
     }
 
     // Reactive scrutinee — two shapes funnel into the closure-`switch`:
@@ -3448,7 +3596,27 @@ fn emit_for_children(
     // what `bind_repeat!` used to do explicitly. Try this BEFORE
     // the static range path so a method-call iterator wins over
     // any static-range matching.
-    if let Some(virt) = try_emit_for_virtualizer(pat, iter, body, chain) {
+    if cfg!(feature = "new-core") {
+        // The virtualizer `for i in count_method(sig)` sugar lowers to
+        // `Element::Virtualizer` + per-row index signals — the
+        // virtualizer contract itself is a later migration phase, so
+        // rather than silently building a static loop, fail with the
+        // status (repo rule: no silent scope cuts).
+        if is_virtualizer_for_shape(pat, iter) {
+            return (
+                quote! {
+                    ::std::compile_error!(
+                        "`for i in count_method(sig)` (the virtualizer for-sugar) is not \
+                         yet available on the new core (idea-lite migration: the \
+                         virtualizer contract migrates with flat_list, P3+). Iterate a \
+                         keyed reactive collection instead: `for item in items_signal, \
+                         key = item.id { … }`."
+                    )
+                },
+                true,
+            );
+        }
+    } else if let Some(virt) = try_emit_for_virtualizer(pat, iter, body, chain) {
         return (virt, true);
     }
 
@@ -3512,7 +3680,13 @@ fn emit_for_children(
     // multi-node body would need a wrapper View — refused, since
     // children are a flat vector. Multi-node / non-range loops fall
     // through to the type-driven path below.
-    if body.len() == 1 {
+    // `Element::Repeat` is an old-core batching container (walker
+    // expands it via `insert_many`). Under `new-core` a static range
+    // falls through to the type-driven path below (a `Range` is
+    // `IntoIterator`) — identical rows, built once; only the
+    // DocumentFragment-batching hint is lost (a web-backend
+    // optimization, revisited at P3b).
+    if !cfg!(feature = "new-core") && body.len() == 1 {
         let body_expr = emit_block_as_primitive(body);
         if let Some(repeat) = try_emit_for_repeat(pat, iter, &body_expr) {
             return (repeat, false);
@@ -3578,6 +3752,14 @@ fn emit_for_children(
         quote! { (#dispatch) #(#chain)* }
     };
     (form, false)
+}
+
+/// Shape predicate for the virtualizer for-sugar (`for IDENT in
+/// method(sig, …)`) — the recognition half of `try_emit_for_virtualizer`,
+/// used by the `new-core` deferral gate.
+fn is_virtualizer_for_shape(pat: &syn::Pat, iter: &Expr) -> bool {
+    matches!(pat, syn::Pat::Ident(p) if p.subpat.is_none() && p.by_ref.is_none())
+        && is_reactive_call_shape(iter)
 }
 
 /// Try to lower `for IDENT in count_method(sig, ...) { body }` to a
@@ -3931,6 +4113,112 @@ mod tests {
         let out = parse_and_emit(quote! {});
         assert!(out.contains("view"));
         assert!(out.contains("Vec :: new"));
+    }
+
+    /// The `new-core` lowering deltas (idea-lite migration P3a). The
+    /// path RETARGET (`::runtime_core` → `::runtime_vocabulary::glue`)
+    /// happens in the lib.rs entry points and is unit-tested in
+    /// `new_core.rs`; these pin the EMISSION differences at the
+    /// decision points themselves. Run with
+    /// `cargo test -p runtime-macros --features new-core`.
+    #[cfg(feature = "new-core")]
+    mod new_core_lowering {
+        use super::*;
+
+        fn squash(s: String) -> String {
+            s.chars().filter(|c| !c.is_whitespace()).collect()
+        }
+
+        /// `text { label(count) }` must stay REACTIVE: the structured
+        /// `Derived` metadata is dropped, but the closure form reads
+        /// each signal arg — a silent static freeze here would be a
+        /// behavior change, not a deferral.
+        #[test]
+        fn structured_text_call_lowers_to_reactive_closure() {
+            let out = squash(parse_and_emit(quote! { text { label(count) } }));
+            assert!(out.contains("move||"), "{out}");
+            assert!(out.contains("label((count).get())"), "{out}");
+            assert!(!out.contains("Derived"), "no wire metadata: {out}");
+        }
+
+        /// `if is_even(count) { … }` — same rule for the bool shape.
+        #[test]
+        fn structured_if_call_lowers_to_when_closure() {
+            let out = squash(parse_and_emit(quote! {
+                if is_even(count) { text { "even" } }
+            }));
+            assert!(out.contains("when(move||is_even((count).get())"), "{out}");
+            assert!(!out.contains("Derived"), "{out}");
+        }
+
+        /// `on_click = add(sig) => out` — fire closure reads args at
+        /// press time and writes the result, like `Action::fire` did.
+        #[test]
+        fn structured_action_lowers_to_fire_closure() {
+            let out = squash(parse_and_emit(quote! {
+                button(label = "go", on_click = add(count) => total)
+            }));
+            assert!(out.contains("(total).set(add((count).get()))"), "{out}");
+            assert!(!out.contains("Action{"), "{out}");
+        }
+
+        /// A static range loop must fall through to the type-driven
+        /// static path (no `Element::Repeat` construction).
+        #[test]
+        fn static_range_for_falls_through_to_type_driven() {
+            let out = squash(parse_and_emit(quote! {
+                view { for i in 0..3 { text { "row" } } }
+            }));
+            assert!(!out.contains("Element::Repeat"), "{out}");
+            assert!(out.contains("__idealyst_for_each"), "{out}");
+        }
+
+        /// Literal-armed reactive `match` must use the closure `switch`
+        /// (the structured `Element::Switch` is generator metadata).
+        #[test]
+        fn structured_match_lowers_to_closure_switch() {
+            let out = squash(parse_and_emit(quote! {
+                match pick(state) { 0 => { text { "a" } }, _ => { text { "b" } } }
+            }));
+            assert!(out.contains("switch("), "{out}");
+            assert!(out.contains("pick((state).get())"), "{out}");
+            assert!(!out.contains("Element::Switch"), "{out}");
+        }
+
+        /// Deferred surfaces fail loudly, naming their migration phase.
+        #[test]
+        fn deferred_primitives_error_with_migration_status() {
+            for (body, needle) in [
+                (quote! { overlay { text { "x" } } }, "not yet available on the new core"),
+                (quote! { presence(visible = v) { text { "x" } } }, "not yet available"),
+                (quote! { view(test_id = "t") }, "P5"),
+                (quote! { link(route = HOME) { text { "x" } } }, "P6"),
+                (quote! { for i in count(sig) { text { "r" } } }, "virtualizer"),
+            ] {
+                let out = parse_and_emit(body);
+                assert!(out.contains("compile_error"), "{out}");
+                assert!(out.contains(needle), "expected `{needle}` in: {out}");
+            }
+        }
+
+        /// The empty `if` branch stays layout-neutral via the glue
+        /// constructor (no old-core StyleSheet construction).
+        #[test]
+        fn empty_else_uses_glue_absolute_view() {
+            let out = squash(parse_and_emit(quote! {
+                if sig.get() { text { "on" } }
+            }));
+            assert!(out.contains("glue::empty_absolute_view()"), "{out}");
+            assert!(!out.contains("StyleSheet"), "{out}");
+        }
+
+        /// Uncontrolled input defaults mint world signals through the
+        /// glue (`runtime_world::Signal` has no `new`).
+        #[test]
+        fn uncontrolled_input_defaults_use_fresh_signal() {
+            let out = squash(parse_and_emit(quote! { toggle(on_change = |_| {}) }));
+            assert!(out.contains("glue::fresh_signal(false)"), "{out}");
+        }
     }
 
     /// Regression (arena drift, 2026-07-22): the `DrawerNavigator` `ui!`

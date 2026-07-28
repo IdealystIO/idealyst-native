@@ -1,0 +1,48 @@
+# scene-parity FULL-OP golden — scenario `full_release_on_swap`, mode `spliced`
+#
+# Resource release on subtree teardown, WITHIN a step (a `when`
+# swap to an empty branch, so it's inside the goldens unlike the
+# final Owner drop): two bound texts release their backend ids
+# (release_text_id) and a dynamically-styled view fires
+# on_node_unstyled. The old core releases scope cleanups LIFO;
+# the new core releases in creation order — a sanctioned
+# ordering-artifact divergence (see README), same op set.
+#
+# Complete backend-call stream (create_*/update_*/apply_style/release_*
+# + the structural ops). Node names are creation-order (n0, n1, ...).
+# Owned by the OLD core; regenerate after an INTENDED walker change
+# with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 view
+create n2 text+id2 ""
+update_text_by_id id2 "a=1"
+insert n1 <- n2
+create n3 text+id3 ""
+update_text_by_id id3 "b=2"
+insert n1 <- n3
+apply_style n1 {background: Some(Literal(Color("#606060"))), width: Some(Literal(Px(60.0)))}
+attach_states n1
+insert_at n0 <- n1 @ 0
+
+== swap out (ids released + on_node_unstyled, inside the step) ==
+remove_child n0 -x n1
+release_text_id id3
+release_text_id id2
+on_node_unstyled n1
+create n4 text "empty"
+insert_at n0 <- n4 @ 0
+
+== swap back in (fresh ids minted) ==
+remove_child n0 -x n4
+create n5 view
+create n6 text+id6 ""
+update_text_by_id id6 "a=1"
+insert n5 <- n6
+create n7 text+id7 ""
+update_text_by_id id7 "b=2"
+insert n5 <- n7
+apply_style n5 {background: Some(Literal(Color("#606060"))), width: Some(Literal(Px(60.0)))}
+attach_states n5
+insert_at n0 <- n5 @ 0

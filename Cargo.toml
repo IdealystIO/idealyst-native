@@ -12,6 +12,10 @@ members = [
     # Registry + the Dyn/Keyed structural drivers, on the runtime-world
     # kernel. Parity-gated by crates/dev/scene-parity.
     "crates/runtime/scene",
+    # Capability-trait split of the Backend mega-trait (idea-lite core
+    # migration, P2a): per-primitive Ops traits over the scene Host seam,
+    # plus the LegacyBridge adapter that proves the signature freeze.
+    "crates/runtime/vocabulary",
     "crates/runtime/reactive/arena",
     "crates/runtime/reactive/refs",
     "crates/runtime/layout",
@@ -76,6 +80,13 @@ members = [
     "crates/dev/robot-test-macros",
     "crates/dev/native-parity",
     "crates/dev/scene-parity",
+    # Smoke app for backend-web's new-core boot path (idea-lite P3b).
+    "crates/dev/newcore-web-smoke",
+    # Integration example for the ui!/#[component] new-core lowering
+    # (idea-lite P3a). Featureless (empty) by default on purpose: its
+    # `new-core` feature flips runtime-macros' lowering build-graph-wide,
+    # so it is only enabled via explicit `-p newcore-app --features …`.
+    "crates/dev/newcore-app",
 
     # MCP — project-aware catalog + stdio server (catalog + Robot tools).
     "crates/mcp/catalog",
@@ -333,6 +344,7 @@ license = "MIT OR Apache-2.0"
 runtime-core = { path = "crates/runtime/core" }
 runtime-world = { path = "crates/runtime/world" }
 runtime-scene = { path = "crates/runtime/scene" }
+runtime-vocabulary = { path = "crates/runtime/vocabulary" }
 # Fast non-cryptographic integer hasher (rustc's own FxHash). Used in the
 # reactive core's hot-path collections keyed by internal Signal/Effect ids,
 # which are never attacker-controlled — SipHash's DoS-resistance is pure

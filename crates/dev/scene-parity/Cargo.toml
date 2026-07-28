@@ -18,3 +18,7 @@ runtime-core = { workspace = true }
 # sanctioned divergences).
 runtime-scene = { workspace = true }
 runtime-world = { workspace = true }
+# P2b full-op gate: the built-in vocabulary's handlers mounted through
+# LegacyBridge<FullRecorder>, compared against the old walker on the
+# same goldens.
+runtime-vocabulary = { workspace = true }

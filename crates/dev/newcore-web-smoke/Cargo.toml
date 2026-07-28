@@ -1,0 +1,29 @@
+# newcore-web-smoke — P3b smoke app for the web backend's NEW-core boot
+# path (`backend_web::newcore::start`). Builds a small vocabulary-builder
+# tree (text + button + toggle + a dyn hole + a keyed list) with DIRECT
+# builder calls — no `ui!`/`jsx!` — so it exercises the registry-dispatch
+# render path without depending on the parallel P3a macro-lowering work.
+#
+# Build + serve (from the repo root):
+#   wasm-pack build --target web --dev crates/dev/newcore-web-smoke
+#   python3 -m http.server 8080 -d crates/dev/newcore-web-smoke
+#   open http://localhost:8080/
+[package]
+name = "newcore-web-smoke"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Smoke app for backend-web's new-core (Host + caps) boot path — idea-lite migration P3b."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+backend-web = { workspace = true, features = ["new-core"] }
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-core = { workspace = true }
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["Window"] }
+console_error_panic_hook = "0.1"

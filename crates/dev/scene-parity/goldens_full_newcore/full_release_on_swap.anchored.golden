@@ -1,0 +1,44 @@
+# scene-parity FULL-OP NEW-CORE override — scenario `full_release_on_swap`, mode `anchored`
+#
+# Sanctioned divergence (README): teardown release ordering. The old
+# core fires scope-level cleanups LIFO then drops effects in creation
+# order; the new kernel frees collected effects in creation order.
+# Same release SET (every release_text_id / on_node_unstyled), only
+# the interleaving differs, only in teardown windows.
+# Regenerate: UPDATE_NEWCORE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 anchor
+create n2 view
+create n3 text+id3 ""
+update_text_by_id id3 "a=1"
+insert n2 <- n3
+create n4 text+id4 ""
+update_text_by_id id4 "b=2"
+insert n2 <- n4
+apply_style n2 {background: Some(Literal(Color("#606060"))), width: Some(Literal(Px(60.0)))}
+attach_states n2
+insert n1 <- n2
+insert n0 <- n1
+
+== swap out (ids released + on_node_unstyled, inside the step) ==
+release_text_id id3
+release_text_id id4
+on_node_unstyled n2
+clear_children n1
+create n5 text "empty"
+insert n1 <- n5
+
+== swap back in (fresh ids minted) ==
+clear_children n1
+create n6 view
+create n7 text+id7 ""
+update_text_by_id id7 "a=1"
+insert n6 <- n7
+create n8 text+id8 ""
+update_text_by_id id8 "b=2"
+insert n6 <- n8
+apply_style n6 {background: Some(Literal(Color("#606060"))), width: Some(Literal(Px(60.0)))}
+attach_states n6
+insert n1 <- n6

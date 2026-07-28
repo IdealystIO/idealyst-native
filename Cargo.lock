@@ -1517,6 +1517,9 @@ dependencies = [
  "js-sys",
  "raw-window-handle",
  "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
  "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -7246,6 +7249,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
+name = "newcore-app"
+version = "0.4.0"
+dependencies = [
+ "runtime-core",
+ "runtime-macros",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
+ "scene-parity",
+]
+
+[[package]]
+name = "newcore-web-smoke"
+version = "0.4.0"
+dependencies = [
+ "backend-web",
+ "console_error_panic_hook",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "nix"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9360,6 +9389,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "runtime-vocabulary"
+version = "0.4.0"
+dependencies = [
+ "runtime-core",
+ "runtime-scene",
+ "runtime-world",
+]
+
+[[package]]
 name = "runtime-world"
 version = "0.4.0"
 dependencies = [
@@ -9603,6 +9641,7 @@ version = "0.4.0"
 dependencies = [
  "runtime-core",
  "runtime-scene",
+ "runtime-vocabulary",
  "runtime-world",
 ]
 

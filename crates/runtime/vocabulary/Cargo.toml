@@ -1,0 +1,30 @@
+# runtime-vocabulary — the vocabulary layer of the idea-lite core migration
+# (P2a): the capability-trait split of runtime-core's 159-method `Backend`
+# mega-trait.
+#
+# `caps` holds one Ops trait per primitive family (signatures FROZEN to
+# today's `Backend`), every trait a subtrait of the `runtime_scene::Host`
+# structural seam extracted in P1. `bridge::LegacyBridge<B>` adapts any
+# existing `Backend` impl to the full capability surface with zero edits
+# to backend crates — the compile-time proof of the signature freeze.
+# `COVERAGE.md` accounts for every Backend method.
+#
+# P2b adds the built-in vocabulary: payload types (`prims`), builders
+# (the ui! contract), generic mount handlers (the walker's per-primitive
+# build modules re-homed, bounded on exactly the caps they use), the
+# shared `style_attach` service, and `register_builtins`.
+
+[package]
+name = "runtime-vocabulary"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# SANCTIONED, migration-transitional (see lib.rs): the frozen Backend
+# signatures reference runtime-core's prop/data types (StyleRules,
+# AccessibilityProps, handler aliases, primitives::* payloads). Those
+# types migrate OUT of runtime-core at P7; this dependency goes with them.
+runtime-core = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-world = { workspace = true }

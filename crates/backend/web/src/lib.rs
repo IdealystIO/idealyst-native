@@ -40,6 +40,8 @@ mod a11y;
 mod animated;
 mod batch_queue;
 mod introspect;
+#[cfg(feature = "new-core")]
+pub mod newcore;
 #[cfg(test)]
 mod tests;
 #[cfg(feature = "async-driver")]

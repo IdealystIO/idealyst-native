@@ -95,6 +95,18 @@ debug-node-ids = []
 # bridge it can't host itself. Forwards to `runtime-core/robot` for the
 # dispatch core. Off by default; `idealyst dev --web` enables it.
 robot = ["runtime-core/robot"]
+# idea-lite core migration (P3b): the `newcore` module — `runtime_scene::Host`
+# + all 30 `runtime_vocabulary::caps` traits implemented directly on
+# `WebBackend` (UFCS delegation to the existing Backend impl), plus the
+# new-core boot path (`newcore::start`) and its microtask/rAF flush driver.
+# OFF by default; with the feature off the build is unchanged (the module
+# and its deps are not compiled). NOTE: runtime-vocabulary depends on
+# runtime-core via the workspace spec (default features), so enabling
+# new-core unifies runtime-core's default `prim-*`/`style-dynamic`
+# features ON — identical to this crate's own defaults, but visible to
+# consumers that disable them; a migration-transitional cost that goes
+# away when vocabulary sheds its runtime-core dependency (P7).
+new-core = ["dep:runtime-world", "dep:runtime-scene", "dep:runtime-vocabulary"]
 
 [dependencies]
 # PATH dep with `default-features = false`, NOT `workspace = true`: the
@@ -107,6 +119,11 @@ robot = ["runtime-core/robot"]
 # cover all of them, so consumers with default features see no change.
 # (Same precedent as canvas-vello → canvas-native `self-register`.)
 runtime-core = { path = "../../runtime/core", default-features = false }
+# New-core migration crates (P3b) — only compiled under the `new-core`
+# feature; the feature-off dependency graph is unchanged.
+runtime-world = { workspace = true, optional = true }
+runtime-scene = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
 css = { workspace = true }
 inventory = "0.3"
 wasm-bindgen = "0.2"
