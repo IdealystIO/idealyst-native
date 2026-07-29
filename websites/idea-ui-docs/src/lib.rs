@@ -32,19 +32,13 @@ compile_error!(
     "idea-ui-docs: enable one of `old-core` (default) / `new-core` — a coreless build has \
      no navigator or author surface."
 );
-// GLUE GAP (reported, not worked around): runtime-macros' `debug-stats`
-// instrumentation wraps every `#[component]` body with
-// `::runtime_core::debug::record_component_enter/exit`, and the glue
-// facade does not mirror a `debug` module — combining the features
-// yields E0433 spam across every `#[component]` in the graph (idea-ui
-// included). Fail loudly with the cause instead.
-#[cfg(all(feature = "new-core", feature = "debug-stats"))]
-compile_error!(
-    "idea-ui-docs: `debug-stats` cannot join a `new-core` build — the #[component] \
-     debug-stats instrumentation emits `::runtime_core::debug::…`, which the glue facade \
-     (runtime-vocabulary/glue) does not mirror. Build with `--no-default-features \
-     --features new-core`."
-);
+// (A `new-core`+`debug-stats` guard used to live here: the glue facade
+// once lacked a `debug` module mirror, so the #[component]
+// instrumentation's `::runtime_core::debug::…` emission failed to
+// resolve. glue.rs now re-exports `runtime_shared::debug` — the
+// runtime-shared survivor-split wave closed the gap — so the feature
+// pair builds; the runtime-v2 defaults flip relies on it
+// (default = ["debug-stats", "new-core"]).
 
 // idea-lite core migration (newcore-app pattern): under `new-core` this
 // alias shadows the extern-prelude `runtime-core` for the WHOLE crate,
@@ -270,12 +264,11 @@ pub fn app_newcore() -> Element {
         .mount_policy(runtime_vocabulary::prims::MountPolicy::LazyDisposing)
         .layout(move || {
             // The navigator provides `SwapNav` for the layout build
-            // window; capture `on_select` for the pressable route-links
-            // (screens can build outside this window — see
-            // `shell::route_link`'s new-core seam).
+            // window. (Route links no longer need an `on_select` stash —
+            // `link(route=)` resolves the navigator's `LinkActivator`
+            // context on the new core since the P6 nav wave.)
             let nav = runtime_world::inject::<runtime_vocabulary::prims::SwapNav>()
                 .expect("SwapNav provided by the swap navigator mount");
-            shell::set_nav_select(nav.on_select.clone());
             let active_route = nav.active_route;
 
             // Auto-close the drawer when a sidebar link navigates while

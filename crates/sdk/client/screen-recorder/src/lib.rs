@@ -30,6 +30,18 @@
 
 mod config;
 mod error;
+
+// One authored surface, two cores (the External surface only — the
+// capture capability below is core-agnostic): the default build keeps
+// the old-core `Element::External` module byte-untouched; the
+// `new-core` feature swaps in the scene-registry re-expression under
+// the SAME module path and public names (`PrivateLayerProps`,
+// `PrivateLayer`). Mutually exclusive, mirroring the svg/form SDK
+// precedents.
+#[cfg(not(feature = "new-core"))]
+pub mod private_layer;
+#[cfg(feature = "new-core")]
+#[path = "private_layer_newcore.rs"]
 pub mod private_layer;
 
 pub use config::{AudioSource, RecordingConfig, Source, WindowSelector, DEFAULT_FPS};
@@ -41,7 +53,20 @@ pub use private_layer::{PrivateLayer, PrivateLayerProps};
 // so it's supplied by the per-target `imp` module — iOS/Android install
 // the real capture-excluded-window handler; web + unsupported targets
 // install the inline no-op. See `private_layer`'s module docs.
+#[cfg(not(feature = "new-core"))]
 pub use imp::register;
+
+/// Old-core bootstrap parity: the old `register(&mut backend)` fed the
+/// per-backend `ExternalRegistry`, which does not exist on the new core
+/// — the scene handler registers through
+/// [`register_scene`](private_layer::register_scene) at the boot seam
+/// instead. A no-op so same-source app bootstrap code compiles
+/// unchanged (the table SDK's convention).
+#[cfg(feature = "new-core")]
+pub fn register<B>(_backend: &mut B) {}
+
+#[cfg(feature = "new-core")]
+pub use private_layer::register_scene;
 
 // The live-source surface is the shared `media-stream` vocabulary — the same
 // currency the `camera` SDK produces and the `video` SDK consumes. Re-export

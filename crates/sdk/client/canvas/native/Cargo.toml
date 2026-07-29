@@ -20,7 +20,11 @@ license.workspace = true
 # - Other targets: framework `External` placeholder; use `canvas-vello`.
 
 [features]
-default = ["self-register"]
+# Runtime-v2 defaults flip: new-core leg on by default (old-core via
+# `--no-default-features --features self-register`).
+default = ["self-register", "new-core"]
+# Old-core marker for uniform invocations.
+old-core = []
 # Self-registration of the per-backend external handler at backend
 # construction (no app-side `register` call needed). ON by default so apps
 # that depend on this crate directly keep the zero-config behavior.
@@ -35,10 +39,29 @@ default = ["self-register"]
 # the registering chunk and splits out cleanly. See the `lazy-loading`
 # guide ("Lazy-loading a heavy SDK").
 self-register = ["dep:inventory"]
+# Idea-lite migration (External-SDK wave): register the web (`<canvas>`
+# 2D) renderer as a scene-Registry handler for `canvas_core::CanvasPrim`
+# (see src/web_newcore.rs). Default-off and MUTUALLY EXCLUSIVE with the
+# old-core register surface (same public `register` name — one core per
+# build graph). Non-web targets install the External-placeholder
+# degradation handler until the native painters port (documented seam in
+# lib.rs). `backend-web/new-core` is required because the wasm32 handler
+# is `WebBackend`-concrete (Canvas2D has no caps-trait expression).
+new-core = [
+    "canvas-core/new-core",
+    "dep:runtime-scene",
+    "dep:runtime-vocabulary",
+    "dep:runtime-world",
+    "backend-web/new-core",
+]
 
 [dependencies]
 runtime-core = { workspace = true }
 canvas-core = { workspace = true }
+# New-core surface (feature `new-core`).
+runtime-scene = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
+runtime-world = { workspace = true, optional = true }
 # Self-registration of the per-backend external handler at construction.
 inventory = { version = "0.3", optional = true }
 # Outline glyphs from font bytes so a `DrawOp::Glyphs` run (a rendered PDF's
@@ -116,3 +139,6 @@ jni = "0.21"
 # Unconditional in tests so the self-register gate tests can iterate the
 # registry even when the feature (and the optional runtime dep) is off.
 inventory = "0.3"
+# tests/newcore.rs (`--features new-core`): the placeholder arm on the
+# shared host-mock recording substrate.
+host-mock = { workspace = true }

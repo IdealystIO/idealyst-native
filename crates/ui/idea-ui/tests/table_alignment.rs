@@ -35,7 +35,7 @@ fn static_app(b: impl runtime_core::IntoStyleSource) -> StyleApplication {
 #[cfg(feature = "new-core")]
 fn static_app(b: impl runtime_core::IntoStyleSource) -> StyleApplication {
     match b.into_style_prop() {
-        runtime_vocabulary::StyleProp::Sheet(app) => app,
+        runtime_vocabulary::StyleProp::Sheet(app) => *app,
         _ => panic!("table cell stylesheets are all-constant → static"),
     }
 }

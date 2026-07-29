@@ -52,10 +52,38 @@ capabilities = ["screen_capture"]
 [package.metadata.idealyst.ios]
 frameworks = ["ReplayKit", "CoreMedia", "CoreVideo"]
 
+[features]
+# Runtime-v2 defaults flip: the new-core leg is the default surface;
+# the old-core leg is the opt-in (`--no-default-features` — in-repo
+# consumers ride the workspace dep spec, which pins defaults off and
+# selects a core explicitly per graph).
+default = ["new-core"]
+# Old-core marker for uniform `--no-default-features --features
+# old-core` invocations (the old-core deps are unconditional).
+old-core = []
+# Idea-lite migration — External surface only (the capture capability is
+# core-agnostic): swaps the `private_layer` module for the
+# scene-registry re-expression (same module path + public names,
+# `register_scene` boot seam). Default-off and MUTUALLY EXCLUSIVE with
+# the old-core External surface, mirroring the svg/form SDK precedents.
+# The new-core leg is a passthrough container on every target — the
+# per-platform capture-EXCLUDED windows (iOS/Android/macOS) remain
+# old-core-only until the new-core native boots grow an external-window
+# story (see src/private_layer_newcore.rs).
+new-core = [
+    "dep:runtime-vocabulary",
+    "dep:runtime-scene",
+]
+
 [dependencies]
 # Only needed for the `private_layer` Element::External component + its
 # `register()`. The capture capability itself is framework-agnostic.
 runtime-core = { workspace = true }
+# New-core surface (feature `new-core`): the scene registry + the
+# vocabulary caps the passthrough handler drives
+# (`ExternalOps::create_external` + scope-tied teardown).
+runtime-scene = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
 thiserror = { workspace = true }
 # Self-registration of the per-backend PrivateLayer external at construction.
 inventory = "0.3"
@@ -167,3 +195,7 @@ runtime_kotlin = [
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
+# tests/newcore_private_layer.rs (`--features new-core`) mounts
+# `PrivateLayer(children)` through the scene registry on the shared
+# host-mock recording substrate.
+host-mock = { workspace = true }

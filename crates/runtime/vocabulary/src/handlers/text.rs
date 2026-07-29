@@ -205,7 +205,7 @@ where
             // `label_now`'s Styled arm).
             #[cfg(feature = "robot")]
             {
-                robot_label = Some(runtime_core::styled_text::plain_text_of(&runs));
+                robot_label = Some(runtime_shared::styled_text::plain_text_of(&runs));
             }
             backend.borrow_mut().create_styled_text(&runs, &prim.a11y)
         }
@@ -295,7 +295,7 @@ where
         bind_value(disabled, move |&d| {
             b.borrow_mut().set_disabled(&n, d);
             if let Some(setter) = state_setter.as_ref() {
-                setter(runtime_core::StateBits::DISABLED, d);
+                setter(runtime_shared::StateBits::DISABLED, d);
             }
         });
     }
@@ -320,7 +320,7 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use runtime_core::accessibility::AccessibilityProps;
+    use runtime_shared::accessibility::AccessibilityProps;
     use runtime_scene::{realize, Host, Registry};
     use runtime_world::{signal, World};
 
@@ -363,7 +363,7 @@ mod tests {
     impl crate::caps::AppEnvOps for JsTextHost {}
     impl crate::caps::IntrospectionOps for JsTextHost {}
     impl crate::caps::StyleOps for JsTextHost {
-        fn apply_style(&mut self, _node: &u32, _style: &Rc<runtime_core::StyleRules>) {}
+        fn apply_style(&mut self, _node: &u32, _style: &Rc<runtime_shared::StyleRules>) {}
     }
     impl crate::caps::TextOps for JsTextHost {
         fn create_text(&mut self, _content: &str, _a11y: &AccessibilityProps) -> u32 {

@@ -3,7 +3,7 @@
 //!
 //! # Design: a vocabulary-owned registry, not a re-export of the old one
 //!
-//! The old core's registry (`runtime_core::robot`) is walker-internal:
+//! The old core's registry (`runtime_shared::robot`) is walker-internal:
 //! its registration surface (`register`, `deregister`, the parent
 //! stack, the `attach_*` action wiring) is `pub(crate)` and driven from
 //! `walker.rs::build_inner` — there is no public write path a foreign
@@ -78,13 +78,13 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use runtime_core::primitives::portal::ViewportRect;
+use runtime_shared::primitives::portal::ViewportRect;
 
 use crate::caps::IntrospectionOps;
 
 // The P5 remainder seams, re-exported at the old core's `robot::…`
 // paths so suites/apps swap only the crate root
-// (`runtime_core::robot::X` ↔ `runtime_vocabulary::robot::X`):
+// (`runtime_shared::robot::X` ↔ `runtime_vocabulary::robot::X`):
 // component `#[method]` registry + element link, and the signal watch
 // registry.
 pub use crate::robot_methods::{
@@ -97,7 +97,7 @@ pub use crate::robot_watch::{
 };
 
 // =============================================================================
-// Element kinds (mirrors `runtime_core::robot::ElementKind`)
+// Element kinds (mirrors `runtime_shared::robot::ElementKind`)
 // =============================================================================
 
 /// Identifies what kind of primitive an element was built from. Same
@@ -147,7 +147,7 @@ pub(crate) struct ElementActions {
     pub frame: Option<Rc<dyn Fn() -> Option<ViewportRect>>>,
     pub absolute_frame: Option<Rc<dyn Fn() -> Option<ViewportRect>>>,
     pub device_frame: Option<Rc<dyn Fn() -> Option<ViewportRect>>>,
-    pub introspect: Option<Rc<dyn Fn() -> Option<runtime_core::introspect::NativeNode>>>,
+    pub introspect: Option<Rc<dyn Fn() -> Option<runtime_shared::introspect::NativeNode>>>,
 }
 
 /// The handler-supplied half of [`ElementActions`] — what the mount
@@ -267,7 +267,7 @@ thread_local! {
 }
 
 /// Monotonic change-revision for a live-update push channel — same
-/// contract as `runtime_core::robot::current_revision` (the bridge
+/// contract as `runtime_shared::robot::current_revision` (the bridge
 /// coalesces bursts; register/deregister bump it).
 static ROBOT_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -366,7 +366,7 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
         let b = backend.clone();
         let n = node.clone();
         Rc::new(move || b.borrow().introspect_native(&n))
-            as Rc<dyn Fn() -> Option<runtime_core::introspect::NativeNode>>
+            as Rc<dyn Fn() -> Option<runtime_shared::introspect::NativeNode>>
     };
     backend.borrow().note_introspection_root(node);
 
@@ -426,7 +426,7 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
 
 // =============================================================================
 // Navigator registry — the NEW core's `list_navigators` / back-stack
-// snapshot surface (mirrors `runtime_core::primitives::navigator`'s
+// snapshot surface (mirrors `runtime_shared::primitives::navigator`'s
 // robot registry: slab + free list + "current" marker + prune-on-read)
 // =============================================================================
 
@@ -612,7 +612,7 @@ pub fn navigator_snapshot(id: NavId) -> Option<NavSnapshot> {
 }
 
 // =============================================================================
-// Public query/control API (mirrors `runtime_core::robot::Robot`)
+// Public query/control API (mirrors `runtime_shared::robot::Robot`)
 // =============================================================================
 
 /// A snapshot of a mounted element's properties.
@@ -707,7 +707,7 @@ pub struct TreeNode {
 /// (same thread as the mount); a ZST indexing the thread-local
 /// registry, cheap to construct.
 ///
-/// API mirrors `runtime_core::robot::Robot`'s element surface so the
+/// API mirrors `runtime_shared::robot::Robot`'s element surface so the
 /// bridge's verb handlers adapt mechanically.
 #[derive(Default)]
 pub struct Robot;
@@ -903,7 +903,7 @@ impl Robot {
     pub fn introspect_native(
         &self,
         element: &Element,
-    ) -> Result<Option<runtime_core::introspect::NativeNode>, RobotError> {
+    ) -> Result<Option<runtime_shared::introspect::NativeNode>, RobotError> {
         let cb = REGISTRY.with(|r| {
             r.borrow()
                 .get(element.id)
@@ -1147,11 +1147,11 @@ pub fn settle() {
 
 // =============================================================================
 // Bridge verb dispatch — the transport half of the old
-// `runtime_core::robot::bridge::dispatch`, adapted 1:1 to THIS registry
+// `runtime_shared::robot::bridge::dispatch`, adapted 1:1 to THIS registry
 // =============================================================================
 
 /// JSON verb dispatch for bridge/relay transports. Mirrors the element
-/// surface of `runtime_core::robot::bridge::dispatch` verb-for-verb and
+/// surface of `runtime_shared::robot::bridge::dispatch` verb-for-verb and
 /// byte-for-byte on the wire (same `cmd` names, same argument shapes,
 /// same response JSON), so the MCP server / relay / `robot-test` client
 /// drive a new-core app unchanged.
@@ -1160,7 +1160,7 @@ pub fn settle() {
 /// `invoke_method` (the `#[method]` registry), `list_watched_signals` /
 /// `read_signal` (the watch registry), and `list_navigators` /
 /// `get_navigator_state` (the nav registry) — all wire-identical to
-/// the old `runtime_core::robot::bridge` responses. Verbs the registry
+/// the old `runtime_shared::robot::bridge` responses. Verbs the registry
 /// doesn't own at all (`get_logs`, `screenshot`, custom commands)
 /// return `unknown command: …` — the transport falls back to its
 /// platform path for those (the web relay client routes them to the
@@ -1168,7 +1168,7 @@ pub fn settle() {
 /// registry-independent).
 pub mod bridge {
     use super::*;
-    use runtime_core::__serde_json as serde_json;
+    use runtime_shared::__serde_json as serde_json;
 
     /// Invoke one bridge verb against the new-core registry. Must run on
     /// the UI thread (registry + driver env are thread-local). Queries
@@ -1569,10 +1569,10 @@ mod tests {
     /// Bridge-dispatch round trip: the relay verb loop's exact path —
     /// `find_element` (by test_id) → `click` (by the returned
     /// element_id) → the author callback fired. Wire shapes mirror the
-    /// old `runtime_core::robot::bridge` responses.
+    /// old `runtime_shared::robot::bridge` responses.
     #[test]
     fn bridge_invoke_command_find_then_click() {
-        use runtime_core::__serde_json::json;
+        use runtime_shared::__serde_json::json;
         use std::cell::Cell;
 
         let robot = Robot::new();
@@ -1620,10 +1620,10 @@ mod tests {
 
     /// `list_components` + `invoke_method` over the bridge — the exact
     /// verb path the MCP server / Inspector use, wire shapes mirroring
-    /// the old `runtime_core::robot::bridge` responses.
+    /// the old `runtime_shared::robot::bridge` responses.
     #[test]
     fn bridge_method_verbs_round_trip() {
-        use runtime_core::__serde_json::json;
+        use runtime_shared::__serde_json::json;
         use std::cell::Cell;
 
         let robot = Robot::new();
@@ -1677,7 +1677,7 @@ mod tests {
     /// mirror of the old `watch_verbs_read_live_signal_value_over_bridge`.
     #[test]
     fn bridge_watch_verbs_read_live_signal_value() {
-        use runtime_core::__serde_json::json;
+        use runtime_shared::__serde_json::json;
         use runtime_world::World;
 
         let robot = Robot::new();
@@ -1718,7 +1718,7 @@ mod tests {
     /// current-marking, and dead-state pruning.
     #[test]
     fn bridge_nav_verbs_snapshot_mark_active_and_prune() {
-        use runtime_core::__serde_json::json;
+        use runtime_shared::__serde_json::json;
         use std::cell::Cell;
 
         let robot = Robot::new();
@@ -1775,7 +1775,7 @@ mod tests {
         );
         mark_active_navigator(id2);
         let all = bridge::invoke_command("list_navigators", &json!({})).unwrap();
-        use runtime_core::__serde_json as serde_json;
+        use runtime_shared::__serde_json as serde_json;
         let v: serde_json::Value = serde_json::from_str(&all).unwrap();
         assert_eq!(v.as_array().unwrap().len(), 2);
         let current: Vec<bool> = v

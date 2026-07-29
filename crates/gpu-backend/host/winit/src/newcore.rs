@@ -60,14 +60,40 @@ where
     R: FnOnce(&mut SceneRegistry<WgpuBackend>) + 'static,
     F: FnOnce() -> SceneElement + 'static,
 {
+    // The profile's logical size IS this backend's author-visible
+    // viewport (window resizes letterbox-scale; the logical size never
+    // changes — `DeviceProfile::logical_size`). Captured here for the
+    // pre-mount seed below.
+    let logical = (
+        profile.logical_size.0 as f32,
+        profile.logical_size.1 as f32,
+    );
     run_impl(
         profile,
         skin,
         Box::new(move |host: &mut render_wgpu::Host| {
+            // Seed the shared old-core viewport TLS value BEFORE the
+            // build: the world's `ViewportCtx` seeds from it at first
+            // breakpoint read, so the first build classifies the real
+            // profile size instead of 0-width `Xs` (the seam every
+            // other new-core boot seeds — web reads the window, macOS/
+            // iOS/Android sample their host views). This windowed host
+            // owns the thread, so the TLS write is safe here — the
+            // engine's `Host::set_viewport` deliberately doesn't write
+            // it (embedded-simulator clobber; see render_wgpu::newcore,
+            // "Viewport source"). LIVE pushes then ride
+            // `Host::set_viewport` → `forward_viewport` — `resumed`'s
+            // pre-mount `set_viewport` call lands before the sink is
+            // installed (a no-op), so this seed is what the first
+            // build classifies against.
+            runtime_core::set_viewport_size(runtime_core::ViewportSize {
+                width: logical.0,
+                height: logical.1,
+            });
             // `start` installs the flush driver (dispatch hook +
-            // FLUSH_WORLD) and returns the retained app. Same
-            // retention as the old boot's `forget(owner)` — the app
-            // lives until the process exits with the event loop
+            // FLUSH_WORLD) + the viewport sink and returns the retained
+            // app. Same retention as the old boot's `forget(owner)` —
+            // the app lives until the process exits with the event loop
             // (window close calls `process::exit`).
             let app = render_wgpu::newcore::start(host.backend().clone(), register, build);
             std::mem::forget(app);

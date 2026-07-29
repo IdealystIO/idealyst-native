@@ -9,6 +9,11 @@ description = "Kitchen-sink navigation demo — a Drawer at the root hosting Tab
 crate-type = ["rlib"]
 
 [features]
+# Runtime-v2 defaults flip: new core by default; old-core leg via
+# `--no-default-features --features old-core`.
+default = ["new-core"]
+# Old-core marker for the CLI single-core pin (old deps unconditional).
+old-core = []
 sidecar = ["dep:dev-server", "swap-navigator/runtime-server", "stack-navigator/runtime-server"]
 # idea-lite migration (P6 SDK retarget): same-source build against the
 # new core via the `extern crate runtime_facade as runtime_core;` alias

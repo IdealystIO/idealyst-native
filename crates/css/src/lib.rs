@@ -12,7 +12,7 @@
 //! native server). Both the web backend and the SSR backend depend on
 //! it so a node's first-paint CSS is byte-identical across the two.
 
-use runtime_core::StyleRules;
+use runtime_shared::StyleRules;
 
 // ---------------------------------------------------------------------------
 // Base reset + per-primitive default styles — single source of truth
@@ -69,7 +69,7 @@ pub const FORM_FONT_RESET: &str =
 /// `ObjectFit::Cover`, specificity 0,1,0) always wins; this only supplies the
 /// default for images whose sheet leaves `object_fit` unset.
 ///
-/// [`ObjectFit`]: runtime_core::ObjectFit
+/// [`ObjectFit`]: runtime_shared::ObjectFit
 pub const IMG_FIT_RESET: &str = ":where(img) { object-fit: contain; }";
 
 /// The full base reset stylesheet ([`BOX_SIZING_RESET`] + [`BUTTON_RESET`]
@@ -140,8 +140,8 @@ pub fn style_class_name(rules: &StyleRules) -> String {
 /// disambiguator inside [`variant_class_key`] (NOT a CSS selector — that's
 /// [`state_pseudo`]). Kept separate from the pseudo so the cache key stays
 /// compact and never changes if the CSS pseudo spelling does.
-fn state_key_tag(state: runtime_core::StateBits) -> &'static str {
-    use runtime_core::StateBits;
+fn state_key_tag(state: runtime_shared::StateBits) -> &'static str {
+    use runtime_shared::StateBits;
     match state {
         StateBits::HOVERED => "h",
         StateBits::PRESSED => "p",
@@ -168,8 +168,8 @@ fn state_key_tag(state: runtime_core::StateBits) -> &'static str {
 /// in the walker's stable order, so the key is deterministic.
 pub fn variant_class_key(
     base_key: &str,
-    overlays: &[(runtime_core::StateBits, std::rc::Rc<StyleRules>)],
-    breakpoint_overlays: &[(runtime_core::Breakpoint, std::rc::Rc<StyleRules>)],
+    overlays: &[(runtime_shared::StateBits, std::rc::Rc<StyleRules>)],
+    breakpoint_overlays: &[(runtime_shared::Breakpoint, std::rc::Rc<StyleRules>)],
     container_overlays: &[(f32, std::rc::Rc<StyleRules>)],
 ) -> String {
     let mut key = String::with_capacity(base_key.len() + 64);
@@ -193,7 +193,7 @@ pub fn variant_class_key(
     for (threshold, overlay) in container_overlays {
         key.push(';');
         key.push('@');
-        key.push_str(&runtime_core::container_axis_name(*threshold));
+        key.push_str(&runtime_shared::container_axis_name(*threshold));
         key.push(':');
         key.push_str(&overlay.content_key());
     }
@@ -225,8 +225,8 @@ pub fn text_shadow_class_key(base_or_variant_key: &str) -> String {
 /// overlay becomes `.ui-<hash><pseudo> { … }`. Shared by the web backend
 /// (`apply_styled_states`) and SSR so hover/press/focus/disabled styles
 /// resolve identically. `None` for unsupported / empty bits.
-pub fn state_pseudo(state: runtime_core::StateBits) -> Option<&'static str> {
-    use runtime_core::StateBits;
+pub fn state_pseudo(state: runtime_shared::StateBits) -> Option<&'static str> {
+    use runtime_shared::StateBits;
     match state {
         StateBits::HOVERED => Some(":hover"),
         StateBits::PRESSED => Some(":active"),
@@ -245,7 +245,7 @@ pub fn state_pseudo(state: runtime_core::StateBits) -> Option<&'static str> {
 }
 
 /// CSS custom property carrying the installed theme's default text font
-/// (see `runtime_core::style::set_default_text_font`). Preminted rule
+/// (see `runtime_shared::style::set_default_text_font`). Preminted rule
 /// bodies whose sheet sets no `font_family` reference it as
 /// `font-family: var(--iy-default-font, inherit)`; the runtime's premint
 /// host driver defines it (web: inline on the document element, SSR: in
@@ -254,15 +254,15 @@ pub fn state_pseudo(state: runtime_core::StateBits) -> Option<&'static str> {
 /// is also what the live engine does when no default font is installed.
 pub const DEFAULT_TEXT_FONT_VAR: &str = "--iy-default-font";
 
-/// The CSS `font-family` value for a resolved [`runtime_core::FontFamily`]
+/// The CSS `font-family` value for a resolved [`runtime_shared::FontFamily`]
 /// — `System` names pass through raw (they can be full fallback stacks),
 /// `Typeface` family names are quoted. Single source for `rules_to_css`,
 /// the styled-text run emitter, and `Backend::apply_default_text_font`
 /// impls, so a family formats identically everywhere.
-pub fn font_family_css_value(ff: &runtime_core::FontFamily) -> String {
+pub fn font_family_css_value(ff: &runtime_shared::FontFamily) -> String {
     match ff {
-        runtime_core::FontFamily::System(name) => name.clone(),
-        runtime_core::FontFamily::Typeface(tf) => format!("\"{}\"", tf.family_name),
+        runtime_shared::FontFamily::System(name) => name.clone(),
+        runtime_shared::FontFamily::Typeface(tf) => format!("\"{}\"", tf.family_name),
     }
 }
 
@@ -295,8 +295,8 @@ pub fn class_rule(class_name: &str, body: &str) -> String {
 pub fn class_rule_group(
     class_name: &str,
     base: &StyleRules,
-    state_overlays: &[(runtime_core::StateBits, std::rc::Rc<StyleRules>)],
-    breakpoint_overlays: &[(runtime_core::Breakpoint, std::rc::Rc<StyleRules>)],
+    state_overlays: &[(runtime_shared::StateBits, std::rc::Rc<StyleRules>)],
+    breakpoint_overlays: &[(runtime_shared::Breakpoint, std::rc::Rc<StyleRules>)],
     container_overlays: &[(f32, std::rc::Rc<StyleRules>)],
 ) -> Vec<String> {
     class_rule_group_with(
@@ -315,8 +315,8 @@ pub fn class_rule_group(
 pub fn class_rule_group_with(
     class_name: &str,
     base: &StyleRules,
-    state_overlays: &[(runtime_core::StateBits, std::rc::Rc<StyleRules>)],
-    breakpoint_overlays: &[(runtime_core::Breakpoint, std::rc::Rc<StyleRules>)],
+    state_overlays: &[(runtime_shared::StateBits, std::rc::Rc<StyleRules>)],
+    breakpoint_overlays: &[(runtime_shared::Breakpoint, std::rc::Rc<StyleRules>)],
     container_overlays: &[(f32, std::rc::Rc<StyleRules>)],
     emit: fn(&StyleRules) -> String,
 ) -> Vec<String> {
@@ -333,7 +333,7 @@ pub fn class_rule_group_with(
         // `outline` on that `:focus` rule — otherwise the native ring
         // double-draws with the themed one. Only emitted where a focus
         // overlay exists; elements without one keep the default ring.
-        let body = if *bit == runtime_core::StateBits::FOCUSED {
+        let body = if *bit == runtime_shared::StateBits::FOCUSED {
             format!("outline:none;{body}")
         } else {
             body
@@ -354,7 +354,7 @@ pub fn class_rule_group_with(
 }
 
 /// The `@media (min-width: …)` prelude for a breakpoint overlay, using
-/// the app's active [`runtime_core::breakpoints`] threshold table.
+/// the app's active [`runtime_shared::breakpoints`] threshold table.
 /// `None` for `Breakpoint::Xs` (the mobile-first base, which has no
 /// media query) and for any breakpoint with no installed threshold.
 ///
@@ -363,8 +363,8 @@ pub fn class_rule_group_with(
 /// boundary lands at exactly the same width the native classifier uses
 /// for the same bucket. Single source of truth shared by the web
 /// backend (`apply_styled_variants`) and SSR.
-pub fn breakpoint_media_query(bp: runtime_core::Breakpoint) -> Option<String> {
-    let px = runtime_core::breakpoints().min_width(bp)?;
+pub fn breakpoint_media_query(bp: runtime_shared::Breakpoint) -> Option<String> {
+    let px = runtime_shared::breakpoints().min_width(bp)?;
     Some(format!("@media (min-width: {})", px_value(px)))
 }
 
@@ -378,7 +378,7 @@ pub fn breakpoint_media_query(bp: runtime_core::Breakpoint) -> Option<String> {
 /// a `breakpoint md { … }` overlay produces a byte-identical rule on
 /// both — the SSR first paint already carries the responsive layout the
 /// hydrated web build would, no JS round trip needed.
-pub fn breakpoint_media_rule(class_name: &str, bp: runtime_core::Breakpoint, body: &str) -> Option<String> {
+pub fn breakpoint_media_rule(class_name: &str, bp: runtime_shared::Breakpoint, body: &str) -> Option<String> {
     let query = breakpoint_media_query(bp)?;
     Some(format!("{query} {{ .{class_name} {{ {body} }} }}"))
 }
@@ -477,8 +477,8 @@ impl core::fmt::Display for CssNum {
 /// the web backend (`setProperty` on `:root`) and the SSR backend
 /// (`:root { … }` in the document head) so a token resolves identically
 /// across both — single source of truth, like [`NAVIGATOR_LAYOUT_CSS`].
-pub fn token_value_css(v: &runtime_core::TokenValue) -> String {
-    use runtime_core::TokenValue;
+pub fn token_value_css(v: &runtime_shared::TokenValue) -> String {
+    use runtime_shared::TokenValue;
     match v {
         TokenValue::Color(c) => c.0.clone(),
         TokenValue::Length(l) => length_css(*l),
@@ -492,7 +492,7 @@ pub fn token_value_css(v: &runtime_core::TokenValue) -> String {
 /// server's first paint resolves `var(--token, fallback)` to the real
 /// theme value — matching the live web build, which installs the same
 /// variables at runtime via `install_tokens`.
-pub fn tokens_to_root_css(tokens: &[runtime_core::TokenEntry]) -> String {
+pub fn tokens_to_root_css(tokens: &[runtime_shared::TokenEntry]) -> String {
     if tokens.is_empty() {
         return String::new();
     }
@@ -524,10 +524,10 @@ pub const ASSET_ROUTE: &str = "assets";
 /// `Embedded` sources — those need a runtime blob URL (web-only); a
 /// headless server has no served path for them.
 pub fn asset_url(
-    kind: runtime_core::assets::AssetTag,
-    source: &runtime_core::assets::AssetSource,
+    kind: runtime_shared::assets::AssetTag,
+    source: &runtime_shared::assets::AssetSource,
 ) -> Option<String> {
-    use runtime_core::assets::{AssetSource, AssetTag};
+    use runtime_shared::assets::{AssetSource, AssetTag};
     match source {
         // Fonts link root-absolute so the URL is stable under any SPA
         // route; other bundled assets live under the asset route.
@@ -550,7 +550,7 @@ pub fn asset_url(
 /// face resolves identically across the two.
 pub fn font_face_css(
     family_name: &str,
-    face: &runtime_core::assets::TypefaceFace,
+    face: &runtime_shared::assets::TypefaceFace,
     url: &str,
 ) -> String {
     let weight = font_weight_css(face.weight);
@@ -582,8 +582,8 @@ pub fn font_face_css(
 }
 
 /// `@font-face` `format()` hint from an asset source's file extension.
-pub fn font_format_hint(source: &runtime_core::assets::AssetSource) -> Option<&'static str> {
-    use runtime_core::assets::AssetSource;
+pub fn font_format_hint(source: &runtime_shared::assets::AssetSource) -> Option<&'static str> {
+    use runtime_shared::assets::AssetSource;
     let path = match source {
         AssetSource::Bundled { path } => *path,
         AssetSource::BundledEmbedded { path, .. } => *path,
@@ -603,8 +603,8 @@ pub fn font_format_hint(source: &runtime_core::assets::AssetSource) -> Option<&'
 }
 
 /// Render a `Length` as a CSS value string.
-pub fn length_css(l: runtime_core::Length) -> String {
-    use runtime_core::Length;
+pub fn length_css(l: runtime_shared::Length) -> String {
+    use runtime_shared::Length;
     match l {
         Length::Px(v) => format!("{}px", css_num(v)),
         Length::Percent(v) => format!("{}%", css_num(v)),
@@ -612,8 +612,8 @@ pub fn length_css(l: runtime_core::Length) -> String {
     }
 }
 
-pub fn tokenized_color_css(t: &runtime_core::Tokenized<runtime_core::Color>) -> String {
-    use runtime_core::Tokenized;
+pub fn tokenized_color_css(t: &runtime_shared::Tokenized<runtime_shared::Color>) -> String {
+    use runtime_shared::Tokenized;
     match t {
         Tokenized::Literal(c) => c.0.clone(),
         Tokenized::Token { name, fallback } => {
@@ -623,14 +623,14 @@ pub fn tokenized_color_css(t: &runtime_core::Tokenized<runtime_core::Color>) -> 
 }
 
 /// CSS declaration body for one styled-text run's deltas
-/// (`runtime_core::TextRunStyle`) — the inline `style` attribute the
+/// (`runtime_shared::TextRunStyle`) — the inline `style` attribute the
 /// web + SSR backends stamp on a run's `<span>`. Shared here so both
 /// emit byte-identical declarations (the same reason `rules_to_css`
 /// lives in this crate). Tokenized values emit as `var(--token,
 /// fallback)`, so run colors ride the CSS cascade on theme swaps —
 /// no per-node re-realization needed on web (see
 /// `Backend::update_styled_text`).
-pub fn text_run_style_css(style: &runtime_core::TextRunStyle) -> String {
+pub fn text_run_style_css(style: &runtime_shared::TextRunStyle) -> String {
     let mut out = String::new();
     if let Some(ff) = &style.font_family {
         push_decl(&mut out, "font-family", &font_family_css_value(ff));
@@ -652,7 +652,7 @@ pub fn text_run_style_css(style: &runtime_core::TextRunStyle) -> String {
 
 /// Render a `Gradient` as a CSS `linear-gradient(...)` / `radial-gradient(...)`
 /// value suitable for the `background-image` property.
-pub fn gradient_css(g: &runtime_core::Gradient) -> String {
+pub fn gradient_css(g: &runtime_shared::Gradient) -> String {
     let stops: Vec<String> = g
         .stops
         .iter()
@@ -660,20 +660,20 @@ pub fn gradient_css(g: &runtime_core::Gradient) -> String {
         .collect();
     let stops_joined = stops.join(", ");
     match g.kind {
-        runtime_core::GradientKind::Linear { angle_deg } => {
+        runtime_shared::GradientKind::Linear { angle_deg } => {
             // CSS `linear-gradient(angle, stops)`: `0deg` is
             // bottom→top, matching the framework's convention.
             format!("linear-gradient({}deg, {})", css_num(angle_deg), stops_joined)
         }
-        runtime_core::GradientKind::Radial { center, radius, extent } => {
+        runtime_shared::GradientKind::Radial { center, radius, extent } => {
             // CSS doesn't allow percentage sizing with the `circle`
             // keyword, so we use the `ellipse` form with two
             // percentages (relative to box width/height).
             // - ClosestSide: `radius * 50%` → inscribed ellipse.
             // - FarthestCorner: `radius * 70.71%` → corner-passing ellipse.
             let base_pct = match extent {
-                runtime_core::RadialExtent::ClosestSide => 50.0,
-                runtime_core::RadialExtent::FarthestCorner => 70.7106781,
+                runtime_shared::RadialExtent::ClosestSide => 50.0,
+                runtime_shared::RadialExtent::FarthestCorner => 70.7106781,
             };
             let pct = (radius * base_pct).max(0.0);
             format!(
@@ -689,8 +689,8 @@ pub fn gradient_css(g: &runtime_core::Gradient) -> String {
 
 /// Render a tokenized length: literal as `{n}px` / `{n}%` / `auto`,
 /// token as `var(--name, fallback)`.
-pub fn tokenized_length_css(t: &runtime_core::Tokenized<runtime_core::Length>) -> String {
-    use runtime_core::Tokenized;
+pub fn tokenized_length_css(t: &runtime_shared::Tokenized<runtime_shared::Length>) -> String {
+    use runtime_shared::Tokenized;
     match t {
         Tokenized::Literal(l) => length_css(*l),
         Tokenized::Token { name, fallback } => {
@@ -700,8 +700,8 @@ pub fn tokenized_length_css(t: &runtime_core::Tokenized<runtime_core::Length>) -
 }
 
 /// Render a tokenized raw number (used for `opacity`, `flex_grow`).
-pub fn tokenized_f32_css(t: &runtime_core::Tokenized<f32>) -> String {
-    use runtime_core::Tokenized;
+pub fn tokenized_f32_css(t: &runtime_shared::Tokenized<f32>) -> String {
+    use runtime_shared::Tokenized;
     match t {
         Tokenized::Literal(v) => css_num(*v).to_string(),
         Tokenized::Token { name, fallback } => {
@@ -713,8 +713,8 @@ pub fn tokenized_f32_css(t: &runtime_core::Tokenized<f32>) -> String {
 /// Render a tokenized number with the `px` suffix (border widths,
 /// line-height, letter-spacing). Token form uses `calc(... * 1px)` so
 /// the unit applies regardless of how the variable resolves.
-pub fn tokenized_border_width_css(t: &runtime_core::Tokenized<f32>) -> String {
-    use runtime_core::Tokenized;
+pub fn tokenized_border_width_css(t: &runtime_shared::Tokenized<f32>) -> String {
+    use runtime_shared::Tokenized;
     match t {
         Tokenized::Literal(v) => format!("{}px", css_num(*v)),
         Tokenized::Token { name, fallback } => {
@@ -725,12 +725,12 @@ pub fn tokenized_border_width_css(t: &runtime_core::Tokenized<f32>) -> String {
 
 /// Same shape as `tokenized_border_width_css` — kept as a separate
 /// helper so semantic call sites read clearly.
-pub fn tokenized_px_f32_css(t: &runtime_core::Tokenized<f32>) -> String {
+pub fn tokenized_px_f32_css(t: &runtime_shared::Tokenized<f32>) -> String {
     tokenized_border_width_css(t)
 }
 
-pub fn flex_direction_css(v: runtime_core::FlexDirection) -> &'static str {
-    use runtime_core::FlexDirection;
+pub fn flex_direction_css(v: runtime_shared::FlexDirection) -> &'static str {
+    use runtime_shared::FlexDirection;
     match v {
         FlexDirection::Row => "row",
         FlexDirection::Column => "column",
@@ -739,8 +739,8 @@ pub fn flex_direction_css(v: runtime_core::FlexDirection) -> &'static str {
     }
 }
 
-pub fn flex_wrap_css(v: runtime_core::FlexWrap) -> &'static str {
-    use runtime_core::FlexWrap;
+pub fn flex_wrap_css(v: runtime_shared::FlexWrap) -> &'static str {
+    use runtime_shared::FlexWrap;
     match v {
         FlexWrap::NoWrap => "nowrap",
         FlexWrap::Wrap => "wrap",
@@ -748,8 +748,8 @@ pub fn flex_wrap_css(v: runtime_core::FlexWrap) -> &'static str {
     }
 }
 
-pub fn justify_content_css(v: runtime_core::JustifyContent) -> &'static str {
-    use runtime_core::JustifyContent;
+pub fn justify_content_css(v: runtime_shared::JustifyContent) -> &'static str {
+    use runtime_shared::JustifyContent;
     match v {
         JustifyContent::FlexStart => "flex-start",
         JustifyContent::FlexEnd => "flex-end",
@@ -760,8 +760,8 @@ pub fn justify_content_css(v: runtime_core::JustifyContent) -> &'static str {
     }
 }
 
-pub fn align_items_css(v: runtime_core::AlignItems) -> &'static str {
-    use runtime_core::AlignItems;
+pub fn align_items_css(v: runtime_shared::AlignItems) -> &'static str {
+    use runtime_shared::AlignItems;
     match v {
         AlignItems::FlexStart => "flex-start",
         AlignItems::FlexEnd => "flex-end",
@@ -771,8 +771,8 @@ pub fn align_items_css(v: runtime_core::AlignItems) -> &'static str {
     }
 }
 
-pub fn align_content_css(v: runtime_core::AlignContent) -> &'static str {
-    use runtime_core::AlignContent;
+pub fn align_content_css(v: runtime_shared::AlignContent) -> &'static str {
+    use runtime_shared::AlignContent;
     match v {
         AlignContent::FlexStart => "flex-start",
         AlignContent::FlexEnd => "flex-end",
@@ -783,8 +783,8 @@ pub fn align_content_css(v: runtime_core::AlignContent) -> &'static str {
     }
 }
 
-pub fn align_self_css(v: runtime_core::AlignSelf) -> &'static str {
-    use runtime_core::AlignSelf;
+pub fn align_self_css(v: runtime_shared::AlignSelf) -> &'static str {
+    use runtime_shared::AlignSelf;
     match v {
         AlignSelf::Auto => "auto",
         AlignSelf::FlexStart => "flex-start",
@@ -797,7 +797,7 @@ pub fn align_self_css(v: runtime_core::AlignSelf) -> &'static str {
 
 /// Lower a `grid-template-columns` track list to its CSS value
 /// (space-separated tracks, e.g. `1fr 1fr 1fr`).
-pub fn track_list_css(tracks: &[runtime_core::TrackSize]) -> String {
+pub fn track_list_css(tracks: &[runtime_shared::TrackSize]) -> String {
     tracks
         .iter()
         .map(track_size_css)
@@ -805,10 +805,10 @@ pub fn track_list_css(tracks: &[runtime_core::TrackSize]) -> String {
         .join(" ")
 }
 
-/// Lower a single [`runtime_core::TrackSize`] to a CSS track sizing
+/// Lower a single [`runtime_shared::TrackSize`] to a CSS track sizing
 /// function. `Fr(1.0)` → `1fr`, `Minmax(a, b)` → `minmax(a, b)`.
-pub fn track_size_css(t: &runtime_core::TrackSize) -> String {
-    use runtime_core::TrackSize;
+pub fn track_size_css(t: &runtime_shared::TrackSize) -> String {
+    use runtime_shared::TrackSize;
     match t {
         TrackSize::Auto => "auto".to_string(),
         TrackSize::MinContent => "min-content".to_string(),
@@ -821,8 +821,8 @@ pub fn track_size_css(t: &runtime_core::TrackSize) -> String {
     }
 }
 
-pub fn position_css(v: runtime_core::Position) -> &'static str {
-    use runtime_core::Position;
+pub fn position_css(v: runtime_shared::Position) -> &'static str {
+    use runtime_shared::Position;
     match v {
         Position::Relative => "relative",
         Position::Absolute => "absolute",
@@ -830,8 +830,8 @@ pub fn position_css(v: runtime_core::Position) -> &'static str {
     }
 }
 
-pub fn font_weight_css(v: runtime_core::FontWeight) -> &'static str {
-    use runtime_core::FontWeight;
+pub fn font_weight_css(v: runtime_shared::FontWeight) -> &'static str {
+    use runtime_shared::FontWeight;
     match v {
         FontWeight::Thin => "100",
         FontWeight::ExtraLight => "200",
@@ -845,16 +845,16 @@ pub fn font_weight_css(v: runtime_core::FontWeight) -> &'static str {
     }
 }
 
-pub fn font_style_css(v: runtime_core::FontStyle) -> &'static str {
-    use runtime_core::FontStyle;
+pub fn font_style_css(v: runtime_shared::FontStyle) -> &'static str {
+    use runtime_shared::FontStyle;
     match v {
         FontStyle::Normal => "normal",
         FontStyle::Italic => "italic",
     }
 }
 
-pub fn text_align_css(v: runtime_core::TextAlign) -> &'static str {
-    use runtime_core::TextAlign;
+pub fn text_align_css(v: runtime_shared::TextAlign) -> &'static str {
+    use runtime_shared::TextAlign;
     match v {
         TextAlign::Left => "left",
         TextAlign::Right => "right",
@@ -863,8 +863,8 @@ pub fn text_align_css(v: runtime_core::TextAlign) -> &'static str {
     }
 }
 
-pub fn text_transform_css(v: runtime_core::TextTransform) -> &'static str {
-    use runtime_core::TextTransform;
+pub fn text_transform_css(v: runtime_shared::TextTransform) -> &'static str {
+    use runtime_shared::TextTransform;
     match v {
         TextTransform::None => "none",
         TextTransform::Uppercase => "uppercase",
@@ -873,18 +873,18 @@ pub fn text_transform_css(v: runtime_core::TextTransform) -> &'static str {
     }
 }
 
-pub fn overflow_css(v: runtime_core::Overflow) -> &'static str {
-    use runtime_core::Overflow;
+pub fn overflow_css(v: runtime_shared::Overflow) -> &'static str {
+    use runtime_shared::Overflow;
     match v {
         Overflow::Visible => "visible",
         Overflow::Hidden => "hidden",
     }
 }
 
-/// CSS `object-fit` keyword for a [`runtime_core::ObjectFit`]. Meaningful
+/// CSS `object-fit` keyword for a [`runtime_shared::ObjectFit`]. Meaningful
 /// only on `<img>` (replaced content); harmless on other elements.
-pub fn object_fit_css(v: runtime_core::ObjectFit) -> &'static str {
-    use runtime_core::ObjectFit;
+pub fn object_fit_css(v: runtime_shared::ObjectFit) -> &'static str {
+    use runtime_shared::ObjectFit;
     match v {
         ObjectFit::Fill => "fill",
         ObjectFit::Contain => "contain",
@@ -892,9 +892,9 @@ pub fn object_fit_css(v: runtime_core::ObjectFit) -> &'static str {
     }
 }
 
-/// CSS `cursor` keyword for a [`runtime_core::Cursor`].
-pub fn cursor_css(v: runtime_core::Cursor) -> &'static str {
-    use runtime_core::Cursor;
+/// CSS `cursor` keyword for a [`runtime_shared::Cursor`].
+pub fn cursor_css(v: runtime_shared::Cursor) -> &'static str {
+    use runtime_shared::Cursor;
     match v {
         Cursor::Auto => "auto",
         Cursor::Default => "default",
@@ -915,9 +915,9 @@ pub fn cursor_css(v: runtime_core::Cursor) -> &'static str {
     }
 }
 
-/// CSS `user-select` keyword for a [`runtime_core::UserSelect`].
-pub fn user_select_css(v: runtime_core::UserSelect) -> &'static str {
-    use runtime_core::UserSelect;
+/// CSS `user-select` keyword for a [`runtime_shared::UserSelect`].
+pub fn user_select_css(v: runtime_shared::UserSelect) -> &'static str {
+    use runtime_shared::UserSelect;
     match v {
         UserSelect::Auto => "auto",
         UserSelect::None => "none",
@@ -926,17 +926,17 @@ pub fn user_select_css(v: runtime_core::UserSelect) -> &'static str {
     }
 }
 
-/// CSS `pointer-events` keyword for a [`runtime_core::PointerEvents`].
-pub fn pointer_events_css(v: runtime_core::PointerEvents) -> &'static str {
-    use runtime_core::PointerEvents;
+/// CSS `pointer-events` keyword for a [`runtime_shared::PointerEvents`].
+pub fn pointer_events_css(v: runtime_shared::PointerEvents) -> &'static str {
+    use runtime_shared::PointerEvents;
     match v {
         PointerEvents::Auto => "auto",
         PointerEvents::None => "none",
     }
 }
 
-pub fn transform_css(t: &runtime_core::Transform) -> String {
-    use runtime_core::Transform;
+pub fn transform_css(t: &runtime_shared::Transform) -> String {
+    use runtime_shared::Transform;
     match t {
         Transform::TranslateX(l) => format!("translateX({})", length_css(*l)),
         Transform::TranslateY(l) => format!("translateY({})", length_css(*l)),
@@ -948,8 +948,8 @@ pub fn transform_css(t: &runtime_core::Transform) -> String {
     }
 }
 
-pub fn easing_css(e: runtime_core::Easing) -> String {
-    use runtime_core::Easing;
+pub fn easing_css(e: runtime_shared::Easing) -> String {
+    use runtime_shared::Easing;
     match e {
         Easing::Linear => "linear".to_string(),
         Easing::Ease => "ease".to_string(),
@@ -1070,7 +1070,7 @@ pub fn rules_to_css_delta(rules: &StyleRules) -> String {
 /// the delta rule itself).
 pub fn flex_promoted(rules: &StyleRules) -> bool {
     match rules.display {
-        Some(runtime_core::DisplayKind::Flex) => true,
+        Some(runtime_shared::DisplayKind::Flex) => true,
         Some(_) => false,
         None => {
             rules.flex_direction.is_some()
@@ -1086,7 +1086,7 @@ pub fn flex_promoted(rules: &StyleRules) -> bool {
 }
 
 fn rules_to_css_impl(rules: &StyleRules, shadow_kind: ShadowKind, pin_flex_direction: bool) -> String {
-    use runtime_core::{Color, Length, Tokenized};
+    use runtime_shared::{Color, Length, Tokenized};
 
     /// One property's value slot. Borrowing tags defer formatting to the
     /// emission loop (nothing runs for `None` fields); `Owned` carries the
@@ -1130,10 +1130,10 @@ fn rules_to_css_impl(rules: &StyleRules, shadow_kind: ShadowKind, pin_flex_direc
     // grid` container that also sets `gap` (every `Grid`) would be forced to
     // `flex` and collapse to one column — the exact bug this guards against.
     match rules.display {
-        Some(runtime_core::DisplayKind::Grid) => {
+        Some(runtime_shared::DisplayKind::Grid) => {
             push_decl(&mut out, "display", "grid");
         }
-        Some(runtime_core::DisplayKind::Flex) => {
+        Some(runtime_shared::DisplayKind::Flex) => {
             push_decl(&mut out, "display", "flex");
             if pin_flex_direction && rules.flex_direction.is_none() {
                 push_decl(&mut out, "flex-direction", "column");
@@ -1329,14 +1329,14 @@ fn rules_to_css_impl(rules: &StyleRules, shadow_kind: ShadowKind, pin_flex_direc
 /// [`rules_to_css`] this emits NO `var(--…)` — suitable for an inline
 /// `style="…"` in email, where CSS variables and `<head>` `:root` blocks are
 /// unavailable.
-pub fn rules_to_css_resolved(rules: &StyleRules, tokens: &[runtime_core::TokenEntry]) -> String {
+pub fn rules_to_css_resolved(rules: &StyleRules, tokens: &[runtime_shared::TokenEntry]) -> String {
     rules_to_css(&resolve_style_tokens(rules, tokens))
 }
 
 /// Text-primitive counterpart of [`rules_to_css_resolved`]: bakes tokens
 /// to literals and lowers `shadow` to `text-shadow`. Used by the
 /// email/static renderers when emitting a text node's style.
-pub fn rules_to_css_resolved_text(rules: &StyleRules, tokens: &[runtime_core::TokenEntry]) -> String {
+pub fn rules_to_css_resolved_text(rules: &StyleRules, tokens: &[runtime_shared::TokenEntry]) -> String {
     rules_to_css_text(&resolve_style_tokens(rules, tokens))
 }
 
@@ -1345,7 +1345,7 @@ pub fn rules_to_css_resolved_text(rules: &StyleRules, tokens: &[runtime_core::To
 /// enumerate every tokenized field of `StyleRules` by value type; a new
 /// tokenized field must be added to the matching list (guarded by
 /// `resolve_style_tokens_bakes_every_token_type`). See [`rules_to_css_resolved`].
-fn resolve_style_tokens(rules: &StyleRules, tokens: &[runtime_core::TokenEntry]) -> StyleRules {
+fn resolve_style_tokens(rules: &StyleRules, tokens: &[runtime_shared::TokenEntry]) -> StyleRules {
     let mut r = rules.clone();
     macro_rules! resolve {
         ($resolver:ident; $($field:ident),* $(,)?) => {
@@ -1372,17 +1372,17 @@ fn resolve_style_tokens(rules: &StyleRules, tokens: &[runtime_core::TokenEntry])
 
 /// Look up a token's installed value by name.
 fn token_lookup<'a>(
-    tokens: &'a [runtime_core::TokenEntry],
+    tokens: &'a [runtime_shared::TokenEntry],
     name: &str,
-) -> Option<&'a runtime_core::TokenValue> {
+) -> Option<&'a runtime_shared::TokenValue> {
     tokens.iter().find(|e| e.name == name).map(|e| &e.value)
 }
 
 fn resolve_color(
-    t: &runtime_core::Tokenized<runtime_core::Color>,
-    tokens: &[runtime_core::TokenEntry],
-) -> runtime_core::Tokenized<runtime_core::Color> {
-    use runtime_core::{TokenValue, Tokenized};
+    t: &runtime_shared::Tokenized<runtime_shared::Color>,
+    tokens: &[runtime_shared::TokenEntry],
+) -> runtime_shared::Tokenized<runtime_shared::Color> {
+    use runtime_shared::{TokenValue, Tokenized};
     match t {
         Tokenized::Literal(_) => t.clone(),
         Tokenized::Token { name, fallback } => Tokenized::Literal(
@@ -1395,10 +1395,10 @@ fn resolve_color(
 }
 
 fn resolve_length(
-    t: &runtime_core::Tokenized<runtime_core::Length>,
-    tokens: &[runtime_core::TokenEntry],
-) -> runtime_core::Tokenized<runtime_core::Length> {
-    use runtime_core::{TokenValue, Tokenized};
+    t: &runtime_shared::Tokenized<runtime_shared::Length>,
+    tokens: &[runtime_shared::TokenEntry],
+) -> runtime_shared::Tokenized<runtime_shared::Length> {
+    use runtime_shared::{TokenValue, Tokenized};
     match t {
         Tokenized::Literal(_) => t.clone(),
         Tokenized::Token { name, fallback } => Tokenized::Literal(
@@ -1411,10 +1411,10 @@ fn resolve_length(
 }
 
 fn resolve_f32(
-    t: &runtime_core::Tokenized<f32>,
-    tokens: &[runtime_core::TokenEntry],
-) -> runtime_core::Tokenized<f32> {
-    use runtime_core::{Length, TokenValue, Tokenized};
+    t: &runtime_shared::Tokenized<f32>,
+    tokens: &[runtime_shared::TokenEntry],
+) -> runtime_shared::Tokenized<f32> {
+    use runtime_shared::{Length, TokenValue, Tokenized};
     match t {
         Tokenized::Literal(_) => t.clone(),
         Tokenized::Token { name, fallback } => Tokenized::Literal(match token_lookup(tokens, name) {
@@ -1434,7 +1434,7 @@ fn collect_transitions(rules: &StyleRules) -> Vec<String> {
     // (name, field) table + one loop, NOT a per-field macro: an inline
     // `format!` per field would stamp out 35 copies of the `Arguments`
     // marshalling (~4 KB of wasm) where this shape emits it once.
-    let fields: [(&str, &Option<runtime_core::Transition>); 35] = [
+    let fields: [(&str, &Option<runtime_shared::Transition>); 35] = [
         ("background", &rules.background_transition),
         ("color", &rules.color_transition),
         ("caret-color", &rules.caret_color_transition),
@@ -1483,7 +1483,7 @@ fn collect_transitions(rules: &StyleRules) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_core::{Color, Length, TokenEntry, TokenValue};
+    use runtime_shared::{Color, Length, TokenEntry, TokenValue};
 
     /// `css_num` must agree with what `f32: Display` produced for the values
     /// CSS actually uses — it replaced Display everywhere in this crate to
@@ -1553,7 +1553,7 @@ mod tests {
     // differs — the numbers and color are byte-identical.
     #[test]
     fn shadow_lowers_to_box_or_text_by_node_kind() {
-        use runtime_core::{Color, Shadow, StyleRules};
+        use runtime_shared::{Color, Shadow, StyleRules};
         let rules = StyleRules {
             shadow: Some(Shadow { x: 1.0, y: 2.0, blur: 3.0, color: Color("#00000080".to_string()) }),
             ..Default::default()
@@ -1575,7 +1575,7 @@ mod tests {
     // value emits (an unset field defers to the `:where(img)` reset default).
     #[test]
     fn rules_to_css_emits_object_fit() {
-        use runtime_core::ObjectFit;
+        use runtime_shared::ObjectFit;
         let cover = StyleRules { object_fit: Some(ObjectFit::Cover), ..Default::default() };
         assert!(rules_to_css(&cover).contains("object-fit: cover"));
         let fill = StyleRules { object_fit: Some(ObjectFit::Fill), ..Default::default() };
@@ -1592,7 +1592,7 @@ mod tests {
     // forced `display: flex; flex-direction: column`.
     #[test]
     fn rules_to_css_emits_grid_display_and_tracks_not_flex() {
-        use runtime_core::{DisplayKind, Length, TrackSize, Tokenized};
+        use runtime_shared::{DisplayKind, Length, TrackSize, Tokenized};
         let css = rules_to_css(&StyleRules {
             display: Some(DisplayKind::Grid),
             grid_template_columns: Some(vec![TrackSize::Fr(1.0); 3]),
@@ -1615,7 +1615,7 @@ mod tests {
     // non-`Fr` sizing functions.
     #[test]
     fn rules_to_css_display_flex_and_track_forms() {
-        use runtime_core::{DisplayKind, TrackSize};
+        use runtime_shared::{DisplayKind, TrackSize};
         let flex = rules_to_css(&StyleRules {
             display: Some(DisplayKind::Flex),
             ..Default::default()
@@ -1653,7 +1653,7 @@ mod tests {
     // can't be drag-selected" real on web.
     #[test]
     fn rules_to_css_emits_cursor_and_user_select() {
-        use runtime_core::{Cursor, StyleRules, UserSelect};
+        use runtime_shared::{Cursor, StyleRules, UserSelect};
         let css = rules_to_css(&StyleRules {
             cursor: Some(Cursor::Pointer),
             user_select: Some(UserSelect::None),
@@ -1671,7 +1671,7 @@ mod tests {
     // (auto). An unset value emits nothing (framework imposes no default).
     #[test]
     fn rules_to_css_emits_pointer_events() {
-        use runtime_core::{PointerEvents, StyleRules};
+        use runtime_shared::{PointerEvents, StyleRules};
         let none = rules_to_css(&StyleRules {
             pointer_events: Some(PointerEvents::None),
             ..Default::default()
@@ -1692,7 +1692,7 @@ mod tests {
     // enum → kebab-case CSS), or the browser silently ignores the declaration.
     #[test]
     fn cursor_css_uses_spec_keywords() {
-        use runtime_core::Cursor;
+        use runtime_shared::Cursor;
         assert_eq!(cursor_css(Cursor::NotAllowed), "not-allowed");
         assert_eq!(cursor_css(Cursor::ColResize), "col-resize");
         assert_eq!(cursor_css(Cursor::Grabbing), "grabbing");
@@ -1702,7 +1702,7 @@ mod tests {
     // default, so a bare styled node carries no cursor/selection declaration.
     #[test]
     fn rules_to_css_omits_unset_interaction_props() {
-        use runtime_core::StyleRules;
+        use runtime_shared::StyleRules;
         let css = rules_to_css(&StyleRules::default());
         assert!(!css.contains("cursor"), "got: {css}");
         assert!(!css.contains("user-select"), "got: {css}");
@@ -1732,7 +1732,7 @@ mod tests {
 
     #[test]
     fn breakpoint_media_query_uses_installed_thresholds() {
-        use runtime_core::Breakpoint;
+        use runtime_shared::Breakpoint;
         // Xs is the mobile-first base — no media query.
         assert_eq!(breakpoint_media_query(Breakpoint::Xs), None);
         // The default tailwind-scale thresholds, rendered without a
@@ -1765,7 +1765,7 @@ mod tests {
     /// drift back.
     #[test]
     fn variant_class_key_is_canonical_and_deterministic() {
-        use runtime_core::{Breakpoint, StateBits, StyleRules};
+        use runtime_shared::{Breakpoint, StateBits, StyleRules};
         use std::rc::Rc;
 
         let base_key = "fg=T:color-text;fs=L:1234";
@@ -1831,7 +1831,7 @@ mod tests {
     /// silently re-diverge SSR from web and reintroduce the double-nav.
     #[test]
     fn ssr_and_web_mint_identical_text_shadow_class() {
-        use runtime_core::{Color, Shadow, StyleRules};
+        use runtime_shared::{Color, Shadow, StyleRules};
 
         // The linchpin identity both derivations rest on.
         let base_key = "fg=T:color-text;fs=L:1234";
@@ -1886,7 +1886,7 @@ mod tests {
 
     #[test]
     fn breakpoint_media_rule_wraps_class_in_media_query() {
-        use runtime_core::Breakpoint;
+        use runtime_shared::Breakpoint;
         // The overlay body is whatever `rules_to_css` produced; here we
         // pass a fixed body to pin the exact wrapping the web backend
         // inserts (and SSR emits) — single source of truth.
@@ -1899,7 +1899,7 @@ mod tests {
 
     #[test]
     fn asset_url_routes_by_kind() {
-        use runtime_core::assets::{AssetSource, AssetTag};
+        use runtime_shared::assets::{AssetSource, AssetTag};
         // Fonts link root-absolute; other bundled assets under the route.
         assert_eq!(
             asset_url(AssetTag::Font, &AssetSource::Bundled { path: "fonts/Inter-Regular.ttf" }),
@@ -1922,8 +1922,8 @@ mod tests {
 
     #[test]
     fn font_face_css_links_served_url() {
-        use runtime_core::assets::{AssetId, AssetSource, TypefaceFace};
-        use runtime_core::{FontStyle, FontWeight};
+        use runtime_shared::assets::{AssetId, AssetSource, TypefaceFace};
+        use runtime_shared::{FontStyle, FontWeight};
         let face = TypefaceFace {
             weight: FontWeight::Bold,
             style: FontStyle::Normal,
@@ -1943,7 +1943,7 @@ mod tests {
     // value in as a literal — no `var(…)` anywhere — for email.
     #[test]
     fn rules_to_css_resolved_bakes_installed_token_values() {
-        use runtime_core::Tokenized;
+        use runtime_shared::Tokenized;
         let rules = StyleRules {
             background: Some(Tokenized::token("color-surface", Color("#ffffff".into()))),
             padding_top: Some(Tokenized::token("spacing-md", Length::Px(8.0))),
@@ -1968,7 +1968,7 @@ mod tests {
     // the value embedded in the token reference — never emits var().
     #[test]
     fn rules_to_css_resolved_falls_back_to_embedded_default() {
-        use runtime_core::Tokenized;
+        use runtime_shared::Tokenized;
         let rules = StyleRules {
             color: Some(Tokenized::token("color-text", Color("#333333".into()))),
             ..Default::default()
@@ -1982,7 +1982,7 @@ mod tests {
     // path must equal the shared path when there are no tokens to bake.
     #[test]
     fn rules_to_css_resolved_matches_literal_path() {
-        use runtime_core::Tokenized;
+        use runtime_shared::Tokenized;
         let rules = StyleRules {
             background: Some(Tokenized::Literal(Color("#abcdef".into()))),
             width: Some(Tokenized::Literal(Length::Px(320.0))),

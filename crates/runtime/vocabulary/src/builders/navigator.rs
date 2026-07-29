@@ -14,8 +14,8 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives::navigator::{Route, RouteParams};
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::primitives::navigator::{Route, RouteParams};
 use runtime_scene::{item, Element};
 
 use crate::prims::{

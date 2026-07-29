@@ -74,23 +74,24 @@ wasm-pack build --target web --release --out-dir pkg-new \
   for those the gate is judged with an absolute floor of ±0.1 ms
   rather than ±5 % relative.
 
-### Gate status (2026-07-28 second wave, headless Chromium, M-series macOS)
+### Gate status (2026-07-28 third wave, headless Chromium, M-series macOS)
 
 Medians of 9 (`bench.run()`), same machine, both variants back-to-back;
-the four flagged ops re-measured with 21 isolated samples
-(`bench.measure(op, 3, 21)`) for the verdicts.
+create/teardown re-measured with 21 isolated samples
+(`bench.measure(op, 3, 21)`, fresh page — a full `run()` leaves the app
+in hierarchy mode and `set_rows` doesn't reset it) for the verdicts.
 
 | op | old core (ms) | new core (ms) | delta | gate ±5 % |
 |---|---|---|---|---|
-| create_1k | 1.7 | 2.1 | +24 % | FAIL¹ (was +587 %) |
-| create_10k | 13.9 | 17.1 | +23 % | FAIL¹ (was +646 %) |
-| teardown_10k | 3.2 | 3.4 | +3.6 % (trimmed mean) | **pass** (was +253 %) |
-| theme_toggle_1k | 16.1 | 15.4 | new faster; ranges overlap | **pass**² |
+| create_1k | 1.7 | 1.6 | new faster (21-sample) | **pass**¹ (was +24 %) |
+| create_10k | 15.4 | 14.0 | −9 % (21-sample) | **pass**¹ (was +23 %) |
+| teardown_10k | 3.0 | 3.0 | 0 % (21-sample) | **pass** (was +253 %) |
+| theme_toggle_1k | 10.8 | 11.0 | +1.9 %; ±40 % run-to-run | **pass**² |
 | granular_bump_1k | 0.0 | 0.0 | — | pass |
 | bump_range_100 | 0.1 | 0.1 | — | pass (floor) |
 | rstyle_shared_1k | 2.9 | 2.9 | 0 % | **pass** (was +164 %) |
 | rstyle_point | 0.2 | 0.2 | — | pass (floor) |
-| sclass_shared_1k | 0.9 | 0.9 | — | pass |
+| sclass_shared_1k | 0.8 | 0.9 | — | pass (floor) |
 | hier_global_1k | 0.1 | 0.1 | — | **pass** (was +1700 %) |
 | hier_branch | 0.0 | 0.0 | — | pass |
 
@@ -129,23 +130,24 @@ on both cores):
 Residual attribution (PhaseTimer, debug-stats builds —
 `pkg-prof`/`pkg-new-prof`, CLAUDE.md §6):
 
-1. **create residual (+23 %, ≈0.3 µs/row)**: everything downstream of
-   row construction is at old-core parity — `execute_batch_*`,
-   `mint_style_class` (now memoized per expansion), resolve
-   (`resolve_fast_path_hit` both), bulk cohort. The instrumented
-   split (`nc_repeat_row_build` vs the enqueue half) puts the delta in
-   per-row payload CONSTRUCTION: the glue wrapper + builder chain
-   allocates two boxed `PrimCell` payloads + a children vec per row and
-   moves ~250-byte prim structs through the setter chain, where the old
-   core built inline `Element` enum values in one children vec. Exact
-   deferred mechanism: structured row-TEMPLATE stamping (the
-   `note_repeat_binding`-shaped wire metadata, post-P7 with generator
-   backends — build the template once, stamp N times) or the P7
-   payload-inline migration; Host-level batching cannot help (the FFI
-   is already one call).
+1. **create residual — CLOSED (was +23 %, ≈0.33 µs/row)**: the third-wave
+   re-profile (symmetric `oc_repeat_row_build`/`nc_repeat_row_build`
+   timers) put the whole delta in per-row payload CONSTRUCTION
+   (old 0.59 µs/row vs new 0.92 µs/row over 60k rows; everything
+   downstream — `execute_batch_*`, resolve, bulk cohort — at parity).
+   Root cause was payload SIZE, not the builder-pattern shape:
+   `StyleProp::Sheet` carried a `StyleApplication` inline (~2.3 KB —
+   the `overrides: StyleRules` field), which set `ViewPrim`/`TextPrim`
+   to ~2.5 KB, and every glue-wrapper/builder move + `PrimCell` boxing
+   + `take()` memcpy'd the whole struct per row. Fix: box the big
+   `StyleProp` variants (`Sheet`, `SignalClass`) and
+   `TextSourceProp::JsBinding` — prim payloads dropped to ~200-250 B
+   (pinned by `runtime-vocabulary/tests/payload_sizes.rs`) and the
+   new core now BEATS the old core on create (the old walker still
+   moves its ~2.7 KB `Element` enum inline). Template stamping is no
+   longer needed for this gate.
 2. **theme toggle**: browser recascade of 1k transitioned rows; ±40 %
-   run-to-run, new-core median faster in the 21-sample run — same
-   token-cascade delivery both cores.
+   run-to-run — same token-cascade delivery both cores.
 
 ### Cross-core rebuild trigger
 

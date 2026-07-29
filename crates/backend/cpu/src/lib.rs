@@ -26,6 +26,17 @@
 //! // `surface.pixels()` now contains the rendered frame.
 //! ```
 //!
+//! ## New core (`new-core` feature)
+//!
+//! With the `new-core` feature, [`newcore::start`] mounts a
+//! scene-element tree on a `runtime_world::World` through the
+//! vocabulary's builtin handlers — `CpuBackend` implements
+//! `runtime_scene::Host` plus all 30 capability traits by UFCS
+//! delegation to this same `Backend` impl, so the rasterizer renders
+//! identical pixels on both cores (pinned byte-for-byte by
+//! `tests/newcore_parity.rs`). Additive: the old-core mount path is
+//! untouched with or without the feature.
+//!
 //! ## Scope of this MVP
 //!
 //! Implemented: View, Text, Button, Pressable, ScrollView; solid +
@@ -47,6 +58,19 @@ mod font_8x8;
 mod node;
 mod raster;
 mod surface;
+
+// Post-dispatch hook slot — UNCONDITIONAL (the fire sites live in
+// host crates, which can't see this crate's features); a no-op single
+// Cell read unless `newcore::start` installed the flush driver. See
+// the module docs for the embedder contract (the CPU backend owns no
+// scheduler — the host decides cadence).
+pub mod dispatch_hook;
+
+// New-core (idea-lite) adoption: Host + the 30 capability traits on
+// `CpuBackend`, plus the world boot + flush driver. Additive — see
+// the module docs.
+#[cfg(feature = "new-core")]
+pub mod newcore;
 
 pub use node::{CpuNode, NodeKind};
 pub use surface::{MemSurface, Surface};
@@ -142,6 +166,16 @@ impl CpuBackend {
         // charge of calling `set_viewport` and so the host is in
         // charge of when the signal updates.
         runtime_core::set_viewport_size(runtime_core::ViewportSize {
+            width: width as f32,
+            height: height as f32,
+        });
+        // New-core leg: forward the same pixel counts into the mounted
+        // world's viewport ctx (captured signal + deduped flush — the
+        // backend-web resize-listener discipline). Kept right beside
+        // the TLS write above so the two sinks can never diverge.
+        // No-op unless a new-core app is booted.
+        #[cfg(feature = "new-core")]
+        newcore::forward_viewport(runtime_core::ViewportSize {
             width: width as f32,
             height: height as f32,
         });

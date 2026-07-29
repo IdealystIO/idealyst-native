@@ -1,0 +1,21 @@
+# host-mock — the permanent NEW-CORE test substrate: a first-class
+# `runtime_scene::Host` + all-30-`runtime_vocabulary::caps::*Ops`
+# recording mock, replacing the per-suite `impl Backend for Mini` +
+# `LegacyBridge` combos so the new core's tests survive the old
+# `Backend` trait's deletion. See src/lib.rs for the op-log format and
+# the harness idioms.
+
+[package]
+name = "host-mock"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# `async-driver` so the pump module can install the manually-pumped
+# AsyncExecutor the lazy-chunk tests need (runtime_core::driver is
+# gated on it). Dev-only crate: the feature leaks nowhere shippable.
+runtime-core = { workspace = true, features = ["async-driver"] }
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true, features = ["legacy-bridge"] }
+runtime-world = { workspace = true }

@@ -561,3 +561,27 @@ pub fn wire_typeface_face(f: WireTypefaceFace) -> TypefaceFace {
         source: AssetSource::Bundled { path: "" },
     }
 }
+
+/// Inverse of `dev-server`'s `convert_out::virtual_layout_to_wire`:
+/// rebuild the in-memory layout descriptor from its wire mirror. The
+/// ONE in-memory definition is
+/// `runtime_shared::primitives::virtualizer::VirtualLayout`
+/// (re-exported through `runtime_core`; both cores share it). Matches
+/// are exhaustive so a new `WireLanes` variant fails compile here
+/// instead of silently flattening to a list. Round-trip pinned by
+/// `mock-backend/tests/wire_virtual_layout_roundtrip.rs`.
+pub fn wire_virtual_layout(
+    w: wire::WireVirtualLayout,
+) -> primitives::virtualizer::VirtualLayout {
+    use primitives::virtualizer::{Axis, Lanes, VirtualLayout};
+    let wire::WireVirtualLayout { horizontal, lanes, main_spacing, cross_spacing } = w;
+    VirtualLayout {
+        axis: if horizontal { Axis::Horizontal } else { Axis::Vertical },
+        lanes: match lanes {
+            wire::WireLanes::Fixed(n) => Lanes::Fixed(n),
+            wire::WireLanes::AutoFit { min_cross } => Lanes::AutoFit { min_cross },
+        },
+        main_spacing,
+        cross_spacing,
+    }
+}

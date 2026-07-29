@@ -49,45 +49,11 @@ use std::rc::Rc;
 // LazyState — lifecycle observable to author code via on_state.
 // ---------------------------------------------------------------------------
 
-/// Lifecycle phases of a `Element::Lazy`. Author code subscribes
-/// via [`LazyBuilder::on_state`] to render its own loading / error
-/// UI; the framework also mounts the [placeholder](LazyBuilder::placeholder)
-/// during `Loading` / `Loaded` as an immediate fallback.
-///
-/// On native targets the chunk is compiled in and rendered inline —
-/// the callback fires once with [`Rendered`](Self::Rendered) and
-/// never observes [`Loading`](Self::Loading) or [`Loaded`](Self::Loaded).
-#[derive(Clone, Debug)]
-pub enum LazyState {
-    /// Chunk fetch in flight. Web only — never observed on native.
-    Loading,
-    /// Chunk fetched and instantiated; the wrapper's async fn is
-    /// being awaited. A brief window; many authors won't bother
-    /// distinguishing this from `Loading`.
-    Loaded,
-    /// The chunk's `app()` returned and the subtree was mounted.
-    Rendered,
-    /// Fetch or invocation failed. The string is the underlying
-    /// error, suitable for logging. Author decides whether to retry,
-    /// fall back permanently, or surface to the user.
-    Error(String),
-}
-
-impl LazyState {
-    /// Convenience predicate for "show the placeholder" UI states.
-    pub fn is_loading(&self) -> bool {
-        matches!(self, LazyState::Loading | LazyState::Loaded)
-    }
-
-    /// Convenience predicate for "load failed" UI state.
-    pub fn is_error(&self) -> bool {
-        matches!(self, LazyState::Error(_))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// LazyLoader — the load closure carried by Element::Lazy.
-// ---------------------------------------------------------------------------
+// The data/handle/Ops types of this primitive moved to `runtime-shared`
+// (the walker-free half); this file keeps the Element/Bound builder
+// surface (and its tests). The wildcard re-export preserves every old
+// path.
+pub use runtime_shared::primitives::lazy::*;
 
 /// Future that resolves to the chunk's `Element`, or an `Err` carrying a
 /// human-readable failure message when the chunk can't be loaded (web:
@@ -100,56 +66,6 @@ impl LazyState {
 /// wrong, so the same message shape works on every backend.
 pub type LazyFuture = Pin<Box<dyn Future<Output = Result<Element, String>>>>;
 
-/// Failure handed to a lazy component's [`.error(..)`](LazyBuilder::on_error)
-/// UI when its chunk can't load. Carries the failure `message` and a `retry`
-/// handle that re-drives the load (re-running the loader under the chunk's
-/// reactive scope). Cheap to clone — both fields are `Rc`.
-///
-/// Wire `retry` straight into a button:
-/// ```ignore
-/// .on_error(|e: &LazyError| ui! {
-///     view {
-///         text { format!("Couldn't load: {}", e.message()) }
-///         Button(label = "Retry", on_press = e.retry())
-///     }
-/// })
-/// ```
-#[derive(Clone)]
-pub struct LazyError {
-    message: Rc<str>,
-    retry: Rc<dyn Fn()>,
-}
-
-impl LazyError {
-    /// Construct a `LazyError`. Framework-internal — the walker builds these
-    /// from a loader's `Err(message)` plus the retry closure it owns. Author
-    /// code receives them, never constructs them.
-    #[doc(hidden)]
-    pub fn __new(message: impl Into<Rc<str>>, retry: Rc<dyn Fn()>) -> Self {
-        Self { message: message.into(), retry }
-    }
-
-    /// The failure detail (network error, missing chunk, panic in the body).
-    /// Suitable for display or logging.
-    pub fn message(&self) -> &str {
-        &self.message
-    }
-
-    /// A handle that re-attempts the load when called. Clone-cheap; pass it
-    /// straight to an `on_press` / `on_click`:
-    /// `Button(label = "Retry", on_press = err.retry())`.
-    pub fn retry(&self) -> Rc<dyn Fn()> {
-        self.retry.clone()
-    }
-}
-
-impl std::fmt::Debug for LazyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // The `retry` closure isn't printable; message is the useful part.
-        f.debug_struct("LazyError").field("message", &self.message).finish_non_exhaustive()
-    }
-}
-
 /// Closure that begins loading the chunk and returns a future for
 /// the result. On native this resolves synchronously (the chunk
 /// crate's `app()` is compiled in); on wasm the future awaits the
@@ -160,34 +76,11 @@ impl std::fmt::Debug for LazyError {
 /// `lazy!` macro) — author code should never construct this by hand.
 pub type LazyLoader = Box<dyn Fn() -> LazyFuture>;
 
-// ---------------------------------------------------------------------------
-// Config slots for the `#[component(lazy)]` generated props.
-// ---------------------------------------------------------------------------
-//
-// A lazy component's call site (`ui! { Profile(id = 5, loading = || …) }`) sets
-// `loading` / `error` like any prop, and `ui!` coerces each value with
-// `.into()`. These newtypes give that `.into()` a target: a blanket `From`
-// over any `Fn() -> impl IntoElement` closure, so authors write a normal
-// `ui!`-returning closure and the slot wraps + `IntoElement`-coerces it. The
-// `#[component(lazy)]` macro generates these fields; author code never names
-// the types directly.
-
 /// The loading-UI slot on a lazy component's props. Wraps a `Fn() -> impl
 /// IntoElement` closure. Default: empty (an empty view while loading).
 #[cfg(feature = "prim-lazy")]
 #[derive(Default, Clone)]
 pub struct LazyLoadingUi(Option<Rc<dyn Fn() -> Element>>);
-
-#[cfg(feature = "prim-lazy")]
-impl<F, R> From<F> for LazyLoadingUi
-where
-    F: Fn() -> R + 'static,
-    R: crate::builder::IntoElement,
-{
-    fn from(f: F) -> Self {
-        LazyLoadingUi(Some(Rc::new(move || f().into_element())))
-    }
-}
 
 #[cfg(feature = "prim-lazy")]
 impl LazyLoadingUi {
@@ -209,17 +102,6 @@ impl LazyLoadingUi {
 pub struct LazyErrorUi(Option<Rc<dyn Fn(&LazyError) -> Element>>);
 
 #[cfg(feature = "prim-lazy")]
-impl<F, R> From<F> for LazyErrorUi
-where
-    F: Fn(&LazyError) -> R + 'static,
-    R: crate::builder::IntoElement,
-{
-    fn from(f: F) -> Self {
-        LazyErrorUi(Some(Rc::new(move |e| f(e).into_element())))
-    }
-}
-
-#[cfg(feature = "prim-lazy")]
 impl LazyErrorUi {
     /// Framework-internal: unwrap the error builder for the walker.
     #[doc(hidden)]
@@ -227,10 +109,6 @@ impl LazyErrorUi {
         self.0
     }
 }
-
-// ---------------------------------------------------------------------------
-// LazyBuilder + lazy_split() constructor — author surface (via macro).
-// ---------------------------------------------------------------------------
 
 /// Builder produced by [`lazy_split`]. Use `.on_state(...)`,
 /// `.placeholder(...)`, and `.with_style(...)` to configure, then
@@ -402,10 +280,6 @@ where
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(all(test, feature = "prim-lazy"))]
 mod tests {
     use super::*;
@@ -482,4 +356,26 @@ mod tests {
         let _ = make_loader();
     }
 
+}
+
+#[cfg(feature = "prim-lazy")]
+impl<F, R> From<F> for LazyLoadingUi
+where
+    F: Fn() -> R + 'static,
+    R: crate::builder::IntoElement,
+{
+    fn from(f: F) -> Self {
+        LazyLoadingUi(Some(Rc::new(move || f().into_element())))
+    }
+}
+
+#[cfg(feature = "prim-lazy")]
+impl<F, R> From<F> for LazyErrorUi
+where
+    F: Fn(&LazyError) -> R + 'static,
+    R: crate::builder::IntoElement,
+{
+    fn from(f: F) -> Self {
+        LazyErrorUi(Some(Rc::new(move |e| f(e).into_element())))
+    }
 }

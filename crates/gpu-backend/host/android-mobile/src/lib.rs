@@ -34,3 +34,9 @@ mod android;
 
 #[cfg(target_os = "android")]
 pub use android::{mount, AndroidHostHandle, MountError};
+
+// idea-lite core migration: the new-core mount seam. Same handle type,
+// same wgpu path — the tree realizes into the embedding app's world
+// through `render_wgpu::newcore::start_in_world` (see `android.rs`).
+#[cfg(all(target_os = "android", feature = "new-core"))]
+pub use android::mount_newcore;

@@ -2,9 +2,9 @@
 
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives;
-use runtime_core::{SafeAreaSides, VirtualizerCallbacks};
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::primitives;
+use runtime_shared::{SafeAreaSides, VirtualizerCallbacks};
 use runtime_scene::Host;
 
 use super::noop;

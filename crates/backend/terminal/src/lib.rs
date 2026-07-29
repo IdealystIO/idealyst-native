@@ -12,9 +12,37 @@
 //! **terminal cell** (1 col x 1 row), not pixel — author stylesheets
 //! that say `width: 40` get 40 columns wide.
 
+//! # New core (`new-core` feature)
+//!
+//! The crate also carries the idea-lite (new-core) mount leg:
+//! [`newcore::start`] mounts a scene-element tree on a
+//! `runtime_world::World` through the vocabulary's builtin handlers,
+//! with [`TerminalBackend`] implementing `runtime_scene::Host` + all 30
+//! capability traits directly and a dispatch-hook flush driver (input
+//! events → staged writes → one deduped flush before the next paint;
+//! timers through the host scheduler, which fires [`dispatch_hook`]
+//! after author callbacks). The grid mechanism (`render_to_grid`,
+//! hit-testing, Taffy layout) is shared verbatim, so the same scene
+//! paints the same cells on both cores — pinned by
+//! `tests/newcore_parity.rs`. Additive: the old-core mount path is
+//! untouched with or without the feature. The live crossterm loop's
+//! new-core leg is `host_terminal::newcore::run`.
+
 mod handles;
 mod node;
 mod render;
+
+// Post-dispatch hook slot — UNCONDITIONAL (the fire sites live in
+// host-terminal's scheduler, which can't see this crate's features);
+// a no-op single Cell read unless `newcore::start` installed the
+// flush driver.
+pub mod dispatch_hook;
+
+// New-core (idea-lite) adoption: Host + the 30 capability traits on
+// `TerminalBackend`, plus the world boot + flush driver. Additive —
+// see the module docs.
+#[cfg(feature = "new-core")]
+pub mod newcore;
 
 pub use node::{NodeKind, TermNode};
 pub use render::{Cell, Grid};
@@ -319,6 +347,15 @@ impl TerminalBackend {
         // case ("is the terminal wide enough for a sidebar?")
         // generally only cares about cell counts.
         runtime_core::set_viewport_size(runtime_core::ViewportSize {
+            width: cols as f32,
+            height: rows as f32,
+        });
+        // New-core leg: forward the same cell counts into the mounted
+        // world's viewport ctx (captured signal + deduped flush — the
+        // backend-web resize-listener discipline). No-op unless a
+        // new-core app is booted.
+        #[cfg(feature = "new-core")]
+        newcore::forward_viewport(runtime_core::ViewportSize {
             width: cols as f32,
             height: rows as f32,
         });

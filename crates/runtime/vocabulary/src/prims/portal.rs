@@ -9,8 +9,8 @@
 
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives::portal::{PortalHandle, PortalTarget};
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::primitives::portal::{PortalHandle, PortalTarget};
 use runtime_world::ReadSignal;
 
 use crate::style_attach::StyleProp;
@@ -30,7 +30,7 @@ pub struct PortalPrim {
 }
 
 /// Per-screen navigation context — the NEW-core port of
-/// `runtime_core::primitives::navigator::ScreenNav` (which carries an
+/// `runtime_shared::primitives::navigator::ScreenNav` (which carries an
 /// old-arena `Signal` and therefore can't cross cores). The navigator
 /// handler's `mount_screen` must `provide` one of these into each
 /// screen's scope; the portal handler `inject`s it and installs the

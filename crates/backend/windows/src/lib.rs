@@ -52,6 +52,16 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::Win32::Foundation::RECT;
 
+// Post-dispatch flush-hook slot (new-core flush driver). Unconditional
+// — the fire sites live in the out-of-repo host shell, which cannot
+// see this crate's features; no-op default so the old core never pays.
+pub mod dispatch_hook;
+
+// New-core (idea-lite) adoption: Host + all 30 caps traits on
+// `WindowsBackend`, UFCS-delegating to the `Backend` impl below.
+#[cfg(feature = "new-core")]
+pub mod newcore;
+
 // STATIC control style constants. The `windows` crate dropped these
 // from its `WindowsAndMessaging` re-exports somewhere between 0.5x and
 // 0.58 (they're not part of the metadata Microsoft ships anymore;

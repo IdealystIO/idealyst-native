@@ -14,3 +14,10 @@ runtime-core = { workspace = true }
 [features]
 default = []
 runtime-server = ["host-winit/runtime-server"]
+# idea-lite core migration: compile in `variant_tv::newcore::run` —
+# the new-core boot entries over `host_winit::newcore` (same window
+# profile as the old `run`). Off by default so the old-core build path
+# is unchanged. `runtime-server` stays old-core-only (named seam: the
+# native runtime-server shells render an old-core dev host's wire
+# stream — see src/newcore.rs).
+new-core = ["host-winit/new-core", "render-wgpu/new-core"]

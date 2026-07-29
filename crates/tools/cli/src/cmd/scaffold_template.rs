@@ -207,6 +207,12 @@ fn project_cargo_toml(
     // the old `crates/framework/core`). Pointing at the stale path makes a
     // path-dep'd scaffold fail to resolve `runtime-core`.
     let fcore_dep = source.dep("crates/runtime/core", &[]);
+    // Runtime-v2 (new core, the default) alias target + glue-path deps.
+    // Optional — pulled in by the `new-core` feature below.
+    let facade_dep = source.dep("crates/runtime/facade", &[]);
+    let vocab_dep = source.dep("crates/runtime/vocabulary", &[]);
+    let scene_dep = source.dep("crates/runtime/scene", &[]);
+    let dev_server_dep = source.dep("crates/dev/server", &[]);
 
     format!(
         r##"[package]
@@ -234,8 +240,41 @@ crate-type = ["rlib"]
 # every `#[component]` plus dependency-provided catalog entries (icon sets,
 # …) surface. See the `catalog_wrapper` module in the CLI.
 
+[features]
+# Runtime-v2 defaults flip: fresh projects build and run on the NEW
+# core by default (`idealyst dev` / `idealyst build` with no flags).
+# The CLI's `--old-core` compiles `default-features = false,
+# features = ["old-core"]` instead — one build graph carries exactly
+# one core (see docs/migrating-to-runtime-v2.md).
+default = ["new-core"]
+
+# The dual-core app convention: `new-core` flips this crate's SAME
+# source onto runtime v2 via the `extern crate runtime_facade as
+# runtime_core;` alias in lib.rs, and provides the scene-registry
+# registration seams the generated wrappers call
+# (`register_scene_extensions`, `scene_app`).
+new-core = [
+    "dep:runtime-facade",
+    "dep:runtime-vocabulary",
+    "dep:runtime-scene",
+    "dev-server?/new-core",
+]
+
+# Old-core marker for the CLI's single-core pin. The old-core deps are
+# unconditional, so this is an empty set.
+old-core = []
+
+# `sidecar`: enabled ONLY by the CLI-generated runtime-server sidecar
+# wrapper (`idealyst dev`). Pulls `dev-server` so the recorder-side
+# registration seams compile.
+sidecar = ["dep:dev-server"]
+
 [dependencies]
 runtime-core = {fcore_dep}
+runtime-facade = {facade_dep_opt}
+runtime-vocabulary = {vocab_dep_opt}
+runtime-scene = {scene_dep_opt}
+dev-server = {dev_server_dep_opt}
 
 # Idealyst project config. The CLI reads this on `idealyst build`,
 # `idealyst run`, `idealyst dev`, etc.
@@ -255,7 +294,18 @@ version   = "0.0.1"
 # leave this alone and invoke them directly.
 targets   = ["web"]
 "##,
+        facade_dep_opt = optional_dep(&facade_dep),
+        vocab_dep_opt = optional_dep(&vocab_dep),
+        scene_dep_opt = optional_dep(&scene_dep),
+        dev_server_dep_opt = optional_dep(&dev_server_dep),
     )
+}
+
+/// Splice `optional = true` into a `source.dep(..)`-produced dep spec
+/// (`{ path = "…" }` / `{ git = "…", rev = "…" }`).
+fn optional_dep(dep: &str) -> String {
+    let inner = dep.trim().trim_start_matches('{').trim_end_matches('}').trim();
+    format!("{{ {inner}, optional = true }}")
 }
 
 fn project_index_html(title: &str, lib_name: &str) -> String {

@@ -569,4 +569,127 @@ mod tests {
         });
         assert!(glue.is_none(), "generic components stay on the legacy path");
     }
+
+    // ------------------------------------------------------------------
+    // `#[component(lazy)]` emission battery (lazy_component.rs's glue,
+    // reached through try_expand). The shared shape is pinned once; the
+    // `__lazy_body` chunk fn differs by core and is pinned per leg.
+    // ------------------------------------------------------------------
+
+    fn expand_lazy(attr_tokens: TokenStream2, fn_tokens: TokenStream2) -> String {
+        let mut item_fn: ItemFn = syn::parse2(fn_tokens).unwrap();
+        let attr = parse_component_attr(attr_tokens).unwrap();
+        let glue = try_expand(&mut item_fn, &attr)
+            .unwrap()
+            .expect("lazy components always take the inline glue path");
+        squash(glue)
+    }
+
+    #[test]
+    fn lazy_emits_wasm_split_boundary_and_config_fields() {
+        let glue = expand_lazy(
+            quote! { lazy },
+            quote! { fn Panel(id: u32) -> Element { body() } },
+        );
+        // Chunk boundary: the readable split-module name + the attribute
+        // path both cores share (retargeted under new-core).
+        assert!(glue.contains("wasm_split(__idealyst_lazy_Panel)"), "{glue}");
+        assert!(
+            glue.contains("use::runtime_core::__wasm_splitaswasm_split"),
+            "{glue}"
+        );
+        // The generated props struct gains the loading/error config slots.
+        assert!(
+            glue.contains("publoading:::runtime_core::primitives::lazy::LazyLoadingUi"),
+            "{glue}"
+        );
+        assert!(
+            glue.contains("puberror:::runtime_core::primitives::lazy::LazyErrorUi"),
+            "{glue}"
+        );
+        // One-shot loader (no `retryable`): take-once cell, loud on reuse.
+        assert!(glue.contains("invokedtwicewithout`retryable`"), "{glue}");
+        assert!(!glue.contains("derive(::core::clone::Clone)"), "{glue}");
+        // Builder wiring: lazy_split + placeholder/on_error config.
+        assert!(
+            glue.contains("::runtime_core::primitives::lazy::lazy_split"),
+            "{glue}"
+        );
+    }
+
+    #[test]
+    fn lazy_retryable_derives_clone_and_clones_props_per_attempt() {
+        let glue = expand_lazy(
+            quote! { lazy, retryable },
+            quote! { fn Panel(id: u32) -> Element { body() } },
+        );
+        assert!(glue.contains("derive(::core::clone::Clone)"), "{glue}");
+        assert!(glue.contains("::core::clone::Clone::clone(&__props)"), "{glue}");
+        assert!(!glue.contains("invokedtwicewithout"), "{glue}");
+    }
+
+    #[test]
+    fn lazy_zero_params_takes_inline_glue_path() {
+        // Zero-arg lazy components are common (route screens); they must
+        // NOT fall back to the legacy empty-marker path — the chunk glue
+        // needs the generated struct for the loading/error fields.
+        let glue = expand_lazy(quote! { lazy }, quote! { fn Screen() -> Element { body() } });
+        assert!(glue.contains("wasm_split(__idealyst_lazy_Screen)"), "{glue}");
+        assert!(glue.contains("publoading"), "{glue}");
+    }
+
+    /// DEFAULT-leg byte stability: the old core's chunk fn constructs the
+    /// component's `Element` inside the loader future — the pre-new-core
+    /// emission, byte-for-byte.
+    #[cfg(not(feature = "new-core"))]
+    #[test]
+    fn lazy_default_leg_chunk_fn_builds_element() {
+        let glue = expand_lazy(
+            quote! { lazy },
+            quote! { fn Panel(id: u32) -> Element { body() } },
+        );
+        assert!(
+            glue.contains(
+                "asyncfn__lazy_body(props:PanelProps)->::runtime_core::Element{\
+                 ::runtime_core::IntoElement::into_element(Panel(props.id))}"
+            ),
+            "{glue}"
+        );
+        assert!(!glue.contains("LazyBodyThunk"), "{glue}");
+    }
+
+    /// NEW-core leg: the chunk fn returns a body THUNK — construction is
+    /// deferred to the vocabulary lazy handler's swap effect, which runs
+    /// with the world entered inside `component_scope` (a naked executor
+    /// poll has no ambient world; building there would panic). See
+    /// lazy_component.rs + runtime-vocabulary's `prims::lazy` docs.
+    #[cfg(feature = "new-core")]
+    #[test]
+    fn lazy_new_core_leg_chunk_fn_returns_body_thunk() {
+        let glue = expand_lazy(
+            quote! { lazy },
+            quote! { fn Panel(id: u32) -> Element { body() } },
+        );
+        assert!(
+            glue.contains(
+                "asyncfn__lazy_body(props:PanelProps,)\
+                 ->::runtime_core::primitives::lazy::LazyBodyThunk"
+            ),
+            "{glue}"
+        );
+        // Explicitly-typed thunk binding (NOT a bare `Box::new` tail):
+        // the wasm `#[wasm_split]` expansion re-homes the body inside
+        // `Box::pin(async move { … })`, whose tail has no coercion
+        // context — without the annotation the closure never unsizes to
+        // `Box<dyn FnOnce() -> Element>` (caught on the first live
+        // wasm32 website build).
+        assert!(
+            glue.contains(
+                "let__thunk:::runtime_core::primitives::lazy::LazyBodyThunk=\
+                 ::std::boxed::Box::new(move||{\
+                 ::runtime_core::IntoElement::into_element(Panel(props.id))});__thunk"
+            ),
+            "{glue}"
+        );
+    }
 }

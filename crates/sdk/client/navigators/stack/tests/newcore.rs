@@ -3,139 +3,45 @@
 //! .retention(…).bind(nav)`, per-screen header options via
 //! `StackScreenExt` (`Screen::new(x).title("…")`), and
 //! `header_state(&nav.screen_chrome)` — mounted through the
-//! vocabulary's stack handler on a minimal recording backend. Covers:
+//! vocabulary's stack handler on the shared `host-mock` recording
+//! substrate (crates/dev/host-mock): the caps surface implemented
+//! natively, no old-core `Backend`, no `LegacyBridge`. Covers:
 //! same-source mount, push/pop round-trip through the bound
 //! `Ref<StackHandle>`, the header-options carrier (chrome republished
 //! per navigation, downcast-or-default), and `link(route = …)` pushing
 //! inside a stack screen.
 #![cfg(feature = "new-core")]
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives::link::LinkConfig;
-use runtime_core::{Backend, StyleRules};
-use runtime_scene::{realize, Registry};
+use host_mock::Harness;
 use runtime_vocabulary::builders::{text, view};
 use runtime_vocabulary::glue::{IntoElement, Ref};
-use runtime_vocabulary::register_builtins;
-use runtime_vocabulary::LegacyBridge;
-use runtime_world::World;
 use stack_navigator::{
     header_state, Route, Screen, StackBuilder, StackContext, StackHandle, StackNavigator,
     StackRetention, StackScreenExt,
 };
 
-// ===========================================================================
-// Minimal recording backend (vocab-test harness pattern)
-// ===========================================================================
-
-type Log = Rc<RefCell<Vec<String>>>;
-type Activations = Rc<RefCell<Vec<Rc<dyn Fn()>>>>;
-
-struct Mini {
-    log: Log,
-    next: u32,
-    link_activations: Activations,
-}
-
-impl Mini {
-    fn mint(&mut self, kind: &str) -> u32 {
-        let n = self.next;
-        self.next += 1;
-        self.log.borrow_mut().push(format!("create n{n} {kind}"));
-        n
-    }
-}
-
-impl Backend for Mini {
-    type Node = u32;
-
-    fn create_view(&mut self, _a11y: &AccessibilityProps) -> u32 {
-        self.mint("view")
-    }
-
-    fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> u32 {
-        let n = self.next;
-        self.next += 1;
-        self.log
-            .borrow_mut()
-            .push(format!("create n{n} text {content:?}"));
-        n
-    }
-
-    fn create_button(
-        &mut self,
-        label: &str,
-        _on_click: &runtime_core::Action,
-        _leading: Option<&runtime_core::IconData>,
-        _trailing: Option<&runtime_core::IconData>,
-        _a11y: &AccessibilityProps,
-    ) -> u32 {
-        let n = self.next;
-        self.next += 1;
-        self.log
-            .borrow_mut()
-            .push(format!("create n{n} button {label:?}"));
-        n
-    }
-
-    fn create_link(&mut self, config: LinkConfig, _a11y: &AccessibilityProps) -> u32 {
-        self.link_activations.borrow_mut().push(config.on_activate);
-        self.mint("link")
-    }
-
-    fn update_text(&mut self, _node: &u32, _content: &str) {}
-    fn update_link_url(&mut self, _node: &u32, _url: &str) {}
-    fn apply_style(&mut self, _node: &u32, _style: &Rc<StyleRules>) {}
-    fn on_node_unstyled(&mut self, _node: &u32) {}
-    fn mark_container(&mut self, _node: &u32) {}
-
-    fn insert(&mut self, parent: &mut u32, child: u32) {
-        self.log
-            .borrow_mut()
-            .push(format!("insert n{parent} <- n{child}"));
-    }
-
-    fn clear_children(&mut self, node: &u32) {
-        self.log.borrow_mut().push(format!("clear_children n{node}"));
-    }
-
-    fn finish(&mut self, _root: u32) {}
-}
-
-struct Harness {
-    world: World,
-    backend: Rc<RefCell<LegacyBridge<Mini>>>,
-    registry: Rc<Registry<LegacyBridge<Mini>>>,
-    log: Log,
-    link_activations: Activations,
-}
-
 fn harness() -> Harness {
-    let log: Log = Rc::new(RefCell::new(Vec::new()));
-    let link_activations: Activations = Rc::new(RefCell::new(Vec::new()));
-    let backend = Rc::new(RefCell::new(LegacyBridge(Mini {
-        log: log.clone(),
-        next: 0,
-        link_activations: link_activations.clone(),
-    })));
-    let mut registry = Registry::new();
-    register_builtins(&mut registry);
-    Harness {
-        world: World::new(),
-        backend,
-        registry: Rc::new(registry),
-        log,
-        link_activations,
-    }
-}
-
-impl Harness {
-    fn take_log(&self) -> Vec<String> {
-        std::mem::take(&mut *self.log.borrow_mut())
-    }
+    let h = Harness::new();
+    // Mirror the historical Mini's recorded op set (creates / insert /
+    // clear_children only): style + state families the mock now records
+    // stay out of the log so the suite's expectations carry unchanged.
+    h.mute(&[
+        "apply_style",
+        "on_node_unstyled",
+        "mark_container",
+        "attach_states",
+        "set_disabled",
+        "attach_html_class",
+        "register_stylesheet",
+        "unregister_stylesheet",
+        "install_tokens",
+        "update_tokens",
+        "update_text",
+    ]);
+    h
 }
 
 const ROOT: Route<()> = Route::new("root", "/");
@@ -200,7 +106,7 @@ fn mount_app(h: &Harness, retention: StackRetention) -> (runtime_scene::Realized
             .bind(nav)
             .into_element()
     };
-    let realized = h.world.enter(|| realize(&h.backend, &h.registry, element));
+    let realized = h.mount(element);
     (realized, App { nav, chrome })
 }
 
@@ -296,10 +202,10 @@ fn link_route_pushes_in_a_stack_screen() {
         .retention(StackRetention::Retain)
         .bind(nav)
         .into_element();
-    let _realized = h.world.enter(|| realize(&h.backend, &h.registry, element));
+    let _realized = h.mount(element);
     h.take_log();
 
-    let activate = h.link_activations.borrow()[0].clone();
+    let activate = h.shared.link_activations.borrow()[0].clone();
     activate();
     h.world.flush();
 

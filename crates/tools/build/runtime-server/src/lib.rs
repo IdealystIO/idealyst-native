@@ -69,6 +69,22 @@ pub struct BuildOptions {
     /// with a path-dep gets a wrapper that uses the same path — no
     /// local-checkout-alongside-the-project assumption.
     pub source: FrameworkSource,
+    /// Build the sidecar against the NEW core (`idealyst dev --web
+    /// --new-core`): the user crate compiles single-core
+    /// (`default-features = false, features = ["new-core", "sidecar"]`,
+    /// the same convention as build-web/build-ssr wrappers), dev-server
+    /// gains its `new-core` feature, and the generated `main` calls
+    /// `dev_server::sidecar::run_newcore({lib}::app,
+    /// {lib}::register_scene_extensions_recorder)` — per-session
+    /// `World` + `realize` instead of the old-core walker.
+    ///
+    /// The host wrapper also drops the hot-patch adapter: the
+    /// `#[component]` macro's new-core emission has no `dev_hot` split
+    /// yet, so a subsecond jump table could not rebind patched bodies —
+    /// applying one would silently re-render OLD code. Passing `None`
+    /// rides the host's rebuild-and-respawn path instead (saves still
+    /// apply live; sidecar state doesn't survive them).
+    pub new_core: bool,
 }
 
 #[derive(Debug)]
@@ -119,7 +135,14 @@ fn build_sidecar_mode(
     let sidecar_dir = wrapper_root.join("runtime-server/app");
     let cargo_target = opts.source.cargo_target_dir(project_dir);
 
-    generate_sidecar_wrapper(&sidecar_dir, project_dir, &opts.source, &cargo_target, manifest)?;
+    generate_sidecar_wrapper(
+        &sidecar_dir,
+        project_dir,
+        &opts.source,
+        &cargo_target,
+        manifest,
+        opts.new_core,
+    )?;
     generate_host_wrapper(
         &wrapper_dir,
         &sidecar_dir,
@@ -127,6 +150,7 @@ fn build_sidecar_mode(
         &opts.source,
         &cargo_target,
         manifest,
+        opts.new_core,
     )?;
 
     // Captures dir for the sidecar's fat build. The hot-patch
@@ -246,6 +270,7 @@ fn generate_sidecar_wrapper(
     source: &FrameworkSource,
     cargo_target: &Path,
     manifest: &Manifest,
+    new_core: bool,
 ) -> Result<()> {
     fs::create_dir_all(sidecar_dir.join("src"))
         .with_context(|| format!("create {}", sidecar_dir.display()))?;
@@ -264,7 +289,41 @@ fn generate_sidecar_wrapper(
     // runtime-core/dev` at cargo invocation; the sidecar build is
     // driven by build-runtime-server (not the launcher's cargo
     // command), so we declare it on the dep here instead.
-    let fcore_dep = source.dep("crates/runtime/core", &["hot-reload", "dev"]);
+    let fcore_dep = if new_core {
+        // `dev` (= robot + catalog) is ON again under --new-core (wave
+        // 2b catalog re-anchor): the recipes that used to make
+        // `runtime-core/catalog` unbuildable in a new-core graph
+        // (`recipes.rs` compiled `ui!` bodies inside runtime-core,
+        // where the graph-wide new-core emission can't resolve) are now
+        // STATIC data in `runtime_shared::recipes`, so runtime-core's
+        // `catalog` is emission-gate + anchor only and compiles under
+        // either macro lowering. This dep line covers crates in the
+        // sidecar graph that compile against the REAL runtime-core;
+        // facade-aliased crates get their anchor from `runtime-facade/
+        // dev` below. `hot-reload` stays dropped — the new-core
+        // `#[component]` emission has no dev_hot split, so the feature
+        // only inflates the build.
+        source.dep("crates/runtime/core", &["dev"])
+    } else {
+        source.dep("crates/runtime/core", &["hot-reload", "dev"])
+    };
+    // New-core only: the facade's `dev` feature (robot + catalog)
+    // switches the catalog + automation surface on for the ALIASED half
+    // of the graph — `runtime-macros/catalog` (the emission gate, which
+    // unifies build-graph-wide) + `runtime-vocabulary/catalog` (the
+    // `glue::__mcp` anchor the retargeted emission resolves) +
+    // `runtime-vocabulary/robot` (the element registry the session's
+    // verb router dispatches against). Without it the user crate's
+    // `#[component]`s never register and `--new-core` sessions have no
+    // MCP catalog — the pre-wave-2b gap.
+    let facade_dep_line = if new_core {
+        format!(
+            "runtime-facade = {}\n",
+            source.dep("crates/runtime/facade", &["dev"])
+        )
+    } else {
+        String::new()
+    };
     // `runtime-server` is dev-server's opt-in for both `host::run` and
     // `sidecar::run`. It pulls `dev-hot`, `subsecond-types`,
     // `libc`, and `anyhow` into the wrapper transitively — we no
@@ -277,7 +336,14 @@ fn generate_sidecar_wrapper(
     // engine crate, not the whole GPU stack). The sidecar already runs
     // the Robot bridge (`runtime-core/dev` → `robot`), so this only
     // adds the verb + the offscreen renderer.
-    let dev_server_dep = source.dep("crates/dev/server", &["runtime-server", "screenshot"]);
+    let dev_server_dep = if new_core {
+        // `new-core` adds the recorder's caps adoption + `run_newcore`
+        // (per-session World + realize) on top of the runtime-server
+        // machinery — the wire protocol out the other side is identical.
+        source.dep("crates/dev/server", &["runtime-server", "screenshot", "new-core"])
+    } else {
+        source.dep("crates/dev/server", &["runtime-server", "screenshot"])
+    };
 
     let cargo_toml = format!(
         r#"# GENERATED by `idealyst build aas`. Do not edit — rewritten
@@ -299,13 +365,15 @@ edition = "2021"
 
 [dependencies]
 runtime-core = {fcore_dep}
-dev-server = {dev_server_dep}
+{facade_dep_line}dev-server = {dev_server_dep}
 # `sidecar` feature: pulls the user crate's recorder-side extension
 # registration (navigator recording handlers) + its `dev-server` dep, so
-# the generated `register_extensions_recorder` resolves. Distinct from
-# the web wrapper's `runtime-server` feature (which must NOT pull
-# dev-server — it'd break the wasm client build).
-{user_name} = {{ path = "{user_path}", features = ["sidecar"] }}
+# the generated register fn resolves. Distinct from the web wrapper's
+# `runtime-server` feature (which must NOT pull dev-server — it'd break
+# the wasm client build). Under `--new-core` the user crate compiles
+# single-core (`default-features = false` + `new-core`), the dual-core
+# app convention shared with the build-web / build-ssr wrappers.
+{user_name} = {user_dep}
 
 # Sidecar is short-lived dev infra — strip everything that costs
 # link time. debug = 0 cuts ~half the link work; the patch dylib's
@@ -317,15 +385,46 @@ strip = "debuginfo"
 "#,
         sidecar_name = sidecar_name,
         fcore_dep = fcore_dep,
+        facade_dep_line = facade_dep_line,
         dev_server_dep = dev_server_dep,
         user_name = manifest.name,
-        user_path = project_dir.display(),
+        user_dep = if new_core {
+            format!(
+                "{{ path = \"{}\", default-features = false, features = [\"new-core\", \"sidecar\"] }}",
+                project_dir.display(),
+            )
+        } else if build_ios::declares_feature(project_dir, "old-core") {
+            // Dual-core apps default to new-core since the runtime-v2
+            // defaults flip — the old-core sidecar must pin single-core.
+            format!(
+                "{{ path = \"{}\", default-features = false, features = [\"old-core\", \"sidecar\"] }}",
+                project_dir.display(),
+            )
+        } else {
+            format!("{{ path = \"{}\", features = [\"sidecar\"] }}", project_dir.display())
+        },
         patch_block = source.patch_block(),
     );
 
 
-    let main_rs = format!(
-        r#"//! GENERATED by `idealyst build aas`. Sidecar binary for the
+    let main_rs = if new_core {
+        format!(
+            r#"//! GENERATED by `idealyst build aas` (`--new-core`). Sidecar binary
+//! for the split-process runtime-server dev host, NEW-core leg:
+//! each session mounts the user's scene through
+//! `dev_server::newcore::SceneSession` (per-session `World` +
+//! `realize`). The wire protocol out the other side is identical to
+//! the old-core sidecar's — clients can't tell the cores apart.
+
+fn main() -> std::io::Result<()> {{
+    dev_server::sidecar::run_newcore({lib}::app, {lib}::register_scene_extensions_recorder)
+}}
+"#,
+            lib = manifest.lib_name,
+        )
+    } else {
+        format!(
+            r#"//! GENERATED by `idealyst build aas`. Sidecar binary for the
 //! split-process runtime-server dev host. Delegates the entire frame loop to
 //! `dev_server::sidecar::run` — anything beyond pointing at the
 //! user crate's `app()` belongs in that library function, not
@@ -335,8 +434,9 @@ fn main() -> std::io::Result<()> {{
     dev_server::sidecar::run({lib}::app, {lib}::register_extensions_recorder)
 }}
 "#,
-        lib = manifest.lib_name,
-    );
+            lib = manifest.lib_name,
+        )
+    };
 
     write_shared_target_config(sidecar_dir, cargo_target)?;
     fs::write(sidecar_dir.join("Cargo.toml"), cargo_toml)?;
@@ -356,6 +456,7 @@ fn generate_host_wrapper(
     source: &FrameworkSource,
     cargo_target: &Path,
     manifest: &Manifest,
+    new_core: bool,
 ) -> Result<()> {
     fs::create_dir_all(wrapper_dir.join("src"))
         .with_context(|| format!("create {}", wrapper_dir.display()))?;
@@ -468,17 +569,7 @@ fn main() -> std::io::Result<()> {{
     let captures_dir = PathBuf::from("{captures_dir}");
     let patch_target_dir = PathBuf::from("{patch_target_dir}");
 
-    let hot_patch: Option<Box<dyn HotPatchAdapter>> =
-        match HotPatchBuilder::new(captures_dir, &sidecar_path, patch_target_dir) {{
-            Ok(b) => Some(Box::new(BuilderAdapter(b))),
-            Err(e) => {{
-                eprintln!(
-                    "[runtime-server-host] hot-patch builder init failed: {{e:#}} — \
-                     falling back to respawn on every change"
-                );
-                None
-            }}
-        }};
+{hot_patch_init}
 
     let cfg = HostConfig {{
         bind_addr,
@@ -500,6 +591,33 @@ fn main() -> std::io::Result<()> {{
         captures_dir = captures_dir.display(),
         user_crate = manifest.name,
         patch_target_dir = patch_target_dir.display(),
+        hot_patch_init = if new_core {
+            // The `#[component]` macro's new-core emission has no
+            // `dev_hot` split, so a jump table can't rebind patched
+            // bodies — applying one would silently re-render OLD code.
+            // `None` rides the host's rebuild-and-respawn path, which
+            // stays fully live (clients keep their sockets, sessions
+            // re-mint on respawn).
+            "    // --new-core: hot-patch rebinding requires the #[component]\n\
+             \x20   // hot-dispatch split, which the new-core emission doesn't have\n\
+             \x20   // yet. Respawn-on-change keeps saves applying live.\n\
+             \x20   let _ = (&captures_dir, &patch_target_dir);\n\
+             \x20   let hot_patch: Option<Box<dyn HotPatchAdapter>> = None;"
+                .to_string()
+        } else {
+            r#"    let hot_patch: Option<Box<dyn HotPatchAdapter>> =
+        match HotPatchBuilder::new(captures_dir, &sidecar_path, patch_target_dir) {
+            Ok(b) => Some(Box::new(BuilderAdapter(b))),
+            Err(e) => {
+                eprintln!(
+                    "[runtime-server-host] hot-patch builder init failed: {e:#} — \
+                     falling back to respawn on every change"
+                );
+                None
+            }
+        };"#
+            .to_string()
+        },
     );
 
     write_shared_target_config(wrapper_dir, cargo_target)?;
@@ -631,6 +749,8 @@ mod regression_tests {
                 targets: Vec::new(),
                 server_bin: None,
                 server_manifest: None,
+                worker_bin: None,
+                worker_manifest: None,
                 server_port: 3000,
                 web: Default::default(),
                 macos: Default::default(),
@@ -667,8 +787,15 @@ mod regression_tests {
         let manifest = fake_manifest();
         let source = fake_source(&workspace_root);
 
-        generate_sidecar_wrapper(&sidecar_dir, &project_dir, &source, &cargo_target, &manifest)
-            .expect("generate sidecar wrapper");
+        generate_sidecar_wrapper(
+            &sidecar_dir,
+            &project_dir,
+            &source,
+            &cargo_target,
+            &manifest,
+            false,
+        )
+        .expect("generate sidecar wrapper");
 
         let cargo_toml = std::fs::read_to_string(sidecar_dir.join("Cargo.toml"))
             .expect("read generated sidecar Cargo.toml");
@@ -695,5 +822,149 @@ mod regression_tests {
              Got features = {:?}",
             names,
         );
+    }
+
+    /// `--new-core` wrapper contract (mirror of build-web / build-ssr's
+    /// new-core wrapper tests): the sidecar compiles the user crate
+    /// single-core (`default-features = false` + `new-core` + `sidecar`),
+    /// enables dev-server's `new-core` feature, boots through
+    /// `sidecar::run_newcore` with the `register_scene_extensions_recorder`
+    /// seam, and the host wrapper disables the hot-patch adapter (the
+    /// new-core `#[component]` emission has no hot-dispatch split, so a
+    /// jump table would silently re-render old code — respawn-on-change
+    /// is the correct live path).
+    #[test]
+    fn new_core_sidecar_wrapper_boots_run_newcore_single_core() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("project");
+        let sidecar_dir = tmp.path().join("sidecar");
+        let host_dir = tmp.path().join("host");
+        let cargo_target = tmp.path().join("target");
+        let workspace_root = tmp.path().join("framework_workspace");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::create_dir_all(&workspace_root).unwrap();
+
+        let manifest = fake_manifest();
+        let source = fake_source(&workspace_root);
+
+        generate_sidecar_wrapper(&sidecar_dir, &project_dir, &source, &cargo_target, &manifest, true)
+            .expect("generate new-core sidecar wrapper");
+        generate_host_wrapper(
+            &host_dir,
+            &sidecar_dir,
+            &project_dir,
+            &source,
+            &cargo_target,
+            &manifest,
+            true,
+        )
+        .expect("generate new-core host wrapper");
+
+        let cargo_toml = std::fs::read_to_string(sidecar_dir.join("Cargo.toml")).unwrap();
+        let parsed: toml::Value = toml::from_str(&cargo_toml).expect("valid TOML");
+        let deps = parsed.get("dependencies").expect("deps table");
+
+        let user = deps.get("demo").expect("user crate dep");
+        assert_eq!(
+            user.get("default-features").and_then(|v| v.as_bool()),
+            Some(false),
+            "user crate must compile single-core under --new-core:\n{cargo_toml}",
+        );
+        let user_feats: Vec<&str> = user
+            .get("features")
+            .and_then(|f| f.as_array())
+            .expect("user features")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(user_feats.contains(&"new-core"), "got {user_feats:?}");
+        assert!(user_feats.contains(&"sidecar"), "got {user_feats:?}");
+
+        let ds_feats: Vec<&str> = deps
+            .get("dev-server")
+            .and_then(|d| d.get("features"))
+            .and_then(|f| f.as_array())
+            .expect("dev-server features")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            ds_feats.contains(&"new-core"),
+            "dev-server must compile its newcore module: {ds_feats:?}",
+        );
+
+        // Wave 2b catalog re-anchor: the new-core sidecar graph must be
+        // catalog + robot capable again. `runtime-core/dev` (= robot +
+        // catalog; buildable now that the recipes are static data in
+        // runtime-shared) covers real-runtime-core consumers, and
+        // `runtime-facade/dev` switches on the emission gate
+        // (runtime-macros/catalog) + the `glue::__mcp` anchor + the
+        // vocabulary robot registry for the aliased half. Dropping
+        // either regresses `--new-core` dev sessions to an empty MCP
+        // catalog.
+        let fcore_feats: Vec<&str> = deps
+            .get("runtime-core")
+            .and_then(|d| d.get("features"))
+            .and_then(|f| f.as_array())
+            .expect("runtime-core features")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            fcore_feats.contains(&"dev"),
+            "new-core sidecar runtime-core dep must enable `dev`: {fcore_feats:?}",
+        );
+        assert!(
+            !fcore_feats.contains(&"hot-reload"),
+            "new-core sidecar must not enable hot-reload (no dev_hot split): {fcore_feats:?}",
+        );
+        let facade_feats: Vec<&str> = deps
+            .get("runtime-facade")
+            .and_then(|d| d.get("features"))
+            .and_then(|f| f.as_array())
+            .expect("runtime-facade dep with features (catalog/robot anchor)")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            facade_feats.contains(&"dev"),
+            "new-core sidecar runtime-facade dep must enable `dev`: {facade_feats:?}",
+        );
+
+        let main_rs = std::fs::read_to_string(sidecar_dir.join("src/main.rs")).unwrap();
+        assert!(
+            main_rs.contains("dev_server::sidecar::run_newcore"),
+            "new-core sidecar boots through run_newcore:\n{main_rs}",
+        );
+        assert!(
+            main_rs.contains("demo::register_scene_extensions_recorder"),
+            "new-core sidecar registers through the scene-registry seam:\n{main_rs}",
+        );
+
+        let host_main = std::fs::read_to_string(host_dir.join("src/main.rs")).unwrap();
+        assert!(
+            host_main.contains("let hot_patch: Option<Box<dyn HotPatchAdapter>> = None;"),
+            "new-core host must disable the hot-patch adapter (respawn path):\n{host_main}",
+        );
+        assert!(
+            !host_main.contains("HotPatchBuilder::new(captures_dir"),
+            "new-core host must not construct the hot-patch builder:\n{host_main}",
+        );
+
+        // And the old-core leg keeps its builder — regression against
+        // accidentally flipping both.
+        let host_dir_old = tmp.path().join("host_old");
+        generate_host_wrapper(
+            &host_dir_old,
+            &sidecar_dir,
+            &project_dir,
+            &source,
+            &cargo_target,
+            &manifest,
+            false,
+        )
+        .expect("generate old-core host wrapper");
+        let old_main = std::fs::read_to_string(host_dir_old.join("src/main.rs")).unwrap();
+        assert!(old_main.contains("HotPatchBuilder::new(captures_dir"), "{old_main}");
     }
 }

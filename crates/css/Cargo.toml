@@ -9,4 +9,6 @@ license.workspace = true
 # workspace-inherited deps): this crate only reads style TYPES
 # (StyleRules, enums, Breakpoint) — all ungated — and must not force the
 # `prim-*` default set back on for size-conscious apps via unification.
-runtime-core = { path = "../runtime/core", default-features = false }
+# Style data model + tokens now live in runtime-shared (the non-walker
+# half of the old runtime-core); this crate never needed the walker.
+runtime-shared = { path = "../runtime/shared", default-features = false }

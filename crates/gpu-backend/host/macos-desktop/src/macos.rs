@@ -43,6 +43,12 @@ pub enum MountError {
     NoAdapter,
     /// `Adapter::request_device` rejected the limits we asked for.
     RequestDevice,
+    /// `mount_newcore` was called before the embedding app booted a
+    /// new-core tree (`backend_macos::newcore::mounted_world()`
+    /// returned `None`). The embedded tree realizes into the app's
+    /// world — no app world, no embed. Only reachable from
+    /// `mount_newcore` (mirrors `host-web`'s variant).
+    NoHostWorld,
 }
 
 impl std::fmt::Display for MountError {
@@ -60,6 +66,11 @@ impl std::fmt::Display for MountError {
             MountError::RequestDevice => {
                 write!(f, "host-macos-desktop: wgpu request_device failed")
             }
+            MountError::NoHostWorld => write!(
+                f,
+                "host-macos-desktop: mount_newcore before the app's new-core boot \
+                 (backend_macos::newcore::mounted_world() is None)"
+            ),
         }
     }
 }
@@ -71,6 +82,14 @@ impl std::error::Error for MountError {}
 /// !Sync` because the interior state is single-threaded (Rc, wgpu
 /// objects, the render-loop guard).
 pub struct MacosHostHandle {
+    /// New-core embeds only ([`mount_newcore`]): the mounted
+    /// `render_wgpu::newcore` app. Declared FIRST so the scene
+    /// unrealizes (author cleanups, node detach) while the wgpu host
+    /// in `inner` is still fully alive; `NewCoreGuard::drop` routes
+    /// through `NewCoreApp::stop`, whose embedded path leaves the
+    /// app-host flush driver alone.
+    #[cfg(feature = "new-core")]
+    _newcore: Option<NewCoreGuard>,
     inner: Rc<RefCell<HostInner>>,
     /// Holding the handle keeps the per-frame closure alive; drop =
     /// cancel the NSTimer. Declared LAST so the loop survives long
@@ -99,20 +118,33 @@ impl MacosHostHandle {
     /// `build_ui` tree drops — so a subsequent `resume()` re-mounts
     /// fresh without paying the wgpu init cost. Same caveats as the
     /// iOS host (see `IosHostHandle::pause`).
+    ///
+    /// Old-core mounts only: a [`mount_newcore`] handle's app is owned
+    /// by the handle itself (drop = full teardown), and `Host::unmount`
+    /// only knows the old walker's `Owner` — pause/resume on a new-core
+    /// embed is a documented no-op until a new-core visibility gate
+    /// lands (same gap as `host-web`'s `WebHostHandle::pause`).
     pub fn pause(&self) {
         let mut inner = self.inner.borrow_mut();
+        if inner.build_ui.is_none() {
+            log::warn!("host-macos-desktop: pause() is a no-op on a new-core embed");
+            return;
+        }
         inner.host.unmount();
         drop(inner);
     }
 
     /// Re-mount the embedded app from its cached `build_ui`.
     /// Idempotent (no-op if already mounted). Pair with [`pause`].
+    /// Old-core mounts only, exactly like [`pause`].
     pub fn resume(&self) {
         let mut inner = self.inner.borrow_mut();
         if inner.host.is_mounted() {
             return;
         }
-        let build_ui = inner.build_ui.clone();
+        let Some(build_ui) = inner.build_ui.clone() else {
+            return;
+        };
         inner.host.mount(move || (&*build_ui)());
         // The swapchain may have been invalidated during the hidden
         // period; force a fresh one, else `get_current_texture`
@@ -138,6 +170,131 @@ pub async fn mount(
     skin: Rc<dyn Painter>,
     build_ui: Rc<dyn Fn() -> Element + 'static>,
 ) -> Result<MacosHostHandle, MountError> {
+    let init = init_wgpu(surface_handle, size).await?;
+
+    // 3. Build the render-side stack + mount the user app. A fresh
+    //    `session::REGISTRY` scope isolates the embedded app's
+    //    `session::animated(…)` state to this host's lifetime, so a
+    //    `LazyDisposing` navigator remount replays the embedded
+    //    animation timeline from t=0 (see the iOS host for the full
+    //    rationale).
+    let session_scope = runtime_core::session::push_scope();
+    let renderer = Renderer::new(&init.device, &init.queue, init.config.format);
+    let mut host = Host::new(skin, profile.color_scheme);
+    let logical = (
+        profile.logical_size.0 as f32,
+        profile.logical_size.1 as f32,
+    );
+    host.set_viewport(logical.0, logical.1);
+    {
+        let build_ui = build_ui.clone();
+        host.mount(move || (&*build_ui)());
+    }
+
+    let (inner, render_loop_handle) =
+        finish_mount(init, renderer, host, logical, Some(build_ui), session_scope);
+
+    Ok(MacosHostHandle {
+        #[cfg(feature = "new-core")]
+        _newcore: None,
+        inner,
+        _render_loop: render_loop_handle,
+    })
+}
+
+/// New-core sibling of [`mount`]: identical wgpu init, render loop, and
+/// per-frame visibility gate, but the embedded tree realizes through
+/// `render_wgpu::newcore::start_in_world` into the embedding APP's own
+/// world (`backend_macos::newcore::mounted_world()`), so the app's
+/// flush driver (backend-macos's dispatch-site wrappers + the
+/// apple-core scheduler/executor post-dispatch hook) commits writes the
+/// embedded app stages from timers, raf loops, and future polls — one
+/// thread, one world, one logical update stream. The one-world-per-
+/// thread argument from the web embed carries over verbatim:
+/// `start_in_world` installs NO second dispatch hook and NO viewport
+/// sink (an embedded sim must never clobber the page/app viewport —
+/// regression-tested in `render-wgpu`'s newcore suite); the app host's
+/// existing driver is the only committer.
+///
+/// Dropping the returned handle unrealizes the embedded scene (its
+/// build-level effects, AV bind keepalives, and scoped timers die with
+/// it — the `collect_owned` harvest inside `start_in_world`), then
+/// tears the wgpu host down exactly like the old-core handle.
+#[cfg(feature = "new-core")]
+pub async fn mount_newcore(
+    surface_handle: GraphicsSurface,
+    size: (u32, u32),
+    profile: DeviceProfile,
+    skin: Rc<dyn Painter>,
+    build_ui: Rc<dyn Fn() -> runtime_scene::Element + 'static>,
+) -> Result<MacosHostHandle, MountError> {
+    // The app's world must exist BEFORE the async wgpu init runs —
+    // fail fast on a mis-sequenced boot.
+    let world = backend_macos::newcore::mounted_world().ok_or(MountError::NoHostWorld)?;
+    // The per-frame loop below rides `runtime_core::driver::render_loop`.
+    // `host-appkit` installs the NSTimer driver at boot on BOTH cores
+    // (its `newcore::run` calls `backend_macos::install_render_loop`),
+    // but the driver contract belongs to the shell, not this embed —
+    // install idempotently (first install wins) so a host shell that
+    // boots backend-macos directly still gets a painting embed, exactly
+    // like `host_web::mount_newcore`'s `backend_web::install_render_loop`.
+    backend_macos::install_render_loop();
+
+    let init = init_wgpu(surface_handle, size).await?;
+
+    // Same per-host session scope as the old mount (see the comment
+    // there): the embedded app's `session::animated` AVs and epoch die
+    // with this handle, so a remount replays from initial state instead
+    // of resuming mid-animation.
+    let session_scope = runtime_core::session::push_scope();
+    let renderer = Renderer::new(&init.device, &init.queue, init.config.format);
+    let mut host = Host::new(skin, profile.color_scheme);
+    let logical = (
+        profile.logical_size.0 as f32,
+        profile.logical_size.1 as f32,
+    );
+    host.set_viewport(logical.0, logical.1);
+    let app = render_wgpu::newcore::start_in_world(
+        host.backend().clone(),
+        |_| {},
+        move || (&*build_ui)(),
+        world,
+    );
+
+    let (inner, render_loop_handle) =
+        // No re-callable builder: pause/resume are old-core-only (see
+        // `MacosHostHandle::pause`); teardown goes through `_newcore`.
+        finish_mount(init, renderer, host, logical, None, session_scope);
+
+    Ok(MacosHostHandle {
+        _newcore: Some(NewCoreGuard(Some(app))),
+        inner,
+        _render_loop: render_loop_handle,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Internals
+// ---------------------------------------------------------------------------
+
+/// Everything the async wgpu init produces — shared by [`mount`] and
+/// [`mount_newcore`] (the host-web `WgpuInit` shape, plus the raw
+/// `NSView*` the per-frame visibility walk needs).
+struct WgpuInit {
+    ns_view: *const NSObject,
+    surface: wgpu::Surface<'static>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    config: wgpu::SurfaceConfiguration,
+}
+
+/// Steps 1–2 of both mounts: AppKit-handle validation + the async wgpu
+/// init (instance → surface → adapter → device → configure). Metal
+/// backend, same shape as host-ios-mobile.
+async fn init_wgpu(
+    surface_handle: GraphicsSurface,
+    size: (u32, u32),
+) -> Result<WgpuInit, MountError> {
     // 1. Validate the surface exposes an AppKit handle (see
     //    `backend-macos/src/imp/graphics.rs::MacosSurfaceProvider`).
     //    Capture the raw `NSView*` for the per-frame visibility check.
@@ -206,25 +363,25 @@ pub async fn mount(
     };
     surface.configure(&device, &config);
 
-    // 3. Build the render-side stack + mount the user app. A fresh
-    //    `session::REGISTRY` scope isolates the embedded app's
-    //    `session::animated(…)` state to this host's lifetime, so a
-    //    `LazyDisposing` navigator remount replays the embedded
-    //    animation timeline from t=0 (see the iOS host for the full
-    //    rationale).
-    let session_scope = runtime_core::session::push_scope();
-    let renderer = Renderer::new(&device, &queue, config.format);
-    let mut host = Host::new(skin, profile.color_scheme);
-    let logical = (
-        profile.logical_size.0 as f32,
-        profile.logical_size.1 as f32,
-    );
-    host.set_viewport(logical.0, logical.1);
-    {
-        let build_ui = build_ui.clone();
-        host.mount(move || (&*build_ui)());
-    }
+    Ok(WgpuInit {
+        ns_view,
+        surface,
+        device,
+        queue,
+        config,
+    })
+}
 
+/// Shared tail of both mounts: the pending-font log, `HostInner`
+/// assembly, and the per-frame render loop.
+fn finish_mount(
+    init: WgpuInit,
+    renderer: Renderer,
+    host: Host,
+    logical: (f32, f32),
+    build_ui: Option<Rc<dyn Fn() -> Element + 'static>>,
+    session_scope: runtime_core::session::ScopeGuard,
+) -> (Rc<RefCell<HostInner>>, RenderLoop) {
     // 3a. macOS doesn't fetch pending font URLs (embedded faces
     //     cover the preview); log the count for diagnosis.
     let pending = host.take_pending_font_urls();
@@ -237,16 +394,17 @@ pub async fn mount(
     }
 
     let inner = Rc::new(RefCell::new(HostInner {
-        surface,
-        device,
-        queue,
-        config,
+        surface: init.surface,
+        device: init.device,
+        queue: init.queue,
+        config: init.config,
         renderer,
         host,
         logical,
-        ns_view,
+        ns_view: init.ns_view,
         build_ui,
         presented_once: false,
+        logged_acquire_skip: false,
         _session_scope: session_scope,
     }));
 
@@ -259,15 +417,25 @@ pub async fn mount(
         draw_frame(&mut inner);
     });
 
-    Ok(MacosHostHandle {
-        inner,
-        _render_loop: render_loop_handle,
-    })
+    (inner, render_loop_handle)
 }
 
-// ---------------------------------------------------------------------------
-// Internals
-// ---------------------------------------------------------------------------
+/// Owns the embedded new-core app for a [`mount_newcore`] handle.
+/// Drop routes through `render_wgpu::newcore::NewCoreApp::stop`
+/// (the embedded path: unrealize + guarded diagnostic clear, app-host
+/// flush driver untouched — a replacement embed may already have
+/// mounted).
+#[cfg(feature = "new-core")]
+struct NewCoreGuard(Option<render_wgpu::newcore::NewCoreApp>);
+
+#[cfg(feature = "new-core")]
+impl Drop for NewCoreGuard {
+    fn drop(&mut self) {
+        if let Some(app) = self.0.take() {
+            app.stop();
+        }
+    }
+}
 
 /// Restore the frame-active flag when the host dies. `draw_frame`
 /// publishes `set_frame_active(visible)` every tick; if the host is
@@ -300,12 +468,17 @@ struct HostInner {
     /// `HostInner`, so while `HostInner` exists, the view exists.
     ns_view: *const NSObject,
     /// Re-callable embedded-app builder, cached for [`MacosHostHandle::resume`].
-    build_ui: Rc<dyn Fn() -> Element + 'static>,
+    /// `None` on a [`mount_newcore`] handle (pause/resume are
+    /// old-core-only — see those methods).
+    build_ui: Option<Rc<dyn Fn() -> Element + 'static>>,
     /// One-shot "first frame presented" diagnostic flag. The robot
     /// screenshot verb can't capture a framebuffer-only CAMetalLayer
     /// drawable, so this log line is the scriptable evidence that the
     /// host actually encoded + presented a frame.
     presented_once: bool,
+    /// One-shot "acquire skipped before first present" diagnostic flag
+    /// (see the Occluded arm in [`draw_frame`]).
+    logged_acquire_skip: bool,
     /// RAII guard for this host's `session::REGISTRY` scope. Declared
     /// LAST so it pops AFTER the renderer / host / wgpu objects drop
     /// (their cleanups may dispatch through scope-anchored timers).
@@ -367,7 +540,27 @@ fn draw_frame(inner: &mut HostInner) {
         }
         wgpu::CurrentSurfaceTexture::Timeout
         | wgpu::CurrentSurfaceTexture::Occluded
-        | wgpu::CurrentSurfaceTexture::Validation => return,
+        | wgpu::CurrentSurfaceTexture::Validation => {
+            // `Occluded` here does NOT mean the NSView failed the
+            // visibility walk above — wgpu's Metal backend skips
+            // drawable acquisition entirely (upstream workaround for
+            // wgpu#8309's nextDrawable hang) whenever the NSWindow's
+            // `occlusionState` lacks the on-screen bit: window behind
+            // a fullscreen app, display asleep, locked session. The
+            // embed keeps running (ticks, flushes) and presents as
+            // soon as the window is actually on screen. One-shot log
+            // so a "preview never paints" report is diagnosable from
+            // stderr.
+            if !inner.presented_once && !inner.logged_acquire_skip {
+                inner.logged_acquire_skip = true;
+                eprintln!(
+                    "[host-macos-desktop] frames skipped before first present \
+                     (surface not ready or window occluded — wgpu presents only \
+                     while NSWindow.occlusionState reports on-screen)"
+                );
+            }
+            return;
+        }
     };
     let view = surface_tex
         .texture

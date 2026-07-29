@@ -133,6 +133,7 @@ pub fn run(args: Args) -> Result<()> {
             // critical enough to risk the heuristic, so leave it off.
             prune_dead_data_min: None,
             premint: false,
+            new_core: false,
         },
     )
     .context("build the docs web bundle")?;

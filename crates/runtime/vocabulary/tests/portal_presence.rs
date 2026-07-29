@@ -1,287 +1,40 @@
 //! Handler-level tests for the P3-set `portal` (+ overlay compositions)
-//! and `presence` primitives — the mock-host pattern of `vocab.rs`, plus
-//! a manually pumped [`Scheduler`] so the presence timing windows
-//! (pre-paint snap → next-frame rest; exit animation → deferred
-//! detach-and-drop) are observable instead of collapsing synchronously.
+//! and `presence` primitives — driven through the `host-mock` recording
+//! host (the caps surface implemented natively, no `Backend`, no
+//! `LegacyBridge`), plus the manually pumped [`host_mock::pump`]
+//! scheduler so the presence timing windows (pre-paint snap →
+//! next-frame rest; exit animation → deferred detach-and-drop) are
+//! observable instead of collapsing synchronously.
 //!
 //! Backend-call-stream parity with the old walker is pinned separately
 //! by `scene-parity`'s `full_portal_*` / `full_presence_*` goldens;
 //! these tests pin vocabulary-local behavior in isolation.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
+// `pump_frames` aliased to the pre-host-mock suite's name `pump_frame`
+// so the call sites' vocabulary is unchanged.
+use host_mock::pump::{install_scheduler, pump_frames as pump_frame, pump_timers};
 use runtime_core::primitives::portal::{PortalTarget, ViewportPlacement};
-use runtime_core::primitives::presence::{PresenceAnim, PresenceState};
-use runtime_core::scheduling::{install_scheduler, ScheduleHandle, Scheduler};
-use runtime_core::{Backend, Easing};
-use runtime_scene::{dyn_keyed, realize, Realized, Registry};
+use runtime_core::primitives::presence::PresenceAnim;
+use runtime_core::Easing;
+use runtime_scene::{dyn_keyed, realize};
 use runtime_vocabulary::builders::{overlay, portal, presence, text, view};
 use runtime_vocabulary::prims::ScreenNav;
-use runtime_vocabulary::{register_builtins, LegacyBridge};
-use runtime_world::{effect, provide, signal, World};
+use runtime_world::{effect, provide, signal};
 
-// ===========================================================================
-// Manually pumped scheduler
-// ===========================================================================
-//
-// `runtime_core::scheduling`'s registry is a process-global `OnceLock`,
-// but the queues here are thread-local — each `#[test]` thread pumps
-// only its own tasks, so parallel tests can't cross-fire.
-
-type Queued = Rc<RefCell<Option<Box<dyn FnOnce()>>>>;
-
-thread_local! {
-    static FRAME_QUEUE: RefCell<Vec<Queued>> = const { RefCell::new(Vec::new()) };
-    static TIMER_QUEUE: RefCell<Vec<Queued>> = const { RefCell::new(Vec::new()) };
-}
-
-struct PumpHandle(Queued);
-
-impl ScheduleHandle for PumpHandle {
-    fn cancel(&mut self) {
-        // Emptying the slot cancels: the pump skips vacated entries.
-        self.0.borrow_mut().take();
-    }
-}
-
-impl Drop for PumpHandle {
-    fn drop(&mut self) {
-        self.cancel();
-    }
-}
-
-struct PumpScheduler;
-
-impl Scheduler for PumpScheduler {
-    fn schedule_microtask(&self, f: Box<dyn FnOnce()>) {
-        // Tests never rely on microtask deferral; run inline.
-        f();
-    }
-
-    fn after_animation_frame(&self, f: Box<dyn FnOnce()>) -> Box<dyn ScheduleHandle> {
-        let slot: Queued = Rc::new(RefCell::new(Some(f)));
-        FRAME_QUEUE.with(|q| q.borrow_mut().push(slot.clone()));
-        Box::new(PumpHandle(slot))
-    }
-
-    fn after_ms(&self, _delay_ms: i32, f: Box<dyn FnOnce()>) -> Box<dyn ScheduleHandle> {
-        let slot: Queued = Rc::new(RefCell::new(Some(f)));
-        TIMER_QUEUE.with(|q| q.borrow_mut().push(slot.clone()));
-        Box::new(PumpHandle(slot))
-    }
-
-    fn raf_loop(&self, _f: Box<dyn FnMut()>) -> Box<dyn ScheduleHandle> {
-        let slot: Queued = Rc::new(RefCell::new(None));
-        Box::new(PumpHandle(slot))
-    }
-}
-
-fn ensure_scheduler() {
-    install_scheduler(Box::new(PumpScheduler)); // first call wins; later calls no-op
-}
-
-fn pump(queue: &'static std::thread::LocalKey<RefCell<Vec<Queued>>>) {
-    let tasks: Vec<Queued> = queue.with(|q| std::mem::take(&mut *q.borrow_mut()));
-    for slot in tasks {
-        // Release the slot borrow BEFORE running: the callback may drop
-        // its own spent ScheduledTask, whose cancel re-borrows the slot.
-        let f = slot.borrow_mut().take();
-        if let Some(f) = f {
-            f();
-        }
-    }
-}
-
-fn pump_frame() {
-    pump(&FRAME_QUEUE);
-}
-
-fn pump_timers() {
-    pump(&TIMER_QUEUE);
-}
-
-// ===========================================================================
-// Recording backend
-// ===========================================================================
-
-type Log = Rc<RefCell<Vec<String>>>;
-
-struct Mini {
-    log: Log,
-    next: u32,
-}
-
-impl Mini {
-    fn mint(&mut self, kind: &str) -> u32 {
-        let n = self.next;
-        self.next += 1;
-        self.log.borrow_mut().push(format!("create n{n} {kind}"));
-        n
-    }
-}
-
-fn state_digest(state: &PresenceState) -> String {
-    if *state == PresenceState::rest() {
-        "rest".to_string()
-    } else {
-        format!(
-            "op={:?} ty={:?}",
-            state.opacity, state.translate_y
-        )
-    }
-}
-
-impl Backend for Mini {
-    type Node = u32;
-
-    fn create_view(&mut self, _a11y: &AccessibilityProps) -> u32 {
-        self.mint("view")
-    }
-
-    fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> u32 {
-        let n = self.next;
-        self.next += 1;
-        self.log
-            .borrow_mut()
-            .push(format!("create n{n} text {content:?}"));
-        n
-    }
-
-    fn create_pressable(&mut self, _on_click: Rc<dyn Fn()>, _a11y: &AccessibilityProps) -> u32 {
-        self.mint("pressable")
-    }
-
-    // Required (non-defaulted) Backend items the suite never exercises.
-    fn create_button(
-        &mut self,
-        _label: &str,
-        _on_click: &runtime_core::Action,
-        _leading: Option<&runtime_core::IconData>,
-        _trailing: Option<&runtime_core::IconData>,
-        _a11y: &AccessibilityProps,
-    ) -> u32 {
-        self.mint("button")
-    }
-
-    fn update_text(&mut self, node: &u32, content: &str) {
-        self.log
-            .borrow_mut()
-            .push(format!("update_text n{node} {content:?}"));
-    }
-
-    fn create_portal(
-        &mut self,
-        _target: PortalTarget,
-        _on_dismiss: Option<Rc<dyn Fn()>>,
-        _trap_focus: bool,
-        _a11y: &AccessibilityProps,
-    ) -> u32 {
-        self.mint("portal")
-    }
-
-    fn release_portal(&mut self, node: &u32) {
-        self.log.borrow_mut().push(format!("release_portal n{node}"));
-    }
-
-    fn set_portal_hidden(&mut self, node: &u32, hidden: bool) {
-        self.log
-            .borrow_mut()
-            .push(format!("set_portal_hidden n{node} {hidden}"));
-    }
-
-    fn create_presence_placeholder(&mut self, _a11y: &AccessibilityProps) -> u32 {
-        self.mint("presence_placeholder")
-    }
-
-    fn apply_presence(
-        &mut self,
-        node: &u32,
-        state: PresenceState,
-        transition: Option<(u32, Easing)>,
-    ) {
-        let t = match transition {
-            Some((ms, _)) => format!("{ms}ms"),
-            None => "snap".to_string(),
-        };
-        self.log
-            .borrow_mut()
-            .push(format!("apply_presence n{node} {} {t}", state_digest(&state)));
-    }
-
-    fn apply_style(&mut self, node: &u32, _style: &Rc<runtime_core::StyleRules>) {
-        self.log.borrow_mut().push(format!("apply_style n{node}"));
-    }
-
-    fn insert(&mut self, parent: &mut u32, child: u32) {
-        self.log
-            .borrow_mut()
-            .push(format!("insert n{parent} <- n{child}"));
-    }
-
-    fn insert_at(&mut self, parent: &mut u32, child: u32, index: usize) {
-        self.log
-            .borrow_mut()
-            .push(format!("insert_at n{parent} <- n{child} @ {index}"));
-    }
-
-    fn remove_child(&mut self, parent: &u32, child: &u32) {
-        self.log
-            .borrow_mut()
-            .push(format!("remove_child n{parent} -x n{child}"));
-    }
-
-    fn clear_children(&mut self, node: &u32) {
-        self.log.borrow_mut().push(format!("clear_children n{node}"));
-    }
-
-    fn supports_child_splice(&self) -> bool {
-        // Spliced mode: a presence hole's child splices directly into
-        // the placeholder, so assertions read naturally.
-        true
-    }
-
-    fn finish(&mut self, _root: u32) {}
-}
-
-struct Harness {
-    world: World,
-    backend: Rc<RefCell<LegacyBridge<Mini>>>,
-    registry: Rc<Registry<LegacyBridge<Mini>>>,
-    log: Log,
-}
-
-fn harness() -> Harness {
-    ensure_scheduler();
-    let log: Log = Rc::new(RefCell::new(Vec::new()));
-    let backend = Rc::new(RefCell::new(LegacyBridge(Mini {
-        log: log.clone(),
-        next: 0,
-    })));
-    let mut registry = Registry::new();
-    register_builtins(&mut registry);
-    Harness {
-        world: World::new(),
-        backend,
-        registry: Rc::new(registry),
-        log,
-    }
-}
-
-impl Harness {
-    fn realize(&self, element: runtime_scene::Element) -> Realized<u32> {
-        self.world
-            .enter(|| realize(&self.backend, &self.registry, element))
-    }
-
-    fn take_log(&self) -> Vec<String> {
-        std::mem::take(&mut *self.log.borrow_mut())
-    }
-
-    fn flush(&self) {
-        self.world.flush();
-    }
+fn harness() -> host_mock::Harness {
+    install_scheduler(); // first call wins; later calls no-op
+    let h = host_mock::Harness::new();
+    // Spliced mode: a presence hole's child splices directly into the
+    // placeholder, so assertions read naturally (the historical Mini's
+    // `supports_child_splice() = true`).
+    h.shared.splice.set(true);
+    // The historical Mini logged bare `apply_style n{node}` (no field
+    // digest) — keep the suite's expected lines byte-stable.
+    h.set_style_line(|n, _| format!("apply_style n{n}"));
+    h
 }
 
 /// Register a probe effect in the CURRENT build scope whose cleanup
@@ -306,7 +59,7 @@ fn fade(ms: u32) -> PresenceAnim {
 fn portal_mounts_children_and_releases_on_swap_out() {
     let h = harness();
     let open = h.world.enter(|| signal(true));
-    let _root = h.realize(
+    let _root = h.mount(
         view()
             .child(dyn_keyed(
                 move || open.get(),
@@ -389,7 +142,7 @@ fn overlay_composition_backdrop_first_then_content_wrapper() {
     let h = harness();
     let dismissed = Rc::new(Cell::new(0usize));
     let dismissed_c = dismissed.clone();
-    let _root = h.realize(
+    let _root = h.mount(
         overlay()
             .on_dismiss(move || dismissed_c.set(dismissed_c.get() + 1))
             .child(text().content("body"))
@@ -423,7 +176,7 @@ fn presence_placeholder_is_bare_and_in_flow() {
     // between its siblings — forcing `absolute; inset: 0` here is the
     // bug that collapsed stacked toasts (macOS in-flow placeholder fix).
     let h = harness();
-    let _root = h.realize(
+    let _root = h.mount(
         view()
             .child(text().content("before"))
             .child(presence(|| text().content("toast").build()).present(false))
@@ -453,7 +206,7 @@ fn presence_placeholder_is_bare_and_in_flow() {
 fn presence_enter_snaps_pre_paint_then_animates_to_rest() {
     let h = harness();
     let open = h.world.enter(|| signal(false));
-    let _root = h.realize(
+    let _root = h.mount(
         presence(|| text().content("card").build())
             .present(open)
             .enter(fade(200))
@@ -485,7 +238,7 @@ fn presence_exit_retires_animates_then_detaches_and_drops() {
     let open = h.world.enter(|| signal(true));
     let drops = Rc::new(Cell::new(0usize));
     let drops_c = drops.clone();
-    let _root = h.realize(
+    let _root = h.mount(
         presence(move || {
             drop_probe(&drops_c);
             text().content("card").build()
@@ -517,7 +270,7 @@ fn presence_without_exit_unmounts_immediately() {
     let open = h.world.enter(|| signal(true));
     let drops = Rc::new(Cell::new(0usize));
     let drops_c = drops.clone();
-    let _root = h.realize(
+    let _root = h.mount(
         presence(move || {
             drop_probe(&drops_c);
             text().content("card").build()
@@ -540,7 +293,7 @@ fn presence_quick_exit_cancels_pending_enter() {
     // child must not animate toward rest while exiting).
     let h = harness();
     let open = h.world.enter(|| signal(false));
-    let _root = h.realize(
+    let _root = h.mount(
         presence(|| text().content("card").build())
             .present(open)
             .enter(fade(200))
@@ -576,7 +329,7 @@ fn presence_re_present_mid_exit_builds_fresh_while_old_finishes() {
     // scope without detaching its nodes (a permanent ghost view).
     let h = harness();
     let open = h.world.enter(|| signal(true));
-    let _root = h.realize(
+    let _root = h.mount(
         presence(|| text().content("card").build())
             .present(open)
             .enter(fade(200))

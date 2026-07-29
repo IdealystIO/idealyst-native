@@ -3,9 +3,9 @@
 
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives;
-use runtime_core::{Easing, StyleRules};
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::primitives;
+use runtime_shared::{Easing, StyleRules};
 
 use super::noop;
 use super::{ExternalOps, ViewOps};
@@ -82,13 +82,21 @@ pub trait NavigatorOps: ExternalOps {
     /// Create a navigator extension; `host` carries every
     /// framework-owned affordance (mount/release screens, nav-state
     /// signals, `NavigatorControl`).
+    ///
+    /// Gated on `legacy-bridge`: `NavigatorHost` closes over the
+    /// OLD-core `Element` (build_node / build_layout_with_outlet), so
+    /// this method exists only for old-Backend interop — the
+    /// `LegacyBridge` and the backends' direct old-walker delegations.
+    /// The NEW core mounts navigators through `handlers::navigator`
+    /// (SwapNav/StackNav over Lifecycle/View caps) and never calls it.
+    #[cfg(feature = "legacy-bridge")]
     #[allow(unused_variables)]
     fn create_navigator(
         &mut self,
         type_id: std::any::TypeId,
         type_name: &'static str,
         presentation: Rc<dyn std::any::Any>,
-        host: primitives::navigator::NavigatorHost<Self::Node>,
+        host: runtime_core::primitives::navigator::NavigatorHost<Self::Node>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
         let _ = type_name;

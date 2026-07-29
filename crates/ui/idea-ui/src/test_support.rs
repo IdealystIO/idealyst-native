@@ -281,7 +281,7 @@ mod imp {
     fn style(src: Option<runtime_vocabulary::StyleProp>) -> Option<TStyle> {
         use runtime_vocabulary::StyleProp as SP;
         src.map(|s| match s {
-            SP::Sheet(app) => TStyle::App(app),
+            SP::Sheet(app) => TStyle::App(*app),
             SP::SheetDynamic(f) => TStyle::AppFn(f),
             SP::Static(rules) => TStyle::Rules(rules),
             SP::Dynamic(f) => TStyle::RulesFn(f),

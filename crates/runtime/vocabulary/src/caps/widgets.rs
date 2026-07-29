@@ -3,8 +3,8 @@
 
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives;
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::primitives;
 
 use super::noop;
 use super::ExternalOps;
@@ -137,7 +137,7 @@ pub trait ActivityIndicatorOps: ExternalOps {
     fn create_activity_indicator(
         &mut self,
         size: primitives::activity_indicator::ActivityIndicatorSize,
-        color: Option<&runtime_core::Color>,
+        color: Option<&runtime_shared::Color>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
         self.missing_primitive_placeholder(

@@ -28,6 +28,12 @@ mod ios;
 #[cfg(target_os = "ios")]
 pub use ios::{mount, IosHostHandle, MountError};
 
+// idea-lite core migration: the new-core mount seam. Same handle type,
+// same wgpu path — the tree realizes into the embedding app's world
+// through `render_wgpu::newcore::start_in_world` (see `ios.rs`).
+#[cfg(all(target_os = "ios", feature = "new-core"))]
+pub use ios::mount_newcore;
+
 #[cfg(target_os = "ios")]
 pub use render_api::DeviceProfile;
 

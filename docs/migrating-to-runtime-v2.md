@@ -49,15 +49,64 @@ under both cores.
 
 ---
 
-## Opting in: the `new-core` feature
+## The defaults flip: runtime v2 is the default
 
-`new-core` is **off by default** everywhere. Your app opts in with its
-own forwarding feature; the canonical block is
+As of the wave-2b defaults flip, the NEW core is what you get with no
+flags anywhere an author touches the framework:
+
+- **CLI**: `idealyst dev` and `idealyst build` (all targets with a
+  new-core leg: web, ssr/ssg, runtime-server/aas, macos, ios, android,
+  terminal) resolve the core per project: a project declaring the
+  dual-core convention's `new-core` cargo feature builds and runs on
+  runtime v2; `--old-core` opts back onto the old walker; `--new-core`
+  is accepted as a no-op alias. Legacy projects without the feature
+  keep building the old core with a one-line note. Roku and
+  `--serverless-lambda` have no new-core CLI leg yet and always build
+  old-core (the wrappers pin `old-core` for dual-core apps).
+  Old-core builds of a dual-core app compile it
+  `default-features = false, features = ["old-core"]` — see
+  `build_ios::old_core_user_dep`; resolution lives in
+  `crates/tools/cli/src/core_mode.rs`.
+- **Fresh projects**: the `idealyst new` scaffold ships
+  `default = ["new-core"]`, an empty `old-core` marker feature, and the
+  new-core registration seams (a registry-generic
+  `register_scene_extensions`, `scene_app()` for the Android wrapper)
+  — mirrored verbatim from `examples/welcome`.
+- **Dual-core apps in-tree** (welcome, websites/website,
+  websites/idea-ui-docs, conformance, newcore-app, nav-showcase):
+  `default = [... , "new-core"]`; the old-core leg is
+  `--no-default-features --features old-core[,…]` (each crate's
+  Cargo.toml documents its exact invocations).
+- **Dual-core UI/SDK library crates** (idea-ui, idea-theme,
+  idea-ui-nav, the navigator SDKs, and every External SDK below):
+  `default = ["new-core"]` — a plain `idea-ui = "…"` dep from a fresh
+  app is the alias build. In-repo consumers ride the workspace dep
+  specs, which pin `default-features = false` so every graph (old-core
+  parity harnesses included) selects a core explicitly.
+
+What deliberately did NOT flip:
+
+- **`runtime-macros/new-core`** stays off by default at the crate level
+  — the emission flip is graph-wide (see the hazard below), so it is
+  only ever enabled by a consumer's own `new-core` feature.
+- **Backend crates' `new-core` features** (backend-web, backend-macos,
+  …) stay opt-in: the generated wrappers enable them explicitly per
+  build, and the backends' default test suites remain the old-core
+  legs.
+- **Parity/test graphs that exist to build the old walker**
+  (scene-parity, mock-backend, the SDK old-core suites, conformance's
+  old leg, the byte-parity corpora) keep doing so via the pinned
+  workspace specs plus their documented `--no-default-features`
+  invocations.
+
+## The `new-core` feature (the dual-core convention)
+
+Your app declares its own forwarding feature; the canonical block is
 `crates/dev/newcore-app/Cargo.toml`:
 
 ```toml
 [features]
-default = []
+default = ["new-core"]
 new-core = [
     "runtime-macros/new-core",
     "dep:runtime-vocabulary",
@@ -79,31 +128,40 @@ cargo build --features new-core          # everything on the new core
 cargo build --features old-core          # everything on the old core
 ```
 
-### idea-ui **[in flight]**
+### idea-ui
 
 idea-ui and idea-theme compile the same component sources on the new
 core through an alias crate: under `new-core`, `extern crate
 runtime_facade as runtime_core;` swaps the old root for
 `runtime-facade`, a thin re-export of `runtime_vocabulary::glue`
 (`crates/runtime/facade/src/lib.rs`, `crates/ui/idea-ui/src/lib.rs`).
-Enable it with default features off and re-enable the prim features you
-need:
+Since the defaults flip a plain dep is the new-core build with the full
+prim set (`default = [prim families, table, new-core]`); the old-core
+leg is the opt-out:
 
 ```toml
+idea-ui = "…"                       # new core, full component set
+
 idea-ui = { version = "…", default-features = false, features = [
-    "new-core",
-    "prim-icon", "prim-image", "prim-text-input",
-    "prim-activity", "prim-portal", "prim-presence",
+    "old-core",                     # old core, historical default prim set
 ] }
 ```
 
-The `table` feature cannot join a `new-core` build — the table SDK is
-still old-core-authored, and idea-ui pins that with a `compile_error!`
-(`crates/ui/idea-ui/src/lib.rs`):
+The `table` feature is dual-core: the table SDK carries its own
+`new-core` leg (scene-registry handlers — real `<table>` DOM on web,
+CSS-grid on native), and idea-ui's `new-core` feature weak-forwards
+`table?/new-core`, so `features = ["new-core", "table", …]` just works
+(the old `compile_error!` pin is gone).
 
-> `idea-ui: the 'table' component feature cannot join a 'new-core'
-> build (the table SDK is old-core-authored; its retarget is a later
-> P6 wave).`
+The `docs` feature (the `DocControls` derive + doc-controls runtime)
+is dual-core too: the derive emits the free `::runtime_core::signal(…)`
+(glue-mirrored) and the control helpers satisfy the world kernel's
+`T: PartialEq` signal bound — `RefBuiltins` now has a `PartialEq`
+supertrait with pointer-identity impls on the `*Ref` handle types
+(`crates/ui/idea-theme/src/extensible/mod.rs`; identity, not key
+equality, so the guarded `set` can never swallow a change between two
+distinct modifiers sharing a key). An app-defined `*Ref` implementing
+`RefBuiltins` must add the same shape of `PartialEq` impl.
 
 ---
 
@@ -124,9 +182,39 @@ Variants without `register` exist for the common case.
 | iOS | `backend_ios::newcore::run_in_view(root_view, register, build)` — called from the generated Swift shell | `crates/backend/ios/mobile/src/newcore.rs` |
 | Android | generated wrapper's `new-core` feature — `attach` mounts your lib's `scene_app()` via `backend_android::newcore::start` | `crates/tools/build/android`, `crates/backend/android/mobile/src/newcore.rs` |
 | SSR | `backend_ssr::newcore::render_to_string(build)` / `render_path(path, build)` / `render_path_with(path, register, build)` — fresh `World` per request, dropped after serialize | `crates/backend/ssr/src/newcore.rs` |
-| SSG crawl | `backend_ssr::newcore::render_all(register, build)` — same hierarchy-driven crawl as the old `render_all` (the vocabulary navigator mounts publish their routes into the shared collector); drives `idealyst build --ssg --new-core` | `crates/backend/ssr/src/newcore.rs` |
-| SSR server | `backend_ssr::newcore::serve(addr, config, register, build)` (feature `serve`) — the old server's HTTP loop with the new-core renderer; drives `idealyst build --ssr --new-core` (app exposes `register_ssr_scene_handlers`) | `crates/backend/ssr/src/{newcore,serve}.rs`, `crates/tools/build/ssr` |
+| SSG crawl | `backend_ssr::newcore::render_all(register, build)` — same hierarchy-driven crawl as the old `render_all` (the vocabulary navigator mounts publish their routes into the shared collector); drives `idealyst build --ssg` (the default core since the flip; `--old-core` opts out) | `crates/backend/ssr/src/newcore.rs` |
+| SSR server | `backend_ssr::newcore::serve(addr, config, register, build)` (feature `serve`) — the old server's HTTP loop with the new-core renderer; drives `idealyst build --ssr` (the default core since the flip; app exposes `register_ssr_scene_handlers`) | `crates/backend/ssr/src/{newcore,serve}.rs`, `crates/tools/build/ssr` |
 | GPU desktop | `host_winit::newcore::run(profile, skin, build)` / `run_with(profile, skin, register, build)` | `crates/gpu-backend/host/winit/src/newcore.rs` |
+| Terminal | `host_terminal::newcore::run(build, opts, register)` — the crossterm loop over `backend_terminal::newcore::start(backend, register, build)` (world boot + dispatch-hook flush driver; `render_headless` twin for snapshots); grid parity with the old core pinned by `backend-terminal/tests/newcore_parity.rs` | `crates/backend/terminal/src/newcore.rs`, `crates/gpu-backend/host/terminal/src/newcore.rs` |
+| Email | `backend_email::newcore::render_email(build)` / `render_email_with(setup, build)` — one-shot `World` per render (the SSR shape for "SSG for emails"), dropped after serialize; byte-parity with the old core pinned by `backend-email/tests/newcore_golden.rs` | `crates/backend/email/src/newcore.rs` |
+| CPU rasterizer | `backend_cpu::newcore::start(backend, register, build)` — host-cadence backend (the host calls `render(surface)` and `dispatch_click`; the wrapped `ClickOutcome` handler schedules the flush, headless hosts settle via `flush_sync`); `set_viewport` forwards into the world's viewport ctx; **pixel** parity with the old core (byte-exact `MemSurface` framebuffers) pinned by `backend-cpu/tests/newcore_parity.rs` | `crates/backend/cpu/src/newcore.rs` |
+| Roku (command stream) | `backend_roku::newcore::start(backend, register, build)` + the embedder contract `settle()` (drain microtasks + flush) after dispatching `HandlerTable` events, before draining the command queue — that's the "event → staged writes → flush → emitted commands" boundary; serialized command-stream **byte** parity pinned by `backend-roku/tests/newcore_parity.rs` (no BrightScript thin client exists — the stream is the observable). No viewport surface on this backend (documented in the module) | `crates/backend/roku/src/newcore.rs` |
+| Linux (GTK4 scaffold) | `backend_linux::newcore::start(backend, register, build)` — target-gated with the rest of the crate (`#![cfg(target_os = "linux")]`); GTK signal handlers are the wrapped author callbacks. Type-checked on `x86_64-unknown-linux-gnu` both cores; no GTK host environment to run — the scaffold's real-widget build-out remains open | `crates/backend/linux/src/newcore.rs` |
+| Windows (Win32 scaffold) | `backend_windows::newcore::start(backend, register, build)` — target-gated (`#![cfg(target_os = "windows")]`); Win32 control callbacks are the wrapped author callbacks. Type-checked on `x86_64-pc-windows-gnu` both cores; no Windows environment to run | `crates/backend/windows/src/newcore.rs` |
+| GPU variants (phone/tablet/tv) | `variant_phone::newcore::run(skin, build)` / `run_at` (tablet/tv likewise) — same `DeviceProfile` as the old `run`, over `host_winit::newcore`. `run_runtime_server` stays old-core-only (native runtime-server shells are the dev-chain's named old-core seam) | `crates/gpu-backend/variant/{phone,tablet,tv}/src/newcore.rs` |
+| Embedded sim (native hosts) | `host_macos_desktop::mount_newcore(...)` (+ `host_ios_mobile` / `host_android_mobile` mirrors) — the native twins of host-web's: `render_wgpu::newcore::start_in_world` into the page backend's world via the new `backend_{macos,ios,android}::newcore::mounted_world()` accessors, so the page's flush driver commits the embedded app's writes; routed cross-target by `host_wgpu::mount_newcore` (wasm32 → host-web, macOS/iOS/Android → these, others `Unsupported`). macOS live-verified (newcore-macos-smoke embedded-mount phase); iOS/Android compile-verified | `crates/gpu-backend/host/{macos-desktop,ios-mobile,android-mobile,wgpu}` |
+| Dev session (runtime-server wire) | `idealyst dev --web` (new core is the default since the flip; `--old-core` opts out) — the sidecar mounts each session through `dev_server::sidecar::run_newcore` → `dev_server::newcore::SceneSession` (per-session `World` + `realize` against the recorder's caps adoption; wire `Command`s out are identical to the old core's, pinned by `mock-backend/tests/wire_behavior_newcore.rs`). Clients replay unchanged; a caps-only replay target exists via `dev_client::newcore::CapsReplay`. Saves apply by rebuild-and-respawn — in-place hot-PATCHING needs the `#[component]` hot-dispatch split, which the new-core emission doesn't have yet | `crates/dev/server/src/newcore.rs`, `crates/dev/server/src/sidecar.rs`, `crates/dev/client/src/newcore.rs`, `crates/tools/build/runtime-server` |
+
+Every boot above wires a **live viewport source** where the platform
+has one: the platform's
+resize seam pushes into the world's `ViewportCtx`
+(`runtime_vocabulary::viewport`), so breakpoint-reactive code —
+`current_breakpoint()`, idea-ui `Breakpoint`, AppShell sidebar
+pinning, responsive grids — re-fires on window resize, rotation, and
+configuration change exactly as it did on the old core. Web listens to
+window `resize`; macOS observes the content view (`setFrameSize:`);
+iOS observes host bounds (`layoutSubviews`); Android mirrors the host
+`ViewGroup` measure (survives Activity recreation); GPU follows
+`Host::set_viewport` — the *logical* viewport, which the winit host
+keeps fixed per `DeviceProfile` (window resizes letterbox-scale, so
+bucket flips only follow logical reports); the terminal and CPU
+backends forward `set_viewport` (cells / pixels respectively). SSR
+seeds per-request from `SSR_VIEWPORT` (no live source — requests are
+point-in-time renders); Roku has no viewport report surface at all,
+and the Linux/Windows scaffolds have no resize seam yet (each module
+documents the wiring rule for when one lands).
+Per-backend seam details: `runtime-vocabulary/src/viewport.rs`,
+"Seeding + platform sources".
 
 A minimal web main:
 
@@ -244,6 +332,29 @@ the same author contract, now enforced at **commit time**
 - **Memos are equality-guarded.** A recompute that produces an equal
   value does not wake consumers
   (`tests.rs::memo_equality_cut_stops_propagation`).
+
+### `resource` / `mutation` (async reactive)
+
+Both primitives exist on runtime v2 with the old API surface —
+`data()` / `error()` / `loading()` / `state()` / `network_state()`,
+`refetch()` on resources, `trigger()` / `run()` / `reset()` /
+`state_signal()` on mutations, `ResourceCancel` with `on_cancel` — as
+glue reimplementations (`crates/runtime/vocabulary/src/async_reactive.rs`,
+behind the same `async-driver` gate as the old root; pinned by
+`crates/runtime/vocabulary/tests/async_reactive.rs`). An async
+completion is event-boundary work: its state write **stages** and
+commits at the driver's flush (the executor fires the post-dispatch
+hook after every future poll), and a completion that lands after its
+owning scope tore down is dropped silently — the resource's cancel
+token and the mutation's liveness sentinel guard the write, so
+unmount-with-a-fetch-in-flight is safe on both cores.
+
+| Old core | Runtime v2 | Failure mode if unmigrated |
+| --- | --- | --- |
+| `resource(...)`/`mutation(...)` anywhere; outside a scope they persist for the thread | require `World::enter` (component build / effect); with no collector they live for the world | runtime panic at creation outside the world |
+| `refetch()`/`trigger()`/`reset()` after the owning scope dropped: silent no-op | panics with the kernel's stale-handle diagnostic (use-after-unmount surfaced) | runtime panic — restructure so the handle doesn't outlive its component |
+| N same-turn `refetch()` calls issue N fetches (first N−1 discarded by the stale guard) | coalesce into ONE fetch per flush | none observable — fewer wasted requests |
+| `NetworkState::from(&state)` ad-hoc conversion | use `.network_state()` on the handle (the `From` impls would be orphans in glue) | compile error under the alias |
 
 ---
 
@@ -363,11 +474,56 @@ trust the compiler over this table):
 | Surface | Status | Workaround |
 | --- | --- | --- |
 | `link(route = …)` (in-app links) | compile error — the ambient link-activator seam retargets with the navigation SDK | `link(external = "…")` works; for in-app navigation dispatch through the injected `SwapNav`/`StackNav` handles |
-| `#[component(lazy)]` / `#[lazy]` | compile error — no chunk-mount prim yet | make the component eager |
-| `web_view` | compile error — dispatches through the old-core WebView SDK | avoid on new-core builds |
+| `#[component(lazy)]` / `#[lazy]` | **supported** — lowers to the vocabulary `lazy` prim (`glue::primitives::lazy` + `handlers/lazy.rs`): placeholder-first mount, chunk body swaps in on load, `loading`/`error` props, retry, SSR keeps the loading UI (byte-identical to old-core SSR). Same `#[wasm_split]` chunk naming, so `idealyst build --web` splits identically. One shape change under the hood: the chunk fn returns a body *thunk* (construction runs in the mount handler's swap effect, under the world) | — |
+| `web_view` | **supported** — the snake_case tag special-case is gone from the macro entirely (it was never a first-party primitive and never resolved on the old core either); the WebView SDK ships the tag contract itself: `ui! { WebView(url = …) }` is ordinary `BuildElement` dispatch on BOTH cores (`crates/sdk/client/webview`, `type WebView = WebViewProps`) | — |
 | virtualizer `for i in count(sig)` sugar | compile error — generator-backend metadata is post-migration | the `flat_list(data=…, key=…, size=…, render=…)` tag works |
 | `CardTabs` ui! sugar | compile error — rides the old `cardtabs!` macro | — |
 | `#[method]` legacy explicit-props / generic form | compile error — `Bindable<H>` rides the old `Element` | the inline-props form works (see Testing below) |
+
+### External SDKs (the third-party primitive layer)
+
+On the old core, peripheral SDKs render via `Element::External` plus a
+per-backend `register_external` registry. The new core has no separate
+External concept — the scene `Registry` treats primitives and externals
+uniformly, so each SDK registers its payload handler exactly like
+`register_builtins` registers the core primitives. Every External SDK
+is dual-core (same public names both cores, default-off `new-core`
+feature, `oldcore.rs`/`newcore.rs` split — the navigator/codeblock/table
+house pattern). App-side changes on the new core:
+
+- **Registration moves to the boot seam.** There is no inventory
+  self-registration; compose the SDK registers into the boot entry's
+  `register` argument: `backend_web::newcore::start_in("#app",
+  |r| { svg::register(r); canvas_native::register(r); }, app)`. An
+  UNREGISTERED payload panics at realize (the scene contract) — the
+  old core rendered a placeholder box instead, so a missed `register`
+  fails loud rather than soft.
+- **Callbacks flush.** SDK glue that fires author callbacks from
+  platform event sources outside the framework's wrapped dispatch
+  sites (a `<form>` submit listener, an iframe `message` event, an
+  NSToolbar button action) calls the backend's
+  `newcore::schedule_flush()` after the callback returns — this closes
+  the "External glue must call schedule_flush" residual named in each
+  backend's `newcore.rs` module docs (web and macOS closed by this
+  wave; the pattern is pinned per SDK).
+
+| SDK | New-core status | Notes |
+| --- | --- | --- |
+| `table` | web `<table>` handlers + native CSS-grid (earlier wave) | SSR reuses the generic handlers |
+| `codeblock` | caps-generic handler, web + SSR (earlier wave) | byte-identical `<pre>`/span DOM |
+| `svg` | web `innerHTML` handler; placeholder elsewhere | native usvg walk old-core-only (seam documented) |
+| `video` | web `<video>` handler; placeholder elsewhere | macOS/iOS/Android players old-core-only (seam documented) |
+| `webview` | web `<iframe>` handler (author callbacks flush); placeholder elsewhere | `WebView` ui! tag works on BOTH cores now |
+| `form` | web real `<form>` + children + submit-flush; placeholder+children elsewhere | `Form` tag = manual `BuildElement` on the new leg |
+| `markdown` | ONE caps-generic semantic-DOM handler for ALL hosts | SSR now gets real markdown DOM (old SSR rendered the placeholder — an upgrade, documented) |
+| `maps` | web leaf handler; placeholder elsewhere | `maps-ios` old-core-only |
+| `toolbar` | REAL macOS `NSToolbar` leg (clicks flush via `backend_macos::newcore::schedule_flush`); placeholder elsewhere | registration-time type dispatch; Windows/Linux legs old-core-only |
+| `screen-recorder` (`PrivateLayer`) | passthrough children handler (`register_scene`) | capture-EXCLUDED native windows old-core-only (seam documented) |
+| `canvas` | web Canvas2D renderer (`canvas-native`) + SSR `<canvas>` host (`canvas_core::register_ssr_scene`); placeholder on native | GPU `canvas-vello` + native painters old-core-only; renderers register a `CanvasPrim` handler (the seam) |
+
+Live evidence: `crates/dev/newcore-canvas-smoke` (repo-root
+`newcore-canvas-smoke.png`) — an author draw closure repainting through
+the SDK's world effect on a real new-core web boot.
 
 Two adjacent nuances:
 
@@ -472,6 +628,54 @@ Status at time of writing (all from checked-in gates):
 
 ---
 
+## Crate layout: `runtime-shared` (the split substrate)
+
+The migration split the old `runtime-core` in two:
+
+- **`runtime-shared`** — the permanent substrate both cores compile
+  against: the style engine (`StyleRules`, stylesheets, tokens, theme
+  plumbing), colors, assets/fonts (`typeface!`/`face!`), animation
+  types, touch/hover/wheel/file-drop event types, the legacy reactive
+  arena (`Signal`/`effect`/`memo`, `Ref`/`node_ref!`), scheduling /
+  time / session, viewport + breakpoints + safe-area, logging, debug
+  counters (`debug-stats`), the robot registry + bridge, native
+  introspection, page metadata, the host slots (platform / color
+  scheme / URL opener / fullscreen / announcer), and every
+  per-primitive prop/handle struct (`primitives::*`).
+- **`runtime-core`** — ONLY the old walker half: `Element`, the
+  `Backend` mega-trait, the render walker, and the `Bound`/builder
+  authoring layer. It re-exports everything from `runtime-shared` at
+  the old paths, so **old-core consumers compile unchanged** — keep
+  writing `runtime_core::…`. The crate is deleted at the end of the
+  migration; the shared substrate outlives it.
+
+Every thread-local moved WITH its module: `runtime-shared` owns the
+single authority and `runtime-core` only re-exports. (A second copy
+would silently split state — signals set through one core invisible to
+the other.)
+
+What this means for downstream crates:
+
+- **Old-core apps/SDKs**: nothing. `runtime_core::…` paths resolve to
+  the same items via re-export.
+- **New-core (`new-core` feature) builds**: `runtime-vocabulary` and
+  `runtime-facade` now depend on `runtime-shared` directly — a default
+  new-core dependency graph contains **no `runtime-core`**
+  (`cargo tree -e normal -p runtime-vocabulary | grep runtime-core`
+  is empty).
+- **`legacy-bridge` feature (`runtime-vocabulary`)**: the one
+  remaining old-core coupling, off by default. It gates
+  `bridge::LegacyBridge` (mounting the new core through an old
+  `Backend` impl) and the `NavigatorOps::create_navigator` cap (whose
+  `NavigatorHost` closes over the old `Element`). Backends whose
+  `newcore.rs` delegates `create_navigator` to their old Backend impl
+  enable it inside their own `new-core` feature; so do the parity and
+  test harnesses. It is deleted together with `runtime-core`.
+- **`css` and `runtime-layout`** depend on `runtime-shared` (they only
+  ever needed the style data model, not the walker).
+
+---
+
 ## Testing and the robot bridge
 
 The robot surface (`idealyst test`, the MCP verbs, `robot-test`)
@@ -499,3 +703,22 @@ adapts verb-for-verb. What changes for test authors:
 - **`assert_signal`** in `#[robot_test]` fns is unchanged — it needs
   the target registered via `watch_signal` first, and the wire shape is
   identical across cores.
+- **MCP catalog + robot in new-core dev sessions** (wave 2b — this
+  used to be a named gap). The catalog is core-agnostic now: the
+  core-primitive recipes are STATIC data in `runtime_shared::recipes`
+  (`include_str!` of `crates/runtime/shared/recipes/*.rs`,
+  compile-gated on both cores by
+  `crates/dev/newcore-app/tests/recipes_compile.rs`), and the
+  `__mcp` inventory anchor exists per lowering: `runtime_core::__mcp`
+  (old), `runtime_vocabulary::glue::__mcp` (retargeted emissions), and
+  the facade root (alias-resolved derive/`recipe!`/`doc_scope!`
+  emissions) — all three the same `mcp-catalog` instance. A new-core
+  graph turns everything on with `runtime-facade/dev` (= robot +
+  catalog); the generated new-core sidecar wrapper enables
+  `runtime-core/dev` + `runtime-facade/dev`, and the sidecar session
+  starts the bridge and installs
+  `dev_server::newcore::install_robot_env` (vocabulary registry for
+  element verbs, shared-bridge fallback for `get_catalog`/logs/
+  customs via `runtime_shared::robot::bridge::install_verb_router`).
+  Pinned by `dev-server/tests/newcore_robot_catalog.rs` and the
+  build-runtime-server wrapper tests.

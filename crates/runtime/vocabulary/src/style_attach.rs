@@ -78,7 +78,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use runtime_core::{
+use runtime_shared::{
     resolve_style, Breakpoint, StateBits, StyleApplication, StyleRules, StyleSheet,
 };
 use runtime_world::{effect, Signal};
@@ -105,13 +105,22 @@ pub enum StyleProp {
     Dynamic(Box<dyn Fn() -> Rc<StyleRules>>),
     /// A static sheet application (`stylesheet!`'s all-constant
     /// builder): sheet-engine resolution + theme-cohort enrollment.
-    Sheet(StyleApplication),
+    ///
+    /// Boxed on purpose: `StyleApplication` inlines its `overrides:
+    /// StyleRules` (~2.3 KB), and an unboxed variant makes EVERY prim
+    /// payload ~2.5 KB — each builder-chain move then memcpys the whole
+    /// struct, which was the create-rows bench residual (+23% vs the
+    /// old core, ~0.33 µs/row of pure payload copying at 10k rows).
+    /// One box per styled node keeps the moving parts pointer-sized.
+    Sheet(Box<StyleApplication>),
     /// A sheet-application closure (`stylesheet!` builder with a
     /// reactive input): per-node binding effect through the sheet
     /// engine.
     SheetDynamic(Box<dyn Fn() -> StyleApplication>),
-    /// Discrete signal→class selection (see [`signal_class`]).
-    SignalClass(SignalClassProp),
+    /// Discrete signal→class selection (see [`signal_class`]). Boxed
+    /// for the same size reason as `Sheet` (the spec carries Vecs +
+    /// four Rcs — the largest remaining variant otherwise).
+    SignalClass(Box<SignalClassProp>),
     /// A build-time-minted class (+ optional runtime slot overrides).
     Preminted {
         class: Cow<'static, str>,
@@ -120,7 +129,7 @@ pub enum StyleProp {
 }
 
 /// Spec for a [`StyleProp::SignalClass`] binding — the new-core
-/// counterpart of `runtime_core::SignalClassSpec`, built over a
+/// counterpart of `runtime_shared::SignalClassSpec`, built over a
 /// `runtime_world` signal by [`signal_class`].
 pub struct SignalClassProp {
     /// The discrete values the signal takes (the JS fast path ships
@@ -156,7 +165,7 @@ pub struct SignalClassProp {
 /// Build a [`StyleProp::SignalClass`] from a world `Signal`, its
 /// discrete values, and a value→application mapping (the mapping runs
 /// once per value at construction, same as the old
-/// `runtime_core::signal_class`).
+/// `runtime_shared::signal_class`).
 ///
 /// On a backend with `supports_js_class_bindings` (web), the attach
 /// takes the ported **JS fast path**: per-value classes are minted at
@@ -181,14 +190,14 @@ where
         let mapping = mapping.clone();
         Rc::new(move || mapping(u32::from(signal.get())))
     };
-    StyleProp::SignalClass(SignalClassProp {
+    StyleProp::SignalClass(Box::new(SignalClassProp {
         values: values.to_vec(),
         apps,
         compute: compute.clone(),
         pristine_compute: compute,
         signal_id: signal.raw_id(),
         read_value: Rc::new(move || u32::from(signal.get())),
-    })
+    }))
 }
 
 /// Conversions into [`StyleProp`] — what builders' `.style(...)` and the
@@ -221,7 +230,7 @@ impl IntoStyleProp for Rc<StyleRules> {
 
 impl IntoStyleProp for StyleApplication {
     fn into_style_prop(self) -> StyleProp {
-        StyleProp::Sheet(self)
+        StyleProp::Sheet(Box::new(self))
     }
 }
 
@@ -229,7 +238,16 @@ impl IntoStyleProp for StyleApplication {
 /// `IntoStyleSource for Rc<StyleSheet>` convenience).
 impl IntoStyleProp for Rc<StyleSheet> {
     fn into_style_prop(self) -> StyleProp {
-        StyleProp::Sheet(StyleApplication::new(self))
+        StyleProp::Sheet(Box::new(StyleApplication::new(self)))
+    }
+}
+
+/// The boxed form verbatim — lets a caller that already has the box
+/// (the repeat handler's style-attachment carry, a navigator override
+/// fold) avoid an unbox/rebox round-trip.
+impl IntoStyleProp for Box<StyleApplication> {
+    fn into_style_prop(self) -> StyleProp {
+        StyleProp::Sheet(self)
     }
 }
 
@@ -244,9 +262,9 @@ pub trait DynStyleResult: sealed::Sealed {
 
 mod sealed {
     pub trait Sealed {}
-    impl Sealed for runtime_core::StyleRules {}
-    impl Sealed for std::rc::Rc<runtime_core::StyleRules> {}
-    impl Sealed for runtime_core::StyleApplication {}
+    impl Sealed for runtime_shared::StyleRules {}
+    impl Sealed for std::rc::Rc<runtime_shared::StyleRules> {}
+    impl Sealed for runtime_shared::StyleApplication {}
 }
 
 impl DynStyleResult for StyleRules {
@@ -343,9 +361,10 @@ pub fn attach_style<H: StyleServices>(
             noop_setter()
         }
         StyleProp::Dynamic(f) => attach_rules_dynamic(backend, node, f),
-        StyleProp::Sheet(app) => attach_sheet_static(backend, node, app),
+        StyleProp::Sheet(app) => attach_sheet_static(backend, node, *app),
         StyleProp::SheetDynamic(f) => attach_sheet_dynamic(backend, node, f),
         StyleProp::SignalClass(spec) => {
+            let spec = *spec;
             // JS fast path (web): pre-minted per-value classes + JS-side
             // fan-out — only when the spec is PRISTINE (a wrapped
             // `compute` means the apps table no longer reflects the
@@ -399,7 +418,7 @@ pub fn attach_style<H: StyleServices>(
                 // sheet for every override site, not one per node).
                 fn empty_sheet() -> Rc<StyleSheet> {
                     static KEY: u8 = 0;
-                    runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
+                    runtime_shared::cached_stylesheet(&KEY as *const u8 as usize, || {
                         Rc::new(StyleSheet::r#static(StyleRules::default()))
                     })
                 }
@@ -685,7 +704,7 @@ fn attach_sheet_dynamic<H: StyleServices>(
     let mut _pinned_sheet: Option<Rc<StyleSheet>> = None;
     let _binding = effect(move || {
         #[cfg(feature = "debug-stats")]
-        let _t_effect = runtime_core::debug::now_micros();
+        let _t_effect = runtime_shared::debug::now_micros();
         // Theme-version subscription — the per-token reads of the old
         // engine go deaf behind the resolution cache; the version
         // signal never does (old `tokens_version_signal` rationale).
@@ -715,18 +734,18 @@ fn attach_sheet_dynamic<H: StyleServices>(
             // (visually inert, but it broke SSG byte-parity — pinned by
             // `dynamic_sheet_path_does_not_fold_default_font`).
             #[cfg(feature = "debug-stats")]
-            let _t_resolve = runtime_core::debug::now_micros();
+            let _t_resolve = runtime_shared::debug::now_micros();
             let base = resolve_style(&app);
             let state_overlays = resolve_state_overlays(&app);
             let bp_overlays = resolve_breakpoint_overlays(&app);
             let cq_overlays = resolve_container_overlays(&app);
             #[cfg(feature = "debug-stats")]
-            runtime_core::debug::record_apply_phase(
+            runtime_shared::debug::record_apply_phase(
                 "nc_sheet_dyn_resolve",
-                runtime_core::debug::now_micros().saturating_sub(_t_resolve),
+                runtime_shared::debug::now_micros().saturating_sub(_t_resolve),
             );
             #[cfg(feature = "debug-stats")]
-            let _t_apply = runtime_core::debug::now_micros();
+            let _t_apply = runtime_shared::debug::now_micros();
             backend_for_effect.borrow_mut().apply_styled_variants(
                 &node_for_effect,
                 &base,
@@ -735,14 +754,14 @@ fn attach_sheet_dynamic<H: StyleServices>(
                 &cq_overlays,
             );
             #[cfg(feature = "debug-stats")]
-            runtime_core::debug::record_apply_phase(
+            runtime_shared::debug::record_apply_phase(
                 "nc_sheet_dyn_apply",
-                runtime_core::debug::now_micros().saturating_sub(_t_apply),
+                runtime_shared::debug::now_micros().saturating_sub(_t_apply),
             );
             #[cfg(feature = "debug-stats")]
-            runtime_core::debug::record_apply_phase(
+            runtime_shared::debug::record_apply_phase(
                 "nc_sheet_dyn_effect_total",
-                runtime_core::debug::now_micros().saturating_sub(_t_effect),
+                runtime_shared::debug::now_micros().saturating_sub(_t_effect),
             );
         } else {
             // Event-driven: merge active state axes into the variant
@@ -916,7 +935,7 @@ fn merge_active_breakpoints(
     if overlays.is_empty() {
         return base;
     }
-    let current = runtime_core::current_breakpoint().get();
+    let current = runtime_shared::current_breakpoint().get();
     let mut merged: Option<StyleRules> = None;
     for (bp, overlay) in overlays {
         if bp.rank() <= current.rank() {
@@ -962,7 +981,7 @@ fn merge_active_containers(
 /// `inject` per call.
 fn fill_default_text_font(
     rules: Rc<StyleRules>,
-    default_font: Option<runtime_core::FontFamily>,
+    default_font: Option<runtime_shared::FontFamily>,
 ) -> Rc<StyleRules> {
     if rules.font_family.is_none() {
         if let Some(font) = default_font {
@@ -982,7 +1001,7 @@ fn fill_default_text_font(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_core::accessibility::AccessibilityProps;
+    use runtime_shared::accessibility::AccessibilityProps;
     use runtime_scene::Host;
     use runtime_world::{collect_owned, World};
 
@@ -1055,12 +1074,12 @@ mod tests {
         // `stylesheet!` output); per-value apps differ by override.
         fn sheet() -> Rc<StyleSheet> {
             static KEY: u8 = 0;
-            runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
+            runtime_shared::cached_stylesheet(&KEY as *const u8 as usize, || {
                 Rc::new(StyleSheet::r#static(StyleRules::default()))
             })
         }
         let mut rules = StyleRules::default();
-        rules.opacity = Some(runtime_core::Tokenized::Literal(if v == 0 { 0.25 } else { 0.75 }));
+        rules.opacity = Some(runtime_shared::Tokenized::Literal(if v == 0 { 0.25 } else { 0.75 }));
         StyleApplication::new(sheet()).with_overrides(rules)
     }
 

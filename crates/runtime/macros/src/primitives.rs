@@ -33,7 +33,15 @@ pub(crate) fn canonical_primitive(name: &str) -> Option<&'static str> {
         "toggle" => Some("toggle"),
         "scroll_view" => Some("scroll_view"),
         "slider" => Some("slider"),
-        "web_view" => Some("web_view"),
+        // NOTE: `web_view` is deliberately NOT in this list. It never was
+        // a first-party primitive — the WebView SDK owns it — and the old
+        // canonical entry only routed the tag into the primitive
+        // prop-split before falling through to component dispatch anyway
+        // (no `web_view` constructor ever existed in runtime-core). The
+        // SDK now ships the tag contract itself (`type WebView =
+        // WebViewProps` + `BuildElement`, both cores), so the tag is
+        // ordinary PascalCase component dispatch — same emission on both
+        // cores, which is what un-deferred it on `new-core`.
         "activity_indicator" => Some("activity_indicator"),
         "flat_list" => Some("flat_list"),
         "link" => Some("link"),

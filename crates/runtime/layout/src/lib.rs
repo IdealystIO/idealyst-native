@@ -1,7 +1,7 @@
 //! Flex layout utility for native backends.
 //!
 //! Wraps [`taffy`] (a pure-Rust flex engine matching CSS semantics)
-//! and translates `runtime_core::StyleRules` into Taffy styles.
+//! and translates `runtime_shared::StyleRules` into Taffy styles.
 //! Backends that don't have a native layout system (iOS, Android)
 //! build a parallel layout tree as they create native nodes, run
 //! Taffy when the tree is complete, and apply the resulting frames
@@ -53,7 +53,7 @@ use taffy::TaffyTree;
 // Keeps `taffy` as a non-public dep of consumers.
 pub use taffy::{AvailableSpace, Size};
 
-use runtime_core::{
+use runtime_shared::{
     AlignContent as FwAlignContent, AlignItems as FwAlignItems, AlignSelf as FwAlignSelf,
     DisplayKind as FwDisplayKind, FlexDirection as FwFlexDirection, FlexWrap as FwFlexWrap,
     JustifyContent as FwJustifyContent, Length as FwLength, Position as FwPosition, StyleRules,
@@ -948,7 +948,7 @@ impl LayoutTree {
 
     /// Set (or clear) an animated `max-height` cap on a node, bypassing
     /// the full `set_style` translation. Native backends call this to
-    /// realize [`AnimProp::MaxHeight`](runtime_core::animation::AnimProp::MaxHeight)
+    /// realize [`AnimProp::MaxHeight`](runtime_shared::animation::AnimProp::MaxHeight)
     /// per animation frame — the reference consumer is idea-ui's
     /// `Collapsible(transition = Measured)`, which tweens the body's
     /// max-height between `0` and its measured content height to
@@ -1508,7 +1508,7 @@ fn track_sizing_function(t: &FwTrackSize) -> TrackSizingFunction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_core::Tokenized;
+    use runtime_shared::Tokenized;
 
     /// `auto` grid columns with cells that measure like real text
     /// reproduce `table-layout: auto`: a content-heavy column takes the
@@ -1534,7 +1534,7 @@ mod tests {
                 Size { width: w, height: lines * 16.0 }
             })
         }
-        use runtime_core::TrackSize as TS;
+        use runtime_shared::TrackSize as TS;
 
         // Over-full: a long Description (single-line 900 ≫ remaining
         // width) must shrink to fill the remainder and wrap; the short
@@ -1543,7 +1543,7 @@ mod tests {
             let mut t = LayoutTree::new();
             let grid = t.new_node();
             let mut gr = StyleRules::default();
-            gr.display = Some(runtime_core::DisplayKind::Grid);
+            gr.display = Some(runtime_shared::DisplayKind::Grid);
             gr.grid_template_columns = Some(vec![TS::Auto; 3]);
             t.set_style(grid, &gr);
             // (longest_word, single_line): Prop, Type, Description.
@@ -1586,7 +1586,7 @@ mod tests {
             }
             // Style the grid AFTER its children are inserted.
             let mut gr = StyleRules::default();
-            gr.display = Some(runtime_core::DisplayKind::Grid);
+            gr.display = Some(runtime_shared::DisplayKind::Grid);
             gr.grid_template_columns = Some(vec![TS::Auto; 3]);
             t.set_style(grid, &gr);
             t.compute(grid, 1000.0, 400.0);
@@ -1616,7 +1616,7 @@ mod tests {
                 cells.push(c);
             }
             let mut gr = StyleRules::default();
-            gr.display = Some(runtime_core::DisplayKind::Grid);
+            gr.display = Some(runtime_shared::DisplayKind::Grid);
             gr.grid_template_columns = Some(vec![TS::Auto; 3]);
             t.set_style(grid, &gr);
             t.add_child(outer, grid);
@@ -1640,7 +1640,7 @@ mod tests {
             let mut t = LayoutTree::new();
             let grid = t.new_node();
             let mut gr = StyleRules::default();
-            gr.display = Some(runtime_core::DisplayKind::Grid);
+            gr.display = Some(runtime_shared::DisplayKind::Grid);
             gr.grid_template_columns = Some(vec![TS::Auto; 3]);
             // build cells (view + padding) with a text grandchild each
             let specs = [(60.0_f32, 60.0_f32), (200.0, 200.0), (90.0, 900.0)];
@@ -1684,7 +1684,7 @@ mod tests {
             let mut t = LayoutTree::new();
             let grid = t.new_node();
             let mut gr = StyleRules::default();
-            gr.display = Some(runtime_core::DisplayKind::Grid);
+            gr.display = Some(runtime_shared::DisplayKind::Grid);
             gr.grid_template_columns = Some(vec![TS::Auto; 3]);
             t.set_style(grid, &gr);
             let specs = [(60.0_f32, 60.0_f32), (120.0, 400.0), (140.0, 500.0)];
@@ -1718,7 +1718,7 @@ mod tests {
                 cells.push(c);
             }
             let mut gr = StyleRules::default();
-            gr.display = Some(runtime_core::DisplayKind::Grid);
+            gr.display = Some(runtime_shared::DisplayKind::Grid);
             // fr weights proportional to max-content: 60 / 200 / 900.
             gr.grid_template_columns = Some(vec![TS::Fr(60.0), TS::Fr(200.0), TS::Fr(900.0)]);
             t.set_style(grid, &gr);
@@ -1736,7 +1736,7 @@ mod tests {
             let mut t = LayoutTree::new();
             let grid = t.new_node();
             let mut gr = StyleRules::default();
-            gr.display = Some(runtime_core::DisplayKind::Grid);
+            gr.display = Some(runtime_shared::DisplayKind::Grid);
             gr.grid_template_columns = Some(vec![TS::Auto; 3]);
             t.set_style(grid, &gr);
             let specs = [(60.0_f32, 60.0_f32), (120.0, 120.0), (140.0, 140.0)];
@@ -1772,7 +1772,7 @@ mod tests {
     /// bottom gap" symptom.
     #[test]
     fn presence_wrappers_stack_in_flow_but_overlap_when_absolute() {
-        use runtime_core::FlexDirection;
+        use runtime_shared::FlexDirection;
 
         // (column container, two wrappers, two 50×30 leaf cards), built with
         // `wrapper_style` applied to each wrapper.
@@ -1821,7 +1821,7 @@ mod tests {
         // stack (the reported macOS toast symptom).
         {
             let mut abs = StyleRules::default();
-            abs.position = Some(runtime_core::Position::Absolute);
+            abs.position = Some(runtime_shared::Position::Absolute);
             abs.top = Some(px(0.0));
             abs.left = Some(px(0.0));
             abs.right = Some(px(0.0));
@@ -1852,7 +1852,7 @@ mod tests {
     /// geometry change (width) must return `true`.
     #[test]
     fn set_style_reports_only_geometry_changes() {
-        use runtime_core::Color;
+        use runtime_shared::Color;
         let mut t = LayoutTree::new();
         let node = t.new_node();
 
@@ -1945,13 +1945,13 @@ mod tests {
         let root = t.new_node();
         let grid = t.new_node();
         let mut gr = StyleRules::default();
-        gr.display = Some(runtime_core::DisplayKind::Grid);
+        gr.display = Some(runtime_shared::DisplayKind::Grid);
         // Predictable max-content tracks for the assertion: each column
         // sizes to its widest cell across both rows.
         gr.grid_template_columns = Some(vec![
-            runtime_core::TrackSize::MaxContent,
-            runtime_core::TrackSize::MaxContent,
-            runtime_core::TrackSize::MaxContent,
+            runtime_shared::TrackSize::MaxContent,
+            runtime_shared::TrackSize::MaxContent,
+            runtime_shared::TrackSize::MaxContent,
         ]);
         t.set_style(grid, &gr);
         t.add_child(root, grid);
@@ -2004,8 +2004,8 @@ mod tests {
         let root = t.new_node();
         let grid = t.new_node();
         let mut gr = StyleRules::default();
-        gr.display = Some(runtime_core::DisplayKind::Grid);
-        gr.grid_template_columns = Some(vec![runtime_core::TrackSize::Auto; 3]);
+        gr.display = Some(runtime_shared::DisplayKind::Grid);
+        gr.grid_template_columns = Some(vec![runtime_shared::TrackSize::Auto; 3]);
         t.set_style(grid, &gr);
         t.add_child(root, grid);
         // Three equally narrow cells (10px each) — total content 30 ≪ 300.
@@ -2044,8 +2044,8 @@ mod tests {
         let root = t.new_node();
         let grid = t.new_node();
         let mut gr = StyleRules::default();
-        gr.display = Some(runtime_core::DisplayKind::Grid);
-        gr.grid_template_columns = Some(vec![runtime_core::TrackSize::Auto; 3]);
+        gr.display = Some(runtime_shared::DisplayKind::Grid);
+        gr.grid_template_columns = Some(vec![runtime_shared::TrackSize::Auto; 3]);
         t.set_style(grid, &gr);
         t.add_child(root, grid);
         // Column 0 has wide content (180); columns 1 and 2 are narrow (20).
@@ -2103,7 +2103,7 @@ mod tests {
         let mut sr = StyleRules::default();
         sr.width = Some(px(300.0));
         sr.max_height = Some(px(cap));
-        sr.overflow = Some(runtime_core::Overflow::Hidden);
+        sr.overflow = Some(runtime_shared::Overflow::Hidden);
         t.set_style(surface, &sr);
 
         // Scroller: the real path — `scroll_view` seed, then the modal's
@@ -2367,8 +2367,8 @@ mod tests {
         // is what my first test omitted.
         let surface = t.new_node();
         let mut surf = StyleRules::default();
-        surf.align_items = Some(runtime_core::AlignItems::Center);
-        surf.justify_content = Some(runtime_core::JustifyContent::Center);
+        surf.align_items = Some(runtime_shared::AlignItems::Center);
+        surf.justify_content = Some(runtime_shared::JustifyContent::Center);
         t.set_style(surface, &surf);
         t.add_child(host, surface);
 
@@ -2381,7 +2381,7 @@ mod tests {
         match fill {
             Fill::None => {}
             Fill::AlignSelfStretch => {
-                gr.align_self = Some(runtime_core::AlignSelf::Stretch)
+                gr.align_self = Some(runtime_shared::AlignSelf::Stretch)
             }
         }
         t.set_style(group, &gr);
@@ -2392,7 +2392,7 @@ mod tests {
         let shell = t.new_node();
         let mut sr = StyleRules::default();
         sr.flex_direction = Some(FwFlexDirection::Row);
-        sr.align_items = Some(runtime_core::AlignItems::Center);
+        sr.align_items = Some(runtime_shared::AlignItems::Center);
         sr.width = Some(Tokenized::Literal(FwLength::Percent(100.0)));
         t.set_style(shell, &sr);
         t.add_child(group, shell);
@@ -2497,8 +2497,8 @@ mod tests {
         // DemoSurface CARD: centers its content (the parent that clipped).
         let card = t.new_node();
         let mut card_s = StyleRules::default();
-        card_s.align_items = Some(runtime_core::AlignItems::Center);
-        card_s.justify_content = Some(runtime_core::JustifyContent::Center);
+        card_s.align_items = Some(runtime_shared::AlignItems::Center);
+        card_s.justify_content = Some(runtime_shared::JustifyContent::Center);
         t.set_style(card, &card_s);
         t.add_child(host, card);
 
@@ -2507,7 +2507,7 @@ mod tests {
         // under-measured the height of (the bug this test guards).
         let surface = t.new_node();
         let mut surf = StyleRules::default();
-        surf.align_items = Some(runtime_core::AlignItems::Center);
+        surf.align_items = Some(runtime_shared::AlignItems::Center);
         surf.width = Some(Tokenized::Literal(FwLength::Percent(100.0)));
         surf.max_width = Some(px(480.0));
         t.set_style(surface, &surf);
@@ -2520,7 +2520,7 @@ mod tests {
         // FieldGroup: align_self stretch overrides the centering parent.
         let group = t.new_node();
         let mut gr_s = StyleRules::default();
-        gr_s.align_self = Some(runtime_core::AlignSelf::Stretch);
+        gr_s.align_self = Some(runtime_shared::AlignSelf::Stretch);
         t.set_style(group, &gr_s);
         t.add_child(stack, group);
 
@@ -3095,13 +3095,13 @@ mod tests {
         let pill = t.new_node();
         let mut pr = StyleRules::default();
         pr.flex_direction = Some(FwFlexDirection::Column);
-        pr.align_items = Some(runtime_core::AlignItems::FlexStart);
+        pr.align_items = Some(runtime_shared::AlignItems::FlexStart);
         t.set_style(pill, &pr);
 
         let row = t.new_node();
         let mut rr = StyleRules::default();
         rr.flex_direction = Some(FwFlexDirection::Row);
-        rr.align_items = Some(runtime_core::AlignItems::Center);
+        rr.align_items = Some(runtime_shared::AlignItems::Center);
         t.set_style(row, &rr);
 
         let circle = t.new_node();
@@ -3172,7 +3172,7 @@ mod tests {
         // Don't stretch the content to the viewport, so its own
         // content-based width is what's under test.
         let mut sr = StyleRules::default();
-        sr.align_items = Some(runtime_core::AlignItems::FlexStart);
+        sr.align_items = Some(runtime_shared::AlignItems::FlexStart);
         t.set_style(scroller, &sr);
 
         // Content track: a row of two 200px items → wants 400px, wider
@@ -3321,7 +3321,7 @@ mod tests {
         let mut body_rules = StyleRules::default();
         body_rules.flex_direction = Some(FwFlexDirection::Column);
         body_rules.flex_shrink = Some(Tokenized::Literal(0.0));
-        body_rules.overflow = Some(runtime_core::Overflow::Hidden);
+        body_rules.overflow = Some(runtime_shared::Overflow::Hidden);
         t.set_style(body, &body_rules);
         t.add_child(root, body);
 
@@ -3354,7 +3354,7 @@ mod tests {
         // the body to its 200px content height.
         let mut restyle = StyleRules::default();
         restyle.flex_direction = Some(FwFlexDirection::Column);
-        restyle.overflow = Some(runtime_core::Overflow::Hidden);
+        restyle.overflow = Some(runtime_shared::Overflow::Hidden);
         restyle.padding_top = Some(px(0.0));
         t.set_style(body, &restyle);
         t.compute(root, 300.0, 800.0);

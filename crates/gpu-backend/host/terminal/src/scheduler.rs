@@ -185,6 +185,19 @@ impl Drop for TerminalHandle {
 /// microtasks → expired timers → next-frame one-shots → recurring
 /// `raf_loop` subscribers. Called once per frame by the host's
 /// render loop.
+///
+/// New-core flush discipline: after each TIMER / NEXT-FRAME / RAF
+/// callback (which may run author code that stages signal writes) the
+/// backend's post-dispatch hook fires
+/// (`backend_terminal::dispatch_hook`), queuing one deduped flush
+/// microtask; the trailing microtask drain at the end of this fn
+/// commits it BEFORE the host's `render_to_grid` for this frame.
+/// Microtasks deliberately do NOT fire the hook: the flush itself
+/// rides a microtask, and hooking them would re-arm the flush from
+/// inside its own dispatch and spin the drain-until-empty loop forever
+/// (see the dispatch_hook module docs). The hook is a no-op single
+/// `Cell` read unless a new-core app is booted, so the old core pays
+/// nothing.
 pub(crate) fn tick() {
     let now = Instant::now();
 
@@ -222,6 +235,9 @@ pub(crate) fn tick() {
             TICK_STATE.with(|s| s.borrow_mut().cancelled.remove(&entry.id));
         if !cancelled {
             (entry.f)();
+            // Post-dispatch hook: an `after_ms` callback may be author
+            // code staging new-core writes (fn docs).
+            backend_terminal::dispatch_hook::fire_dispatch_hook();
         }
     }
 
@@ -233,6 +249,7 @@ pub(crate) fn tick() {
             TICK_STATE.with(|s| s.borrow_mut().cancelled.remove(&entry.id));
         if !cancelled {
             (entry.f)();
+            backend_terminal::dispatch_hook::fire_dispatch_hook();
         }
     }
 
@@ -247,6 +264,7 @@ pub(crate) fn tick() {
             TICK_STATE.with(|s| s.borrow().cancelled.contains(&entry.id));
         if !cancelled {
             (entry.f)();
+            backend_terminal::dispatch_hook::fire_dispatch_hook();
         }
     }
     // Drop cancelled entries and merge back any newly-registered
@@ -269,6 +287,23 @@ pub(crate) fn tick() {
         // last frame".
         state.cancelled.clear();
     });
+
+    // 5) Trailing microtask drain: anything the timer/next-frame/raf
+    //    phases queued — notably the new-core flush the dispatch hook
+    //    schedules — runs BEFORE the host paints this frame. Microtask
+    //    semantics ("run ASAP after the current turn") make this the
+    //    correct home on the old core too; previously such tasks waited
+    //    for the next tick's phase 1.
+    loop {
+        let drained: Vec<_> =
+            TICK_STATE.with(|s| std::mem::take(&mut s.borrow_mut().microtasks));
+        if drained.is_empty() {
+            break;
+        }
+        for f in drained {
+            f();
+        }
+    }
 }
 
 /// `true` if any timer is due soon, a raf subscriber is active, or

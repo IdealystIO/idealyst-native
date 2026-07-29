@@ -27,6 +27,35 @@ license.workspace = true
 # platform-agnostic; this server can drive any of them.
 robot = ["runtime-core/robot"]
 
+# New-core adoption of the recorder (idea-lite migration): compiles
+# `dev_server::newcore` — `runtime_scene::Host` + all 30
+# `runtime_vocabulary::caps` traits on `WireRecordingBackend`
+# (UFCS-delegating to the existing `Backend` impl, so wire emission is
+# byte-identical by construction) plus `SceneSession` (per-session
+# `World` + `realize` mount, the new-core twin of the sidecar's
+# `runtime_core::mount`). Combined with `runtime-server` it also
+# compiles `sidecar::run_newcore` for `--new-core` dev sessions.
+# Off by default so old-core-only consumers don't drag the scene /
+# vocabulary / world crates.
+# `runtime-vocabulary/legacy-bridge` is required: the recorder IS an
+# old-`Backend` interop surface (its caps impls delegate to the Backend
+# impl, and navigator recording rides `NavigatorHost` + the registered
+# recording handlers), and the vocabulary gates that interop half —
+# `caps::NavigatorOps::create_navigator` included — behind that feature.
+new-core = [
+    "dep:runtime-scene",
+    "dep:runtime-vocabulary",
+    "dep:runtime-world",
+    "runtime-vocabulary/legacy-bridge",
+    # New-core sessions register their elements in the VOCABULARY robot
+    # registry (mount handlers' `register_mount`, cfg'd on this), and
+    # the sidecar's session thread routes bridge verbs to
+    # `runtime_vocabulary::robot::bridge::invoke_command` — without the
+    # feature the registry never populates and every find/click verb
+    # answers empty.
+    "runtime-vocabulary/robot",
+]
+
 # Enables `dev_server::test_support` — a `MockClient` plus helpers for
 # driving the fake-sidecar IPC. Off by default; integration tests in
 # *this* crate get it automatically through `cfg(test)`. Downstream
@@ -56,6 +85,13 @@ screenshot = ["dep:headless-screenshot", "dep:base64", "runtime-server", "robot"
 [dependencies]
 runtime-core = { workspace = true }
 wire = { workspace = true }
+
+# New-core substrate (feature `new-core` only): the scene seam +
+# realized-tree drivers, the caps traits + built-in vocabulary, and the
+# per-session world. See the feature's comment above.
+runtime-scene = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
+runtime-world = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
@@ -121,6 +157,10 @@ serde_json = { workspace = true }
 # for `cargo test` — the production builds of dev-server still
 # choose to enable `robot` via *our* feature, see `[features]` above.
 runtime-core = { workspace = true, features = ["robot"] }
+# `tests/newcore_robot_catalog.rs`: links mcp-catalog + the static
+# core recipes so the bridge's `get_catalog` verb is live under test
+# (see the [[test]] entry below).
+runtime-shared = { workspace = true, features = ["catalog"] }
 idea-ui = { workspace = true }
 # `tests/runtime_server_shell_e2e.rs` drives the *real* native
 # runtime-server client shell (the worker-thread WebSocket transport +
@@ -144,3 +184,15 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "io-util", 
 [[test]]
 name = "aas_async_reactor"
 required-features = ["runtime-server"]
+
+# Wave 2b: robot verbs + the MCP catalog in a new-core session. The
+# test drives the SAME `newcore::install_robot_env` wiring the sidecar
+# session thread installs, over `runtime_core::robot::bridge::
+# invoke_command` — the shared TCP bridge's dispatch path. The
+# `runtime-shared/catalog` dev-dep below links the catalog crate (and
+# its static recipes) so the `get_catalog` fallback verb is live in
+# test builds, matching the generated sidecar wrapper's
+# `runtime-core/dev` + `runtime-facade/dev` graph.
+[[test]]
+name = "newcore_robot_catalog"
+required-features = ["new-core"]

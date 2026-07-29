@@ -17,13 +17,54 @@ license.workspace = true
 #   `External` placeholder. Apps that want video on those targets ship
 #   their own SDK module — the `register_external` surface is open.
 
+[features]
+# Runtime-v2 defaults flip: the new-core leg is the default surface;
+# the old-core leg is the opt-in (`--no-default-features` — in-repo
+# consumers ride the workspace dep spec, which pins defaults off and
+# selects a core explicitly per graph).
+default = ["new-core"]
+# Old-core marker for uniform `--no-default-features --features
+# old-core` invocations (the old-core deps are unconditional).
+old-core = []
+# Idea-lite migration: re-express the SAME authored surface
+# (`Video(VideoProps { .. }).bind(v)` + a bootstrap `register`) over the
+# scene registry — the new core's unified primitive==external contract.
+# Default-off and MUTUALLY EXCLUSIVE with the old-core surface (the two
+# define the same public names — one core per build, mirroring the
+# runtime-macros/new-core build-graph-wide switch; a consuming app crate
+# forwards this from its own new-core feature). The old-core modules are
+# byte-untouched under the default build. `backend-web/new-core` is
+# needed because the wasm32 handler is `WebBackend`-concrete (`<video>`
+# DOM has no caps-trait expression) and `Registry<WebBackend>` needs the
+# backend's new-core `Host` impl. The native players (iOS/macOS/Android)
+# are old-core-only for now — see `src/newcore.rs`.
+new-core = [
+    "dep:runtime-vocabulary",
+    "dep:runtime-scene",
+    "dep:runtime-world",
+    "backend-web/new-core",
+]
+
 [dependencies]
 runtime-core = { workspace = true }
 # A `Video` can display a live `MediaStream` (from `camera` /
 # `screen-recorder`), not just a URL `src`.
 media-stream = { workspace = true }
+# New-core surface (feature `new-core`): the scene registry + the
+# vocabulary caps the handlers drive (`ExternalOps::create_external`
+# placeholder path) + `style_attach` for the author-style channel +
+# `runtime_world::effect` for the reactive-source binding.
+runtime-scene = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
+runtime-world = { workspace = true, optional = true }
 # Self-registration of the per-backend Video external at construction.
 inventory = "0.3"
+
+[dev-dependencies]
+# tests/newcore.rs (`--features new-core`) mounts `Video(...)` through
+# the scene registry end-to-end on the shared host-mock recording
+# substrate; tests/oldcore.rs runs on the default (old-core) surface.
+host-mock = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }

@@ -27,6 +27,12 @@ use wire::{
 pub mod convert;
 pub mod graphics;
 pub mod navigators;
+// New-core replay target (idea-lite migration): `CapsReplay<B>` lets
+// this replayer drive a backend's `runtime_vocabulary::caps` surface
+// instead of the `Backend` mega-trait. Gated so old-core-only client
+// shells don't drag the scene/vocabulary crates.
+#[cfg(feature = "new-core")]
+pub mod newcore;
 
 /// The runtime-server (Application-as-a-Server) **client-side replayer** —
 /// wraps any `runtime_core::Backend` and feeds it the wire

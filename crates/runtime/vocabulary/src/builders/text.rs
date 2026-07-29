@@ -1,10 +1,10 @@
 //! Text-family builders: `text()`, `button()`.
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::IntoAction;
-use runtime_core::primitives::icon::IconData;
-use runtime_core::styled_text::TextRun;
-use runtime_core::{ButtonHandle, TextHandle};
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::IntoAction;
+use runtime_shared::primitives::icon::IconData;
+use runtime_shared::styled_text::TextRun;
+use runtime_shared::{ButtonHandle, TextHandle};
 use runtime_scene::{item, Element};
 use runtime_world::{IntoValue, Value};
 
@@ -111,7 +111,7 @@ impl ButtonBuilder {
     }
 
     /// The press action. Accepts a plain closure or a full
-    /// [`Action`](runtime_core::Action) (server-fn metadata preserved).
+    /// [`Action`](runtime_shared::Action) (server-fn metadata preserved).
     pub fn on_press(mut self, action: impl IntoAction) -> Self {
         self.prim.on_press = action.into_action();
         self

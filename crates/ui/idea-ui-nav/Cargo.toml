@@ -9,6 +9,13 @@ description = "Themed navigation chrome (TabBar / Drawer / StackHeader) for the 
 crate-type = ["rlib"]
 
 [features]
+# Runtime-v2 defaults flip: new-core (production alias build) by
+# default. Suites: old-core = `--no-default-features`; new-core tests =
+# `--no-default-features --features new-core-harness` (plain new-core
+# compiles the test files empty — see `new-core-harness` below).
+default = ["new-core"]
+# Old-core marker for uniform invocations (old deps unconditional).
+old-core = []
 # Mirror idea-ui: reflective doc-control panels for idea-ui-docs.
 docs = ["idea-ui/docs"]
 # Forward a `test_id` to the root interactive primitive for robot/E2E.

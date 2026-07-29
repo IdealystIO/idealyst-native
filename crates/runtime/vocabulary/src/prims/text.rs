@@ -2,16 +2,16 @@
 
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives::icon::IconData;
-use runtime_core::styled_text::TextRun;
-use runtime_core::{Action, ButtonHandle, TextHandle};
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::primitives::icon::IconData;
+use runtime_shared::styled_text::TextRun;
+use runtime_shared::{Action, ButtonHandle, TextHandle};
 use runtime_world::Value;
 
 use crate::style_attach::StyleProp;
 
 /// A pre-decomposed reactive text binding — the new-core carrier of
-/// `runtime_core::JsBindingSpec` (the f-string fast path: signal ids +
+/// `runtime_shared::JsBindingSpec` (the f-string fast path: signal ids +
 /// template parts, so a JS-binding-capable backend fans out per fire
 /// WITHOUT running a Rust effect per leaf).
 ///
@@ -54,7 +54,11 @@ pub struct JsTextBinding {
 ///   deferred — see the crate docs' deferred set).
 pub enum TextSourceProp {
     Value(Value<String>),
-    JsBinding(JsTextBinding),
+    /// Boxed: the binding spec carries six Vec/Rc columns (~136 bytes),
+    /// and an unboxed variant sets the size of EVERY text payload —
+    /// each builder-chain move memcpys it (part of the create-rows
+    /// bench residual; see `StyleProp::Sheet`'s note).
+    JsBinding(Box<JsTextBinding>),
     Runs(Vec<TextRun>),
 }
 

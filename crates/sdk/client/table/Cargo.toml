@@ -34,6 +34,14 @@ description = "Cross-platform table SDK — real <table> on web, shared-track CS
 crate-type = ["rlib"]
 
 [features]
+# Runtime-v2 defaults flip: the new-core leg is the default surface;
+# the old-core leg is the opt-in (`--no-default-features` — in-repo
+# consumers ride the workspace dep spec, which pins defaults off and
+# selects a core explicitly per graph).
+default = ["new-core"]
+# Old-core marker for uniform `--no-default-features --features
+# old-core` invocations (the old-core deps are unconditional).
+old-core = []
 # Idea-lite migration (P6 SDK retarget): re-express the SAME authored
 # surface over the scene Registry (web `<table>` handlers) + the
 # vocabulary glue's view builder (native CSS-grid). Default-off and

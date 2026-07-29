@@ -33,7 +33,7 @@
 //! home anyway — registration is backend-facing state and a world owns
 //! its backend. What deliberately REMAINS thread-level (inside
 //! runtime-core, which this phase does not modify): the **resolution
-//! cache** behind `runtime_core::resolve_style`. It is world-agnostic
+//! cache** behind `runtime_shared::resolve_style`. It is world-agnostic
 //! by construction — keyed by token *names* (token-stable content
 //! keys) — and [`update_tokens`] wipes it per swap exactly as the old
 //! engine did (so `ComputedLayer` closures re-run against the new
@@ -80,8 +80,8 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 
-use runtime_core::assets::TypefaceId;
-use runtime_core::{Color, FontFamily, StyleRules, StyleSheet, TokenEntry, TokenValue, Tokenized};
+use runtime_shared::assets::TypefaceId;
+use runtime_shared::{Color, FontFamily, StyleRules, StyleSheet, TokenEntry, TokenValue, Tokenized};
 use runtime_world::{effect, inject, provide, signal, unscoped, Signal};
 
 use crate::caps::{AppEnvOps, AssetOps, StyleOps};
@@ -273,7 +273,7 @@ impl ThemeCtx {
         // on the new path (core's REGISTRATIONS / pending queues / typeface
         // dedup are unused here — the per-world tables in this module own
         // those roles).
-        runtime_core::reset_for_ssg_render();
+        runtime_shared::reset_for_ssg_render();
         self.version.update(|v| v + 1);
     }
 
@@ -478,7 +478,7 @@ pub(crate) fn sheet_is_registered(sheet: &Rc<StyleSheet>) -> bool {
 ///    unregister queue; drain the queue (`unregister_stylesheet`).
 /// 3. Already registered? Done.
 /// 4. Pregenerate the sheet's resolvable rule set
-///    (`runtime_core::pregenerate`), register any typefaces the rules
+///    (`runtime_shared::pregenerate`), register any typefaces the rules
 ///    reference (`register_asset` per face + `register_typeface`,
 ///    deduped per world), then `register_stylesheet`.
 ///
@@ -523,7 +523,7 @@ pub(crate) fn ensure_sheet_registered<H: StyleOps + AssetOps + AppEnvOps>(
     // `resolve_style` on this sheet takes the slow ResolutionKey path
     // and returns pointer-distinct rules, defeating backends'
     // pointer-keyed class caches (the create_10k bench-gate residual).
-    let rules: Rc<Vec<Rc<StyleRules>>> = Rc::new(runtime_core::pregenerate_and_seed(sheet));
+    let rules: Rc<Vec<Rc<StyleRules>>> = Rc::new(runtime_shared::pregenerate_and_seed(sheet));
 
     // Typeface registration BEFORE the sheet ships (old
     // `ensure_typefaces_registered_with` contract: every `apply_style`
@@ -534,7 +534,7 @@ pub(crate) fn ensure_sheet_registered<H: StyleOps + AssetOps + AppEnvOps>(
             if fresh {
                 let mut b = backend.borrow_mut();
                 for face in tf.faces {
-                    b.register_asset(face.asset, runtime_core::assets::AssetTag::Font, &face.source);
+                    b.register_asset(face.asset, runtime_shared::assets::AssetTag::Font, &face.source);
                 }
                 b.register_typeface(tf.id, tf.family_name, tf.faces, tf.fallback);
             }

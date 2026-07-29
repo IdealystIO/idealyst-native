@@ -1375,17 +1375,11 @@ fn emit_component(
     // / `flat_list`, whose glue wrappers
     // (`glue::primitives::{overlay,presence,graphics,flat_list}`) landed
     // with the P3-set handlers; their emissions below retarget unchanged.
+    // (`web_view` left the deferral list with the P6 External-SDK wave:
+    // it was never a first-party primitive — the WebView SDK now ships
+    // the `WebView` tag contract itself, so both cores emit ordinary
+    // component dispatch. See `canonical_primitive`'s note.)
     if cfg!(feature = "new-core") {
-        if canonical == Some("web_view") {
-            return quote! {
-                ::std::compile_error!(
-                    "`web_view` is not yet available on the new core (idea-lite \
-                     migration: it dispatches through the old-core WebView SDK \
-                     component, which retargets with the SDK layer at P6). Build \
-                     without `runtime-macros/new-core` or avoid this primitive."
-                )
-            };
-        }
         if name_str == "CardTabs" {
             return quote! {
                 ::std::compile_error!(
@@ -4229,17 +4223,34 @@ mod tests {
         /// flat_list — are no longer in this list; their un-deferred
         /// lowerings are pinned below. `test_id = …` left with the P5
         /// identity seam, `link(route = …)` with the P6 nav-SDK
-        /// retarget — see `link_route_lowers_to_link_constructor`.)
+        /// retarget — see `link_route_lowers_to_link_constructor`;
+        /// `web_view` with the P6 External-SDK wave — see
+        /// `web_view_tag_is_plain_component_dispatch_both_cores`.)
         #[test]
         fn deferred_primitives_error_with_migration_status() {
             for (body, needle) in [
-                (quote! { web_view(src = "https://x") }, "WebView SDK"),
                 (quote! { for i in count(sig) { text { "r" } } }, "flat_list"),
             ] {
                 let out = parse_and_emit(body);
                 assert!(out.contains("compile_error"), "{out}");
                 assert!(out.contains(needle), "expected `{needle}` in: {out}");
             }
+        }
+
+        /// `web_view` is UN-deferred (P6 External-SDK wave) by ceasing to
+        /// be macro-special at all: the tag routes through ordinary
+        /// component (`BuildElement`) dispatch on BOTH cores — the
+        /// WebView SDK ships the `WebView = WebViewProps` tag contract.
+        /// Regression: the snake_case spelling previously hit a
+        /// new-core-only compile_error while never resolving anywhere on
+        /// the old core either (no `web_view` constructor existed).
+        #[test]
+        fn web_view_tag_is_plain_component_dispatch_both_cores() {
+            let out = squash(parse_and_emit(quote! {
+                WebView(url = webview::url("https://x"))
+            }));
+            assert!(!out.contains("compile_error"), "{out}");
+            assert!(out.contains("BuildElement"), "{out}");
         }
 
         /// `link(route = …)` is UN-deferred (P6 nav wave): both cores

@@ -21,28 +21,11 @@ use std::rc::Rc;
 // Backdrop
 // =============================================================================
 
-/// How an overlay's backdrop layer behaves.
-///
-/// Backdrop dismissal is composition-level here — we render a
-/// fullscreen `pressable()` as the first child inside the portal and
-/// wire its `on_click` to the user's `on_dismiss` (for `Dismiss`)
-/// or leave it as a passive scrim (for `Opaque`).
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
-pub enum BackdropMode {
-    /// Semi-transparent scrim. Clicks on the scrim fire the
-    /// `on_dismiss` callback.
-    #[default]
-    Dismiss,
-    /// Semi-transparent scrim. Clicks on the scrim do NOT dismiss;
-    /// the host must drive open/close itself.
-    Opaque,
-    /// No scrim at all. The viewport behind stays interactive.
-    None,
-}
-
-// =============================================================================
-// overlay() — viewport-anchored composition
-// =============================================================================
+// The data/handle/Ops types of this primitive moved to `runtime-shared`
+// (the walker-free half); this file keeps the Element/Bound builder
+// surface (and its tests). The wildcard re-export preserves every old
+// path.
+pub use runtime_shared::primitives::overlay::*;
 
 /// Build a viewport-anchored overlay (modal, drawer, full-screen
 /// sheet). Returns a builder; chain `.placement(...)`,
@@ -178,10 +161,6 @@ impl ChildList for Option<OverlayBuilder> {
     }
 }
 
-// =============================================================================
-// anchored_overlay() — element-anchored composition
-// =============================================================================
-
 /// Build an element-anchored overlay (popover, tooltip, dropdown,
 /// context menu). Returns a builder; chain `.target(...)`,
 /// `.side(...)`, `.align(...)`, `.offset(...)`, `.backdrop(...)`,
@@ -210,11 +189,6 @@ pub fn anchored_overlay(
         ref_fill: None,
     }
 }
-
-// NOTE: `anchored_overlay` has no `click_through` — popovers, tooltips,
-// dropdowns and context menus are content-sized (not full-strip), so their
-// root only covers what they render; there's no empty band to pass through.
-// The shared lowering always receives `click_through: false` for it below.
 
 /// Builder for the element-anchored overlay composition. Lowers to
 /// [`Element::Portal`] via `From<AnchoredOverlayBuilder>`.
@@ -326,10 +300,6 @@ impl ChildList for Option<AnchoredOverlayBuilder> {
         }
     }
 }
-
-// =============================================================================
-// Lowering — shared between both compositions
-// =============================================================================
 
 #[allow(clippy::too_many_arguments)]
 fn build_overlay_portal(

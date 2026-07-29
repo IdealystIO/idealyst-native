@@ -63,6 +63,10 @@ pub struct RunOptions {
     /// Robot bridge writes its port discovery file to a project-local
     /// `.idealyst/bridge.port`.
     pub env_vars: Vec<(String, String)>,
+    /// Local mode: mount on the NEW core (runtime v2 — the default for
+    /// dual-core apps since the defaults flip). See
+    /// `build_macos::BuildOptions::new_core`.
+    pub new_core: bool,
 }
 
 #[derive(Debug)]
@@ -96,6 +100,7 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
             source: opts.source,
             user_features: opts.user_features.clone(),
             universal: false, // dev/run: fast host-arch build
+            new_core: opts.new_core,
         },
     )?;
 
@@ -556,6 +561,8 @@ mod tests {
             server_bin: None,
             server_manifest: None,
             server_port: 3000,
+            worker_bin: None,
+            worker_manifest: None,
             web: Default::default(),
             macos,
             permissions: Default::default(),

@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::primitives::link::LinkConfig;
+use runtime_shared::primitives::link::LinkConfig;
 use runtime_scene::{Element, MountCx};
 use runtime_world::{effect, Value};
 
@@ -86,7 +86,7 @@ where
 /// so a `Dyn` stroke emits two `update_icon_stroke` at mount) →
 /// draw-in (snap to `from`, animate on the next microtask) → ref-fill.
 ///
-/// Microtask scheduling rides `runtime_core::schedule_microtask` during
+/// Microtask scheduling rides `runtime_shared::schedule_microtask` during
 /// the transition (same host-installed scheduler every backend already
 /// wires; synchronous fallback off-web without one, exactly like the
 /// walker).
@@ -151,7 +151,7 @@ where
         backend.borrow_mut().update_icon_stroke(&node, anim.from);
         let b = backend.clone();
         let n = node.clone();
-        runtime_core::schedule_microtask(move || {
+        runtime_shared::schedule_microtask(move || {
             b.borrow_mut().animate_icon_stroke(
                 &n,
                 anim.from,
@@ -205,7 +205,7 @@ where
         }
         (None, None) if prim.external => {
             let url = initial_url.clone();
-            Rc::new(move || runtime_core::open_url(&url))
+            Rc::new(move || runtime_shared::open_url(&url))
         }
         (None, None) => panic!(
             "link(): a non-external link needs .route(...) or .on_activate(...) — a link \

@@ -22,12 +22,39 @@ license.workspace = true
 # handlers — the embedded preview is read-only (the outer macOS
 # backend owns hit testing for the surrounding NSView tree).
 
+# idea-lite core migration: `mount_newcore` — the new-core sibling of
+# `mount`. Same wgpu init / render loop / visibility gate, but the
+# embedded tree realizes through `render_wgpu::newcore::start_in_world`
+# into the embedding APP's own world
+# (`backend_macos::newcore::mounted_world`), so the app's flush driver
+# commits the embedded app's staged writes. The `backend-macos` dep is
+# legitimate here (not in author code): this crate IS the macOS-specific
+# host shell, and on macOS the embedding app host is backend-macos by
+# definition. Mirrors `host-web`'s feature block.
+[features]
+new-core = [
+    "render-wgpu/new-core",
+    "dep:runtime-scene",
+    "dep:backend-macos",
+    # The app-host surfaces `mount_newcore` reaches: the mounted-world
+    # accessor (backend-macos's own new-core boot) and the NSTimer
+    # render-loop driver install (gated behind backend-macos's
+    # async-driver).
+    "backend-macos/new-core",
+    "backend-macos/async-driver",
+]
+
 [dependencies]
+runtime-scene = { workspace = true, optional = true }
 render-api = { workspace = true }
 render-wgpu = { workspace = true }
 runtime-core = { workspace = true, features = ["async-driver"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# The embedding app host — `mount_newcore` reads its mounted world +
+# installs its render-loop driver. Optional: only the `new-core`
+# feature pulls it (the old-core mount has no backend-macos coupling).
+backend-macos = { workspace = true, optional = true }
 # Match host-ios-mobile's wgpu major (29), Metal backend.
 wgpu = { version = "29", default-features = false, features = ["metal", "wgsl"] }
 raw-window-handle = "0.6"

@@ -39,10 +39,11 @@ pub use runtime_macros::{
 // `runtime_vocabulary::scoped_scheduling`).
 pub use runtime_vocabulary::{effect, rx, timeline};
 
-// Old-core `#[macro_export]` decl macros whose `$crate::…` expansions
-// resolve against runtime-core itself and construct types glue already
-// re-exports (`assets::Typeface` for `typeface!`/`face!`, `Ref<H>` for
-// `node_ref!`). Same items both cores — a module re-export can't carry
-// them, so they live here (the website retarget's `typeface.rs` and
-// `node_ref!` call sites are the consumers).
-pub use runtime_core::{face, node_ref, typeface};
+// Shared-substrate `#[macro_export]` decl macros whose `$crate::…`
+// expansions resolve against runtime-shared (where they and the types
+// they construct — `assets::Typeface` for `typeface!`/`face!`, `Ref<H>`
+// for `node_ref!` — now live; old runtime_core re-exports the same
+// items, so both cores see ONE authority). A module re-export can't
+// carry them, so they live here (the website retarget's `typeface.rs`
+// and `node_ref!` call sites are the consumers).
+pub use runtime_shared::{face, node_ref, typeface};

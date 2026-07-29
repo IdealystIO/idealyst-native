@@ -267,6 +267,7 @@ impl NewCoreApp {
     pub fn stop(self) {
         if !self.embedded {
             crate::dispatch_hook::clear_dispatch_hook();
+            set_viewport_sink(None);
             set_flush_world(None);
             BACKEND.with(|b| *b.borrow_mut() = None);
         } else {
@@ -318,9 +319,16 @@ pub fn start(
     let registry = Rc::new(registry);
 
     let world = World::new();
-    let realized = world.enter(|| {
+    let (vp_sig, realized) = world.enter(|| {
         let element = build();
-        realize(&backend, &registry, element)
+        let realized = realize(&backend, &registry, element);
+        // Capture the per-world viewport ctx AFTER the build, never
+        // before: the ctx's bucket memo pins the breakpoint TABLE at
+        // creation and apps `install_breakpoints` inside their root
+        // component (see the viewport-source section and backend-web's
+        // identical ordering comment).
+        let vp_sig = runtime_vocabulary::viewport::viewport_ctx().size_signal();
+        (vp_sig, realized)
     });
 
     // Buffered-microtask drain (step 3) — a no-op on the winit
@@ -355,6 +363,10 @@ pub fn start(
     // (b) the host scheduler's post-dispatch hook.
     crate::dispatch_hook::install_dispatch_hook(schedule_flush);
     set_flush_world(Some(world.clone()));
+    // Live viewport source: `Host::set_viewport` now reaches the
+    // world's ctx through `forward_viewport` (windowed boots only —
+    // see the viewport-source section for the embed rationale).
+    set_viewport_sink(Some(vp_sig));
     BACKEND.with(|b| *b.borrow_mut() = Some(Rc::downgrade(&backend)));
     NewCoreApp {
         realized,
@@ -395,6 +407,12 @@ pub fn start(
 ///   host scheduler drives the thread. On web that's backend-web's
 ///   (already installed by its boot); this crate's own slot is only
 ///   fired by `host-winit`, which is not present in an embed.
+/// - **No viewport-sink install** — the shared world's `ViewportCtx`
+///   belongs to the embedding page, whose own resize listener
+///   (backend-web's viewport source) is its live source; forwarding
+///   `Host::set_viewport` here would stamp the sim profile's fixed
+///   logical size over the page's real viewport (see the
+///   viewport-source section).
 ///
 /// The host must have constructed the backend (via [`crate::Host::new`],
 /// which installs the global self-handle) and a scheduler + time source
@@ -527,6 +545,66 @@ fn enter_mounted_world<R>(f: impl FnOnce() -> R) -> R {
         Some(world) => world.enter(f),
         None => f(),
     }
+}
+
+// ===========================================================================
+// Viewport source (the new-core GPU viewport seam)
+// ===========================================================================
+//
+// The vocabulary's per-world viewport/breakpoint ctx
+// (`runtime_vocabulary::viewport`) is SEED-ONLY unless the platform
+// pushes live sizes (its module docs). On this backend the LOGICAL
+// viewport is what author layout/breakpoints run against, and its one
+// source of truth is [`crate::Host::set_viewport`] — the shell calls it
+// with the profile's logical size at window creation (and would on any
+// future logical change; a WINDOW resize deliberately does NOT change
+// the logical size — the winit host letterboxes, see `DeviceProfile::
+// logical_size`). That seam forwards here so the mounted world's ctx
+// tracks the logical viewport exactly like the other backends track
+// their windows: same values, same bucket transitions, no
+// backend-specific thresholds — the mechanism differs (fixed logical
+// size vs live window), the observable contract converges.
+//
+// Old-TLS seeding split: `Host::set_viewport` must NOT write the
+// old-core TLS value itself — an EMBEDDED simulator (`host_web::
+// mount_newcore`, the website's in-page wgpu preview) shares its
+// thread's TLS with the embedding page, and stamping the sim profile
+// over the page's real viewport would collapse the page to phone
+// breakpoints. The WINDOWED host (`host_winit::newcore::run_with`)
+// seeds the TLS pre-mount instead, where the window owns the thread.
+// The sink is equally embed-safe: only the windowed [`start`] installs
+// it ([`start_in_world`] leaves the page backend's own resize listener
+// as the ctx's source).
+//
+// Discipline (mirrors `backend_web::newcore`'s resize listener): the
+// seam runs OUTSIDE `World::enter`, so the boot CAPTURES the world's
+// signal handle — capture, don't inject — and the push stages through
+// the handle (routes to its own world, equality-guarded, dead-world
+// writes are silent no-ops) then rides one deduped [`schedule_flush`].
+
+thread_local! {
+    /// The mounted world's viewport signal (`Copy` handle). `None`
+    /// outside a windowed new-core boot, so `Host::set_viewport` costs
+    /// one TLS read and nothing else on old-core and embedded paths.
+    static VIEWPORT_SINK: Cell<Option<runtime_world::Signal<runtime_core::ViewportSize>>> =
+        const { Cell::new(None) };
+}
+
+fn set_viewport_sink(sig: Option<runtime_world::Signal<runtime_core::ViewportSize>>) {
+    VIEWPORT_SINK.with(|s| s.set(sig));
+}
+
+/// Forward one logical-viewport report into the mounted world's
+/// viewport ctx (no-op before [`start`] / after teardown / on embedded
+/// boots). Called by [`crate::Host::set_viewport`].
+pub(crate) fn forward_viewport(size: runtime_core::ViewportSize) {
+    let Some(sig) = VIEWPORT_SINK.with(|s| s.get()) else {
+        return;
+    };
+    // Staged write outside `enter` + one deduped flush — commits on
+    // the next scheduler turn, like every wrapped callback.
+    sig.set(size);
+    schedule_flush();
 }
 
 // ---------------------------------------------------------------------------

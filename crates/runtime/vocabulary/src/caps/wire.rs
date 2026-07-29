@@ -7,7 +7,7 @@
 //! with the adopt-sentinel once the wire client mounts through the
 //! scene Registry (design §8) — kept frozen until then.
 
-use runtime_core::__serde_json::Value;
+use runtime_shared::__serde_json::Value;
 use runtime_scene::Host;
 
 /// Serves `walker/text.rs` (`note_text_binding`, `note_signal_initial`),

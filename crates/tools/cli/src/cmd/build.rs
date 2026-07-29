@@ -217,22 +217,44 @@ pub struct Args {
     #[arg(long)]
     pub robot: bool,
 
-    /// `--ssr` / `--ssg` only: build the SSR wrapper against the NEW
-    /// core (idea-lite migration) — renders through
-    /// `backend_ssr::newcore::{render_all, serve}` on per-request
-    /// worlds. Requires the dual-core app convention: the app crate
-    /// exposes a `new-core` cargo feature (its defaults are disabled
-    /// for this build — one core per build graph) plus
-    /// `register_ssr_scene_handlers(&mut runtime_scene::Registry<backend_ssr::SsrBackend>)`.
-    /// No effect on other targets.
+    /// DEPRECATED no-op alias: the NEW core (runtime v2) is the
+    /// default since the defaults flip — dual-core projects (any
+    /// project declaring the `new-core` cargo feature; every
+    /// `idealyst new` scaffold does) build on it with no flags.
+    /// Kept so existing invocations don't break; on a project
+    /// WITHOUT the feature it still errors with the migration
+    /// pointer instead of silently building the old core.
     #[arg(long)]
     pub new_core: bool,
+
+    /// Opt back onto the OLD core (the pre-runtime-v2 walker).
+    /// Compiles the app `default-features = false, features =
+    /// ["old-core"]` when the project declares an `old-core` feature
+    /// (dual-core apps default to new-core), and with its plain
+    /// defaults otherwise. New-core builds require the dual-core app
+    /// convention: a `new-core` cargo feature plus the per-target
+    /// registration seams
+    /// (`register_ssr_scene_handlers(&mut runtime_scene::Registry<backend_ssr::SsrBackend>)`
+    /// for SSR/SSG, `register_scene_extensions` — registry-generic in
+    /// the scaffold — for web/macos/terminal, `scene_app()` for
+    /// android). Roku and `--serverless-lambda` have no new-core CLI
+    /// leg yet and always build old-core.
+    #[arg(long)]
+    pub old_core: bool,
 }
 
 pub fn run(args: Args) -> Result<()> {
     let dir = std::fs::canonicalize(&args.dir)
         .with_context(|| format!("cannot resolve project dir {}", args.dir.display()))?;
     let manifest = parse_manifest(&dir)?;
+
+    // Runtime-v2 defaults flip: resolve the effective core once
+    // (new core unless `--old-core`, or the project never declared the
+    // dual-core convention) and let every target read the resolved
+    // value through `args.new_core`.
+    let mut args = args;
+    args.new_core = crate::core_mode::resolve(&dir, args.new_core, args.old_core)?;
+    args.old_core = false;
 
     // Resolve which targets to build. Explicit flags win; otherwise
     // fall back to manifest. The `--aas` flag is separate from the
@@ -384,6 +406,7 @@ fn build_terminal_target(dir: &std::path::Path, args: &Args) -> Result<()> {
             mode: build_terminal::BuildMode::Local,
             source,
             user_features: Vec::new(),
+            new_core: args.new_core,
         },
     )?;
     eprintln!(
@@ -458,6 +481,10 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
                 args.no_data_prune,
             ),
             premint: args.premint,
+            // `--new-core`: wrapper boots via backend_web::newcore and
+            // compiles the app single-core (dual-core app convention —
+            // same contract as the SSR wrapper's `--new-core` leg).
+            new_core: args.new_core,
         },
     )?;
     let bundle = artifact
@@ -519,6 +546,7 @@ fn build_ios_target(dir: &std::path::Path, args: &Args) -> Result<()> {
             device: args.device,
             source,
             user_features: Vec::new(),
+            new_core: args.new_core,
         },
     )?;
     eprintln!(
@@ -539,6 +567,7 @@ fn build_android_target(dir: &std::path::Path, args: &Args) -> Result<()> {
             mode: build_android::BuildMode::Local,
             source,
             user_features: Vec::new(),
+            new_core: args.new_core,
         },
     )?;
     eprintln!(
@@ -550,6 +579,11 @@ fn build_android_target(dir: &std::path::Path, args: &Args) -> Result<()> {
 }
 
 fn build_roku_target(dir: &std::path::Path, _args: &Args) -> Result<()> {
+    // Roku has no new-core CLI leg yet — the wrapper always builds the
+    // old core (the generator pins `old-core` for dual-core apps).
+    if _args.new_core {
+        eprintln!("[build roku] no new-core roku leg yet — building the old core");
+    }
     let source = crate::framework_source::resolve(dir)?;
     let artifact = build_roku::build(
         dir,
@@ -589,6 +623,7 @@ fn build_macos_target(dir: &std::path::Path, args: &Args) -> Result<()> {
             // `build --macos` is a host-arch dev artifact; the universal
             // (Intel + Apple Silicon) build is `publish macos`'s job.
             universal: false,
+            new_core: args.new_core,
         },
     )?;
     eprintln!("[build macos] success → {}", artifact.binary.display(),);
@@ -689,6 +724,14 @@ fn build_ssg_export(
 }
 
 fn build_serverless_lambda_target(dir: &std::path::Path, args: &Args) -> Result<()> {
+    // The lambda wrapper force-links the OLD-core `app()` (no new-core
+    // serverless leg yet); the generator pins `old-core` for dual-core
+    // apps so exactly one core's macro emission is in the graph.
+    if args.new_core {
+        eprintln!(
+            "[build serverless-lambda] no new-core serverless leg yet — building the old core"
+        );
+    }
     let source = crate::framework_source::resolve(dir)?;
     let arch = build_serverless_lambda::Arch::parse(args.arch.as_deref())?;
     let artifact = build_serverless_lambda::build(
@@ -731,6 +774,7 @@ fn build_runtime_server_host(dir: &std::path::Path, args: &Args) -> Result<()> {
         build_runtime_server::BuildOptions {
             release: args.release,
             source,
+            new_core: args.new_core,
         },
     )?;
     eprintln!(

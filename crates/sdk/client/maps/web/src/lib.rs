@@ -14,8 +14,20 @@
 //! with zero FFI ceremony. A production version would bind to
 //! Leaflet / MapLibre via wasm-bindgen so the map is interactive at
 //! the Rust API level (markers, animated camera moves, etc.).
+//!
+//! # Two cores, one DOM
+//!
+//! The old-core surface ([`register`] against `WebBackend`'s
+//! `ExternalRegistry` + the inventory self-registration) is gated
+//! `not(feature = "new-core")`. The iframe builder itself
+//! ([`build_map_iframe`]) is pure DOM (web-sys + maps-core only, no
+//! core types), so it is UNGATED and shared by both legs — the
+//! umbrella's new-core scene-registry handler calls it directly, which
+//! is what keeps the two cores' DOM from drifting (the svg SDK's
+//! `web_util` precedent). The `new-core` feature's only other job is
+//! enabling `backend-web/new-core` so the umbrella can name
+//! `Registry<WebBackend>`.
 
-use backend_web::WebBackend;
 use maps_core::MapViewProps;
 
 /// Install the MapView handler. Called once at app bootstrap:
@@ -24,13 +36,17 @@ use maps_core::MapViewProps;
 /// let mut backend = WebBackend::new("#app");
 /// maps::register(&mut backend);   // routes to this function on web
 /// ```
-pub fn register(backend: &mut WebBackend) {
+#[cfg(not(feature = "new-core"))]
+pub fn register(backend: &mut backend_web::WebBackend) {
     backend.register_external::<MapViewProps, _>(|props, _backend| {
         build_map_iframe(props)
     });
 }
 
 // Self-register at backend construction. See [[project_inventory_self_registration]].
+// Old-core only — the new core has no inventory self-registration; the
+// registry is built explicitly at boot.
+#[cfg(not(feature = "new-core"))]
 inventory::submit! {
     backend_web::WebExternalRegistrar(register)
 }
@@ -40,7 +56,11 @@ inventory::submit! {
 /// shrinks as zoom increases (rough heuristic — production code would
 /// drive Leaflet's `setView` API directly instead of recomputing a
 /// bbox per render).
-fn build_map_iframe(props: &std::rc::Rc<MapViewProps>) -> web_sys::Element {
+///
+/// `pub` and feature-ungated: this is the whole handler DOM, shared by
+/// the old-core [`register`] closure and the umbrella's new-core
+/// scene-registry handler.
+pub fn build_map_iframe(props: &std::rc::Rc<MapViewProps>) -> web_sys::Element {
     let document = web_sys::window()
         .expect("no window")
         .document()

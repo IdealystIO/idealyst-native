@@ -184,6 +184,32 @@ pub struct Args {
     #[arg(long)]
     pub local: bool,
 
+    /// DEPRECATED no-op alias: the NEW core (runtime v2) is the
+    /// default since the defaults flip — dual-core projects (any
+    /// project declaring the `new-core` cargo feature; every
+    /// `idealyst new` scaffold does) run it with no flags. In
+    /// runtime-server mode (the default) the sidecar mounts the app
+    /// through a per-session `World` + scene `realize`
+    /// (`dev_server::sidecar::run_newcore`); the wire protocol is
+    /// unchanged, so clients are identical either way. Saves apply via
+    /// rebuild-and-respawn (hot-PATCHING needs the `#[component]`
+    /// hot-dispatch split, which the new-core emission doesn't have
+    /// yet). In `--local` mode each platform wrapper boots its own
+    /// `newcore` entry. On a project WITHOUT the `new-core` feature
+    /// this flag errors with the migration pointer instead of
+    /// silently running the old core.
+    #[arg(long)]
+    pub new_core: bool,
+
+    /// Opt the dev session back onto the OLD core (the pre-runtime-v2
+    /// walker): old-core sidecar mount in runtime-server mode (which
+    /// restores in-place hot-PATCHING), old-core wrappers in `--local`
+    /// mode. Dual-core apps compile `default-features = false,
+    /// features = ["old-core"]`; legacy apps (no `new-core` feature)
+    /// are always old-core and don't need the flag.
+    #[arg(long)]
+    pub old_core: bool,
+
     /// Build and run the web target.
     #[arg(long)]
     pub web: bool,
@@ -323,6 +349,16 @@ pub fn run(args: Args) -> Result<()> {
     let dir = std::fs::canonicalize(&args.dir).with_context(|| {
         format!("cannot resolve project dir {}", args.dir.display())
     })?;
+
+    // Runtime-v2 defaults flip: resolve the effective core once (new
+    // core unless `--old-core`, or the project never declared the
+    // dual-core convention) and let every launcher read the resolved
+    // value through `args.new_core`. Applies to BOTH modes: the
+    // runtime-server sidecar mounts the resolved core; `--local`
+    // wrappers boot the resolved core's per-platform entry.
+    let mut args = args;
+    args.new_core = crate::core_mode::resolve(&dir, args.new_core, args.old_core)?;
+    args.old_core = false;
 
     // Resolve the active target set. Explicit flags win; if none are
     // passed, fall back to the manifest's `targets`. We parse the
@@ -495,7 +531,7 @@ pub fn run(args: Args) -> Result<()> {
     // wait loop after the worker join.
     let mut host_pid: Option<u32> = None;
     let runtime_server_port: Option<u16> = if !args.local && !full_stack_web {
-        let host_binary = build_runtime_server_host(&dir)?;
+        let host_binary = build_runtime_server_host(&dir, args.new_core)?;
         let port_file = runtime_server_port_file(&dir);
         // Clear any stale value from a previous session before
         // letting the host overwrite it — keeps reads from picking
@@ -951,14 +987,19 @@ fn dedup_preserve_order(xs: Vec<Target>) -> Vec<Target> {
 /// Build (or rebuild) the runtime-server host binary for this project. The host
 /// is what serves the wire WebSocket; runs as a child process for the
 /// rest of this session.
-fn build_runtime_server_host(dir: &Path) -> Result<PathBuf> {
-    crate::dlog!("dev", "building runtime-server host…");
+fn build_runtime_server_host(dir: &Path, new_core: bool) -> Result<PathBuf> {
+    crate::dlog!(
+        "dev",
+        "building runtime-server host{}…",
+        if new_core { " (new core)" } else { "" },
+    );
     let source = crate::framework_source::resolve(dir)?;
     let artifact = build_runtime_server::build(
         dir,
         build_runtime_server::BuildOptions {
             release: false,
             source,
+            new_core,
         },
     )?;
     Ok(artifact.host_binary)
@@ -1052,6 +1093,7 @@ fn launch_terminal(dir: &Path, args: &Args, runtime_server_port: Option<u16>) ->
             source,
             user_features: dev_user_features_other(),
             env_vars,
+            new_core: args.new_core,
         },
     )
     .context("terminal dev launch failed")?;
@@ -1468,6 +1510,10 @@ fn launch_ssr(
                 // rebuild.
                 prune_dead_data_min: None,
                 premint: false,
+                // Follows the session's resolved core (runtime-v2
+                // defaults flip) so the served SSR HTML and the
+                // hydrating bundle agree on a core.
+                new_core: args.new_core,
             },
         )
         .with_context(|| "wasm build for SSR mode failed")?;
@@ -1481,9 +1527,9 @@ fn launch_ssr(
             release: false,
             source: source.clone(),
             user_features: Vec::new(),
-            // Dev SSR always runs the shipped (old-core) leg; the
-            // new-core wrapper is a `build`-flow opt-in (`--new-core`).
-            new_core: false,
+            // Follows the session's resolved core (runtime-v2
+            // defaults flip).
+            new_core: args.new_core,
         },
     )
     .with_context(|| "SSR wrapper build failed")?;
@@ -1915,6 +1961,7 @@ fn launch_ios(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Resu
             // simulator from re-foregrounding a stale process. A full
             // uninstall would wipe app state on every reload, so keep it off.
             clean: false,
+            new_core: args.new_core,
         },
     )
     .context("iOS dev launch failed")?;
@@ -1972,6 +2019,7 @@ fn launch_android(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> 
             // The dev process hosts the relay and exported its URL; pass it so
             // run-android bakes it into the manifest + sets up `adb reverse`.
             robot_relay_url: std::env::var("IDEALYST_ROBOT_RELAY_URL").ok(),
+            new_core: args.new_core,
         },
     )
     .context("Android dev launch failed")?;
@@ -2020,6 +2068,7 @@ fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>, macos
             source: source.clone(),
             user_features: dev_user_features_macos(),
             universal: false, // dev: fast host-arch build
+            new_core: args.new_core,
         },
     )
     .context("macOS dev build failed")?;
@@ -2051,6 +2100,7 @@ fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>, macos
             background: true,
             user_features: dev_user_features_macos(),
             env_vars,
+            new_core: args.new_core,
         },
     )
     .context("macOS dev launch failed")?;
@@ -2191,6 +2241,8 @@ impl Args {
         Self {
             dir: self.dir.clone(),
             local: self.local,
+            new_core: self.new_core,
+            old_core: self.old_core,
             web: self.web,
             no_robot: self.no_robot,
             headless_client: self.headless_client,

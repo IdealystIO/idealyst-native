@@ -1368,6 +1368,9 @@ dependencies = [
  "pico-args",
  "runtime-core",
  "runtime-layout",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
  "softbuffer",
  "winit",
 ]
@@ -1377,7 +1380,11 @@ name = "backend-email"
 version = "0.4.0"
 dependencies = [
  "css",
+ "idea-ui-mail",
  "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
 ]
 
 [[package]]
@@ -1448,6 +1455,9 @@ dependencies = [
  "gtk4",
  "runtime-core",
  "runtime-layout",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
 ]
 
 [[package]]
@@ -1475,6 +1485,9 @@ version = "0.4.0"
 dependencies = [
  "backend-roku-macros",
  "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
  "serde",
  "serde_json",
 ]
@@ -1518,6 +1531,9 @@ dependencies = [
  "inventory",
  "runtime-core",
  "runtime-layout",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
 ]
 
 [[package]]
@@ -1547,6 +1563,9 @@ version = "0.4.0"
 dependencies = [
  "runtime-core",
  "runtime-layout",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
  "windows 0.58.0",
 ]
 
@@ -2122,9 +2141,12 @@ dependencies = [
 name = "canvas-core"
 version = "0.4.0"
 dependencies = [
+ "host-mock",
  "image",
  "media-stream",
  "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
  "serde",
  "serde_json",
 ]
@@ -2153,6 +2175,7 @@ dependencies = [
  "backend-macos",
  "backend-web",
  "canvas-core",
+ "host-mock",
  "inventory",
  "jni 0.21.1",
  "js-sys",
@@ -2161,6 +2184,9 @@ dependencies = [
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
  "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
  "skrifa 0.42.1",
  "wasm-bindgen",
  "web-sys",
@@ -2386,6 +2412,7 @@ dependencies = [
  "backend-ios-mobile",
  "backend-macos",
  "backend-web",
+ "host-mock",
  "inventory",
  "jni 0.21.1",
  "log",
@@ -2864,7 +2891,7 @@ dependencies = [
 name = "css"
 version = "0.4.0"
 dependencies = [
- "runtime-core",
+ "runtime-shared",
 ]
 
 [[package]]
@@ -3201,6 +3228,8 @@ version = "0.4.0"
 dependencies = [
  "mock-backend",
  "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
  "serde_json",
  "wire",
 ]
@@ -3250,7 +3279,11 @@ dependencies = [
  "notify-debouncer-mini",
  "pollster 0.3.0",
  "runtime-core",
+ "runtime-scene",
  "runtime-server-shell-native",
+ "runtime-shared",
+ "runtime-vocabulary",
+ "runtime-world",
  "serde",
  "serde_json",
  "subsecond-types",
@@ -4069,12 +4102,15 @@ dependencies = [
  "backend-android-mobile",
  "backend-ios-mobile",
  "backend-web",
+ "host-mock",
  "inventory",
  "jni 0.21.1",
  "js-sys",
  "objc2 0.5.2",
  "objc2-ui-kit",
  "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -4606,6 +4642,7 @@ dependencies = [
  "graphql_client",
  "net",
  "runtime-core",
+ "runtime-facade",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -5153,11 +5190,13 @@ dependencies = [
 name = "host-android-mobile"
 version = "0.4.0"
 dependencies = [
+ "backend-android-mobile",
  "log",
  "raw-window-handle",
  "render-api",
  "render-wgpu",
  "runtime-core",
+ "runtime-scene",
  "wgpu",
 ]
 
@@ -5179,6 +5218,7 @@ name = "host-ios-mobile"
 version = "0.4.0"
 dependencies = [
  "backend-ios-core",
+ "backend-ios-mobile",
  "log",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
@@ -5186,6 +5226,7 @@ dependencies = [
  "render-api",
  "render-wgpu",
  "runtime-core",
+ "runtime-scene",
  "wgpu",
 ]
 
@@ -5193,6 +5234,7 @@ dependencies = [
 name = "host-macos-desktop"
 version = "0.4.0"
 dependencies = [
+ "backend-macos",
  "log",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
@@ -5200,7 +5242,18 @@ dependencies = [
  "render-api",
  "render-wgpu",
  "runtime-core",
+ "runtime-scene",
  "wgpu",
+]
+
+[[package]]
+name = "host-mock"
+version = "0.4.0"
+dependencies = [
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
 ]
 
 [[package]]
@@ -6699,10 +6752,15 @@ checksum = "3e2e65a1a2e43cfcb47a895c4c8b10d1f4a61097f9f254f183aee60cad9c651d"
 name = "maps"
 version = "0.4.0"
 dependencies = [
+ "backend-web",
+ "host-mock",
  "maps-core",
  "maps-ios",
  "maps-web",
  "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "web-sys",
 ]
 
 [[package]]
@@ -6743,6 +6801,7 @@ dependencies = [
  "backend-ios-core",
  "backend-ios-mobile",
  "backend-web",
+ "host-mock",
  "inventory",
  "jni 0.21.1",
  "objc2 0.5.2",
@@ -6750,6 +6809,8 @@ dependencies = [
  "objc2-ui-kit",
  "pulldown-cmark",
  "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
  "serde",
  "serde_json",
 ]
@@ -7090,7 +7151,10 @@ dependencies = [
  "idea-ui",
  "image",
  "runtime-core",
+ "runtime-scene",
  "runtime-server-shell-native",
+ "runtime-vocabulary",
+ "runtime-world",
  "serde_json",
  "stack-navigator",
  "swap-navigator",
@@ -7309,11 +7373,28 @@ name = "newcore-app"
 version = "0.4.0"
 dependencies = [
  "runtime-core",
+ "runtime-facade",
  "runtime-macros",
  "runtime-scene",
  "runtime-vocabulary",
  "runtime-world",
  "scene-parity",
+]
+
+[[package]]
+name = "newcore-canvas-smoke"
+version = "0.4.0"
+dependencies = [
+ "backend-web",
+ "canvas",
+ "canvas-native",
+ "console_error_panic_hook",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
@@ -7347,9 +7428,11 @@ name = "newcore-macos-smoke"
 version = "0.4.0"
 dependencies = [
  "host-appkit",
+ "host-macos-desktop",
  "objc2 0.5.2",
  "objc2-app-kit",
  "objc2-foundation 0.2.2",
+ "render-wgpu",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -9433,20 +9516,14 @@ dependencies = [
 name = "runtime-core"
 version = "0.4.0"
 dependencies = [
- "base64",
- "bitflags 2.11.1",
  "dev-hot",
- "libc",
- "linkme",
- "log",
  "mcp-catalog",
- "pollster 0.4.0",
  "raw-window-handle",
  "runtime-macros",
+ "runtime-shared",
  "rustc-hash 2.1.2",
  "serde",
  "serde_json",
- "tungstenite 0.24.0",
  "wasm-splitter",
 ]
 
@@ -9454,8 +9531,8 @@ dependencies = [
 name = "runtime-facade"
 version = "0.4.0"
 dependencies = [
- "runtime-core",
  "runtime-macros",
+ "runtime-shared",
  "runtime-vocabulary",
 ]
 
@@ -9463,7 +9540,7 @@ dependencies = [
 name = "runtime-layout"
 version = "0.4.0"
 dependencies = [
- "runtime-core",
+ "runtime-shared",
  "taffy",
 ]
 
@@ -9498,11 +9575,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "runtime-shared"
+version = "0.4.0"
+dependencies = [
+ "base64",
+ "bitflags 2.11.1",
+ "libc",
+ "linkme",
+ "log",
+ "mcp-catalog",
+ "pollster 0.4.0",
+ "raw-window-handle",
+ "rustc-hash 2.1.2",
+ "serde",
+ "serde_json",
+ "tungstenite 0.24.0",
+ "wasm-splitter",
+]
+
+[[package]]
 name = "runtime-vocabulary"
 version = "0.4.0"
 dependencies = [
+ "host-mock",
+ "mcp-catalog",
  "runtime-core",
  "runtime-scene",
+ "runtime-shared",
+ "runtime-vocabulary",
  "runtime-world",
 ]
 
@@ -9814,6 +9914,7 @@ dependencies = [
  "backend-web",
  "block2 0.5.1",
  "futures-channel",
+ "host-mock",
  "inventory",
  "jni 0.21.1",
  "js-sys",
@@ -9822,6 +9923,8 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
  "thiserror 2.0.18",
  "tokio",
  "wasm-bindgen",
@@ -10689,6 +10792,7 @@ dependencies = [
  "backend-ssr",
  "backend-web",
  "dev-server",
+ "host-mock",
  "inventory",
  "ios-navigator-helpers",
  "jni 0.21.1",
@@ -10863,6 +10967,7 @@ dependencies = [
  "backend-ios-mobile",
  "backend-web",
  "fontdb 0.18.0",
+ "host-mock",
  "inventory",
  "jni 0.21.1",
  "js-sys",
@@ -10870,6 +10975,9 @@ dependencies = [
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
  "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
  "usvg 0.42.0",
  "wasm-bindgen",
  "web-sys",
@@ -10917,6 +11025,7 @@ dependencies = [
  "backend-ssr",
  "backend-web",
  "dev-server",
+ "host-mock",
  "inventory",
  "runtime-core",
  "runtime-scene",
@@ -11593,10 +11702,14 @@ dependencies = [
  "backend-macos",
  "backend-windows",
  "gtk4",
+ "host-mock",
  "objc2 0.5.2",
  "objc2-app-kit",
  "objc2-foundation 0.2.2",
  "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
  "windows 0.58.0",
 ]
 
@@ -12357,6 +12470,7 @@ dependencies = [
  "backend-macos",
  "backend-web",
  "block2 0.5.1",
+ "host-mock",
  "inventory",
  "jni 0.21.1",
  "media-stream",
@@ -12365,6 +12479,9 @@ dependencies = [
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
  "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -12967,6 +13084,7 @@ dependencies = [
  "backend-android-mobile",
  "backend-ios-mobile",
  "backend-web",
+ "host-mock",
  "inventory",
  "jni 0.21.1",
  "js-sys",
@@ -12974,6 +13092,9 @@ dependencies = [
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
  "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -12991,6 +13112,7 @@ dependencies = [
  "dev-server",
  "runtime-core",
  "runtime-facade",
+ "runtime-scene",
  "runtime-vocabulary",
 ]
 

@@ -466,13 +466,13 @@ pub fn cell_base_application(cell: &Element) -> Option<StyleApplication> {
             if let Some(c) = data.downcast_ref::<PrimCell<prims::ViewPrim>>() {
                 c.with_mut(|p| {
                     if let Some(StyleProp::Sheet(app)) = &p.style {
-                        out = Some(app.clone());
+                        out = Some((**app).clone());
                     }
                 });
             } else if let Some(c) = data.downcast_ref::<PrimCell<TableCellPrim>>() {
                 c.with_mut(|p| {
                     if let Some(StyleProp::Sheet(app)) = &p.style {
-                        out = Some(app.clone());
+                        out = Some((**app).clone());
                     }
                 });
             }

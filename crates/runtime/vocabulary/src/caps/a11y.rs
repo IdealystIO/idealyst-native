@@ -1,11 +1,11 @@
 //! Accessibility, per-frame animation writes, and dev-time
 //! introspection / geometry / screenshots.
 
-use runtime_core::accessibility::{AccessibilityProps, AccessibilityTree, LiveRegionPriority, Role};
-use runtime_core::animation::AnimProp;
-use runtime_core::introspect::NativeNode;
-use runtime_core::primitives::portal::ViewportRect;
-use runtime_core::Screenshot;
+use runtime_shared::accessibility::{AccessibilityProps, AccessibilityTree, LiveRegionPriority, Role};
+use runtime_shared::animation::AnimProp;
+use runtime_shared::introspect::NativeNode;
+use runtime_shared::primitives::portal::ViewportRect;
+use runtime_shared::Screenshot;
 use runtime_scene::Host;
 
 /// The accessibility surface that does NOT live on `create_*` prop
@@ -40,7 +40,7 @@ pub trait A11yOps: Host {
 }
 
 /// Per-frame animated property writes from `AnimatedValue` listeners.
-/// Serves `runtime_core::animation::binding` (through handles) and the
+/// Serves `runtime_shared::animation::binding` (through handles) and the
 /// backends' fast property-write paths.
 pub trait AnimationOps: Host {
     /// Per-frame write of an animated scalar property.

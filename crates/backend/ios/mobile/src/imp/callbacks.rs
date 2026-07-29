@@ -553,6 +553,16 @@ declare_class!(
                     width: w,
                     height: h,
                 });
+                // New-core mirror: forward the SAME size into the
+                // mounted world's viewport ctx so breakpoint-dependent
+                // author reactivity re-fires on rotation/resize (no-op
+                // TLS read when no new-core app is booted). See
+                // newcore.rs, "Viewport source".
+                #[cfg(feature = "new-core")]
+                crate::newcore::forward_viewport(runtime_core::ViewportSize {
+                    width: w,
+                    height: h,
+                });
                 if lw != 0.0 || lh != 0.0 {
                     crate::imp::schedule_layout_pass();
                 }

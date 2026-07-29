@@ -232,7 +232,7 @@ fn cell_helpers_reach_both_lowerings() {
     let web_cell = item_lowering::cell_item(
         false,
         Vec::new(),
-        Some(StyleProp::Sheet(glue::StyleApplication::new(sheet))),
+        Some(StyleProp::Sheet(Box::new(glue::StyleApplication::new(sheet)))),
     );
     let base = cell_base_application(&web_cell).expect("web cell base application");
     set_cell_style(&web_cell, move || base.clone());

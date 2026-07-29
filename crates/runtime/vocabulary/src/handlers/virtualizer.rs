@@ -13,8 +13,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use runtime_core::primitives::virtualizer::ItemKey;
-use runtime_core::VirtualizerCallbacks;
+use runtime_shared::primitives::virtualizer::ItemKey;
+use runtime_shared::VirtualizerCallbacks;
 use runtime_scene::{realize, Element, MountCx, Realized, Registry};
 use runtime_world::{collect_owned, effect, untrack, Owned};
 
@@ -119,8 +119,8 @@ where
 
     let measure_sizes = prim.item_size.is_measured();
     let user_size: Rc<dyn Fn(usize) -> f32> = match prim.item_size {
-        runtime_core::primitives::virtualizer::ItemSize::Known(f)
-        | runtime_core::primitives::virtualizer::ItemSize::Measured(f) => f,
+        runtime_shared::primitives::virtualizer::ItemSize::Known(f)
+        | runtime_shared::primitives::virtualizer::ItemSize::Measured(f) => f,
     };
 
     // `item_size` with the measured-override store layered on top: a

@@ -24,8 +24,38 @@ license.workspace = true
 # new External props → the one node is rebuilt. Per-target `register`
 # functions live in `lib.rs` behind `#[cfg(...)]` (codeblock pattern).
 
+[features]
+# Runtime-v2 defaults flip: the new-core leg is the default surface;
+# the old-core leg is the opt-in (`--no-default-features` — in-repo
+# consumers ride the workspace dep spec, which pins defaults off and
+# selects a core explicitly per graph).
+default = ["new-core"]
+# Old-core marker for uniform `--no-default-features --features
+# old-core` invocations (the old-core deps are unconditional).
+old-core = []
+# Idea-lite migration: re-express the SAME authored surface
+# (`Markdown(source = …)` / `markdown(src, theme).with_style(…)` + a
+# bootstrap `register`) over the scene registry — the new core's unified
+# primitive==external contract. Default-off and MUTUALLY EXCLUSIVE with
+# the old-core surface (the two define the same public names — one core
+# per build, mirroring the runtime-macros/new-core build-graph-wide
+# switch; a consuming app crate forwards this from its own new-core
+# feature). The old-core modules are byte-untouched under the default
+# build. No `backend-web/new-core` edge: the new-core handler is
+# caps-GENERIC (the old web handler was `Backend`-trait-generic, no
+# web_sys), so wasm32 apps register through the same generic fn at the
+# boot seam (`start_in` hands a `Registry<WebBackend>`).
+new-core = ["dep:runtime-vocabulary", "dep:runtime-scene"]
+
 [dependencies]
 runtime-core = { workspace = true }
+# New-core surface (feature `new-core`): the scene registry (`item` +
+# `MountCx`/`Registry`) + the vocabulary caps the mount handler drives
+# (`DocumentOps::create_element`, `TextOps::create_text`,
+# `StyleOps::apply_style`) + `style_attach` for the author-style channel
+# + `glue` for the manual `BuildElement`/`Reactive`/`switch` component.
+runtime-scene = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
 # Self-registration of the per-backend external handler at construction.
 inventory = "0.3"
 
@@ -40,6 +70,12 @@ pulldown-cmark = { version = "0.12", default-features = false }
 # device deserializes + dispatches to its real per-backend handler).
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+# tests/oldcore.rs runs on the default (old-core) surface;
+# tests/newcore.rs (`--features new-core`) mounts markdown through the
+# scene registry end-to-end on the shared host-mock recording substrate.
+[dev-dependencies]
+host-mock = { workspace = true }
 
 # Web handler self-registers a `WebExternalRegistrar` (the generic
 # `register` monomorphized to `WebBackend`), so the web backend must be a

@@ -34,7 +34,15 @@ headless = ["dep:pollster", "embed-font-bytes"]
 # `host-winit`). OFF by default; with the feature off the build is unchanged
 # (the module and its deps are not compiled). Mirrors `backend-macos`'s
 # `new-core`.
-new-core = ["dep:runtime-world", "dep:runtime-scene", "dep:runtime-vocabulary"]
+new-core = [
+    "dep:runtime-world",
+    "dep:runtime-scene",
+    "dep:runtime-vocabulary",
+    # `create_navigator` (old-Element-typed NavigatorHost) is behind the
+    # vocabulary's `legacy-bridge` gate; this backend's newcore.rs
+    # implements it by delegating to the old Backend impl.
+    "runtime-vocabulary/legacy-bridge",
+]
 # `embed-font-bytes`: the wgpu Simulator shapes text with cosmic-text,
 # which needs the raw font bytes. NATIVE hosts (`host-winit`, the
 # mobile sims) enable this so `face!` fonts are `include_bytes!`-baked

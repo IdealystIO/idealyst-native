@@ -86,6 +86,35 @@ ui! { { toolbar::Toolbar(props).bind(r) } }
 r.with(|h| h.set_visible(false));
 ```
 
+## New core (`--features new-core`)
+
+The crate is dual-core: the default build is the old-core surface above
+(`Element::External` + per-backend `register_external`), and the
+`new-core` feature swaps in the same public names over the scene
+registry (`runtime_scene::Registry` — the new core's unified
+primitive==external contract). Author code compiles unchanged; only the
+bootstrap seam moves:
+
+```rust
+// macOS new-core boot — pass `register` to the registry seam:
+host_appkit::newcore::run_with(
+    || app(),
+    host_appkit::newcore::RunOptions::default(),
+    |registry| toolbar::register(registry),
+)?;
+```
+
+On macOS the new-core leg drives the **same shared NSToolbar
+machinery** (`src/macos_shared.rs`) as the old core; the reactive
+`items` closure runs through `runtime_world::effect`, and every button
+`on_click` is wrapped to call `backend_macos::newcore::schedule_flush()`
+after the author code returns — NSToolbar target-action fires outside
+the new core's wrapped dispatch sites, so unwrapped clicks would leave
+staged signal writes uncommitted. On every other host, `register`
+installs the frozen External-placeholder degradation path (zero-size,
+`items` never evaluated) — the same posture as the old core's
+unregistered-handler fallback.
+
 [`ToolbarProps::items`]: src/lib.rs
 [`ToolbarProps::visible`]: src/lib.rs
 [`ToolbarHandle`]: src/lib.rs

@@ -170,6 +170,9 @@ pub fn publish(project_dir: &Path, opts: MacPublishOptions) -> Result<MacPublish
             // Macs too — the App Store rejects an arm64-only build below the
             // 12.0 deployment target (error 409).
             universal: true,
+            // Dual-core apps ship their default core (new-core since
+            // the runtime-v2 defaults flip); legacy apps stay old-core.
+            new_core: build_ios::declares_feature(&project_dir, "new-core"),
         },
     )?;
 

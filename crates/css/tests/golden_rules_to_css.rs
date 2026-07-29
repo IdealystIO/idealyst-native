@@ -9,8 +9,8 @@
 //! output. If a test fails after an intentional format change, update
 //! the expected string AND bump anything keyed off minted class names.
 
-use runtime_core::assets::{SystemFallback, Typeface, TypefaceId};
-use runtime_core::{
+use runtime_shared::assets::{SystemFallback, Typeface, TypefaceId};
+use runtime_shared::{
     AlignContent, AlignItems, AlignSelf, Color, Cursor, DisplayKind, Easing, FlexDirection,
     FlexWrap, FontFamily, FontStyle, FontWeight, Gradient, GradientKind, GradientStop,
     JustifyContent, Length, ObjectFit, Overflow, PointerEvents, Position, Shadow, StyleRules,
@@ -242,7 +242,7 @@ fn golden_edge_branches() {
         kind: GradientKind::Radial {
             center: (0.25, 0.75),
             radius: 1.5,
-            extent: runtime_core::RadialExtent::FarthestCorner,
+            extent: runtime_shared::RadialExtent::FarthestCorner,
         },
         stops: vec![
             GradientStop { offset: 0.0, color: Color("#ff0000".to_string()) },

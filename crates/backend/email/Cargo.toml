@@ -26,6 +26,37 @@ license.workspace = true
 # job of a component layer (`idea-ui-mail`), not this backend — mirroring
 # how the web backend stays layout-neutral and idea-ui owns the opinions.
 
+[features]
+# New-core (idea-lite) render path: `newcore::render_email` /
+# `newcore::render_email_with` render on a fresh `runtime_world::World`
+# per email through the vocabulary's builtin handlers, with
+# `EmailBackend` implementing `runtime_scene::Host` + all 30 capability
+# traits directly. Additive — the old-core render path is untouched with
+# or without this feature (same convention as backend-ssr's `new-core`).
+new-core = [
+    "dep:runtime-world",
+    "dep:runtime-scene",
+    "dep:runtime-vocabulary",
+    # `create_navigator` (old-Element-typed NavigatorHost) is behind the
+    # vocabulary's `legacy-bridge` gate; this backend's newcore.rs
+    # implements it by delegating to the old Backend impl.
+    "runtime-vocabulary/legacy-bridge",
+]
+
 [dependencies]
 runtime-core = { workspace = true }
 css = { workspace = true }
+# New-core migration crates — only compiled under the `new-core` feature.
+runtime-world = { workspace = true, optional = true }
+runtime-scene = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Old-core side of the new-core golden corpus
+# (`tests/newcore_golden.rs`): the real idea-ui-mail components render
+# through the old walker while the new side re-authors the same template
+# with vocabulary builders (`ui!`'s lowering is a build-graph-wide
+# switch, so one binary cannot compile the same component for both
+# cores). Dev-dep only — idea-ui-mail's own backend-email dep is ALSO
+# dev-only, so no cycle.
+idea-ui-mail = { workspace = true }

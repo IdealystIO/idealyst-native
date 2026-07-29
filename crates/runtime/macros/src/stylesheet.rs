@@ -1366,7 +1366,7 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
                 if __reactive {
                     ::runtime_core::StyleProp::SheetDynamic(::std::boxed::Box::new(__build))
                 } else {
-                    ::runtime_core::StyleProp::Sheet(__build())
+                    ::runtime_core::StyleProp::Sheet(::std::boxed::Box::new(__build()))
                 }
             }
         }

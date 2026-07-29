@@ -622,13 +622,16 @@ path = "src/main.rs"
 [dependencies]
 runtime-core = {fcore_dep}
 backend-roku = {broku_dep}
-{user_name} = {{ path = "{user_path}" }}
+{user_name} = {user_dep}
 "#,
         wrapper_name = wrapper_name,
         fcore_dep = fcore_dep,
         broku_dep = broku_dep,
         user_name = manifest.name,
-        user_path = project_dir.display(),
+        // Old-core wrapper (roku has no new-core CLI leg yet): pin
+        // `old-core` for dual-core apps, whose defaults are new-core
+        // since the runtime-v2 defaults flip.
+        user_dep = build_ios::old_core_user_dep(project_dir),
     );
 
     let main_rs = format!(

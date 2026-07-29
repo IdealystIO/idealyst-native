@@ -12,6 +12,19 @@
 //! through the walker; the walker calls more `Backend` methods on
 //! this same `WireRecordingBackend`, producing more `Command`s;
 //! those flush back to the app.
+//!
+//! # New core (feature `new-core`)
+//!
+//! The recorder is DUAL, like every shipping backend: the [`newcore`]
+//! module implements `runtime_scene::Host` plus all 30
+//! `runtime_vocabulary::caps` traits on the same
+//! [`WireRecordingBackend`], each delegating to the `Backend` impl
+//! below — so a new-core `realize` emits the identical wire
+//! `Command`s (the wire protocol is the compatibility contract).
+//! `newcore::SceneSession` is the session mount (per-session
+//! `runtime_world::World` + `register_builtins` + `realize`), and —
+//! with `runtime-server` also on — `sidecar::run_newcore` hosts full
+//! `idealyst dev --new-core` sessions on it.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -28,6 +41,13 @@ use wire::{
 };
 
 pub mod convert_out;
+// New-core adoption (idea-lite migration): `runtime_scene::Host` + the
+// 30 `runtime_vocabulary::caps` traits on `WireRecordingBackend`,
+// delegating to the `Backend` impl below so wire emission is identical
+// by construction, plus `SceneSession` (the new-core session mount).
+// Gated so old-core-only consumers don't drag scene/vocabulary/world.
+#[cfg(feature = "new-core")]
+pub mod newcore;
 // runtime-server dev-host driver. Pulled in only when the consumer activates
 // the `runtime-server` feature — `host::run` and `HotPatchAdapter`
 // depend on `anyhow` + `subsecond_types`, which are optional deps.
@@ -2300,7 +2320,7 @@ impl Backend for WireRecordingBackend {
         state.emit(Command::CreateVirtualizer {
             id,
             overscan,
-            layout: wire_virtual_layout(layout),
+            layout: convert_out::virtual_layout_to_wire(layout),
             initial_size: wire::WireItemSize { measured, sizes },
             initial_keys: keys,
             a11y: wire_a11y,
@@ -2393,19 +2413,6 @@ fn wire_element_align(a: primitives::portal::ElementAlign) -> wire::WireElementA
     }
 }
 
-fn wire_virtual_layout(l: runtime_core::VirtualLayout) -> wire::WireVirtualLayout {
-    wire::WireVirtualLayout {
-        horizontal: l.axis.is_horizontal(),
-        lanes: match l.lanes {
-            runtime_core::Lanes::Fixed(n) => wire::WireLanes::Fixed(n),
-            runtime_core::Lanes::AutoFit { min_cross } => {
-                wire::WireLanes::AutoFit { min_cross }
-            }
-        },
-        main_spacing: l.main_spacing,
-        cross_spacing: l.cross_spacing,
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Navigator dispatcher — legacy callback path stripped. The

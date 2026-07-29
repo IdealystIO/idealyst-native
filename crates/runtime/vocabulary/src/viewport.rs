@@ -1,8 +1,8 @@
 //! # Per-world viewport / breakpoint state — the reactive viewport source
 //!
 //! The old engine keeps ONE thread-local viewport signal
-//! (`runtime_core::viewport_size`) plus a thread-local memoized bucket
-//! (`runtime_core::current_breakpoint`); backends push window resizes
+//! (`runtime_shared::viewport_size`) plus a thread-local memoized bucket
+//! (`runtime_shared::current_breakpoint`); backends push window resizes
 //! into it and author code subscribes from effects. On the new kernel a
 //! world effect cannot subscribe to an old-core signal, so until this
 //! module existed the glue re-exported the old free fns VALUE-only and
@@ -38,7 +38,7 @@
 //! ## Seeding + platform sources
 //!
 //! A world's ctx seeds from the SHARED old-core viewport value at first
-//! use (`runtime_core::viewport_size().get()`), because every existing
+//! use (`runtime_shared::viewport_size().get()`), because every existing
 //! platform seam writes there: SSR seeds `SSR_VIEWPORT` before render,
 //! the web hydrate boot seeds the `data-ssr-viewport` attribute, and
 //! the native backends sample their window into `set_viewport_size`.
@@ -49,24 +49,48 @@
 //!   `window.inner{Width,Height}` at boot and installs a `resize`
 //!   listener that pushes both sinks (old-core TLS for value parity +
 //!   this ctx) and schedules a flush.
-//! - **iOS / Android / macOS / GPU**: NOT wired yet (seed-only). Their
-//!   old-core sources (UIKit `layoutSubviews`, Android
-//!   `OnLayoutChangeListener`, AppKit bounds sample, winit
-//!   `WindowEvent::Resized`) write only the old TLS signal; each
-//!   backend's newcore boot must capture this ctx and push from the
-//!   same seam, exactly like web. Until then, breakpoint-dependent
-//!   `when`s on native re-evaluate only on remount.
+//! - **macOS** (`backend-macos/src/newcore.rs`, "Viewport source"):
+//!   wired — the AppKit seams (`LayoutObserverView::setFrameSize:` +
+//!   `finish`'s deferred first mirror) push both sinks; the boot
+//!   captures this ctx's signal post-build and the seams forward via
+//!   `forward_viewport` + one deduped `schedule_flush`.
+//! - **iOS** (`backend-ios-mobile/src/newcore.rs`, "Viewport source"):
+//!   wired — `LayoutObserverView::layoutSubviews` (rotation/resize +
+//!   first measurement) pushes both sinks, same forward/flush shape.
+//! - **Android** (`backend-android-mobile/src/newcore.rs`, "Viewport
+//!   source"): wired — the deferred mirror microtask in
+//!   `imp::viewport_size()` (fed by every layout pass, so rotation and
+//!   configuration changes route through it) pushes both sinks; the
+//!   sink reinstalls on Activity-recreation re-`start` and dead-world
+//!   writes no-op, so a mirror racing teardown is inert.
+//! - **GPU** (`render-wgpu/src/newcore.rs`, "Viewport source"): wired
+//!   at its one source of truth — `Host::set_viewport`, the LOGICAL
+//!   viewport report. Window resizes deliberately never change the
+//!   logical size on the winit host (fixed `DeviceProfile::
+//!   logical_size`, letterboxed), so bucket flips only follow logical
+//!   reports; the windowed boot seeds the old TLS pre-mount
+//!   (`host_winit::newcore::run_with`), while embedded sim boots
+//!   (`start_in_world`) install NO sink so the sim profile can't
+//!   clobber the embedding page's ctx.
+//!
+//! Wiring rule for future seams: every platform site that writes the
+//! old TLS (`runtime_shared::set_viewport_size`) must forward the SAME
+//! value to its backend's new-core `forward_viewport` — the two sinks
+//! never diverge, and the push always stages outside `World::enter`
+//! then rides the backend's deduped flush.
 //!
 //! ## What still reads the OLD signal
 //!
 //! `style_attach`'s native breakpoint-overlay merge reads the old-core
-//! bucket value at apply time (correct values, no re-fire) — moving the
-//! native re-application onto this ctx is the remaining native-gap
-//! documented above and in `theme.rs`.
+//! bucket value at apply time (correct values — every live source above
+//! pushes both sinks with the same size, so the old bucket tracks the
+//! ctx — but no re-fire of the merge itself) — moving the native
+//! breakpoint-overlay re-application onto this ctx is the remaining
+//! native gap, also noted in `theme.rs`.
 
 use std::cell::RefCell;
 
-use runtime_core::{Breakpoint, ViewportSize};
+use runtime_shared::{Breakpoint, ViewportSize};
 use runtime_world::{inject, memo, provide, signal, unscoped, Memo, ReadSignal, Signal};
 
 /// The per-world viewport context: the size signal plus the derived
@@ -110,12 +134,12 @@ pub fn viewport_ctx() -> ViewportCtx {
         // before the first build. A plain value read — no old-core
         // subscription is possible from world effects, which is the
         // whole reason this ctx exists.
-        let seed = runtime_core::viewport_size().get();
+        let seed = runtime_shared::viewport_size().get();
         let size = signal(seed);
         // Capture the table once, like the old thread-local memo did
         // (`install_breakpoints` is documented first-wins-before-first-
         // read on both cores).
-        let table = runtime_core::breakpoints();
+        let table = runtime_shared::breakpoints();
         let breakpoint = memo(move || table.classify(size.get().width));
         ViewportCtx { size, breakpoint }
     });

@@ -20,9 +20,15 @@
       // Built by:
       //   rm -rf websites/website/pkg-newcore
       //   wasm-pack build --target web --dev websites/website \
-      //       --out-dir pkg-newcore -- --no-default-features --features new-core
+      //       --out-dir pkg-newcore -- --no-default-features \
+      //       --features new-core,newcore-standalone-web
       // (NOT with default features — `old-core`/`new-core` are mutually
-      // exclusive; see the compile_error guard in src/lib.rs. wasm-pack
+      // exclusive; see the compile_error guard in src/lib.rs.
+      // `newcore-standalone-web` compiles the crate's OWN
+      // `#[wasm_bindgen(start)]` — the CLI-built vehicle is
+      // `idealyst build --web --new-core websites/website`, whose
+      // generated wrapper has its own start fn and serves index.html
+      // with real wasm-split chunking. wasm-pack
       // 0.12 fails re-reading its own generated package.json on
       // REbuilds — rm -rf pkg-newcore first.)
       // Serve from the app dir (e.g. `python3 -m http.server`) and open

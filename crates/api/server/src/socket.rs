@@ -361,12 +361,16 @@ where
                     }
                     c.sender = Some(tx.clone());
                 }
-                sender.set(Some(tx));
+                // `set_always`: `SocketSender`/`In` are unbounded (no
+                // `PartialEq`), and every delivery must notify — the
+                // pre-guarded-`set` contract (each received message
+                // retriggers subscribers even if payloads compare equal).
+                sender.set_always(Some(tx));
                 status.set(SocketStatus::Open);
 
                 while let Some(res) = sock.recv().await {
                     match res {
-                        Ok(msg) => incoming.set(Some(msg)),
+                        Ok(msg) => incoming.set_always(Some(msg)),
                         Err(_) => {
                             status.set(SocketStatus::Error);
                             return;
@@ -505,7 +509,9 @@ where
                     match res {
                         Ok(data) => {
                             if let Ok(value) = serde_json::from_str::<T>(&data) {
-                                incoming.set(Some(value));
+                                // `set_always`: `T` is unbounded; every SSE
+                                // event must notify (see the socket comment).
+                                incoming.set_always(Some(value));
                             }
                         }
                         Err(_) => {

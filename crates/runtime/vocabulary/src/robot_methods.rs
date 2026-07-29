@@ -1,12 +1,12 @@
 //! Component-method registry for the NEW core — the vocabulary port of
-//! `runtime_core::robot::components` (P5 `#[method]` seam).
+//! `runtime_shared::robot::components` (P5 `#[method]` seam).
 //!
 //! # Emission surface (why this module always compiles)
 //!
 //! The `#[component]` macro emits `register_component(...)` + a
 //! keepalive effect + a `__component_root(...)` wrap for every
 //! `#[method]`-bearing component UNCONDITIONALLY — under `new-core` the
-//! retarget maps those `::runtime_core::…` paths to
+//! retarget maps those `::runtime_shared::…` paths to
 //! `::runtime_vocabulary::glue::…`, which re-exports from HERE. Exactly
 //! like the old core's stub `robot` module, the names must exist in
 //! every build: with the vocabulary `robot` feature OFF these are
@@ -51,7 +51,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::__serde_json as serde_json;
+use runtime_shared::__serde_json as serde_json;
 use runtime_scene::Element;
 
 /// Opaque per-instance ID. Stable while the component is mounted; never
@@ -316,7 +316,7 @@ pub fn __component_root(child: Element, _instance: ComponentInstanceId) -> Eleme
 #[cfg(all(test, feature = "robot"))]
 mod tests {
     use super::*;
-    use runtime_core::__serde_json::json;
+    use runtime_shared::__serde_json::json;
     use std::cell::Cell;
 
     /// Register → list → invoke → drop deregisters (guard lifecycle),

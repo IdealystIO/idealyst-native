@@ -115,6 +115,49 @@ pub(crate) fn emit_inline_lazy_glue(g: LazyGlue<'_>) -> TokenStream2 {
                      A `Fn(&LazyError) -> impl IntoElement` closure; the error \
                      carries `.message()` and `.retry()`. Default: log + keep loading.";
 
+    // The chunk body fn. OLD core: constructs the component's `Element`
+    // inside the loader future (the walker's `ScopedLoad` re-enters the
+    // chunk scope per poll so construction-time reactive state has an
+    // owner). NEW core: a future poll runs on the executor with NO world
+    // entered — constructing there would panic in `component_scope` — so
+    // `__lazy_body` returns a **body thunk** (`LazyBodyThunk`) and the
+    // vocabulary's mount handler invokes it inside its swap effect
+    // (world entered, `component_scope`-collected). Same `#[wasm_split]`
+    // module + fn naming either way, so wasm-split-cli's chunk
+    // classification is identical across cores. The `::runtime_core::…`
+    // paths below are retargeted to `runtime_vocabulary::glue::…` under
+    // `new-core` (glue::primitives::lazy defines the thunk types).
+    #[cfg(not(feature = "new-core"))]
+    let lazy_body_fn = quote! {
+        #[::runtime_core::__wasm_split::wasm_split(#split_name)]
+        async fn __lazy_body(props: #props_ident) -> ::runtime_core::Element {
+            ::runtime_core::IntoElement::into_element(
+                #fn_name(#(props.#arg_names),*)
+            )
+        }
+    };
+    #[cfg(feature = "new-core")]
+    let lazy_body_fn = quote! {
+        #[::runtime_core::__wasm_split::wasm_split(#split_name)]
+        async fn __lazy_body(
+            props: #props_ident,
+        ) -> ::runtime_core::primitives::lazy::LazyBodyThunk {
+            // Explicitly typed binding: the wasm `#[wasm_split]`
+            // expansion re-homes these statements inside a
+            // `Box::pin(async move { … })`, where the async block's
+            // tail has NO return-type coercion context — an
+            // unannotated `Box::new(closure)` stays `Box<{closure}>`
+            // and fails the `Box<dyn FnOnce() -> Element>` output.
+            let __thunk: ::runtime_core::primitives::lazy::LazyBodyThunk =
+                ::std::boxed::Box::new(move || {
+                    ::runtime_core::IntoElement::into_element(
+                        #fn_name(#(props.#arg_names),*)
+                    )
+                });
+            __thunk
+        }
+    };
+
     quote! {
         #[doc = #struct_doc]
         #clone_derive
@@ -153,13 +196,10 @@ pub(crate) fn emit_inline_lazy_glue(g: LazyGlue<'_>) -> TokenStream2 {
                 use ::runtime_core::__wasm_split as wasm_split;
 
                 // The component's body — hoisted into a chunk. Receives the
-                // props (config fields ride along, unused) and calls the fn.
-                #[::runtime_core::__wasm_split::wasm_split(#split_name)]
-                async fn __lazy_body(props: #props_ident) -> ::runtime_core::Element {
-                    ::runtime_core::IntoElement::into_element(
-                        #fn_name(#(props.#arg_names),*)
-                    )
-                }
+                // props (config fields ride along, unused) and calls the fn
+                // (old core: builds the Element; new core: returns the body
+                // thunk — see `lazy_body_fn` above).
+                #lazy_body_fn
 
                 // Pull the loading/error config out (cheap `Rc` clones) before
                 // the props move into the loader.

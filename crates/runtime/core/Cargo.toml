@@ -75,7 +75,7 @@ prim-graphics = []
 # Timing reads go through the platform-agnostic `runtime_core::time`
 # source (installed by each backend); this crate links no `js-sys` /
 # `wasm-bindgen` itself.
-debug-stats = ["runtime-macros/debug-stats"]
+debug-stats = ["runtime-shared/debug-stats", "runtime-macros/debug-stats"]
 
 # Dev-time hot-reload substrate. Pulls in `dev-hot` (the
 # subsecond-backed jump-table runtime) and tells the `#[component]`
@@ -100,7 +100,7 @@ hot-reload = ["runtime-macros/hot-reload", "dep:dev-hot", "dev-hot/hot"]
 # `runtime-macros/catalog` (the emission gate) and pulls `mcp-catalog`
 # in as an optional dep so user crates never declare it directly.
 # See `docs/mcp-catalog-spec.md`.
-catalog = ["runtime-macros/catalog", "dep:mcp-catalog"]
+catalog = ["runtime-macros/catalog", "dep:mcp-catalog", "runtime-shared/catalog"]
 
 # Backward-compatible alias. The catalog feature used to be named `mcp`
 # (after its first consumer). MCP now *relies on* the catalog rather than
@@ -136,15 +136,10 @@ strict-naming = ["runtime-macros/strict-naming"]
 # Off by default — adds per-node overhead (one registry entry per
 # mounted element + retained action closures). Production builds
 # should leave this off.
-# `dep:base64` powers the Robot bridge's `"screenshot"` verb, which
-# returns the captured PNG as base64 in its JSON response.
-# `dep:libc` is the unix `kill(pid, 0)` liveness check the bridge uses to
-# sweep dead-pid registration files from `~/.idealyst/apps/` on bind (so
-# a crashed prior run doesn't leave a ghost the MCP server tries to dial).
-# `dep:tungstenite` is the native dial-out transport's WebSocket client
-# (target-gated to non-wasm, so it's a no-op when `robot` is enabled on a web
-# build — mirrors how `dep:libc` resolves to nothing there).
-robot = ["dep:base64", "dep:libc", "dep:tungstenite"]
+# The registry, bridge, and their deps (base64/libc/tungstenite) moved
+# to `runtime-shared` with the module; this forward keeps the old
+# single-crate gate working.
+robot = ["runtime-shared/robot"]
 
 # `dev` umbrella feature — the one `idealyst dev` flips. Bundles
 # every feature that "the user is running locally for development"
@@ -164,19 +159,15 @@ dev = ["robot", "catalog"]
 # `AsyncExecutor` in `driver.rs`); each `backend/*` crate installs the
 # implementation appropriate to its platform (rAF/spawn_local on web,
 # a render thread on Android, CADisplayLink on iOS). This crate links
-# NO platform deps for them — no `wasm-bindgen-futures`, no
-# `objc2`/`block2`. The only target-gated dep is `pollster`, a portable
-# native fallback so `spawn_async` works before a backend installs an
-# executor (and `log` for the desktop-fallback warning).
+# NO platform deps for them. The `driver` module (and its pollster/log
+# native fallback deps) moved to `runtime-shared`; this forward keeps
+# the old gate working.
 #
 # Off by default because that native fallback is dead weight for apps
 # that never need a frame ticker. Enabling this feature does NOT pull
 # in any GPU library — that's the author's call, kept in the author's
 # own Cargo.toml. The `Graphics` surface primitive is unconditional.
-async-driver = [
-    "dep:pollster",
-    "dep:log",
-]
+async-driver = ["runtime-shared/async-driver"]
 
 # When on, the `face!` macro embeds each font file's bytes into the
 # binary via `include_bytes!` (emitting `AssetSource::BundledEmbedded`,
@@ -191,11 +182,10 @@ async-driver = [
 # this off, and resolves every font to a served-file URL via
 # `@font-face { src: url(...) }` — keeping the fonts out of the wasm.
 #
-# This is why the `#[cfg]` split lives on the `__face_source!` helper
-# *defined here in runtime-core* (evaluated against runtime-core's own
-# unified feature set) rather than inside the `face!` expansion (which
-# would be evaluated against the author crate's features).
-embed-font-bytes = []
+# The `__face_source!` helper (and this `#[cfg]` split) moved to
+# `runtime-shared` with `assets.rs`; the forward keeps the dep-graph
+# decision unified there rather than in the author crate's features.
+embed-font-bytes = ["runtime-shared/embed-font-bytes"]
 # Premint style-dump registry (`runtime_core::premint`): the linkme
 # distributed slice every `stylesheet!` registers into under
 # `cfg(idealyst_premint_dump)`, plus the resolver re-exports the dump
@@ -203,7 +193,7 @@ embed-font-bytes = []
 # shipped builds never carry it. Requires `style-dynamic` because the
 # dump resolves sheets through the live resolution pipeline
 # (`premint::resolve_layers` → walker resolvers).
-style-dump = ["style-dynamic", "dep:linkme"]
+style-dump = ["style-dynamic", "runtime-shared/style-dump"]
 
 # The runtime style engine: `StyleSource::Static`/`Reactive`/`SignalClass`
 # attachment, `StyleRules` resolution/merging, the theme cohort, and
@@ -220,11 +210,15 @@ style-dump = ["style-dynamic", "dep:linkme"]
 # as `prim-*`. Backend crates forward this feature (same unification
 # caveat as `prim-*`: the app must set `default-features = false` on
 # BOTH runtime-core and its backend crate).
-style-dynamic = []
+style-dynamic = ["runtime-shared/style-dynamic"]
 
 [dependencies]
+# The shared substrate — the non-walker half of this crate, extracted
+# in the final migration phase. Every same-named feature above forwards
+# to it; `default-features = false` so THIS crate's `style-dynamic`
+# default (not the dep spec) controls the engine gate.
+runtime-shared = { path = "../shared", default-features = false }
 runtime-macros = { workspace = true }
-linkme = { workspace = true, optional = true }
 # `dev-hot` is only linked in when the `hot-reload` cargo
 # feature is on (typically by the runtime-server dylib-mode host wrapper). Off
 # by default — production builds don't compile it.
@@ -237,13 +231,6 @@ dev-hot = { workspace = true, optional = true }
 mcp-catalog = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-# Only linked under the `robot` feature — encodes captured screenshot
-# PNGs as base64 for the bridge's `"screenshot"` JSON response.
-base64 = { version = "0.22", optional = true }
-# Bitflags for `AccessibilityTraits` (one u16 of orthogonal a11y flags
-# per primitive). Already transitively pulled by several deps; declaring
-# it directly here so the module owns the version pin.
-bitflags = "2"
 # The `Graphics` primitive exposes its surface as a standard
 # `raw_window_handle` handle so authors can plug any GPU library
 # (wgpu, glow, vello, softbuffer, …) on top. Tiny dep — a handful of
@@ -260,20 +247,4 @@ rustc-hash = { workspace = true }
 # `lazy!` macro's expansion in author crates can reach it.
 wasm-split = { workspace = true }
 
-# Native deps for the optional `async-driver` feature. `pollster`
-# drives the future returned from `spawn_async` on every non-wasm
-# target so authors can write the same `async fn build_renderer(...)`
-# everywhere. `log` is reserved for desktop-fallback warnings.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-pollster = { version = "0.4", optional = true }
-log = { version = "0.4", optional = true }
-# `kill(pid, 0)` for the Robot bridge's stale-registration sweep. Only
-# linked under `robot` (non-wasm); ordinary app builds don't pull it.
-libc = { version = "0.2", optional = true }
-# Native WebSocket CLIENT for the Robot bridge's dial-out transport: when a
-# relay URL is configured the app dials a `robot-relay` (web-style universal
-# transport) instead of self-hosting a TCP listener. Only under `robot`
-# (non-wasm) — web uses `backend-web`'s `web_sys` client instead. No TLS
-# (ws:// loopback / dev-host only) so it's a pure-Rust, cross-compiles-clean dep.
-tungstenite = { version = "0.24", default-features = false, features = ["handshake"], optional = true }
 

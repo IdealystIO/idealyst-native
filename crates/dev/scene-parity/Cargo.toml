@@ -21,7 +21,7 @@ runtime-world = { workspace = true }
 # P2b full-op gate: the built-in vocabulary's handlers mounted through
 # LegacyBridge<FullRecorder>, compared against the old walker on the
 # same goldens.
-runtime-vocabulary = { workspace = true }
+runtime-vocabulary = { workspace = true, features = ["legacy-bridge"] }
 # GfxSim's dummy surface provider (graphics lifecycle goldens) — same
 # version runtime-core builds its GraphicsSurface contract against.
 raw-window-handle = "0.6"

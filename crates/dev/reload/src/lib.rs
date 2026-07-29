@@ -341,6 +341,8 @@ fn build_wasm(dir: &Path, opts: &BuildOptions) -> Result<()> {
             // rebuild.
             prune_dead_data_min: None,
             premint: false,
+            // The dev reload loop stays old-core (runtime-server mode).
+            new_core: false,
         },
     )
     .map(|_| ())

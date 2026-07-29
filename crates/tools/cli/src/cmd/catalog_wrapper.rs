@@ -92,6 +92,22 @@ pub fn generate_with(
     // in the graph flips the `#[component]` emission gate for every crate,
     // including the project lib.
     let fcore_dep = source.dep("crates/runtime/core", &["catalog"]);
+    // Runtime-v2 defaults flip: a dual-core project's default build IS
+    // the new-core graph, where `runtime_core` resolves through the
+    // facade alias — the retargeted `#[component]` catalog emissions
+    // then need the facade's `catalog` anchor (`glue::__mcp`) plus the
+    // `runtime-macros/catalog` emission gate the facade feature
+    // forwards. Old-core projects skip the line (facade never enters
+    // their graph).
+    let facade_dep_line = if build_ios::declares_feature(&project_root, "new-core") {
+        format!(
+            "runtime-facade = {}
+",
+            source.dep("crates/runtime/facade", &["catalog"]),
+        )
+    } else {
+        String::new()
+    };
     // Redirect any git-pinned framework crates the project uses to the
     // same physical paths the wrapper uses, so the two halves share ONE
     // `runtime_core` instance (otherwise feature unification can't merge
@@ -141,12 +157,13 @@ path = "src/main.rs"
 
 [dependencies]
 runtime-core = {fcore_dep}
-{user_name} = {{ path = "{user_path}" }}
+{facade_dep_line}{user_name} = {{ path = "{user_path}" }}
 {forced_dep_lines}{patch_block}"#,
         name = manifest.name,
         subdir = subdir,
         bin_name = bin_name,
         fcore_dep = fcore_dep,
+        facade_dep_line = facade_dep_line,
         user_name = manifest.name,
         user_path = project_root.display(),
         forced_dep_lines = forced_dep_lines,

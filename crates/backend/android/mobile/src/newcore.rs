@@ -164,11 +164,12 @@
 //!   dispatch): these belong to old-core SDK surfaces that predate the
 //!   new core; their ports must call [`schedule_flush`] after author
 //!   callbacks — same residual as web's External note.
-//! - **Viewport resize** (`RustViewportResizeListener`): feeds the
-//!   old-core viewport signal + a backend-internal layout pass. The
-//!   new core has no viewport source yet on any backend (web is
-//!   seed-only) — the layout pass itself still runs, so views reflow;
-//!   only new-core *breakpoint re-resolution* waits on that seam.
+//! - ~~Viewport resize~~ — WIRED: the deferred viewport mirror in
+//!   `imp::viewport_size()` (the seam `RustViewportResizeListener`'s
+//!   layout pass funnels into) now pushes BOTH sinks — the old-core
+//!   TLS signal and, via [`forward_viewport`], the mounted world's
+//!   `ViewportCtx` — so new-core breakpoint re-resolution follows
+//!   rotation/resize live (see the "Viewport source" section).
 //!
 //! Everything funnels through [`schedule_flush`]/`flush_now`, which
 //! skips re-entrant flushes (`world.is_flushing()`) — belt and braces;
@@ -271,6 +272,67 @@ pub fn flush_sync() {
     flush_now();
 }
 
+// ===========================================================================
+// Viewport source (the new-core Android resize seam — host-compilable
+// half, regression-tested below)
+// ===========================================================================
+//
+// The vocabulary's per-world viewport/breakpoint ctx
+// (`runtime_vocabulary::viewport`) is SEED-ONLY unless the platform
+// pushes live sizes (its module docs). This backend's resize seam is
+// the deferred viewport mirror inside `viewport_size()` (imp/mod.rs —
+// every layout pass samples the host `ViewGroup`, and a CHANGED size
+// schedules one mirror microtask; configuration changes and rotations
+// route through it because they re-measure the host). The seam keeps
+// writing the shared old-core TLS value
+// (`runtime_core::set_viewport_size`) — the old core subscribes to it,
+// and the world ctx SEEDS from it — and additionally calls
+// [`forward_viewport`] so breakpoint-dependent author reactivity
+// re-fires on rotation/resize instead of freezing at its seed.
+//
+// Activity recreation: `start` idempotently re-runs (stop → fresh
+// world) and re-installs the sink for the NEW world's ctx, exactly like
+// [`FLUSH`]; a mirror microtask that races teardown either hits a
+// cleared sink (no-op) or a dead world (silent kernel no-op) — the
+// P5 dead-world discipline holds.
+//
+// Discipline (mirrors `backend_web::newcore`'s resize listener): the
+// seam runs OUTSIDE `World::enter` (a posted looper microtask), so the
+// boot CAPTURES the world's signal handle — capture, don't inject —
+// and the push stages through the handle (routes to its own world,
+// equality-guarded) then rides one deduped [`schedule_flush`].
+//
+// TLS audit note: [`VIEWPORT_SINK`] is a const-init `Cell` of a `Copy`
+// handle — no destructor, so it lowers to plain ELF-TLS and spends
+// ZERO bionic pthread keys (same class as `dispatch_hook::HOOK`; the
+// module-docs "+2 keys" budget is unchanged).
+
+thread_local! {
+    /// The mounted world's viewport signal (`Copy` handle). `None`
+    /// outside a new-core boot, so the shared old-core seam costs one
+    /// TLS read and nothing else when the old core is driving.
+    static VIEWPORT_SINK: Cell<Option<runtime_world::Signal<runtime_core::ViewportSize>>> =
+        const { Cell::new(None) };
+}
+
+fn set_viewport_sink(sig: Option<runtime_world::Signal<runtime_core::ViewportSize>>) {
+    VIEWPORT_SINK.with(|s| s.set(sig));
+}
+
+/// Forward one platform viewport mirror into the mounted world's
+/// viewport ctx (no-op before [`start`] / after [`stop`]). Called by
+/// the same Android seams that write `runtime_core::set_viewport_size`,
+/// with the same dp values — the two sinks never diverge.
+pub(crate) fn forward_viewport(size: runtime_core::ViewportSize) {
+    let Some(sig) = VIEWPORT_SINK.with(|s| s.get()) else {
+        return;
+    };
+    // Staged write outside `enter` + one deduped flush — commits on
+    // the next looper turn, like every wrapped callback.
+    sig.set(size);
+    schedule_flush();
+}
+
 /// Run `f` with the mounted app's world ambient (`World::enter`).
 /// JNI-interop seam: exports that must CREATE reactive state
 /// (`signal()`, `memo()`) run outside any handler/effect, where no
@@ -285,6 +347,21 @@ pub fn with_world_entered<R>(f: impl FnOnce() -> R) -> Option<R> {
 /// Core-selection probe for shared transports (robot relay).
 pub fn is_booted() -> bool {
     FLUSH.with(|f| f.world.borrow().is_some())
+}
+
+/// The world mounted by [`start`] (a cheap handle clone; `None` before
+/// boot / after stop).
+///
+/// Host-integration seam: an embedded renderer mounted INSIDE this
+/// app's tree — the wgpu simulator preview
+/// (`host_android_mobile::mount_newcore`) — realizes its scene into
+/// this SAME world, so the app's existing flush driver (dispatch-site
+/// wrappers + the scheduler/executor post-dispatch hook) commits the
+/// embedded app's staged writes with no second driver: one thread, one
+/// world, one logical update stream. Mirrors
+/// `backend_web::newcore::mounted_world`.
+pub fn mounted_world() -> Option<World> {
+    FLUSH.with(|f| f.world.borrow().clone())
 }
 
 /// Run a platform-invoked vocabulary callback with the mounted world
@@ -395,7 +472,9 @@ mod native {
     use runtime_vocabulary::caps;
     use runtime_world::World;
 
-    use super::{flushing0, flushing1, flushing_key, schedule_flush, set_flush_world};
+    use super::{
+        flushing0, flushing1, flushing_key, schedule_flush, set_flush_world, set_viewport_sink,
+    };
     use crate::imp::{self, AndroidBackend};
 
     // Re-exported so JNI wrappers and app crates can name the boot-path
@@ -475,9 +554,16 @@ mod native {
         let registry = Rc::new(registry);
 
         let world = World::new();
-        let realized = world.enter(|| {
+        let (vp_sig, realized) = world.enter(|| {
             let element = build();
-            realize(&backend, &registry, element)
+            let realized = realize(&backend, &registry, element);
+            // Capture the per-world viewport ctx AFTER the build,
+            // never before: the ctx's bucket memo pins the breakpoint
+            // TABLE at creation and apps `install_breakpoints` inside
+            // their root component (see the viewport-source section
+            // and backend-web's identical ordering comment).
+            let vp_sig = runtime_vocabulary::viewport::viewport_ctx().size_signal();
+            (vp_sig, realized)
         });
 
         // Step 3: no-op on this backend (the Android scheduler never
@@ -506,6 +592,15 @@ mod native {
         // and (b) the scheduler/executor post-dispatch hook.
         crate::dispatch_hook::install_dispatch_hook(schedule_flush);
         set_flush_world(Some(world.clone()));
+        // Live viewport source: the deferred mirror in
+        // `imp::viewport_size()` now reaches the world's ctx through
+        // `forward_viewport`. The first post-mount layout pass (the
+        // retrying pass `finish` scheduled) pushes the REAL host size —
+        // the ctx seeded from the pre-build TLS value, which is stale
+        // on a cold boot because Android measures after `attach`
+        // returns. Survives Activity recreation: this install runs
+        // again for the new world (see the viewport-source section).
+        set_viewport_sink(Some(vp_sig));
         APP.with(|slot| {
             *slot.borrow_mut() = Some(App {
                 realized,
@@ -522,6 +617,7 @@ mod native {
     /// the JNI wrapper's `detach` (new-core branch).
     pub fn stop() {
         crate::dispatch_hook::clear_dispatch_hook();
+        set_viewport_sink(None);
         set_flush_world(None);
         APP.with(|slot| {
             if let Some(app) = slot.borrow_mut().take() {
@@ -2094,6 +2190,98 @@ mod tests {
         set_flush_world(None);
     }
 
+    /// Regression (native new-core breakpoints frozen at their seed —
+    /// rotation/configuration change never re-fired breakpoint-
+    /// dependent `when`s): the Android resize seam
+    /// ([`forward_viewport`], called from `imp::viewport_size()`'s
+    /// deferred mirror microtask right after its `set_viewport_size`
+    /// write) must stage the size into the mounted world's viewport
+    /// ctx from OUTSIDE `World::enter` and commit it through the flush
+    /// driver, re-firing a breakpoint-reading effect exactly when the
+    /// BUCKET changes — and must go inert once the sink is cleared,
+    /// so a mirror racing Activity-recreation teardown is a no-op (the
+    /// P5 dead-world discipline). The JNI layout machinery that fires
+    /// the mirror only exists inside an Android process (module header
+    /// above — same limitation as every `imp/` surface); this
+    /// host-side test is the reachable unit gate for everything from
+    /// the seam fn down.
+    #[test]
+    fn regression_resize_seam_recomputes_breakpoint_via_viewport_sink() {
+        install_test_scheduler();
+        let world = World::new();
+        set_flush_world(Some(world.clone()));
+
+        // What `start` does: capture the world's ctx (inside enter,
+        // post-build position) and install the sink.
+        let (vp_sig, runs, last) = world.enter(|| {
+            let ctx = runtime_vocabulary::viewport::viewport_ctx();
+            let bp = ctx.breakpoint();
+            let runs = Rc::new(Cell::new(0usize));
+            let last = Rc::new(Cell::new(runtime_core::Breakpoint::Xs));
+            let runs_c = runs.clone();
+            let last_c = last.clone();
+            // Stand-in for the shell's `when(!sidebar_pinned(Lg))`.
+            let _e = effect(move || {
+                last_c.set(bp.get());
+                runs_c.set(runs_c.get() + 1);
+            });
+            (ctx.size_signal(), runs, last)
+        });
+        world.flush();
+        assert_eq!(runs.get(), 1);
+        set_viewport_sink(Some(vp_sig));
+
+        // The seam: fires outside `enter` (a posted looper microtask),
+        // stages, flush commits on the next looper turn.
+        forward_viewport(runtime_core::ViewportSize {
+            width: 1280.0,
+            height: 800.0,
+        });
+        assert_eq!(runs.get(), 1, "staged — commits on the next looper turn");
+        pump();
+        assert_eq!(
+            last.get(),
+            runtime_core::Breakpoint::Xl,
+            "bucket followed the resize"
+        );
+        assert_eq!(runs.get(), 2);
+
+        // Same-bucket resize: per-pixel change, no bucket flip, no
+        // re-fire (memo equality cut).
+        forward_viewport(runtime_core::ViewportSize {
+            width: 1290.0,
+            height: 800.0,
+        });
+        pump();
+        assert_eq!(runs.get(), 2, "per-pixel resizes inside a bucket stay silent");
+
+        // Rotation-shaped crossing below the threshold.
+        forward_viewport(runtime_core::ViewportSize {
+            width: 700.0,
+            height: 800.0,
+        });
+        pump();
+        assert_eq!(last.get(), runtime_core::Breakpoint::Sm);
+        assert_eq!(runs.get(), 3);
+
+        // Teardown severs the route (what `stop` does — the Activity-
+        // recreation race): a late mirror microtask forwards into a
+        // cleared sink and nothing is staged or scheduled.
+        set_viewport_sink(None);
+        forward_viewport(runtime_core::ViewportSize {
+            width: 1280.0,
+            height: 800.0,
+        });
+        assert!(
+            !FLUSH.with(|f| f.queued.get()),
+            "cleared sink schedules nothing"
+        );
+        pump();
+        assert_eq!(runs.get(), 3, "no re-fire after teardown");
+
+        set_flush_world(None);
+    }
+
     /// `is_booted` / `flush_sync` / `with_world_entered` are safe both
     /// sides of a mount — the JNI-interop seam surface.
     #[test]
@@ -2139,5 +2327,22 @@ mod tests {
         // covers for creation-side work.
         let sig2 = world.enter(|| enter_mounted_world(|| signal(8i32)));
         assert_eq!(world.enter(|| sig2.get()), 8);
+    }
+
+    /// `mounted_world` hands an embedded mount
+    /// (`host_android_mobile::mount_newcore`) the SAME world the boot
+    /// stored — creations made through the clone land in the boot
+    /// world — and reports `None` once the slot clears, so a
+    /// mis-sequenced embed fails fast (`MountError::NoHostWorld`)
+    /// instead of realizing into a dead world.
+    #[test]
+    fn mounted_world_clones_boot_world_for_embedded_mounts() {
+        let world = World::new();
+        set_flush_world(Some(world.clone()));
+        let mounted = mounted_world().expect("boot stored a world");
+        let sig = mounted.enter(|| signal(9i32));
+        assert_eq!(world.enter(|| sig.get()), 9, "clone is the boot world");
+        set_flush_world(None);
+        assert!(mounted_world().is_none(), "cleared after stop");
     }
 }

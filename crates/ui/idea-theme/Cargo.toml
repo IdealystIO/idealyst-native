@@ -27,6 +27,14 @@ runtime-facade = { workspace = true, optional = true }
 # src/recipes.rs). Off in every production build — the `recipe!` macro
 # expands to nothing without it, so recipes cost zero in shipped apps.
 [features]
+# Runtime-v2 defaults flip: the new-core leg is the default surface;
+# the old-core leg is the opt-in (`--no-default-features` — in-repo
+# consumers ride the workspace dep spec, which pins defaults off and
+# selects a core explicitly per graph).
+default = ["new-core"]
+# Old-core marker for uniform `--no-default-features --features
+# old-core` invocations (the old-core deps are unconditional).
+old-core = []
 catalog = ["runtime-core/catalog"]
 # Default-off (one core per build graph — runtime-facade enables
 # `runtime-macros/new-core`, which unifies across the graph; see that

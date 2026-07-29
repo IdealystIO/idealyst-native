@@ -33,19 +33,62 @@ robot = []
 # (repeat batch, dynamic-sheet effect). Same discipline as the other
 # crates' debug-stats (CLAUDE.md §6): OFF by default, counters land in
 # runtime-core's thread-local phase map, zero code when off.
-debug-stats = ["runtime-core/debug-stats"]
+debug-stats = ["runtime-shared/debug-stats"]
 
-# Forward runtime-core's `async-driver` gate so glue can mirror the old
+# Forward runtime-shared's `async-driver` gate so glue can mirror the old
 # root's feature-gated `driver` module (`spawn_async` / `render_loop`).
 # Apps whose aliased sources spell `runtime_core::driver::…` enable this
 # (the website's embedded-simulator new-core build is the consumer).
-async-driver = ["runtime-core/async-driver"]
+async-driver = ["runtime-shared/async-driver"]
+
+# MCP catalog anchor for new-core graphs (idea-lite wave 2b): links
+# `mcp-catalog` and re-exports it at `glue::__mcp`, where the
+# retargeted `#[component]` / `doc_scope!` emissions land
+# (`::runtime_core::__mcp::…` → `::runtime_vocabulary::glue::__mcp::…`
+# under `runtime-macros/new-core`). Forwards `runtime-shared/catalog`
+# so the robot bridge's `get_catalog` verb + the static core-primitive
+# recipes ride along — one switch gives a new-core session the full
+# catalog. Off by default (production carries zero catalog code);
+# the emission gate itself is `runtime-macros/catalog`, enabled by
+# whichever wrapper/app wants capture (see runtime-facade/catalog).
+catalog = ["dep:mcp-catalog", "runtime-shared/catalog"]
+
+# The ONLY remaining runtime-core coupling: `bridge::LegacyBridge`, the
+# migration-transitional adapter that wraps an old `Backend` impl in the
+# new capability surface. Off by default so this crate's default
+# dependency graph is runtime-core-free (P7 gate: `cargo tree -p
+# runtime-vocabulary` shows no runtime-core); the transitional consumers
+# (backend-ssr new-core boot, scene-parity, SDK test harnesses) enable
+# it on their dep line. Deleted together with the old core.
+legacy-bridge = ["dep:runtime-core"]
 
 [dependencies]
-# SANCTIONED, migration-transitional (see lib.rs): the frozen Backend
-# signatures reference runtime-core's prop/data types (StyleRules,
-# AccessibilityProps, handler aliases, primitives::* payloads). Those
-# types migrate OUT of runtime-core at P7; this dependency goes with them.
-runtime-core = { workspace = true }
+# P7 landed: the shared prop/data types (StyleRules, AccessibilityProps,
+# handler aliases, primitives::* payloads, robot bridge, host slots)
+# live in runtime-shared — the permanent substrate. runtime-core remains
+# ONLY as an optional dep behind `legacy-bridge` (above).
+runtime-shared = { workspace = true }
+runtime-core = { workspace = true, optional = true }
 runtime-scene = { workspace = true }
 runtime-world = { workspace = true }
+# Catalog anchor (see the `catalog` feature above).
+mcp-catalog = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The test suites drive mounts through `bridge::LegacyBridge` over the
+# mock backend, so they need the feature on (and runtime-core as a
+# direct dev-dep for its author surface).
+runtime-core = { workspace = true }
+# Self-dev-dep so the test targets compile the lib WITH `async-driver`
+# (feature unification): the lazy chunk driver (handlers/lazy.rs,
+# tests/lazy.rs) and the resource/mutation mirrors
+# (src/async_reactive.rs, tests/async_reactive.rs) are gated on it
+# exactly like the old core's same-named gate, and a plain
+# `cargo test -p runtime-vocabulary` must exercise both instead of
+# silently vanishing behind a --features flag nobody passes in CI.
+runtime-vocabulary = { path = ".", features = ["async-driver", "legacy-bridge", "robot"] }
+# The new-core test substrate: scene Host + all-30-caps recording mock.
+# Dev-dep cycle (host-mock depends on this crate's lib) is fine — Cargo
+# permits dev-dependency cycles, and it keeps the suites off the old
+# `Backend` trait ahead of the deletion wave.
+host-mock = { workspace = true }

@@ -22,5 +22,20 @@ license.workspace = true
 # selects vello vs native explicitly, so `register` lives in the renderer
 # crates, not the umbrella.
 
+[features]
+# Runtime-v2 defaults flip: the new-core leg is the default surface;
+# the old-core leg is the opt-in (`--no-default-features` — in-repo
+# consumers ride the workspace dep spec, which pins defaults off and
+# selects a core explicitly per graph).
+default = ["new-core"]
+# Old-core marker for uniform `--no-default-features --features
+# old-core` invocations (the old-core deps are unconditional).
+old-core = []
+# Idea-lite migration: forward the new-core surface (scene-registry
+# `Canvas` constructor + `CanvasPrim` payload) from canvas-core.
+# Default-off; a consuming app crate forwards this from its own
+# new-core feature.
+new-core = ["canvas-core/new-core"]
+
 [dependencies]
 canvas-core = { workspace = true }

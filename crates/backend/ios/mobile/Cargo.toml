@@ -46,7 +46,15 @@ async-driver = ["runtime-core/async-driver", "backend-ios-core/async-driver"]
 # only compiles under `target_os = "ios"`, so glue tests are the only
 # unit-test seam); the Host/caps impls and the boot path inside it are
 # `cfg(target_os = "ios")`.
-new-core = ["dep:runtime-world", "dep:runtime-scene", "dep:runtime-vocabulary"]
+new-core = [
+    "dep:runtime-world",
+    "dep:runtime-scene",
+    "dep:runtime-vocabulary",
+    # `create_navigator` (old-Element-typed NavigatorHost) is behind the
+    # vocabulary's `legacy-bridge` gate; this backend's newcore.rs
+    # implements it by delegating to the old Backend impl.
+    "runtime-vocabulary/legacy-bridge",
+]
 
 [dependencies]
 runtime-core = { workspace = true }

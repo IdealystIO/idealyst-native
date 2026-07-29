@@ -251,12 +251,78 @@ pub fn is_booted() -> bool {
     FLUSH_WORLD.with(|w| w.borrow().is_some())
 }
 
+/// The world mounted by the boot path (a cheap handle clone; `None`
+/// before boot / after stop).
+///
+/// Host-integration seam: an embedded renderer mounted INSIDE this
+/// app's tree — the wgpu simulator preview
+/// (`host_ios_mobile::mount_newcore`) — realizes its scene into this
+/// SAME world, so the app's existing flush driver (dispatch-site
+/// wrappers + the apple-core scheduler/executor post-dispatch hook)
+/// commits the embedded app's staged writes with no second driver:
+/// one thread, one world, one logical update stream. Mirrors
+/// `backend_web::newcore::mounted_world`.
+pub fn mounted_world() -> Option<World> {
+    FLUSH_WORLD.with(|w| w.borrow().clone())
+}
+
 /// Synchronously commit staged writes (skipped mid-flush; no-op before
 /// boot). Interop seam for callers that stage writes and must return
 /// with the tree updated (robot verbs, in-app self-tests) — they
 /// cannot ride the async microtask the dispatch-site glue queues.
 pub fn flush_sync() {
     flush_now();
+}
+
+// ===========================================================================
+// Viewport source (the new-core iOS resize/rotation seam —
+// host-compilable half, regression-tested below)
+// ===========================================================================
+//
+// The vocabulary's per-world viewport/breakpoint ctx
+// (`runtime_vocabulary::viewport`) is SEED-ONLY unless the platform
+// pushes live sizes (its module docs). This backend's resize seam is
+// `LayoutObserverView::layoutSubviews` (imp/callbacks.rs — UIKit calls
+// it on every host bounds change: rotation, split-view, first
+// measurement); it keeps writing the shared old-core TLS value
+// (`runtime_core::set_viewport_size`) — the old core subscribes to it,
+// and the world ctx SEEDS from it — and additionally calls
+// [`forward_viewport`] so breakpoint-dependent author reactivity
+// re-fires on rotation instead of freezing at its seed.
+//
+// Discipline (mirrors `backend_web::newcore`'s resize listener and
+// `backend_macos::newcore` mechanically): the seam runs OUTSIDE
+// `World::enter` (a UIKit layout callback), so the boot CAPTURES the
+// world's signal handle — capture, don't inject — and the push stages
+// through the handle (routes to its own world, equality-guarded,
+// dead-world writes are silent no-ops) then rides one deduped
+// [`schedule_flush`]: the same event-boundary glue as every
+// dispatch-site wrapper.
+
+thread_local! {
+    /// The mounted world's viewport signal (`Copy` handle). `None`
+    /// outside a new-core boot, so the shared old-core seam costs one
+    /// TLS read and nothing else when the old core is driving.
+    static VIEWPORT_SINK: Cell<Option<runtime_world::Signal<runtime_core::ViewportSize>>> =
+        const { Cell::new(None) };
+}
+
+fn set_viewport_sink(sig: Option<runtime_world::Signal<runtime_core::ViewportSize>>) {
+    VIEWPORT_SINK.with(|s| s.set(sig));
+}
+
+/// Forward one platform viewport mirror into the mounted world's
+/// viewport ctx (no-op before boot / after teardown). Called by the
+/// same iOS seam that writes `runtime_core::set_viewport_size`, with
+/// the same value — the two sinks never diverge.
+pub(crate) fn forward_viewport(size: runtime_core::ViewportSize) {
+    let Some(sig) = VIEWPORT_SINK.with(|s| s.get()) else {
+        return;
+    };
+    // Staged write outside `enter` + one deduped flush — commits at
+    // the next run-loop turn boundary, like every wrapped callback.
+    sig.set(size);
+    schedule_flush();
 }
 
 /// Run a platform-invoked vocabulary callback with the mounted world
@@ -362,7 +428,9 @@ mod ios_impl {
     use runtime_vocabulary::caps;
     use runtime_world::World;
 
-    use super::{flushing0, flushing1, flushing_key, schedule_flush, set_flush_world};
+    use super::{
+        flushing0, flushing1, flushing_key, schedule_flush, set_flush_world, set_viewport_sink,
+    };
     use crate::imp::{IosBackend, IosNode};
 
     // =======================================================================
@@ -399,6 +467,7 @@ mod ios_impl {
         /// The old wrapper's `ios_teardown` analogue.
         pub fn stop(self) {
             backend_apple_core::dispatch_hook::clear_dispatch_hook();
+            set_viewport_sink(None);
             set_flush_world(None);
             drop(self);
         }
@@ -484,9 +553,16 @@ mod ios_impl {
         let registry = Rc::new(registry);
 
         let world = World::new();
-        let realized = world.enter(|| {
+        let (vp_sig, realized) = world.enter(|| {
             let element = build();
-            realize(&backend, &registry, element)
+            let realized = realize(&backend, &registry, element);
+            // Capture the per-world viewport ctx AFTER the build,
+            // never before: the ctx's bucket memo pins the breakpoint
+            // TABLE at creation and apps `install_breakpoints` inside
+            // their root component (see the viewport-source section
+            // and backend-web's identical ordering comment).
+            let vp_sig = runtime_vocabulary::viewport::viewport_ctx().size_signal();
+            (vp_sig, realized)
         });
 
         // Pre-`finish` buffered drain (step 3) — deferred chrome and
@@ -516,6 +592,14 @@ mod ios_impl {
         // and (b) the apple-core scheduler/executor post-dispatch hook.
         backend_apple_core::dispatch_hook::install_dispatch_hook(schedule_flush);
         set_flush_world(Some(world.clone()));
+        // Live viewport source: `LayoutObserverView::layoutSubviews`
+        // (the UIKit resize/rotation seam) now reaches the world's ctx
+        // through `forward_viewport`. Its first post-mount measurement
+        // pushes the REAL bounds — the ctx seeded from the pre-build
+        // TLS value, which is 0×0 on a cold boot because UIKit lays
+        // out after `run_in_view` returns. See the viewport-source
+        // section (host-compilable half).
+        set_viewport_sink(Some(vp_sig));
         NewCoreApp {
             realized,
             _backend: backend,
@@ -1976,6 +2060,98 @@ mod tests {
         backend_apple_core::scheduler::end_mount_buffering();
     }
 
+    /// Regression (native new-core breakpoints frozen at their seed —
+    /// rotation/resize never re-fired breakpoint-dependent `when`s):
+    /// the iOS resize seam ([`forward_viewport`], called by
+    /// `LayoutObserverView::layoutSubviews` right after its
+    /// `set_viewport_size` write) must stage the size into the mounted
+    /// world's viewport ctx from OUTSIDE `World::enter` and commit it
+    /// through the flush driver, re-firing a breakpoint-reading effect
+    /// exactly when the BUCKET changes — and must go inert once the
+    /// sink is cleared (teardown). The UIKit `layoutSubviews` delivery
+    /// itself needs a live simulator (`newcore-ios-smoke`); this
+    /// host-side test is the reachable unit gate for everything from
+    /// the seam fn down — module docs, gating.
+    #[test]
+    fn regression_resize_seam_recomputes_breakpoint_via_viewport_sink() {
+        backend_apple_core::scheduler::install_scheduler();
+        backend_apple_core::scheduler::end_mount_buffering(); // clean slate
+        backend_apple_core::scheduler::begin_mount_buffering();
+
+        let world = World::new();
+        set_flush_world(Some(world.clone()));
+
+        // What `start` does: capture the world's ctx (inside enter,
+        // post-build position) and install the sink.
+        let (vp_sig, runs, last) = world.enter(|| {
+            let ctx = runtime_vocabulary::viewport::viewport_ctx();
+            let bp = ctx.breakpoint();
+            let runs = Rc::new(Cell::new(0usize));
+            let last = Rc::new(Cell::new(runtime_core::Breakpoint::Xs));
+            let runs_c = runs.clone();
+            let last_c = last.clone();
+            // Stand-in for the shell's `when(!sidebar_pinned(Lg))`.
+            let _e = effect(move || {
+                last_c.set(bp.get());
+                runs_c.set(runs_c.get() + 1);
+            });
+            (ctx.size_signal(), runs, last)
+        });
+        world.flush();
+        assert_eq!(runs.get(), 1);
+        set_viewport_sink(Some(vp_sig));
+
+        // The seam: fires outside `enter` (a UIKit layout callback),
+        // stages, flush commits.
+        forward_viewport(runtime_core::ViewportSize {
+            width: 1280.0,
+            height: 800.0,
+        });
+        assert_eq!(runs.get(), 1, "staged — commits at the turn boundary");
+        runtime_core::scheduling::drain_buffered_microtasks();
+        assert_eq!(
+            last.get(),
+            runtime_core::Breakpoint::Xl,
+            "bucket followed the resize"
+        );
+        assert_eq!(runs.get(), 2);
+
+        // Same-bucket resize: per-pixel change, no bucket flip, no
+        // re-fire (memo equality cut).
+        forward_viewport(runtime_core::ViewportSize {
+            width: 1290.0,
+            height: 800.0,
+        });
+        runtime_core::scheduling::drain_buffered_microtasks();
+        assert_eq!(runs.get(), 2, "per-pixel resizes inside a bucket stay silent");
+
+        // Rotation-shaped crossing below the threshold.
+        forward_viewport(runtime_core::ViewportSize {
+            width: 700.0,
+            height: 800.0,
+        });
+        runtime_core::scheduling::drain_buffered_microtasks();
+        assert_eq!(last.get(), runtime_core::Breakpoint::Sm);
+        assert_eq!(runs.get(), 3);
+
+        // Teardown severs the route (what `stop` does): a late UIKit
+        // layout callback forwards into a cleared sink.
+        set_viewport_sink(None);
+        forward_viewport(runtime_core::ViewportSize {
+            width: 1280.0,
+            height: 800.0,
+        });
+        assert!(
+            !FLUSH_QUEUED.with(|q| q.get()),
+            "cleared sink schedules nothing"
+        );
+        runtime_core::scheduling::drain_buffered_microtasks();
+        assert_eq!(runs.get(), 3, "no re-fire after teardown");
+
+        set_flush_world(None);
+        backend_apple_core::scheduler::end_mount_buffering();
+    }
+
     /// Regression (flat_list rendered ZERO rows on new-core — every
     /// backend shared the gap): `enter_mounted_world`, the virtualizer
     /// mount/release dispatch-site wrapper, runs its callback with the
@@ -2000,5 +2176,22 @@ mod tests {
         // still covers for creation-side work.
         let sig2 = world.enter(|| enter_mounted_world(|| runtime_world::signal(8i32)));
         assert_eq!(world.enter(|| sig2.get()), 8);
+    }
+
+    /// `mounted_world` hands an embedded mount
+    /// (`host_ios_mobile::mount_newcore`) the SAME world the boot
+    /// stored — creations made through the clone land in the boot
+    /// world — and reports `None` once the slot clears, so a
+    /// mis-sequenced embed fails fast (`MountError::NoHostWorld`)
+    /// instead of realizing into a dead world.
+    #[test]
+    fn mounted_world_clones_boot_world_for_embedded_mounts() {
+        let world = World::new();
+        set_flush_world(Some(world.clone()));
+        let mounted = mounted_world().expect("boot stored a world");
+        let sig = mounted.enter(|| runtime_world::signal(9i32));
+        assert_eq!(world.enter(|| sig.get()), 9, "clone is the boot world");
+        set_flush_world(None);
+        assert!(mounted_world().is_none(), "cleared after stop");
     }
 }

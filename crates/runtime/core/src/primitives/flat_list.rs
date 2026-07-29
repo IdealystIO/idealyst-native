@@ -16,14 +16,11 @@ use crate::primitives::virtualizer::{
 use crate::{Bound, Element, Signal};
 use std::rc::Rc;
 
-/// Typed size strategy. `Known` is fastest; use it whenever you can
-/// compute size from data alone. `Measured` is for cases where the
-/// rendered size depends on layout/content the framework can't see
-/// (e.g. wrapped text in a flex container of unknown width).
-pub enum FlatListItemSize<T> {
-    Known(Rc<dyn Fn(usize, &T) -> f32>),
-    Measured(Rc<dyn Fn(usize, &T) -> f32>),
-}
+// The data/handle/Ops types of this primitive moved to `runtime-shared`
+// (the walker-free half); this file keeps the Element/Bound builder
+// surface (and its tests). The wildcard re-export preserves every old
+// path.
+pub use runtime_shared::primitives::flat_list::*;
 
 /// Construct a `FlatList`.
 ///
@@ -117,12 +114,6 @@ where
     };
 
     virtualizer(item_count, item_key, item_size, render_item_erased)
-}
-
-/// Convenience helper for the common case where every item has the
-/// same fixed height.
-pub fn fixed_size<T: 'static>(size: f32) -> FlatListItemSize<T> {
-    FlatListItemSize::Known(Rc::new(move |_, _| size))
 }
 
 #[cfg(test)]

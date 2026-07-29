@@ -14,7 +14,15 @@ serve = ["dep:tiny_http"]
 # builtin handlers, with `SsrBackend` implementing `runtime_scene::Host`
 # + all 30 capability traits directly. Additive — the old-core render
 # path is untouched with or without this feature.
-new-core = ["dep:runtime-world", "dep:runtime-scene", "dep:runtime-vocabulary"]
+new-core = [
+    "dep:runtime-world",
+    "dep:runtime-scene",
+    "dep:runtime-vocabulary",
+    # `create_navigator` (old-Element-typed NavigatorHost) is behind the
+    # vocabulary's `legacy-bridge` gate; this backend's newcore.rs
+    # implements it by delegating to the old Backend impl.
+    "runtime-vocabulary/legacy-bridge",
+]
 
 [dependencies]
 runtime-core = { workspace = true }

@@ -22,94 +22,13 @@
 
 use crate::assets::{kinds, Asset};
 use crate::{Bound, Element, Ref, RefFill};
-use std::any::Any;
 use std::rc::Rc;
 
-/// Handle exposed to a parent via `Ref<ImageHandle>`. No methods in
-/// v1 — image is a passive widget. Future additions could include
-/// `reload()`, `measure()`, or load-state callbacks.
-#[derive(Clone)]
-pub struct ImageHandle {
-    #[allow(dead_code)]
-    node: Rc<dyn Any>,
-    #[allow(dead_code)]
-    ops: &'static dyn ImageOps,
-}
-
-impl ImageHandle {
-    pub fn new(node: Rc<dyn Any>, ops: &'static dyn ImageOps) -> Self {
-        Self { node, ops }
-    }
-}
-
-pub trait ImageOps {
-    // Reserved for future image-specific operations (reload, measure).
-}
-
-/// Payload delivered to an [`on_load`](Bound::on_load) handler once an
-/// image's bitmap has decoded. `width`/`height` are the image's
-/// **natural** (intrinsic) pixel dimensions — `naturalWidth`/
-/// `naturalHeight` on web, the `NSImage`/`UIImage` `size` on Apple.
-/// These are otherwise awkward to obtain (they require a live ref +
-/// a measure op), so the load event surfaces them directly — e.g. to
-/// compute an aspect ratio for a placeholder box before the image
-/// paints.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ImageLoadEvent {
-    pub width: f32,
-    pub height: f32,
-}
-
-/// Installed via [`Bound::<ImageHandle>::on_load`]. Fires once, when the
-/// image's bitmap has finished decoding, with its natural
-/// [dimensions](ImageLoadEvent). Reactive `src` swaps re-fire it when the
-/// new bitmap loads. Born batched — one reactive cycle per call, like the
-/// touch / hover handlers.
-///
-/// Delivered on web (`<img>` `load`) and Apple (async URL completion +
-/// synchronous asset assignment). A **no-op on Android** (its `ImageView`
-/// has no URL loader — nothing decodes to observe) and on headless / CPU
-/// backends (no real decode). See [`crate::Backend::install_image_load_handler`].
-pub type ImageLoadHandler = Rc<dyn Fn(&ImageLoadEvent)>;
-
-/// Installed via [`Bound::<ImageHandle>::on_error`]. Fires when the image
-/// fails to load or decode — a network error, a 404, or bytes no decoder
-/// accepts. Carries no payload (there's nothing to report but the
-/// failure). Born batched like [`ImageLoadHandler`].
-///
-/// Same backend coverage as [`ImageLoadHandler`]: web (`<img>` `error`)
-/// and Apple (async completion failure); no-op elsewhere. See
-/// [`crate::Backend::install_image_error_handler`].
-pub type ImageErrorHandler = Rc<dyn Fn()>;
-
-/// Trait the macro emits for `src = ...`. Accepts a bare string, a
-/// `String`, or a closure returning `String` — closures enable
-/// reactive sources without explicit `move ||` from the caller.
-pub trait IntoImageSource {
-    fn into_image_source(self) -> Box<dyn Fn() -> String>;
-}
-
-impl IntoImageSource for &str {
-    fn into_image_source(self) -> Box<dyn Fn() -> String> {
-        let s = self.to_string();
-        Box::new(move || s.clone())
-    }
-}
-
-impl IntoImageSource for String {
-    fn into_image_source(self) -> Box<dyn Fn() -> String> {
-        Box::new(move || self.clone())
-    }
-}
-
-impl<F> IntoImageSource for F
-where
-    F: Fn() -> String + 'static,
-{
-    fn into_image_source(self) -> Box<dyn Fn() -> String> {
-        Box::new(self)
-    }
-}
+// The data/handle/Ops types of this primitive moved to `runtime-shared`
+// (the walker-free half); this file keeps the Element/Bound builder
+// surface (and its tests). The wildcard re-export preserves every old
+// path.
+pub use runtime_shared::primitives::image::*;
 
 /// Construct an `Image` primitive. The `src` argument is reactive
 /// via `IntoImageSource` — pass a `&str`/`String` for a static URL
@@ -166,54 +85,6 @@ pub fn image_asset(asset: Asset<kinds::Image>) -> Bound<ImageHandle> {
     })
 }
 
-/// A unified source for an image — a (reactive) URL **or** a declarative
-/// bundled [`Asset`]. The two existing construction paths ([`image`] for a
-/// free-form URL, [`image_asset`] for a registered asset) converge here so
-/// an image-bearing API (an `Avatar`, a card, …) can accept either with a
-/// single prop instead of forcing a string URL.
-///
-/// `#[non_exhaustive]`: future modes (raw bytes, a pre-decoded handle, a
-/// blob) can be added as new variants without breaking call sites —
-/// construct via the `From` impls (`&str` / `String` / `Reactive<String>` /
-/// `Signal<String>` / `Asset<Image>`) rather than matching exhaustively.
-#[non_exhaustive]
-#[derive(Clone)]
-pub enum ImageSource {
-    /// A URL string (`http(s)://`, `file://`, `data:`…). Reactive — a
-    /// static literal or a signal-driven getter; the image repaints when it
-    /// changes.
-    Url(crate::Reactive<String>),
-    /// A declarative bundled asset, resolved to a backend-local path
-    /// (web `dist/assets/`, iOS bundle resource, Android `AssetManager`).
-    Asset(Asset<kinds::Image>),
-}
-
-impl From<&str> for ImageSource {
-    fn from(s: &str) -> Self {
-        ImageSource::Url(s.into())
-    }
-}
-impl From<String> for ImageSource {
-    fn from(s: String) -> Self {
-        ImageSource::Url(s.into())
-    }
-}
-impl From<crate::Reactive<String>> for ImageSource {
-    fn from(r: crate::Reactive<String>) -> Self {
-        ImageSource::Url(r)
-    }
-}
-impl From<crate::Signal<String>> for ImageSource {
-    fn from(s: crate::Signal<String>) -> Self {
-        ImageSource::Url(s.into())
-    }
-}
-impl From<Asset<kinds::Image>> for ImageSource {
-    fn from(a: Asset<kinds::Image>) -> Self {
-        ImageSource::Asset(a)
-    }
-}
-
 /// Construct an `Image` from a unified [`ImageSource`], dispatching to the
 /// URL path ([`image`]) or the asset path ([`image_asset`]). Accepts
 /// anything `Into<ImageSource>`, so component props can hold one
@@ -226,6 +97,12 @@ pub fn image_from(src: impl Into<ImageSource>) -> Bound<ImageHandle> {
         // image; a `Reactive::Static` URL is a constant.
         ImageSource::Url(r) => image(move || r.get()),
         ImageSource::Asset(a) => image_asset(a),
+        // `ImageSource` is `#[non_exhaustive]`; now that it lives in
+        // runtime-shared the attribute binds across the crate boundary,
+        // so this (old-core, pending-deletion) constructor needs a
+        // wildcard arm. A new variant must be handled above before it
+        // can exist — this arm is unreachable today.
+        _ => unreachable!("unhandled ImageSource variant in image_from"),
     }
 }
 
@@ -415,4 +292,3 @@ mod tests {
         }
     }
 }
-

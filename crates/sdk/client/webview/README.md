@@ -19,13 +19,20 @@ use runtime_core::{signal, Ref};
 let mut backend = WebBackend::new("#app");
 webview::register(&mut backend);
 
-// Inside a `ui!` block. `WebView` is an external primitive, so it's
-// interpolated as an expression (the macro only recognizes the
-// framework's closed first-party set):
+// Inside a `ui!` block. The PascalCase `WebView` tag resolves through
+// `BuildElement` dispatch (`pub type WebView = WebViewProps`):
+ui! {
+    view {
+        WebView(url = webview::url("https://example.com"))
+    }
+}
+
+// The fn-call form (interpolated as an expression) when a handle is
+// needed for imperative ops:
 let url = signal("https://example.com".to_string());
 let wv: Ref<WebViewHandle> = Ref::new();
 ui! {
-    View {
+    view {
         { webview::WebView(WebViewProps {
             url: webview::url(move || url.get()),
             on_load: Some(Rc::new(|| log::info!("loaded"))),

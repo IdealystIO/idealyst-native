@@ -24,7 +24,9 @@ license.workspace = true
 description = "Integration example: ui! + #[component] authored app on the new core (idea-lite P3a)."
 
 [features]
-default = []
+# Runtime-v2 defaults flip: the proof crate builds its new-core leg by
+# default. Old-core leg: `--no-default-features --features old-core`.
+default = ["new-core"]
 new-core = [
     "runtime-macros/new-core",
     "dep:runtime-vocabulary",
@@ -35,12 +37,17 @@ new-core = [
     "dep:runtime-scene",
     "dep:runtime-world",
     "dep:scene-parity",
+    # The alias target for tests/recipes_compile.rs — the dual-core
+    # compile gate over the STATIC recipe sources in
+    # crates/runtime/shared/recipes/ (see runtime_shared::recipes).
+    "dep:runtime-facade",
 ]
 old-core = ["dep:runtime-core"]
 
 [dependencies]
 runtime-macros = { workspace = true }
 runtime-core = { workspace = true, optional = true }
+runtime-facade = { workspace = true, optional = true }
 runtime-vocabulary = { workspace = true, optional = true }
 runtime-scene = { workspace = true, optional = true }
 runtime-world = { workspace = true, optional = true }

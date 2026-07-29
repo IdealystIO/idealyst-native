@@ -16,6 +16,11 @@ license.workspace = true
 # `IdealystSchema` derive (a no-op without the `catalog` feature, so this
 # adds no platform code to a normal build).
 runtime-core = { workspace = true }
+# New-core surface (feature `new-core`): the scene registry (`item` +
+# `Registry`/`MountCx`) + the vocabulary style channel (`attach_style`)
+# the renderer handlers drive.
+runtime-scene = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
 # Scene wire serialization (snapshot crosses the runtime-server wire). `rc` so
 # `DrawOp::Image`'s `Arc<ImageSource>` serializes (the buffer is sent as before;
 # the `Arc` only avoids a per-frame clone in-process — sharing isn't preserved
@@ -38,6 +43,26 @@ image = { version = "0.25", optional = true, default-features = false, features 
 ] }
 
 [features]
+# Runtime-v2 defaults flip: the new-core leg is the default surface;
+# the old-core leg is the opt-in (`--no-default-features` — in-repo
+# consumers ride the workspace dep spec, which pins defaults off and
+# selects a core explicitly per graph).
+default = ["new-core"]
+# Old-core marker for uniform `--no-default-features --features
+# old-core` invocations (the old-core deps are unconditional).
+old-core = []
 # Decode encoded image containers (PNG/JPEG) into `ImageSource` via the
 # `image` crate. Off by default — renderers only ever consume raw RGBA.
 decode = ["dep:image"]
+# Idea-lite migration (External-SDK wave): swap the `Canvas` constructor
+# + registration seams onto the scene registry (`newcore` module). The
+# scene model / props / layers / wire serde are core-agnostic and shared
+# by both cores. Default-off and MUTUALLY EXCLUSIVE with the old-core
+# constructor surface (same public names — one core per build graph; a
+# consuming crate forwards this from its own new-core feature).
+new-core = ["dep:runtime-scene", "dep:runtime-vocabulary"]
+
+[dev-dependencies]
+# tests/newcore.rs (`--features new-core`): mounts `Canvas(...)` through
+# the scene registry on the shared host-mock recording substrate.
+host-mock = { workspace = true }

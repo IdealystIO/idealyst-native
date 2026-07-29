@@ -23,12 +23,40 @@ license.workspace = true
 # the preview is read-only and touches on the SurfaceView don't have a
 # meaningful target inside the wgpu scene.
 
+# idea-lite core migration: `mount_newcore` — the new-core sibling of
+# `mount`. Same wgpu init / render loop, but the embedded tree realizes
+# through `render_wgpu::newcore::start_in_world` into the embedding
+# APP's own world (`backend_android::newcore::mounted_world`), so the
+# app's flush driver commits the embedded app's staged writes. The
+# `backend-android-mobile` dep is legitimate here (not in author code):
+# this crate IS the Android-specific host shell, and on Android the
+# embedding app host is backend-android-mobile by definition. Mirrors
+# `host-web`'s feature block.
+[features]
+new-core = [
+    "render-wgpu/new-core",
+    "dep:runtime-scene",
+    "dep:backend-android-mobile",
+    # The app-host surfaces `mount_newcore` reaches: the mounted-world
+    # accessor (backend-android-mobile's own new-core boot) and the
+    # Choreographer render-loop driver install (gated behind
+    # backend-android-mobile's async-driver).
+    "backend-android-mobile/new-core",
+    "backend-android-mobile/async-driver",
+]
+
 [dependencies]
 render-api = { workspace = true }
 render-wgpu = { workspace = true }
 runtime-core = { workspace = true, features = ["async-driver"] }
+runtime-scene = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
+# The embedding app host — `mount_newcore` reads its mounted world +
+# installs its render-loop driver. Optional: only the `new-core`
+# feature pulls it (the old-core mount has no backend-android-mobile
+# coupling).
+backend-android-mobile = { workspace = true, optional = true }
 # Match host-ios-mobile / host-web on wgpu 29. Vulkan is the modern
 # Android backend (API 24+); GL is the legacy fallback. Enabling both
 # lets wgpu pick whichever the device supports.

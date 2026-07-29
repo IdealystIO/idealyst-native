@@ -405,7 +405,17 @@ fn try_build_repeat_batched<B: Backend + 'static>(
     let _t_enqueue_loop = crate::debug::now_micros();
     let queued_all = crate::with_current_identity(slot_identity, || -> Option<()> {
         for i in 0..count {
+            // Split row CONSTRUCTION from enqueue so the cross-core
+            // create-residual attribution is symmetric with the new
+            // core's `nc_repeat_row_build` (CLAUDE.md §6).
+            #[cfg(feature = "debug-stats")]
+            let _t_row = crate::debug::now_micros();
             let row_prim = row_builder(i);
+            #[cfg(feature = "debug-stats")]
+            crate::debug::record_apply_phase(
+                "oc_repeat_row_build",
+                crate::debug::now_micros().saturating_sub(_t_row),
+            );
             let queued = enqueue_primitive(backend, &mut batch, row_prim, &mut style_attachments)?;
             row_top_ids.push(queued);
         }

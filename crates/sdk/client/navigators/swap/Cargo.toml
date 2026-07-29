@@ -20,6 +20,14 @@ license.workspace = true
 # the inventory registrar on web/macOS).
 
 [features]
+# Runtime-v2 defaults flip: the new-core leg is the default surface;
+# the old-core leg is the opt-in (`--no-default-features` — in-repo
+# consumers ride the workspace dep spec, which pins defaults off and
+# selects a core explicitly per graph).
+default = ["new-core"]
+# Old-core marker for uniform `--no-default-features --features
+# old-core` invocations (the old-core deps are unconditional).
+old-core = []
 # Recording handler for the runtime-server sidecar's recorder backend.
 # Host-side only; off by default. Mirrors tab/drawer.
 runtime-server = ["dep:dev-server", "dep:wire"]
@@ -55,12 +63,13 @@ wire = { workspace = true, optional = true }
 # The generic chrome/registration test registers the handler on a concrete
 # SsrBackend; the handler itself is backend-neutral (no backend dep, no cfg).
 [dev-dependencies]
-# New-core suite (tests/newcore.rs, `--features new-core`): a minimal
-# recording Backend bridged through LegacyBridge + a World drives the
-# same-source authored surface end-to-end (vocab-test harness pattern).
+# New-core suite (tests/newcore.rs, `--features new-core`): the shared
+# host-mock recording substrate drives the same-source authored surface
+# end-to-end.
 runtime-scene = { workspace = true }
 runtime-world = { workspace = true }
 backend-ssr = { workspace = true }
+host-mock = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true, features = ["prim-navigator"] }

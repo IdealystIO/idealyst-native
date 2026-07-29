@@ -221,14 +221,30 @@ path = "src/main.rs"
 server-aws = {saws_dep}
 # User crate with the `server` feature ON — this is what compiles the
 # `#[server]` bodies and emits their `inventory::submit!` route registrations.
-{user_name} = {{ path = "{user_path}", features = ["server"] }}
+{user_dep}
 tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
 {patch_block}
 "#,
         bin_name = bin_name,
         saws_dep = saws_dep,
-        user_name = manifest.name,
-        user_path = project_dir.display(),
+        // Server-side artifact: the wrapper force-links the old-core
+        // `app()` (see main.rs template), so dual-core apps — whose
+        // defaults are new-core since the runtime-v2 flip — must pin
+        // `old-core` single-core here. Legacy apps keep the historical
+        // dep line.
+        user_dep = if build_ios::declares_feature(project_dir, "old-core") {
+            format!(
+                "{} = {{ path = \"{}\", default-features = false, features = [\"server\", \"old-core\"] }}",
+                manifest.name,
+                project_dir.display(),
+            )
+        } else {
+            format!(
+                "{} = {{ path = \"{}\", features = [\"server\"] }}",
+                manifest.name,
+                project_dir.display(),
+            )
+        },
         patch_block = source.patch_block(),
     );
 

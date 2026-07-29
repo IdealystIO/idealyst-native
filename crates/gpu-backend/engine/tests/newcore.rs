@@ -1038,3 +1038,126 @@ fn embedded_stop_keeps_replacement_flush_driver_alive() {
     app_b.stop();
     newcore::flush_sync();
 }
+
+// ===========================================================================
+// Viewport source — `Host::set_viewport` → world ViewportCtx
+// ===========================================================================
+
+/// Regression (native new-core breakpoints frozen at their seed): the
+/// GPU viewport seam — [`render_wgpu::Host::set_viewport`], the one
+/// source of truth for this backend's author-visible LOGICAL viewport
+/// — must stage the size into the mounted world's viewport ctx from
+/// OUTSIDE `World::enter` and commit it through the flush driver,
+/// re-firing a breakpoint-reading effect exactly when the BUCKET
+/// changes, and must go inert after `stop()`. (The winit window's
+/// PHYSICAL resize deliberately does not reach this seam — the host
+/// letterboxes at a fixed logical size, `DeviceProfile::logical_size`
+/// — so this headless drive of the real seam is the full behavior
+/// surface, not a stand-in.)
+#[test]
+fn regression_host_set_viewport_recomputes_breakpoint() {
+    ensure_test_scheduler();
+    // The windowed host's pre-mount TLS seed
+    // (`host_winit::newcore::run_with`): the ctx seeds from this at
+    // first breakpoint read, so the build classifies the real profile
+    // size instead of 0-width Xs.
+    runtime_core::set_viewport_size(runtime_core::ViewportSize {
+        width: 1280.0,
+        height: 832.0,
+    });
+
+    let mut host = render_wgpu::Host::new(
+        Rc::new(NativeSkin::new(Platform::MacOs)),
+        ColorScheme::Light,
+    );
+    let backend = host.backend().clone();
+
+    let runs: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+    let last: Rc<Cell<runtime_core::Breakpoint>> =
+        Rc::new(Cell::new(runtime_core::Breakpoint::Xs));
+    let (runs_c, last_c) = (runs.clone(), last.clone());
+    let app = newcore::start(backend, |_| {}, move || {
+        // Stand-in for the shell's `when(!sidebar_pinned(Lg))`: a
+        // breakpoint-reading effect created during the build.
+        let bp = runtime_vocabulary::viewport::viewport_ctx().breakpoint();
+        let _e = runtime_world::effect(move || {
+            last_c.set(bp.get());
+            runs_c.set(runs_c.get() + 1);
+        });
+        view().child(text().content("vp")).build()
+    });
+    drain();
+    assert_eq!(runs.get(), 1);
+    assert_eq!(
+        last.get(),
+        runtime_core::Breakpoint::Xl,
+        "ctx seeded from the pre-mount TLS seed, not 0-width Xs"
+    );
+
+    // The seam: the shell reports a (logical) viewport change from
+    // outside `enter`; staged, then committed by the flush driver.
+    host.set_viewport(700.0, 832.0);
+    assert_eq!(runs.get(), 1, "staged — commits on the driver's microtask");
+    drain();
+    assert_eq!(last.get(), runtime_core::Breakpoint::Sm, "bucket followed");
+    assert_eq!(runs.get(), 2);
+
+    // Same-bucket report: no bucket flip, no re-fire (memo equality
+    // cut) — per-pixel noise stays silent.
+    host.set_viewport(720.0, 832.0);
+    drain();
+    assert_eq!(runs.get(), 2, "same-bucket reports stay silent");
+
+    // Teardown severs the route: `stop` clears the sink, so a late
+    // shell report is a no-op.
+    app.stop();
+    host.set_viewport(1280.0, 832.0);
+    drain();
+    assert_eq!(runs.get(), 2, "no re-fire after stop");
+}
+
+/// Embedded boots (`start_in_world` — the website's in-page wgpu
+/// Simulator) must NOT wire the sink: the shared world's ViewportCtx
+/// belongs to the embedding page, and forwarding the sim profile's
+/// fixed logical size would stamp phone breakpoints over the page's
+/// real viewport (the clobber documented in render_wgpu::newcore,
+/// "Viewport source").
+#[test]
+fn embedded_start_in_world_does_not_clobber_the_page_viewport() {
+    ensure_test_scheduler();
+    // The "page": a world whose ctx tracks a desktop viewport.
+    runtime_core::set_viewport_size(runtime_core::ViewportSize {
+        width: 1280.0,
+        height: 800.0,
+    });
+    let world = runtime_world::World::new();
+    let page_ctx = world.enter(runtime_vocabulary::viewport::viewport_ctx);
+    assert_eq!(page_ctx.breakpoint().peek(), runtime_core::Breakpoint::Xl);
+
+    let mut host = render_wgpu::Host::new(
+        Rc::new(NativeSkin::new(Platform::MacOs)),
+        ColorScheme::Light,
+    );
+    let backend = host.backend().clone();
+    let app = newcore::start_in_world(
+        backend,
+        |_| {},
+        || view().child(text().content("sim")).build(),
+        world.clone(),
+    );
+
+    // The embedding shell reports the SIM's logical size (what
+    // host_web does when the canvas mounts) — the page ctx must not
+    // move.
+    host.set_viewport(390.0, 844.0);
+    world.flush();
+    drain();
+    assert_eq!(
+        page_ctx.breakpoint().peek(),
+        runtime_core::Breakpoint::Xl,
+        "sim viewport report must not reach the page's ctx"
+    );
+
+    app.stop();
+    newcore::flush_sync();
+}

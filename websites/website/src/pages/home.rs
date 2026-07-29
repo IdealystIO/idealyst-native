@@ -6,20 +6,12 @@
 //! differentiators, and a "platforms" strip listing every supported
 //! target.
 
-// The live-Simulator imports are dual-core now; the cfg soup below
-// only prunes per-configuration dead imports (the new-core hero uses
-// the live Simulator on wasm and the static placeholder elsewhere —
-// see `hero_simulator`'s doc for why).
-#[cfg(any(feature = "old-core", all(feature = "new-core", target_arch = "wasm32")))]
 use std::rc::Rc;
 
 use runtime_core::{component, ui, Element, IntoElement, Route, StyleApplication};
 use idea_ui::Typography;
 
-#[cfg(any(feature = "old-core", all(feature = "new-core", target_arch = "wasm32")))]
-use crate::components::simulator::{Simulator, SimulatorSkin};
-#[cfg(any(feature = "old-core", not(target_arch = "wasm32")))]
-use crate::components::simulator::simulator_placeholder;
+use crate::components::simulator::{simulator_placeholder, Simulator, SimulatorSkin};
 use crate::pages::common::CodePanel;
 use crate::routes::{
     AGENTIC_ROUTE, BACKENDS_ROUTE, COMPARISONS_ROUTE, CONCEPTS_ROUTE, INSTALL_ROUTE,
@@ -105,11 +97,19 @@ fn hero() -> Element {
 // headline + device read as one visual unit.
 // =============================================================================
 
-// Lazy component: on web, wasm-split-cli post-build hoists the body
-// (and its transitive wgpu / welcome / ios_sim deps) into a separate
-// chunk wasm loaded on demand. On native targets the attribute is
-// transparent: the body compiles inline and runs synchronously.
-#[cfg(feature = "old-core")]
+// Lazy component — SAME source on both cores (the new-core lazy
+// lowering landed: `glue::primitives::lazy` + the vocabulary `lazy`
+// handler; see docs/migrating-to-runtime-v2.md). On web, wasm-split-cli
+// post-build hoists the body (and its transitive wgpu / welcome /
+// ios_sim deps) into a separate chunk wasm loaded on demand. On native
+// targets the attribute is transparent: the body compiles inline and
+// runs synchronously.
+//
+// SSR (both cores): the lazy boundary keeps its loading UI — the
+// chunk is never loaded server-side — so the SSG bytes for "/" are the
+// container div + chassis placeholder, byte-identical across cores
+// (tests/ssg_parity.rs pins this; the new-core handler swaps children
+// imperatively, no reactive anchor, precisely to preserve that shape).
 #[component(lazy)]
 fn HeroSimulator() -> Element {
     let build_ui: Rc<dyn Fn() -> Element> = Rc::new(welcome::app);
@@ -123,7 +123,6 @@ fn HeroSimulator() -> Element {
     }
 }
 
-#[cfg(feature = "old-core")]
 fn hero_simulator() -> Element {
     // While the chunk loads, render the device chassis with an "off"
     // screen inside (from `simulator_placeholder`). Reserving the
@@ -138,64 +137,6 @@ fn hero_simulator() -> Element {
                 }
             },
         )
-    }
-}
-
-/// New-core hero device: on the browser build, the LIVE embedded
-/// simulator, mounted through the new-core wgpu-host seam
-/// (`host_wgpu::mount_newcore` → `render_wgpu::newcore::start_in_world`
-/// into the page's own world — see `components/simulator.rs`).
-///
-/// Eager, not `#[component(lazy)]`: the lazy lowering is still a
-/// documented new-core macro deferral (glue has no lazy/chunk-mount
-/// prim — see `runtime_vocabulary::glue`'s "Deferred surface"), and
-/// this build vehicle (plain `wasm-pack`, newcore.html — no CLI
-/// wasm-split post-pass) never splits chunks, so laziness would buy
-/// nothing here.
-///
-/// The `target_arch` split exists because of that same deferral: the
-/// old core's SSR keeps `Element::Lazy` at its loading UI, so the
-/// old-core SSG bytes for "/" are the chassis placeholder — and the
-/// cross-core byte gate (tests/ssg_parity.rs) requires the new-core
-/// SSR render to match them exactly. Any DYNAMIC placeholder→live swap
-/// on the new core would leave an anchor (`<div style="display:
-/// contents">`) in the server bytes where the old core has none, so
-/// the server-side branch must be the STATIC placeholder. When the
-/// new-core lazy port lands, this fn collapses back to the lazy shape
-/// above (whose loading UI restores initial-DOM parity on the client
-/// too — the piece a future new-core HYDRATE of "/" will need; the
-/// client-render `start_in` boot used today never compares DOM).
-#[cfg(feature = "new-core")]
-fn hero_simulator() -> Element {
-    // The outer bare `view()` mirrors the old-core lazy boundary: on
-    // the old core `HeroSimulator` is `#[component(lazy)]`, whose mount
-    // wraps the body in an unstyled anchor container. Reproducing that
-    // one structural `<div>` keeps SSG output byte-identical across
-    // cores — without it the whole home page shifts by one wrapper
-    // node (and keeps the wasm branch's shape aligned with it).
-    #[cfg(target_arch = "wasm32")]
-    {
-        let build_ui: Rc<dyn Fn() -> Element> = Rc::new(welcome::app);
-        ui! {
-            view() {
-                view(style = crate::styles::SimulatorStage()) {
-                    Simulator(
-                        build_ui = build_ui,
-                        skin = SimulatorSkin::Ios,
-                    )
-                }
-            }
-        }
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        ui! {
-            view() {
-                view(style = crate::styles::SimulatorStage()) {
-                    { simulator_placeholder(None) }
-                }
-            }
-        }
     }
 }
 

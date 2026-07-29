@@ -20,6 +20,12 @@ use std::time::{Duration, Instant};
 mod scheduler;
 mod stderr_redirect;
 
+// New-core (idea-lite) leg: `newcore::run` / `newcore::render_headless`
+// mirror the old entries on `backend_terminal::newcore::start` (world
+// boot + dispatch-hook flush driver). Additive — see the module docs.
+#[cfg(feature = "new-core")]
+pub mod newcore;
+
 /// Install the terminal scheduler on this thread without spinning up
 /// a full crossterm-backed host. Test-only — calling `run(...)`
 /// installs it automatically.
@@ -60,6 +66,55 @@ use runtime_core::Element;
 fn default_log_path() -> std::path::PathBuf {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     cwd.join(".idealyst").join("terminal.log")
+}
+
+/// Install a panic hook so panic info lands in the log alongside
+/// anything `eprintln!` writes. Without this, a runtime panic races
+/// with the raw-mode teardown — the alternate-screen exit executes
+/// mid-message and the terminal-log ends up with no diagnostic,
+/// leaving only the host's "exited with status 101" line in the build
+/// log. Shared by the old-core [`run`] and the new-core
+/// `newcore::run`.
+///
+/// Defensive shape: the original panic message is written FIRST and on
+/// its own try (a) so the user always sees what actually failed, even
+/// if backtrace capture later panics. Backtrace capture is wrapped in
+/// `catch_unwind` because `force_capture` touches TLS, and during
+/// teardown the reactive-arena TLS may already be destroyed — a panic
+/// in the panic hook becomes a fatal runtime abort that swallows the
+/// real message (saw this when the dev-tui shutdown raced with effect
+/// cleanup).
+fn install_panic_log_hook(log_path: std::path::PathBuf) {
+    std::panic::set_hook(Box::new(move |info| {
+        // (a) Write the panic info on its own. No TLS access here
+        //     beyond what `info`'s Display impl already does.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+            {
+                use std::io::Write;
+                let _ = writeln!(f, "[panic] {info}");
+            }
+        }));
+        // (b) Try the backtrace too, but tolerate failure. This
+        //     fires force_capture which uses TLS internally; during
+        //     thread shutdown that can itself panic with
+        //     AccessError. `catch_unwind` keeps the AccessError
+        //     from cascading into a double-panic abort.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let bt = std::backtrace::Backtrace::force_capture();
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+            {
+                use std::io::Write;
+                let _ = writeln!(f, "{bt}");
+            }
+        }));
+    }));
 }
 
 /// Default layout-px-per-cell for runtime-server clients. Picked
@@ -209,52 +264,7 @@ where
     // the original fd 2. See `stderr_redirect.rs` for the why.
     let _stderr = stderr_redirect::StderrRedirect::install(&default_log_path());
 
-    // Install a panic hook so panic info lands in the log alongside
-    // anything `eprintln!` writes. Without this, a runtime panic
-    // races with the raw-mode teardown — the alternate-screen exit
-    // executes mid-message and the terminal-log ends up with no
-    // diagnostic, leaving only the host's "exited with status 101"
-    // line in the build log.
-    //
-    // Defensive shape: the original panic message is written FIRST
-    // and on its own try (a) so the user always sees what actually
-    // failed, even if backtrace capture later panics. Backtrace
-    // capture is wrapped in `catch_unwind` because `force_capture`
-    // touches TLS, and during teardown the reactive-arena TLS may
-    // already be destroyed — a panic in the panic hook becomes a
-    // fatal runtime abort that swallows the real message (saw this
-    // when the dev-tui shutdown raced with effect cleanup).
-    let log_path = default_log_path();
-    std::panic::set_hook(Box::new(move |info| {
-        // (a) Write the panic info on its own. No TLS access here
-        //     beyond what `info`'s Display impl already does.
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
-            {
-                use std::io::Write;
-                let _ = writeln!(f, "[panic] {info}");
-            }
-        }));
-        // (b) Try the backtrace too, but tolerate failure. This
-        //     fires force_capture which uses TLS internally; during
-        //     thread shutdown that can itself panic with
-        //     AccessError. `catch_unwind` keeps the AccessError
-        //     from cascading into a double-panic abort.
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let bt = std::backtrace::Backtrace::force_capture();
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
-            {
-                use std::io::Write;
-                let _ = writeln!(f, "{bt}");
-            }
-        }));
-    }));
+    install_panic_log_hook(default_log_path());
 
     enable_raw_mode()?;
     execute!(

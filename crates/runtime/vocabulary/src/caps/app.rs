@@ -2,8 +2,8 @@
 
 use std::rc::Rc;
 
-use runtime_core::primitives;
-use runtime_core::{Color, ColorScheme, PageMetadata, Platform, Tokenized};
+use runtime_shared::primitives;
+use runtime_shared::{Color, ColorScheme, PageMetadata, Platform, Tokenized};
 use runtime_scene::Host;
 
 /// Mount-time app environment: platform identity, appearance, the

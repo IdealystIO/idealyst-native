@@ -2,8 +2,8 @@
 
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::{
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::{
     FileDropHandler, HoverHandler, TouchHandler, TouchId, ViewHandle, WheelHandler,
 };
 use runtime_scene::Host;
@@ -82,7 +82,7 @@ pub trait PressableOps: ViewOps {
 
     /// Imperative-ref handle for a pressable. Default: no-op.
     #[allow(unused_variables)]
-    fn make_pressable_handle(&self, node: &Self::Node) -> runtime_core::PressableHandle {
-        runtime_core::PressableHandle::new(Rc::new(()), &noop::NoopPressableOps)
+    fn make_pressable_handle(&self, node: &Self::Node) -> runtime_shared::PressableHandle {
+        runtime_shared::PressableHandle::new(Rc::new(()), &noop::NoopPressableOps)
     }
 }

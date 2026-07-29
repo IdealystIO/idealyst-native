@@ -205,12 +205,13 @@ pub use runtime_scene::Element as SceneElement;
 #[cfg(feature = "new-core")]
 #[derive(Debug)]
 pub enum NewCoreMountError {
-    /// This target's wgpu host has no new-core mount yet. Only
-    /// `host-web` is ported today — the iOS / Android / macOS sim
-    /// hosts still mount old-core-authored trees through the old
-    /// walker; their ports follow the same `start_in_world` seam and
-    /// are tracked in the idea-lite migration log. Consumers fall back
-    /// exactly like `MountError::Unsupported` (chassis, no preview).
+    /// This target's wgpu host has no new-core mount. Web and the
+    /// native sim hosts (macOS / iOS / Android) are ported — each
+    /// realizes the embedded tree into its page/app backend's mounted
+    /// world through the shared `start_in_world` seam. The remaining
+    /// targets (terminal, headless, Windows/Linux desktop) have no
+    /// wgpu host at all, so this mirrors `MountError::Unsupported`
+    /// exactly (consumers fall back to the chassis, no preview).
     Unsupported,
     /// The underlying platform host failed — same error the old-core
     /// `mount` would report.
@@ -223,8 +224,9 @@ impl std::fmt::Display for NewCoreMountError {
         match self {
             NewCoreMountError::Unsupported => write!(
                 f,
-                "host-wgpu: no new-core wgpu host wired for this target yet \
-                 (web is the ported host; native sim hosts still mount the old core)"
+                "host-wgpu: no new-core wgpu host wired for this target \
+                 (web + macOS/iOS/Android sim hosts are ported; terminal, \
+                 headless, and Windows/Linux desktop have no wgpu host)"
             ),
             NewCoreMountError::Platform(e) => write!(f, "{e}"),
         }
@@ -236,9 +238,12 @@ impl std::error::Error for NewCoreMountError {}
 
 /// New-core sibling of [`mount`]: mount a wgpu render backend behind a
 /// `Graphics`-primitive surface, realizing `build_ui`'s scene tree
-/// into the embedding host's world (on web: the page's own new-core
-/// world, so the page's flush driver commits the embedded app's
-/// staged writes — see `host_web::mount_newcore`).
+/// into the embedding host's world — on web the page's own new-core
+/// world (`host_web::mount_newcore`), on macOS / iOS / Android the
+/// app's own new-core world (`host_macos_desktop::mount_newcore` and
+/// siblings) — so the embedding host's flush driver commits the
+/// embedded app's staged writes: one thread, one world, one logical
+/// update stream.
 #[cfg(feature = "new-core")]
 pub async fn mount_newcore(
     surface: GraphicsSurface,
@@ -253,8 +258,33 @@ pub async fn mount_newcore(
             .await
             .map_err(NewCoreMountError::Platform)
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
     {
+        host_ios_mobile::mount_newcore(surface, size, profile, painter, build_ui)
+            .await
+            .map_err(NewCoreMountError::Platform)
+    }
+    #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+    {
+        host_android_mobile::mount_newcore(surface, size, profile, painter, build_ui)
+            .await
+            .map_err(NewCoreMountError::Platform)
+    }
+    #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+    {
+        host_macos_desktop::mount_newcore(surface, size, profile, painter, build_ui)
+            .await
+            .map_err(NewCoreMountError::Platform)
+    }
+    #[cfg(not(any(
+        target_arch = "wasm32",
+        all(target_os = "ios", not(target_arch = "wasm32")),
+        all(target_os = "android", not(target_arch = "wasm32")),
+        all(target_os = "macos", not(target_arch = "wasm32"))
+    )))]
+    {
+        // Bind the args so the function signature stays honest
+        // (no "unused parameter" warnings on unsupported targets).
         let _ = (surface, size, profile, painter, build_ui);
         Err(NewCoreMountError::Unsupported)
     }

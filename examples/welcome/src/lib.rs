@@ -51,3 +51,37 @@ pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
 pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBackend) {
     // No SDK navigator/external needs recorder-side registration in this app.
 }
+
+// New-core recorder registration seam for the `idealyst dev --new-core`
+// sidecar wrapper (`dev_server::sidecar::run_newcore`) — the scene-
+// registry twin of `register_extensions_recorder`, mirroring the web
+// wrapper's `register_scene_extensions` convention. This app registers
+// no third-party scene handlers.
+#[cfg(all(feature = "sidecar", feature = "new-core"))]
+pub fn register_scene_extensions_recorder(_registry: &mut dev_server::newcore::SceneRegistry) {}
+
+// New-core scene-registry registration seam — the runtime-v2 twin of
+// `register_extensions`, invoked by the CLI-generated new-core wrappers
+// (web `start_in`/`hydrate_in`, macOS `newcore::run_with`, iOS
+// `newcore::run_in_view`, terminal `newcore::run`) after
+// `runtime_vocabulary::register_builtins`. Registry-generic over the
+// scene `Host` so ONE seam serves every backend (each wrapper's call
+// site pins `H` to its concrete backend); a project that adds an SDK
+// with a caps-generic handler (codeblock, table, markdown, …) calls
+// its `register` here, and one with a backend-CONCRETE handler
+// specializes `H` to that backend instead.
+#[cfg(feature = "new-core")]
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}
+
+// New-core Android entry: the generated Android wrapper's `new-core`
+// attach branch mounts `scene_app()` through
+// `backend_android::newcore::start` (see crates/tools/build/android).
+// Under the facade alias `app()` already returns the scene `Element`,
+// so this is a plain re-export shim with the conventional name.
+#[cfg(feature = "new-core")]
+pub fn scene_app() -> runtime_core::Element {
+    app()
+}

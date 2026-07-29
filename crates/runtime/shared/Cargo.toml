@@ -1,0 +1,103 @@
+# runtime-shared — the permanent shared substrate of the runtime: the
+# non-walker half of what used to be `runtime-core`.
+#
+# Extracted in the final phase of the idea-lite core migration so the
+# NEW core (runtime-world / runtime-scene / runtime-vocabulary /
+# runtime-facade) and the style pipeline (crates/css, runtime-layout)
+# can depend on the shared type/util modules WITHOUT pulling the old
+# walker / `Element` / `Backend` machinery. `runtime-core` depends on
+# this crate and re-exports everything at its old paths, so every
+# old-core consumer compiles unchanged.
+#
+# What lives here: the style engine + data model, colors, assets/fonts
+# (`typeface!` / `face!`), accessibility props, the animation system,
+# touch/hover/wheel/file-drop event types + recognizers, the legacy
+# reactive arena (Signal/Effect/Ref — the survivor modules are built on
+# it, see lib.rs), scheduling/time/session, viewport/breakpoint/
+# safe-area TLS state, logging/debug counters, the robot automation
+# registry + bridge, introspection, and the per-primitive prop/handle
+# STRUCTS (handles, navigator substrate, virtualizer callbacks, …).
+#
+# What does NOT live here: the render walker, the `Element` wire tree,
+# the `Backend` mega-trait, and the `Bound`/builder authoring layer —
+# those stay in `runtime-core` until the old core is deleted.
+#
+# TLS-authority rule: every thread-local that moved here (viewport
+# signal, touch claims, robot registries, phase counters, platform/
+# color-scheme/url-opener slots, cached stylesheets, …) has exactly ONE
+# definition — this crate's. runtime-core re-exports; it never
+# duplicates a TLS static (two copies would silently split state).
+
+[package]
+name = "runtime-shared"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Idealyst shared runtime substrate: style engine, assets, animation, input types, scheduling, robot — the non-walker half of runtime-core."
+
+[features]
+# Feature set mirrors the runtime-core gates that used to compile these
+# modules; runtime-core forwards each of its same-named features here so
+# the old single-crate feature surface keeps working unchanged.
+default = ["style-dynamic"]
+
+# The runtime style engine (see runtime-core's Cargo.toml for the full
+# rationale). Gates the live registration/resolution internals; the
+# data model stays compiled either way.
+style-dynamic = []
+
+# Premint style-dump registry (`premint` module): only the CLI's
+# ephemeral dump build enables it.
+style-dump = ["style-dynamic", "dep:linkme"]
+
+# Phase counters + component timing log (`debug` module). Off by
+# default; zero code when off (a no-op shim keeps macro-emitted calls
+# resolving — that shim lives in runtime-core / the vocabulary, next to
+# the macro emission surfaces).
+debug-stats = []
+
+# Programmatic introspection + control of the running UI: the robot
+# registry, watch/components/logs registries, and the bridge transport.
+# Same dep rationale as the old runtime-core `robot` feature.
+robot = ["dep:base64", "dep:libc", "dep:tungstenite"]
+
+# Serve the in-process MCP catalog over the robot bridge
+# (`get_catalog`). The catalog *anchor* (`runtime_core::__mcp`) stays in
+# runtime-core; this only links the catalog crate so the bridge verb can
+# read it. runtime-core's `catalog` feature forwards here when `robot`
+# is also on.
+catalog = ["dep:mcp-catalog"]
+
+# Platform-agnostic async + per-frame primitives (`driver` module) and
+# the reactive async surface built on them (resource/mutation/
+# async_reducer/NetworkState).
+async-driver = ["dep:pollster", "dep:log"]
+
+# `face!` embeds font bytes (see runtime-core's Cargo.toml — the
+# `__face_source!` cfg split must be evaluated against THIS crate's
+# features, which is why the helper lives here with the macro).
+embed-font-bytes = []
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Bitflags for `AccessibilityTraits` (one u16 of orthogonal a11y flags
+# per primitive).
+bitflags = "2"
+rustc-hash = { workspace = true }
+# The `Graphics` primitive's surface types expose standard
+# `raw_window_handle` handles (tiny dep — enums + traits).
+raw-window-handle = "0.6"
+# `__wasm_split` anchor for the `#[component(lazy)]` glue — same
+# hidden-re-export pattern as `__serde_json`.
+wasm-split = { workspace = true }
+linkme = { workspace = true, optional = true }
+# Robot bridge screenshot PNG → base64 in the JSON response.
+base64 = { version = "0.22", optional = true }
+mcp-catalog = { workspace = true, optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = { version = "0.4", optional = true }
+log = { version = "0.4", optional = true }
+libc = { version = "0.2", optional = true }
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"], optional = true }

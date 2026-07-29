@@ -2,8 +2,8 @@
 
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives::presence::{PresenceAnim, PresenceHandle};
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::primitives::presence::{PresenceAnim, PresenceHandle};
 use runtime_scene::{item, Element};
 use runtime_world::{IntoValue, Value};
 

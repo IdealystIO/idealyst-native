@@ -88,15 +88,8 @@ struct WebFormOps;
 
 impl FormOps for WebFormOps {
     fn submit(&self, node: &dyn Any) {
-        let Some(form) = node
-            .downcast_ref::<web_sys::Node>()
-            .and_then(|n| n.clone().dyn_into::<web_sys::HtmlFormElement>().ok())
-        else {
-            return;
-        };
-        // `requestSubmit()` (not `submit()`) so constraint validation
-        // runs AND the `submit` event fires — routing through the same
-        // listener that calls `on_submit` + `preventDefault()`.
-        let _ = form.request_submit();
+        // Shared with the new-core leg (web_util) so the two cores'
+        // imperative submit can't drift.
+        crate::web_util::request_submit(node);
     }
 }

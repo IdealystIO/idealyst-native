@@ -1,7 +1,7 @@
 //! Graphics payload: the raw GPU-drawable surface.
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives::graphics::{GraphicsHandle, OnLost, OnReady, OnResize};
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::primitives::graphics::{GraphicsHandle, OnLost, OnReady, OnResize};
 
 use crate::style_attach::StyleProp;
 
@@ -13,7 +13,7 @@ use crate::style_attach::StyleProp;
 /// the lifecycle callbacks, tear it down on unmount — everything else
 /// (device init, render loop, redraw scheduling) is the author's,
 /// driven through the `raw_window_handle` the backend delivers in
-/// `on_ready` (see `runtime_core::primitives::graphics` for the
+/// `on_ready` (see `runtime_shared::primitives::graphics` for the
 /// lifecycle contract: ready → resize* → lost → ready …).
 ///
 /// All three callbacks move into `create_graphics` whole — the old

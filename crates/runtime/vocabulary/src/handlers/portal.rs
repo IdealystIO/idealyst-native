@@ -73,7 +73,7 @@ where
         Err(_) => {
             let backend2 = backend_c.clone();
             let node2 = node_c.clone();
-            runtime_core::schedule_microtask(move || {
+            runtime_shared::schedule_microtask(move || {
                 if let Ok(mut b) = backend2.try_borrow_mut() {
                     b.release_portal(&node2);
                 }

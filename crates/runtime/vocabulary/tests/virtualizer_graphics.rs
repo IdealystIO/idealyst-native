@@ -1,210 +1,21 @@
 //! Virtualizer + graphics handler tests: the lazy row contract
 //! (mount/release via backend-held callbacks, per-row ownership scopes,
 //! the measured-size cache), the data-changed effect, and both
-//! primitives' teardown-release probes — against a minimal recording
-//! backend bridged through `LegacyBridge` (op-stream parity with the
-//! old walker lives in `scene-parity`'s golden suite).
+//! primitives' teardown-release probes — driven through the `host-mock`
+//! recording host (the caps surface implemented natively, no `Backend`,
+//! no `LegacyBridge`; op-stream parity with the old walker lives in
+//! `scene-parity`'s golden suite).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives::graphics::{OnLost, OnReady, OnResize, OnResizeEvent};
+use host_mock::harness;
+use runtime_core::primitives::graphics::OnResizeEvent;
 use runtime_core::primitives::virtualizer::{Axis, ItemSize, Lanes, VirtualLayout};
-use runtime_core::{Backend, StyleRules, Tokenized, VirtualizerCallbacks};
-use runtime_scene::{realize, Registry};
+use runtime_core::{StyleRules, Tokenized};
+use runtime_scene::realize;
 use runtime_vocabulary::builders::{graphics, text, virtualizer};
-use runtime_vocabulary::{register_builtins, LegacyBridge};
-use runtime_world::{signal, World};
-
-// ===========================================================================
-// Minimal recording backend with virtualizer + graphics support
-// ===========================================================================
-
-type Log = Rc<RefCell<Vec<String>>>;
-
-/// Captured graphics lifecycle closures, so tests fire them like the
-/// platform would.
-struct GraphicsCbs {
-    on_resize: OnResize,
-    #[allow(dead_code)]
-    on_ready: OnReady,
-    on_lost: OnLost,
-}
-
-struct Mini {
-    log: Log,
-    next: u32,
-    /// Captured virtualizer callback bundles, in creation order.
-    virtualizers: Rc<RefCell<Vec<VirtualizerCallbacks<u32>>>>,
-    /// Captured graphics lifecycle closures, in creation order.
-    graphics: Rc<RefCell<Vec<GraphicsCbs>>>,
-}
-
-impl Mini {
-    fn mint(&mut self, kind: &str) -> u32 {
-        let n = self.next;
-        self.next += 1;
-        self.log.borrow_mut().push(format!("create n{n} {kind}"));
-        n
-    }
-}
-
-impl Backend for Mini {
-    type Node = u32;
-
-    fn create_view(&mut self, _a11y: &AccessibilityProps) -> u32 {
-        self.mint("view")
-    }
-
-    fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> u32 {
-        let n = self.next;
-        self.next += 1;
-        self.log
-            .borrow_mut()
-            .push(format!("create n{n} text {content:?}"));
-        n
-    }
-
-    fn update_text(&mut self, node: &u32, content: &str) {
-        self.log
-            .borrow_mut()
-            .push(format!("update_text n{node} {content:?}"));
-    }
-
-    fn create_button(
-        &mut self,
-        label: &str,
-        _on_click: &runtime_core::Action,
-        _leading: Option<&runtime_core::IconData>,
-        _trailing: Option<&runtime_core::IconData>,
-        _a11y: &AccessibilityProps,
-    ) -> u32 {
-        let n = self.next;
-        self.next += 1;
-        self.log
-            .borrow_mut()
-            .push(format!("create n{n} button {label:?}"));
-        n
-    }
-
-    fn create_virtualizer(
-        &mut self,
-        callbacks: VirtualizerCallbacks<u32>,
-        overscan: f32,
-        layout: runtime_core::primitives::virtualizer::VirtualLayout,
-        _a11y: &AccessibilityProps,
-    ) -> u32 {
-        // Do NOT call callbacks here: the backend is mutably borrowed
-        // during create — same constraint as every real backend.
-        self.virtualizers.borrow_mut().push(callbacks);
-        let n = self.next;
-        self.next += 1;
-        self.log
-            .borrow_mut()
-            .push(format!("create n{n} virtualizer overscan={overscan} layout={layout:?}"));
-        n
-    }
-
-    fn virtualizer_data_changed(&mut self, node: &u32) {
-        self.log
-            .borrow_mut()
-            .push(format!("virtualizer_data_changed n{node}"));
-    }
-
-    fn release_virtualizer(&mut self, node: &u32) {
-        self.log
-            .borrow_mut()
-            .push(format!("release_virtualizer n{node}"));
-    }
-
-    fn create_graphics(
-        &mut self,
-        on_ready: OnReady,
-        on_resize: OnResize,
-        on_lost: OnLost,
-        _a11y: &AccessibilityProps,
-    ) -> u32 {
-        self.graphics.borrow_mut().push(GraphicsCbs {
-            on_ready,
-            on_resize,
-            on_lost,
-        });
-        self.mint("graphics")
-    }
-
-    fn release_graphics(&mut self, node: &u32) {
-        self.log
-            .borrow_mut()
-            .push(format!("release_graphics n{node}"));
-    }
-
-    fn apply_style(&mut self, node: &u32, style: &Rc<StyleRules>) {
-        let width = style
-            .width
-            .as_ref()
-            .map(|w| format!("{w:?}"))
-            .unwrap_or_else(|| "none".into());
-        self.log
-            .borrow_mut()
-            .push(format!("apply_style n{node} width={width}"));
-    }
-
-    fn on_node_unstyled(&mut self, node: &u32) {
-        self.log
-            .borrow_mut()
-            .push(format!("on_node_unstyled n{node}"));
-    }
-
-    fn insert(&mut self, parent: &mut u32, child: u32) {
-        self.log
-            .borrow_mut()
-            .push(format!("insert n{parent} <- n{child}"));
-    }
-
-    fn clear_children(&mut self, node: &u32) {
-        self.log.borrow_mut().push(format!("clear_children n{node}"));
-    }
-
-    fn finish(&mut self, _root: u32) {}
-}
-
-struct Harness {
-    world: World,
-    backend: Rc<RefCell<LegacyBridge<Mini>>>,
-    registry: Rc<Registry<LegacyBridge<Mini>>>,
-    log: Log,
-    virtualizers: Rc<RefCell<Vec<VirtualizerCallbacks<u32>>>>,
-    graphics: Rc<RefCell<Vec<GraphicsCbs>>>,
-}
-
-fn harness() -> Harness {
-    let log: Log = Rc::new(RefCell::new(Vec::new()));
-    let virtualizers = Rc::new(RefCell::new(Vec::new()));
-    let graphics = Rc::new(RefCell::new(Vec::new()));
-    let backend = Rc::new(RefCell::new(LegacyBridge(Mini {
-        log: log.clone(),
-        next: 0,
-        virtualizers: virtualizers.clone(),
-        graphics: graphics.clone(),
-    })));
-    let mut registry = Registry::new();
-    register_builtins(&mut registry);
-    Harness {
-        world: World::new(),
-        backend,
-        registry: Rc::new(registry),
-        log,
-        virtualizers,
-        graphics,
-    }
-}
-
-impl Harness {
-    fn take_log(&self) -> Vec<String> {
-        std::mem::take(&mut *self.log.borrow_mut())
-    }
-}
+use runtime_world::signal;
 
 fn px(w: f32) -> StyleRules {
     StyleRules {
@@ -337,12 +148,8 @@ fn regression_released_row_effects_stop_firing() {
 
     // The platform mounts rows 0 and 1 (with the world ambient — the
     // documented host-driver contract for callback invocation).
-    let cbs = Rc::clone(&h.virtualizers);
-    let ((n0, s0), (n1, s1)) = world.enter(|| {
-        let cbs = cbs.borrow();
-        let v = &cbs[0];
-        ((v.mount_item)(0), (v.mount_item)(1))
-    });
+    let cbs = h.virtualizer(0);
+    let ((n0, s0), (n1, s1)) = world.enter(|| ((cbs.mount_item)(0), (cbs.mount_item)(1)));
     assert_ne!(n0, n1, "each row realizes its own detached node");
     assert_ne!(s0, s1, "scope ids are unique");
     let log = h.take_log();
@@ -369,10 +176,7 @@ fn regression_released_row_effects_stop_firing() {
     );
 
     // Release row 0: its binding must never fire again.
-    {
-        let cbs = h.virtualizers.borrow();
-        (cbs[0].release_item)(s0);
-    }
+    (cbs.release_item)(s0);
     version.set(2);
     world.flush();
     assert_eq!(
@@ -411,10 +215,8 @@ fn row_construction_creations_die_with_the_row() {
             .build(),
         )
     });
-    let (_, scope) = world.enter(|| {
-        let cbs = h.virtualizers.borrow();
-        (cbs[0].mount_item)(0)
-    });
+    let cbs = h.virtualizer(0);
+    let (_, scope) = world.enter(|| (cbs.mount_item)(0));
     let local = row_signal.borrow().expect("render ran");
     h.take_log();
 
@@ -425,10 +227,7 @@ fn row_construction_creations_die_with_the_row() {
 
     // Released row: the slot is freed — a stale write panics with the
     // generational-slot diagnostic instead of silently leaking.
-    {
-        let cbs = h.virtualizers.borrow();
-        (cbs[0].release_item)(scope);
-    }
+    (cbs.release_item)(scope);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| local.set(2)));
     assert!(
         result.is_err(),
@@ -456,7 +255,7 @@ fn measured_size_cache_survives_release_and_keys_by_item() {
             .build(),
         )
     });
-    let cbs = h.virtualizers.borrow()[0].clone_shallow();
+    let cbs = h.virtualizer(0);
     assert!(cbs.measure_sizes, "Measured mode asks the backend to observe");
     assert_eq!((cbs.item_size)(0), 40.0, "estimate before any measurement");
 
@@ -506,11 +305,9 @@ fn multi_root_row_panics_with_diagnostic() {
             .build(),
         )
     });
+    let cbs = h.virtualizer(0);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        world.enter(|| {
-            let cbs = h.virtualizers.borrow();
-            (cbs[0].mount_item)(0)
-        })
+        world.enter(|| (cbs.mount_item)(0))
     }));
     let err = result.expect_err("multi-root row must panic");
     let msg = err
@@ -580,7 +377,7 @@ fn graphics_mount_wires_callbacks_and_releases_on_teardown() {
     // handlers observe them unwrapped (no cycle() shim — staged commits
     // make event batching structural).
     {
-        let mut g = h.graphics.borrow_mut();
+        let mut g = h.shared.graphics.borrow_mut();
         (g[0].on_resize)(OnResizeEvent {
             size: (800, 600),
             scale: 2.0,
@@ -633,26 +430,4 @@ fn graphics_ref_fill_receives_handle() {
         )
     });
     assert_eq!(filled.get(), 1);
-}
-
-// ===========================================================================
-// Helper: shallow clone of a captured callback bundle (all fields Rc)
-// ===========================================================================
-
-trait CloneShallow {
-    fn clone_shallow(&self) -> Self;
-}
-
-impl CloneShallow for VirtualizerCallbacks<u32> {
-    fn clone_shallow(&self) -> Self {
-        VirtualizerCallbacks {
-            item_count: self.item_count.clone(),
-            item_key: self.item_key.clone(),
-            item_size: self.item_size.clone(),
-            measure_sizes: self.measure_sizes,
-            mount_item: self.mount_item.clone(),
-            release_item: self.release_item.clone(),
-            set_measured_size: self.set_measured_size.clone(),
-        }
-    }
 }

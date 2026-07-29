@@ -3,10 +3,10 @@
 
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives::icon::IconData;
-use runtime_core::styled_text::{plain_text_of, TextRun};
-use runtime_core::{Action, ButtonHandle, TextHandle};
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::primitives::icon::IconData;
+use runtime_shared::styled_text::{plain_text_of, TextRun};
+use runtime_shared::{Action, ButtonHandle, TextHandle};
 use runtime_scene::Host;
 
 use super::noop;

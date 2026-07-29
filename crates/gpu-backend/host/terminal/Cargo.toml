@@ -24,6 +24,13 @@ default = []
 # frame loop. Off by default so the local path pulls zero
 # transport code.
 runtime-server = ["dep:runtime-server-shell-native"]
+# New-core (idea-lite) leg: `newcore::run` / `newcore::render_headless`
+# mirror the old entries but mount through
+# `backend_terminal::newcore::start` (world boot + dispatch-hook flush
+# driver) instead of `runtime_core::mount`. Additive — the old-core
+# entries are untouched. The scheduler's dispatch-hook fire sites are
+# unconditional (no-op single Cell read on the old core).
+new-core = ["backend-terminal/new-core"]
 
 [dependencies]
 runtime-core = { workspace = true }

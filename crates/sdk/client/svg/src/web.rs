@@ -26,7 +26,6 @@ use runtime_core::effect;
 use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
-use wasm_bindgen::JsCast;
 
 pub(crate) static OPS: &dyn SvgOps = &WebSvgOps;
 
@@ -103,46 +102,8 @@ struct WebSvgOps;
 
 impl SvgOps for WebSvgOps {
     fn intrinsic_size(&self, node: &dyn Any) -> Option<(f32, f32)> {
-        let wrapper = node.downcast_ref::<web_sys::Node>()?;
-        let wrapper_el: &web_sys::Element = wrapper.dyn_ref::<web_sys::Element>()?;
-        // `querySelector` is enabled by web-sys's base `Element`
-        // feature. Iterating `children()` would also work but needs
-        // the `HtmlCollection` feature — overkill for "find the first
-        // svg descendant".
-        let svg = wrapper_el.query_selector("svg").ok().flatten()?;
-        parse_svg_intrinsic_size(&svg)
+        // Shared with the new-core leg's ops impl (web_util) so the
+        // two cores' introspection can't drift.
+        crate::web_util::intrinsic_size_of_node(node)
     }
-}
-
-/// Pull intrinsic dimensions off an `<svg>` element. Prefers viewBox
-/// (the conventional way to declare logical extents) and falls back
-/// to width/height attributes for simpler markup.
-fn parse_svg_intrinsic_size(svg: &web_sys::Element) -> Option<(f32, f32)> {
-    if let Some(vb) = svg.get_attribute("viewBox") {
-        // `viewBox = "minX minY width height"`. Comma- or space-
-        // separated per the SVG spec.
-        let parts: Vec<&str> = vb
-            .split(|c: char| c.is_whitespace() || c == ',')
-            .filter(|s| !s.is_empty())
-            .collect();
-        if parts.len() == 4 {
-            let w: f32 = parts[2].parse().ok()?;
-            let h: f32 = parts[3].parse().ok()?;
-            return Some((w, h));
-        }
-    }
-    let w_attr = svg.get_attribute("width")?;
-    let h_attr = svg.get_attribute("height")?;
-    let w: f32 = strip_unit(&w_attr).parse().ok()?;
-    let h: f32 = strip_unit(&h_attr).parse().ok()?;
-    Some((w, h))
-}
-
-/// Drop a trailing unit suffix (`px`, `pt`, `%`, etc.) from an SVG
-/// dimension attribute. Returns the leading numeric portion.
-fn strip_unit(s: &str) -> &str {
-    let end = s
-        .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+'))
-        .unwrap_or(s.len());
-    &s[..end]
 }

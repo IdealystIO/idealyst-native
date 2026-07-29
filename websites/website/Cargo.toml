@@ -85,19 +85,23 @@ dev-server = { workspace = true, optional = true }
 # the iOS backends, here) so it's a single toggle: this `default`
 # entry threads it through every backend that ships PhaseTimer
 # instrumentation. Drop this entry once the perf chase is over.
-default = ["debug-stats", "old-core"]
+default = ["debug-stats", "new-core"]
 # The two cores — SAME-SOURCE dual-core app (the idea-ui-docs /
 # conformance pattern): exactly one per build. `old-core` is the
 # default (CLI dev/build flows unchanged); `new-core` is the idea-lite
 # migration build, booted on web via `backend_web::newcore::start_in`
 # (see the `web_entry_newcore` module in lib.rs + newcore.html):
 #
-#   cargo check -p website                                       # old core
+#   cargo check -p website                                       # new core (the default
+#                                                                #   since the runtime-v2 flip)
 #   cargo check -p website --no-default-features \
-#       --features new-core                                      # new core
+#       --features old-core,debug-stats                          # old core
+#   idealyst build --web websites/website                        # new-core web (CLI wrapper,
+#                                                                #   wasm-split chunking;
+#                                                                #   --old-core opts out)
 #   wasm-pack build --target web --dev websites/website \
 #       --out-dir pkg-newcore -- --no-default-features \
-#       --features new-core                                      # new-core web
+#       --features new-core,newcore-standalone-web               # new-core web (standalone)
 #
 # The embedded-Simulator preview stack (welcome + the wgpu hosts +
 # sim painters) and `codeblock` are DUAL-CORE: both features enable
@@ -153,6 +157,14 @@ new-core = [
     # `--new-core` wrapper). No-op when `ssr` is off.
     "backend-ssr?/new-core",
 ]
+# Standalone new-core web boot (`web_entry_newcore` in lib.rs +
+# newcore.html): the interim plain-wasm-pack vehicle that carries its
+# OWN `#[wasm_bindgen(start)]`. NON-default and NOT enabled by the CLI
+# web wrapper (`idealyst build --web --new-core`), whose generated
+# wrapper has its own start fn — two starts in one module is a
+# wasm-bindgen error. Enable only for the manual wasm-pack flow:
+#   wasm-pack build ... --features new-core,newcore-standalone-web
+newcore-standalone-web = []
 # Opt into the project-wide `debug-stats` instrumentation. Routes
 # through every dep that has its own `debug-stats` feature, so the
 # whole transitive build records into the same

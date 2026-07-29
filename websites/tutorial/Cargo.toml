@@ -9,6 +9,16 @@ description = "Idealyst tutorial — a step-by-step teacher for the framework's 
 crate-type = ["cdylib", "rlib"]
 
 [features]
+# RUNTIME-V2 STATUS: deliberately still old-core-only (no `new-core`
+# feature — the CLI's defaults-flip resolution therefore builds it on
+# the old core with a note). The mechanical conversion is cheap (every
+# dep — swap-navigator, idea-ui, idea-ui-nav, codeblock — is dual-core;
+# the facade-alias pattern applies), but the LESSON CONTENT teaches
+# old-core reactive semantics (`batch(..)`, "the write is visible
+# immediately") that are wrong on runtime v2 (staged writes, no batch).
+# Flipping the compile default without the editorial rewrite would ship
+# misleading teaching material. Convert content + code together; see
+# docs/migrating-to-runtime-v2.md ("Reactive semantics").
 # `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
 # (build-runtime-server). Pulls `dev-server` + the swap SDK's recording
 # handler so `register_extensions_recorder` can register a navigator

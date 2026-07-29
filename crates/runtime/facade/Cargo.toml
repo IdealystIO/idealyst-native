@@ -35,13 +35,36 @@ description = "Old-core author-surface facade over runtime_vocabulary::glue (ide
 # vocabulary robot registry so `test_id` forwarding and `#[method]`
 # registrations in an aliased crate go live.
 robot = ["runtime-vocabulary/robot"]
+# Mirror of the old `runtime-core/async-driver` opt-in: forwards to the
+# vocabulary so glue's root grows `driver` (spawn_async/render_loop) and
+# the `resource`/`mutation` mirrors — the names an aliased async-consuming
+# SDK crate (graphql's hooks) reaches for via `runtime_core::…`.
+async-driver = ["runtime-vocabulary/async-driver"]
+# Mirror of the old `runtime-core/catalog` opt-in — ONE switch makes a
+# new-core graph catalog-capable: turns on the macro emission gate
+# (`runtime-macros/catalog`) and the vocabulary anchor
+# (`glue::__mcp`, which this root's glob re-export carries, so the
+# alias-resolved `::runtime_core::__mcp::…` emissions from
+# `#[derive(IdealystSchema)]` / `#[idealyst_tool]` / `recipe!` resolve
+# here too). Forwards runtime-shared's `catalog` through the
+# vocabulary, so the bridge `get_catalog` verb + the static
+# core-primitive recipes come along. `mcp` alias kept for parity with
+# the old core's back-compat name.
+catalog = ["runtime-vocabulary/catalog", "runtime-macros/catalog"]
+mcp = ["catalog"]
+# Mirror of `runtime-core/dev` (robot + catalog): what a dev-session
+# wrapper turns on to get the automation registry AND the MCP catalog
+# in a new-core graph (see build-runtime-server's `--new-core` sidecar
+# generation).
+dev = ["robot", "catalog"]
 
 [dependencies]
 runtime-vocabulary = { workspace = true }
 runtime-macros = { workspace = true, features = ["new-core"] }
-# For the old-core `#[macro_export]` decl macros this root re-exports
-# (`typeface!` / `face!` / `node_ref!`): their `$crate::…` expansions
-# resolve against runtime-core itself, and the types they construct
-# (`assets::Typeface`, `Ref<H>`) are the SAME old-core types glue
-# already re-exports — the sanctioned transitional dependency.
-runtime-core = { workspace = true }
+# For the shared-substrate `#[macro_export]` decl macros this root
+# re-exports (`typeface!` / `face!` / `node_ref!`): their `$crate::…`
+# expansions resolve against runtime-shared, and the types they
+# construct (`assets::Typeface`, `Ref<H>`) are the same items glue
+# already re-exports. No runtime-core dependency — the facade's graph
+# is walker-free.
+runtime-shared = { workspace = true }

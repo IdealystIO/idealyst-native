@@ -19,6 +19,18 @@ crate-type = ["rlib"]
 default = [
     "prim-icon", "prim-image", "prim-text-input", "prim-activity",
     "prim-portal", "prim-presence", "table",
+    # Runtime-v2 defaults flip: the facade-alias (new-core) build is
+    # the default compile path. Old-core leg:
+    # `--no-default-features --features old-core`. In-repo consumers
+    # ride the workspace dep spec, which pins defaults off and selects
+    # a core (+ prim set) explicitly per graph.
+    "new-core",
+]
+# The old-core surface with the historical default prim set — ONE flag
+# for the old-core leg's invocations.
+old-core = [
+    "prim-icon", "prim-image", "prim-text-input", "prim-activity",
+    "prim-portal", "prim-presence", "table",
 ]
 # Each feature mirrors the same-named runtime-core family and gates the
 # components that (transitively) render it:

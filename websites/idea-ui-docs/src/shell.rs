@@ -325,54 +325,21 @@ fn build_nav(query: &str, active_route: Signal<&'static str>) -> Element {
 
 // =============================================================================
 // route_link — the in-app route-jump wrapper shared by the sidebar nav
-// items and the Overview landing CTAs. Per-core fork:
-//
-//   old-core: the framework `link(route = …, params = ())` primitive —
-//     exactly what every call site spelled before the fork.
-//   new-core SEAM (nav-SDK link-activator, P6): `link(route = …)` is a
-//     documented macro deferral on the new core (the ambient
-//     link-activator lives in the old routing registry), so the wrapper
-//     is a `pressable` firing the swap navigator's `on_select` instead.
-//     `on_select` is captured at layout build via `set_nav_select`
-//     because screens (including the INITIAL screen, which mounts before
-//     the navigator provides `SwapNav`) can build outside the world
-//     provide window — the click always happens after layout, so the
-//     stash is populated by then.
+// items and the Overview landing CTAs. SAME-SOURCE on both cores: the
+// framework `link(route = …, params = ())` primitive. (The new-core
+// pressable + `set_nav_select` stash that used to live here is gone —
+// `link(route=)` landed end-to-end on the new core in the P6 nav wave:
+// the swap navigator provides the `LinkActivator` world context around
+// every screen AND author-layout build, and the macro emits the same
+// lowering on both cores. Real `<a href>` sidebar entries again.)
 // =============================================================================
 
-#[cfg(feature = "old-core")]
 pub fn route_link(route: &'static Route<()>, child: Element) -> Element {
     ui! {
         link(route = route, params = ()) {
             child
         }
     }
-}
-
-#[cfg(feature = "new-core")]
-thread_local! {
-    static NAV_SELECT: std::cell::RefCell<Option<Rc<dyn Fn(&'static str)>>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// Stash the swap navigator's `on_select` for `route_link` — called once
-/// from `app_newcore`'s `.layout(...)` closure.
-#[cfg(feature = "new-core")]
-pub fn set_nav_select(f: Rc<dyn Fn(&'static str)>) {
-    NAV_SELECT.with(|s| *s.borrow_mut() = Some(f));
-}
-
-#[cfg(feature = "new-core")]
-pub fn route_link(route: &'static Route<()>, child: Element) -> Element {
-    let name = route.name();
-    pressable(vec![child], move || {
-        NAV_SELECT.with(|s| {
-            if let Some(f) = &*s.borrow() {
-                f(name)
-            }
-        })
-    })
-    .into_element()
 }
 
 fn nav_item(entry: &'static Entry, active_route: Signal<&'static str>) -> Element {

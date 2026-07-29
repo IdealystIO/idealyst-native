@@ -328,7 +328,7 @@ pub fn register_ssr_extensions(backend: &mut backend_ssr::SsrBackend) {
 }
 
 /// New-core SSR/SSG registration seam for the CLI wrapper
-/// (`idealyst build --ssr/--ssg --new-core`): the scene-registry
+/// (`idealyst build --ssr/--ssg` — new core is the default since the flip): the scene-registry
 /// counterpart of [`register_ssr_extensions`], invoked per request /
 /// per crawled page with the fresh registry. Navigators are vocabulary
 /// built-ins on the new core; the codeblock payload handler is the
@@ -336,19 +336,32 @@ pub fn register_ssr_extensions(backend: &mut backend_ssr::SsrBackend) {
 #[cfg(all(feature = "ssr", feature = "new-core"))]
 pub use codeblock::register as register_ssr_scene_handlers;
 
+/// New-core WEB registration seam for the CLI wrapper
+/// (`idealyst build --web` — new core is the default since the flip): the scene-registry counterpart
+/// of [`register_extensions`], invoked once at boot with the fresh
+/// `Registry<WebBackend>` (generic — `codeblock::register` is
+/// registry-type-agnostic, same seam the SSR alias above uses).
+#[cfg(feature = "new-core")]
+pub use codeblock::register as register_scene_extensions;
+
 // =============================================================================
 // New-core web boot entry.
 // =============================================================================
 
-#[cfg(all(target_arch = "wasm32", feature = "new-core"))]
+// Gated on `newcore-standalone-web` (NON-default) because the CLI web
+// wrapper (`idealyst build --web`, new-core default) generates its own
+// `#[wasm_bindgen(start)]` and calls `register_scene_extensions` +
+// `app()` itself — two start fns in one module is a wasm-bindgen
+// error. This module is only for the manual wasm-pack vehicle.
+#[cfg(all(target_arch = "wasm32", feature = "new-core", feature = "newcore-standalone-web"))]
 mod web_entry_newcore {
     use wasm_bindgen::prelude::*;
 
     /// New-core web boot: mounts into `#app` (newcore.html). The
-    /// wasm-pack module's start fn — the CLI wrapper (old core) is not
-    /// involved in this build. `codeblock::register` (the SDK's
-    /// new-core scene-registry leg) is the boot registration seam, so
-    /// code panels render the SDK's `<pre>`/span handler.
+    /// wasm-pack module's start fn — the CLI wrapper is not involved
+    /// in this build. `codeblock::register` (the SDK's new-core
+    /// scene-registry leg) is the boot registration seam, so code
+    /// panels render the SDK's `<pre>`/span handler.
     #[wasm_bindgen(start)]
     pub fn boot() {
         // Console logger so framework warnings reach devtools (the CLI

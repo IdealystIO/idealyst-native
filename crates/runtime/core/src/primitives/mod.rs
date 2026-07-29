@@ -20,7 +20,8 @@ pub mod flat_list;
 pub mod graphics;
 pub mod icon;
 pub mod image;
-pub mod key;
+// `key` moved wholesale to runtime-shared (pure data types).
+pub use runtime_shared::primitives::key;
 pub mod lazy;
 pub mod link;
 pub mod navigator;

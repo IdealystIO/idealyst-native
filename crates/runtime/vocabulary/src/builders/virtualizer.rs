@@ -2,8 +2,8 @@
 
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives::virtualizer::{
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::primitives::virtualizer::{
     Axis, ItemKey, ItemSize, Lanes, VirtualLayout, VirtualizerHandle,
 };
 use runtime_scene::{item, Element};

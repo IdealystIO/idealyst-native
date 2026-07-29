@@ -52,6 +52,10 @@ pub struct RunOptions {
     /// Robot bridge writes its port discovery file to a project-
     /// local `.idealyst/bridge.port`.
     pub env_vars: Vec<(String, String)>,
+    /// Local mode: mount on the NEW core (runtime v2 — the default for
+    /// dual-core apps since the defaults flip). See
+    /// `build_terminal::BuildOptions::new_core`.
+    pub new_core: bool,
 }
 
 #[derive(Debug)]
@@ -140,6 +144,7 @@ fn build(project_dir: &Path, opts: &RunOptions) -> Result<build_terminal::BuildA
             mode: build_mode,
             source: opts.source.clone(),
             user_features: opts.user_features.clone(),
+            new_core: opts.new_core,
         },
     )
 }

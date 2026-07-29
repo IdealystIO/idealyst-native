@@ -2,10 +2,10 @@
 
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives;
-use runtime_core::primitives::icon::IconData;
-use runtime_core::{Color, Easing, ImageErrorHandler, ImageLoadHandler};
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::primitives;
+use runtime_shared::primitives::icon::IconData;
+use runtime_shared::{Color, Easing, ImageErrorHandler, ImageLoadHandler};
 
 use super::noop;
 use super::{ExternalOps, ViewOps};

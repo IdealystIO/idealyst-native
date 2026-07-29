@@ -14,11 +14,15 @@
 //!
 //! [`Scene`]: canvas_core::Scene
 
+#[cfg(not(feature = "new-core"))]
 use backend_web::WebBackend;
+#[cfg(not(feature = "new-core"))]
+use canvas_core::paint_scene;
 use canvas_core::{
-    paint_scene, BlendMode, CanvasProps, Color, DrawOp, FillRule, ImageSource, LineCap, LineJoin,
+    BlendMode, CanvasProps, Color, DrawOp, FillRule, ImageSource, LineCap, LineJoin,
     LinearGradient, Paint, PaintKind, Path, PathSeg, RadialGradient, Scene, TextureLayer, Transform,
 };
+#[cfg(not(feature = "new-core"))]
 use runtime_core::effect;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -33,6 +37,7 @@ use web_sys::{
 /// Register the native canvas renderer against a `WebBackend`. One line
 /// from the app's bootstrap; backs every `canvas::Canvas` with a
 /// `<canvas>` 2D context.
+#[cfg(not(feature = "new-core"))]
 pub fn register(backend: &mut WebBackend) {
     canvas_core::ensure_wire_serde();
     backend.register_external::<CanvasProps, _>(|props, _backend| build_canvas(props));
@@ -43,8 +48,9 @@ pub fn register(backend: &mut WebBackend) {
 // `self-register` feature: the ctor is a link-time anchor that pins this
 // crate's rasterizer + glyph stack in `main.wasm`, so delegate-only
 // consumers (canvas-vello's Canvas2D fallback) opt out to keep it
-// splittable into their lazy chunk.
-#[cfg(feature = "self-register")]
+// splittable into their lazy chunk. (No inventory self-registration on
+// the new core — the registry is built explicitly at boot.)
+#[cfg(all(feature = "self-register", not(feature = "new-core")))]
 inventory::submit! {
     backend_web::WebExternalRegistrar(register)
 }
@@ -52,9 +58,11 @@ inventory::submit! {
 /// Disconnects the `ResizeObserver` and frees its `Closure` on scope
 /// teardown, so a callback the browser has already queued can't fire
 /// into freed wasm state after unmount (the classic web-listener UAF).
-struct ObserverGuard {
-    observer: ResizeObserver,
-    _cb: Closure<dyn FnMut()>,
+/// `pub(crate)`: shared with the new-core handler (`web_newcore`),
+/// which owns the identical resize/teardown contract.
+pub(crate) struct ObserverGuard {
+    pub(crate) observer: ResizeObserver,
+    pub(crate) _cb: Closure<dyn FnMut()>,
 }
 
 impl Drop for ObserverGuard {
@@ -63,6 +71,7 @@ impl Drop for ObserverGuard {
     }
 }
 
+#[cfg(not(feature = "new-core"))]
 fn build_canvas(props: &Rc<CanvasProps>) -> web_sys::Element {
     let document = web_sys::window()
         .expect("no window")

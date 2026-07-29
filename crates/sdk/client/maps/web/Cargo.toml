@@ -10,6 +10,24 @@ license.workspace = true
 # iframe — simple proof of the pipeline without an FFI binding story
 # for Leaflet / MapLibre.
 
+[features]
+# Runtime-v2 defaults flip: the new-core leg is the default surface;
+# the old-core leg is the opt-in (`--no-default-features` — in-repo
+# consumers ride the workspace dep spec, which pins defaults off and
+# selects a core explicitly per graph).
+default = ["new-core"]
+# Old-core marker for uniform `--no-default-features --features
+# old-core` invocations (the old-core deps are unconditional).
+old-core = []
+# Idea-lite migration: gates the old-core surface (`register` +
+# inventory self-registration) OFF and enables the web backend's
+# new-core leg so the umbrella `maps` crate can register its
+# scene-registry handler against `Registry<WebBackend>`. The shared
+# iframe builder (`build_map_iframe`) stays compiled either way — it is
+# pure DOM and both cores' handlers call it. Forwarded from the
+# umbrella's own `new-core` feature.
+new-core = ["backend-web/new-core"]
+
 [dependencies]
 maps-core = { workspace = true }
 backend-web = { workspace = true }

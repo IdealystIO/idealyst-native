@@ -80,112 +80,18 @@
 //! }
 //! ```
 
-use std::any::Any;
-use std::rc::Rc;
 
-use crate::style::Easing;
 use crate::{Bound, Element, Ref, RefFill};
 
 // ============================================================================
 // PresenceState — the animatable vocabulary
 // ============================================================================
 
-/// The narrow set of properties a presence animation can override
-/// during enter / exit. Each is `Option` so authors only set the
-/// ones they care about; missing fields use the resting value.
-///
-/// All coordinates are in CSS pixels (or the backend's equivalent
-/// point unit). `scale` is uniform — non-uniform scale isn't
-/// supported.
-#[derive(Copy, Clone, Debug, Default, PartialEq)]
-pub struct PresenceState {
-    pub opacity: Option<f32>,
-    pub translate_x: Option<f32>,
-    pub translate_y: Option<f32>,
-    pub scale: Option<f32>,
-}
-
-impl PresenceState {
-    /// "Resting" state — every field set to its identity value.
-    /// Backends interpret this as "no presence override is active";
-    /// the rendered values come from the node's regular style.
-    pub fn rest() -> Self {
-        Self::default()
-    }
-
-    pub fn opacity(mut self, v: f32) -> Self {
-        self.opacity = Some(v);
-        self
-    }
-    pub fn translate(mut self, x: f32, y: f32) -> Self {
-        self.translate_x = Some(x);
-        self.translate_y = Some(y);
-        self
-    }
-    pub fn translate_y(mut self, y: f32) -> Self {
-        self.translate_y = Some(y);
-        self
-    }
-    pub fn translate_x(mut self, x: f32) -> Self {
-        self.translate_x = Some(x);
-        self
-    }
-    pub fn scale(mut self, s: f32) -> Self {
-        self.scale = Some(s);
-        self
-    }
-}
-
-/// One half of a presence definition. On enter, `state` is what's
-/// applied *before* the first paint; on exit, it's what's
-/// interpolated *toward* before the scope drops. Same shape both
-/// ways so authors can mirror a fade-and-slide enter as a
-/// fade-and-slide exit by sharing a `PresenceState`.
-#[derive(Copy, Clone, Debug)]
-pub struct PresenceAnim {
-    pub state: PresenceState,
-    pub duration_ms: u32,
-    pub easing: Easing,
-}
-
-impl PresenceAnim {
-    pub fn new(state: PresenceState, duration_ms: u32, easing: Easing) -> Self {
-        Self { state, duration_ms, easing }
-    }
-
-    /// A fade-only enter or exit. Common enough to deserve a helper.
-    pub fn fade(duration_ms: u32, easing: Easing) -> Self {
-        Self {
-            state: PresenceState::default().opacity(0.0),
-            duration_ms,
-            easing,
-        }
-    }
-}
-
-// ============================================================================
-// Handle + ops (placeholder — no imperative API yet)
-// ============================================================================
-
-#[derive(Clone)]
-pub struct PresenceHandle {
-    #[allow(dead_code)]
-    node: Rc<dyn Any>,
-    #[allow(dead_code)]
-    ops: &'static dyn PresenceOps,
-}
-
-impl PresenceHandle {
-    pub fn new(node: Rc<dyn Any>, ops: &'static dyn PresenceOps) -> Self {
-        Self { node, ops }
-    }
-}
-
-pub trait PresenceOps {}
-
-// ============================================================================
-// Constructor + builder
-// ============================================================================
+// The data/handle/Ops types of this primitive moved to `runtime-shared`
+// (the walker-free half); this file keeps the Element/Bound builder
+// surface (and its tests). The wildcard re-export preserves every old
+// path.
+pub use runtime_shared::primitives::presence::*;
 
 /// Build a presence-controlled subtree.
 ///

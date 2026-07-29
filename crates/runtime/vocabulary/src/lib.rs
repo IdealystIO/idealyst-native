@@ -5,7 +5,7 @@
 //! (idea-lite core migration, design §5). One Ops trait per primitive
 //! family lives in [`caps`], with **signatures frozen** — method names,
 //! parameter types, return types, and data-only defaults are copied
-//! verbatim from `runtime_core::backend::Backend`. [`bridge::LegacyBridge`]
+//! verbatim from `runtime_shared::backend::Backend`. [`bridge::LegacyBridge`]
 //! wraps any existing `Backend` impl and implements
 //! [`runtime_scene::Host`] plus every Ops trait by delegation, proving
 //! the freeze compiles and giving every existing backend the full
@@ -72,7 +72,7 @@
 //!
 //! [`glue`] is the emission surface `ui!` / `#[component]` target when
 //! `runtime-macros` is built with its `new-core` feature (the macros
-//! retarget `::runtime_core::…` paths in their OUTPUT to
+//! retarget `::runtime_shared::…` paths in their OUTPUT to
 //! `::runtime_vocabulary::glue::…`). Additional deferrals specific to
 //! that path — each fails compilation under `new-core` with a message
 //! naming its migration phase, never silently:
@@ -108,9 +108,13 @@
 //!   `get_navigator_state` verbs;
 //! - `web_view` (dispatches through the old-core WebView SDK component;
 //!   SDK retarget, P6);
-//! - `#[component(lazy)]` / `#[lazy]` (no lazy/chunk-mount prim in the
-//!   vocabulary yet — `Element::Lazy`'s wasm-split chunk driver
-//!   retargets with the remaining web deferred set). `#[method]`
+//! - ~~`#[component(lazy)]` / `#[lazy]`~~ — SUPPORTED: the `lazy`
+//!   chunk boundary is a vocabulary prim ([`prims::lazy`]) mounted by
+//!   [`handlers::mount_lazy`] (imperative placeholder→body swap, no
+//!   reactive anchor — SSR bytes stay identical to the old walker's),
+//!   with the emission surface in `glue::primitives::lazy` (thunk-
+//!   flavored loader: construction runs in the swap effect, under the
+//!   world). `#[method]`
 //!   blocks LOWER (P5 robot remainder) for the inline-props component
 //!   shape; only the legacy explicit-props/`Bindable` form stays a
 //!   loud macro error (its return type rides the old `Element`);
@@ -177,10 +181,27 @@
 //! the same change. Nothing in this crate depends on the walker, the
 //! reactive arena, or `Element` — only on the type vocabulary.
 
+// `resource()` / `mutation()` new-core mirrors (feature `async-driver`,
+// matching the old root's gate on the same names).
+#[cfg(feature = "async-driver")]
+pub mod async_reactive;
+/// `LegacyBridge` — adapts an OLD-core `runtime_core::Backend` impl to
+/// the new capability surface. Behind the non-default `legacy-bridge`
+/// feature because it is the ONLY part of this crate that still touches
+/// runtime-core (an optional dep); the default build's dependency graph
+/// is runtime-core-free. Enabled by the transitional consumers that
+/// still mount through an old Backend (backend-ssr's new-core boot,
+/// scene-parity, the SDK/e2e test harnesses).
+#[cfg(feature = "legacy-bridge")]
 pub mod bridge;
 pub mod builders;
 pub mod caps;
 pub mod glue;
+// `glue::primitives::lazy` lives in its own file (re-exported into the
+// inline `glue::primitives` module — the canonical path) — the
+// `#[component(lazy)]` new-core emission surface.
+#[doc(hidden)]
+pub mod glue_lazy;
 pub mod handlers;
 pub mod prims;
 #[cfg(feature = "robot")]
@@ -199,6 +220,7 @@ pub mod style_attach;
 pub mod theme;
 pub mod viewport;
 
+#[cfg(feature = "legacy-bridge")]
 pub use bridge::LegacyBridge;
 pub use builders::{
     activity_indicator, anchored_overlay, button, graphics, icon, image, link, navigator_outlet,
@@ -211,11 +233,11 @@ pub use style_attach::{
     attach_style, on_teardown, signal_class, IntoStyleProp, StyleProp, StyleServices,
 };
 
-/// New-core mirror of `runtime_core::rx!` — wraps an expression as a
+/// New-core mirror of `runtime_shared::rx!` — wraps an expression as a
 /// reactive prop value ([`glue::Reactive::derive`]). Defined here (not in
 /// `runtime-facade`) so the `$crate::…` expansion resolves against the
 /// vocabulary, keeping the facade paper-thin; the facade re-exports it
-/// under the old `runtime_core::rx` name for aliased SDK crates.
+/// under the old `runtime_shared::rx` name for aliased SDK crates.
 #[macro_export]
 macro_rules! rx {
     ($e:expr) => {
@@ -223,7 +245,7 @@ macro_rules! rx {
     };
 }
 
-/// New-core mirror of `runtime_core::effect!` — a scope-owned reactive
+/// New-core mirror of `runtime_shared::effect!` — a scope-owned reactive
 /// effect over a bare BLOCK. The old expansion is
 /// `Effect::scoped(move || { $body })` (adopted by the active scope);
 /// here the world effect is collected by the ambient collector (the
@@ -237,7 +259,7 @@ macro_rules! effect {
     };
 }
 
-/// New-core mirror of `runtime_core::timeline!` — same grammar, same
+/// New-core mirror of `runtime_shared::timeline!` — same grammar, same
 /// session-epoch-relative act schedule, but routed through
 /// [`glue::session::after_ms`] so the tasks anchor to the NEW core's
 /// scope (the old macro's `$crate::session::after_ms` resolves against
@@ -245,7 +267,7 @@ macro_rules! effect {
 /// inert on a new-core mount — see [`scoped_scheduling`]). Defined here
 /// (not in `runtime-facade`) for the same reason as [`rx!`]/[`effect!`]:
 /// the `$crate::…` expansion must resolve against the vocabulary; the
-/// facade re-exports it under the old `runtime_core::timeline` name.
+/// facade re-exports it under the old `runtime_shared::timeline` name.
 #[macro_export]
 macro_rules! timeline {
     ( $( $at:expr => { $( $av:ident : $animator:expr ),* $(,)? } ),* $(,)? ) => {{

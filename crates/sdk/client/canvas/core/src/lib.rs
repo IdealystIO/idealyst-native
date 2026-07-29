@@ -52,10 +52,11 @@
 mod scene;
 pub use scene::*;
 
-use runtime_core::{
-    external, Bound, ExternalHandle, IdealystSchema, Length, RegisterExternal, StyleRules,
-    StyleSheet,
-};
+// Old-core-only plumbing (the External constructor + registry seam);
+// the style-model + schema imports are shared by both cores.
+#[cfg(not(feature = "new-core"))]
+use runtime_core::{external, Bound, ExternalHandle, RegisterExternal};
+use runtime_core::{IdealystSchema, Length, StyleRules, StyleSheet};
 use std::any::Any;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -426,7 +427,7 @@ pub fn paint_scene(props: &CanvasProps) -> Scene {
 /// or `flex_grow` on the chain — the same rule every percentage-sized
 /// box follows. `flex_grow: 1` in this default covers the common
 /// "fill the remaining main-axis space" case without a definite parent.
-fn default_fill_style() -> Rc<StyleSheet> {
+pub(crate) fn default_fill_style() -> Rc<StyleSheet> {
     thread_local! {
         static SHEET: Rc<StyleSheet> = {
             let mut fill = StyleRules::default();
@@ -456,6 +457,7 @@ fn default_fill_style() -> Rc<StyleSheet> {
 ///
 /// Registers the wire serde for [`CanvasProps`] on first construction
 /// (idempotent) so a canvas can render across the runtime-server wire.
+#[cfg(not(feature = "new-core"))]
 #[allow(non_snake_case)]
 pub fn Canvas(props: CanvasProps) -> Bound<ExternalHandle<CanvasProps>> {
     ensure_wire_serde();
@@ -476,9 +478,22 @@ pub fn Canvas(props: CanvasProps) -> Bound<ExternalHandle<CanvasProps>> {
 ///
 /// Call from an app's `register_ssr_extensions` hook (the SSR/SSG build path),
 /// mirroring the client-side `register` on the web/native path.
+#[cfg(not(feature = "new-core"))]
 pub fn register_ssr<B: RegisterExternal>(backend: &mut B) {
     backend.register_external::<CanvasProps, _>(|_props, b| b.create_element("canvas"));
 }
+
+// One authored surface, two cores (idea-lite migration, External-SDK
+// wave): the scene model, props, layers, and wire serde above are
+// core-agnostic and stay shared; ONLY the `Canvas` constructor and the
+// registration seams are per-core. The `new-core` feature swaps in
+// `newcore`, which re-expresses the same `Canvas(props).with_style(…)`
+// call shape over the scene registry (renderer crates register a
+// handler for [`newcore::CanvasPrim`]).
+#[cfg(feature = "new-core")]
+mod newcore;
+#[cfg(feature = "new-core")]
+pub use newcore::{register_ssr_scene, Canvas, CanvasBound, CanvasPrim};
 
 /// Register the wire (serialize, deserialize) pair for [`CanvasProps`]
 /// so an `Element::External<CanvasProps>` can cross the runtime-server
@@ -545,6 +560,9 @@ mod tests {
     /// fill-parent style so it's visible on every backend, instead of
     /// collapsing to a 0×0 box on native. Mirrors the navigators' fill
     /// convention (`flex_grow: 1` + `100% × 100%`).
+    /// (Old-core lowering shape; the new-core twin lives in
+    /// tests/newcore.rs.)
+    #[cfg(not(feature = "new-core"))]
     #[test]
     fn unstyled_canvas_defaults_to_fill_parent() {
         use runtime_core::{resolve_style, Length, StyleSource, Tokenized};
@@ -566,6 +584,7 @@ mod tests {
 
     /// An explicit `.with_style(...)` replaces the fill default — authors
     /// who size the canvas themselves aren't fighting a baked-in 100%.
+    #[cfg(not(feature = "new-core"))]
     #[test]
     fn explicit_style_overrides_fill_default() {
         use runtime_core::{resolve_style, Length, StyleRules, StyleSheet, StyleSource, Tokenized};

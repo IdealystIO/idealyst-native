@@ -44,16 +44,17 @@ debug-stats = [
     "runtime-core/debug-stats",
     "backend-android-mobile/debug-stats",
 ]
-default = ["debug-stats", "old-core"]
+default = ["debug-stats", "new-core"]
 
 # The two cores — SAME-SOURCE dual-core app (the newcore-app pattern,
 # see the conformance example): exactly one per build; `old-core` is the
 # default (CLI builds unchanged), `new-core` is the idea-lite migration
 # build, booted on web via `backend_web::newcore::start`:
 #
-#   cargo check -p idea-ui-docs                                    # old core
+#   cargo check -p idea-ui-docs                                    # new core (the default
+#                                                                  #   since the runtime-v2 flip)
 #   cargo check -p idea-ui-docs --no-default-features \
-#       --features new-core                                        # new core
+#       --features old-core,debug-stats                            # old core
 #   wasm-pack build --target web --dev websites/idea-ui-docs \
 #       --out-dir pkg-newcore -- --no-default-features \
 #       --features new-core                                        # new-core web
@@ -67,10 +68,11 @@ default = ["debug-stats", "old-core"]
 # `<pre>`/span DOM and PropsTable/the Table pages render the same real
 # `<table>` on either core (the table handlers register through
 # `backend_web::newcore::start_in`'s seam — see `web_entry_newcore`).
-# `idea-ui/docs` is old-core-only for now: the DocControls derive
-# expands `::runtime_core::Signal::new(…)`, which the glue facade's
-# `Signal` doesn't provide (glue gap — the app never consumes
-# `doc_controls` itself, so new-core simply builds without the derive).
+# `idea-ui/docs` is DUAL-CORE too: the DocControls derive emits the free
+# `::runtime_core::signal(…)` (glue-mirrored) and the doc-controls
+# runtime satisfies the world kernel's `T: PartialEq` signal bound
+# (`RefBuiltins: PartialEq`, pointer-identity impls in idea-theme), so
+# both features enable it and the derive compiles on either core.
 old-core = ["dep:swap-navigator", "dep:codeblock", "dep:table", "idea-ui/table", "idea-ui/docs"]
 # `new-core` flips the whole idea-* subtree onto the glue facade
 # (`extern crate runtime_facade as runtime_core;` in lib.rs) and pulls
@@ -87,6 +89,7 @@ new-core = [
     "dep:table",
     "table/new-core",
     "idea-ui/table",
+    "idea-ui/docs",
     "backend-web/new-core",
 ]
 
@@ -100,11 +103,10 @@ serde_json = "1"
 [dependencies]
 runtime-core = { workspace = true }
 # PATH dep with `default-features = false` (the documented cargo gotcha:
-# the flag is ignored on `workspace = true` lines): idea-ui's `docs`
-# feature is old-core-only and `table` is re-enabled per-core by the
-# feature blocks above (both cores turn it on; `new-core` also flips the
-# SDK's own new-core leg), so the base dep carries just the full prim
-# family set both cores render.
+# the flag is ignored on `workspace = true` lines): `docs` and `table`
+# are re-enabled per-core by the feature blocks above (both cores turn
+# them on; `new-core` also flips the table SDK's own new-core leg), so
+# the base dep carries just the full prim family set both cores render.
 idea-ui = { path = "../../crates/ui/idea-ui", default-features = false, features = [
     "prim-icon", "prim-image", "prim-text-input", "prim-activity",
     "prim-portal", "prim-presence",

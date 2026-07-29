@@ -313,6 +313,15 @@ pub fn report_viewport(width_px: jni::sys::jint, height_px: jni::sys::jint, dens
         width: width_dp,
         height: height_dp,
     });
+    // New-core mirror — inert today (runtime-server mode drives the
+    // old core), but every seam that writes `set_viewport_size`
+    // forwards so a future new-core shell inherits live breakpoints
+    // for free. See newcore.rs, "Viewport source".
+    #[cfg(feature = "new-core")]
+    crate::newcore::forward_viewport(runtime_core::ViewportSize {
+        width: width_dp,
+        height: height_dp,
+    });
     let viewport = runtime_server_shell_native::WireViewport {
         width: width_dp,
         height: height_dp,

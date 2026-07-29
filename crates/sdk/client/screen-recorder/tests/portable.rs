@@ -2,10 +2,10 @@
 //! on the host (no real capture backend) and exercise the API surface +
 //! the skeleton's `Unsupported` contract.
 
-use screen_recorder::{
-    PrivateLayer, PrivateLayerProps, RecorderError, RecordingConfig, ScreenRecorder, Source,
-    DEFAULT_FPS,
-};
+use screen_recorder::{PrivateLayer, RecorderError, RecordingConfig, ScreenRecorder, Source, DEFAULT_FPS};
+#[cfg(not(feature = "new-core"))]
+use screen_recorder::PrivateLayerProps;
+#[cfg(not(feature = "new-core"))]
 use runtime_core::{view, Element, IntoElement};
 
 #[test]
@@ -29,8 +29,9 @@ fn config_builders_apply() {
 
 #[test]
 fn private_layer_constructs_without_panicking() {
-    // It builds an Element::External; constructing it must not panic and
-    // must accept a children vec.
+    // It builds an external element (old core: Element::External; new
+    // core: a scene item); constructing it must not panic and must
+    // accept a children vec.
     let _layer = PrivateLayer(Vec::new());
 }
 
@@ -51,6 +52,10 @@ fn private_layer_constructs_without_panicking() {
 /// TypeId → handler never dispatched, or children dropped → empty
 /// overlay), the on-device run would show a blank/recorded layer. So we
 /// assert the lowering deterministically here.
+/// Old-core lowering only — the new-core counterpart (children mount
+/// INTO the external node through the scene registry) lives in
+/// tests/newcore_private_layer.rs.
+#[cfg(not(feature = "new-core"))]
 #[test]
 fn private_layer_lowers_to_external_carrying_children() {
     let child = view(Vec::new()).into_element();

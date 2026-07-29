@@ -689,6 +689,7 @@ fn nserror_to_recorder(error: *mut AnyObject, fallback: &str) -> RecorderError {
 // Private layer — borderless overlay window above the app window.
 // ===========================================================================
 
+#[cfg(not(feature = "new-core"))]
 use backend_macos::MacosBackend;
 
 /// Install the `PrivateLayer` external handler against a `MacosBackend`.
@@ -711,6 +712,11 @@ use backend_macos::MacosBackend;
 /// via `backend_macos::private_layer_window_ids`, matches them against
 /// `SCShareableContent.windows`, and passes the matching `SCWindow`s to the
 /// `SCContentFilter` exclusion list — so the recording omits the overlay.
+// Old-core only: the capture-excluded overlay window rides the old
+// `ExternalRegistry`; the new-core leg renders the layer inline via
+// `private_layer::register_scene` until the new-core native boots grow
+// an external-window story (see private_layer_newcore.rs).
+#[cfg(not(feature = "new-core"))]
 pub fn register(backend: &mut MacosBackend) {
     backend.register_external::<crate::PrivateLayerProps, _>(|_props, b| {
         b.create_private_layer_window()
@@ -719,6 +725,7 @@ pub fn register(backend: &mut MacosBackend) {
 
 // Self-register at backend construction (no app-side `register` call needed).
 // See [[project_inventory_self_registration]].
+#[cfg(not(feature = "new-core"))]
 inventory::submit! {
     backend_macos::MacosExternalRegistrar(register)
 }

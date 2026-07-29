@@ -30,9 +30,11 @@
 // this file free of cfg noise while shipping zero navigator code.
 pub mod host;
 pub mod registry;
-pub mod scroll;
+// `scroll` + `url_sync` moved wholesale to runtime-shared; `shared`
+// keeps an Element-coupled remainder here (see the file) on top of the
+// runtime-shared substrate.
+pub use runtime_shared::primitives::navigator::{scroll, url_sync};
 pub mod shared;
-pub mod url_sync;
 
 pub use host::{NavigatorHandler, NavigatorHost};
 pub use registry::{NavigatorHandlerFactory, NavigatorRegistry, RegisterNavigator};

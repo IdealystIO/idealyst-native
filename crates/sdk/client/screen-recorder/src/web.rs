@@ -215,9 +215,12 @@ fn map_get_display_media_err(e: &JsValue) -> RecorderError {
 // Private layer — web (documented no-op for capture exclusion).
 // ===========================================================================
 
+#[cfg(not(feature = "new-core"))]
 use backend_web::WebBackend;
 
 /// Install the `PrivateLayer` external handler against a `WebBackend`.
+/// Old-core only — the new-core leg mounts the same inline posture
+/// through `private_layer::register_scene` (see private_layer_newcore.rs).
 ///
 /// Web has no separate-window equivalent, so the handler renders the
 /// layer's children INLINE in a plain `<div>` — they ARE captured by
@@ -228,6 +231,7 @@ use backend_web::WebBackend;
 // crops the private layer out of the captured frames (Chromium-only,
 // behind the Element Capture API). The DOM node the handler returns
 // here is the natural anchor for that target once wired.
+#[cfg(not(feature = "new-core"))]
 pub fn register(backend: &mut WebBackend) {
     backend.register_external::<crate::PrivateLayerProps, _>(|_props, _b| {
         web_sys::window()
@@ -241,6 +245,7 @@ pub fn register(backend: &mut WebBackend) {
 
 // Self-register at backend construction (no app-side `register` call needed).
 // See [[project_inventory_self_registration]].
+#[cfg(not(feature = "new-core"))]
 inventory::submit! {
     backend_web::WebExternalRegistrar(register)
 }

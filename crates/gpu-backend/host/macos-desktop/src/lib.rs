@@ -29,6 +29,12 @@ mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::{mount, MacosHostHandle, MountError};
 
+// idea-lite core migration: the new-core mount seam. Same handle type,
+// same wgpu path — the tree realizes into the embedding app's world
+// through `render_wgpu::newcore::start_in_world` (see `macos.rs`).
+#[cfg(all(target_os = "macos", feature = "new-core"))]
+pub use macos::mount_newcore;
+
 #[cfg(target_os = "macos")]
 pub use render_api::DeviceProfile;
 

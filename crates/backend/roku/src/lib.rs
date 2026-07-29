@@ -50,6 +50,20 @@
 //! `Button` → `Button`; layout flex props translate to
 //! `LayoutGroup`'s `layoutDirection` + `itemSpacings`.
 //!
+//! # New core (`new-core` feature)
+//!
+//! With the `new-core` Cargo feature, `newcore::start` mounts a
+//! scene-element tree on a `runtime_world::World` through the
+//! vocabulary's builtin handlers — `RokuBackend` implements
+//! `runtime_scene::Host` plus all 30 capability traits by direct UFCS
+//! delegation to this `Backend` impl, so both cores emit byte-identical
+//! serialized command streams (pinned by `tests/newcore_parity.rs`).
+//! The flush model is embedder-driven: wrapped author callbacks land in
+//! the [`HandlerTable`], and after dispatching device events the
+//! embedder calls `newcore::settle()` before draining the queue. See
+//! the `newcore` module docs for the full contract. The old-core
+//! `snapshot`/`render` path is untouched by the feature.
+//!
 //! # Caveats
 //!
 //! - **No native flex**: SceneGraph's `LayoutGroup` only supports
@@ -107,6 +121,9 @@
 #![deny(missing_debug_implementations)]
 
 pub mod command;
+pub mod dispatch_hook;
+#[cfg(feature = "new-core")]
+pub mod newcore;
 mod style;
 
 /// `#[method]` — annotate pure-logic functions for transpilation

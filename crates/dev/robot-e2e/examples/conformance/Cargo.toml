@@ -17,26 +17,27 @@ crate-type = ["rlib", "cdylib"]
 # without it the lowered primitives omit their `test_id` slots and the whole
 # suite is blind. It also pulls the `robot-e2e` harness + turns on the real
 # Robot API. `--no-default-features` still builds a plain, untested app.
-default = ["robot", "old-core"]
+default = ["robot", "new-core"]
 robot = ["runtime-core/robot", "idea-ui?/robot", "dep:robot-e2e"]
 
 # The two cores — SAME-SOURCE dual-core app (the newcore-app pattern):
-# exactly one per build; `old-core` is the default (CLI builds are
-# unchanged), `new-core` is the idea-lite migration build:
+# exactly one per build. Runtime-v2 defaults flip: `new-core` is the
+# DEFAULT; `old-core` is the opt-in leg:
 #
-#   cargo check -p conformance                                        # old core
+#   cargo check -p conformance                                        # new core
 #   cargo check -p conformance --no-default-features \
-#       --features new-core,robot                                     # new core
+#       --features old-core,robot                                     # old core
 #
-# `new-core` is NON-default on purpose: it forwards to
+# Exactly one core per build graph: `new-core` forwards to
 # `runtime-macros/new-core`, and proc-macro features unify across a
-# build graph (see runtime-macros/Cargo.toml). The old-core surface
-# (idea-ui components, the class stack-navigator SDK) is old-core-only —
-# those crates' own `ui!` call sites cannot lower to the new core yet —
-# so its screens/suites are gated out of new-core builds and reported as
-# blocked, never stubbed.
-old-core = ["dep:idea-ui", "dep:stack-navigator"]
+# build graph (see runtime-macros/Cargo.toml).
+# Both core features pull `robot` themselves: the CLI's single-core
+# builds compile `default-features = false, features = ["<core>"]`
+# (runtime-v2 defaults flip), which would otherwise strip the default
+# `robot` and leave the suite blind (no `test_id` emission).
+old-core = ["dep:idea-ui", "dep:stack-navigator", "robot"]
 new-core = [
+    "robot",
     "dep:runtime-macros",
     "runtime-macros/new-core",
     "dep:runtime-vocabulary",

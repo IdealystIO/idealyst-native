@@ -1,7 +1,7 @@
 //! Render-elsewhere builders: `portal()`, plus the `overlay()` /
 //! `anchored_overlay()` compositions.
 //!
-//! Ports `runtime_core::primitives::{portal,overlay}`'s authoring
+//! Ports `runtime_shared::primitives::{portal,overlay}`'s authoring
 //! surface: `portal()` is the raw primitive; the two overlay builders
 //! are build-time compositions that lower to a portal item with the
 //! backdrop / content wiring added around the caller's children — they
@@ -9,12 +9,12 @@
 
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives::overlay::BackdropMode;
-use runtime_core::primitives::portal::{
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::primitives::overlay::BackdropMode;
+use runtime_shared::primitives::portal::{
     AnchorTarget, ElementAlign, ElementSide, PortalHandle, PortalTarget, ViewportPlacement,
 };
-use runtime_core::{PointerEvents, StyleRules};
+use runtime_shared::{PointerEvents, StyleRules};
 use runtime_scene::{item, Element};
 
 use crate::prims::{PortalPrim, PressablePrim, PrimCell};

@@ -1,7 +1,7 @@
 //! Graphics builder: `graphics()`.
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives::graphics::{GraphicsHandle, OnReadyEvent, OnResizeEvent};
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::primitives::graphics::{GraphicsHandle, OnReadyEvent, OnResizeEvent};
 use runtime_scene::{item, Element};
 
 use crate::prims::{GraphicsPrim, PrimCell};

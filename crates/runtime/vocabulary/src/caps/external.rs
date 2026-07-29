@@ -4,7 +4,7 @@
 use std::any::Any;
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
+use runtime_shared::accessibility::AccessibilityProps;
 use runtime_scene::Host;
 
 use super::ViewOps;

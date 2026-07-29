@@ -1,51 +1,27 @@
 //! P2b unit tests: builder coercions, `StyleProp` paths, prop-binding
 //! shapes, teardown probes, and the mount-once payload contract —
-//! against a minimal recording backend bridged through `LegacyBridge`
-//! (the full-op *sequence* parity lives in `scene-parity`'s golden
-//! suite; these tests pin the vocabulary-local behaviors in isolation).
+//! against the shared `host-mock` substrate (crates/dev/host-mock): the
+//! native scene `Host` + caps recording mock, no `Backend`, no
+//! `LegacyBridge` (the full-op *sequence* parity lives in
+//! `scene-parity`'s golden suite; these tests pin the vocabulary-local
+//! behaviors in isolation).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::{Backend, StateBits, StyleRules, Tokenized};
-use runtime_scene::{realize, Registry};
+use host_mock::{take_animated_log, Harness};
+use runtime_core::{StateBits, StyleRules, Tokenized};
+use runtime_scene::realize;
 use runtime_vocabulary::builders::{
     button, icon, image, link, pressable, slider, text, toggle, view, TextContent,
 };
 use runtime_vocabulary::style_attach::IntoStyleProp;
-use runtime_vocabulary::{register_builtins, LegacyBridge, StyleProp};
+use runtime_vocabulary::StyleProp;
 use runtime_world::{signal, Value, World};
 
 // ===========================================================================
-// Minimal recording backend
+// Harness (host-mock, configured like the old suite-local Mini)
 // ===========================================================================
-
-type Log = Rc<RefCell<Vec<String>>>;
-
-struct Mini {
-    log: Log,
-    next: u32,
-    /// State setters handed to `attach_states`, so tests can flip
-    /// interaction states like a native event source would.
-    state_setters: Rc<RefCell<Vec<Rc<dyn Fn(StateBits, bool)>>>>,
-    /// on_change callbacks the backend received (slider snap test).
-    slider_changes: Rc<RefCell<Vec<Rc<dyn Fn(f32)>>>>,
-    /// on_click callbacks the backend received (pressable block test).
-    press_handlers: Rc<RefCell<Vec<Rc<dyn Fn()>>>>,
-    /// Per-test opt-in for the batched-Repeat path (the repeat-handler
-    /// suite flips it; everything else stays on the fallback default).
-    batched_repeat: Rc<Cell<bool>>,
-}
-
-impl Mini {
-    fn mint(&mut self, kind: &str) -> u32 {
-        let n = self.next;
-        self.next += 1;
-        self.log.borrow_mut().push(format!("create n{n} {kind}"));
-        n
-    }
-}
 
 fn width_of(rules: &StyleRules) -> String {
     rules
@@ -55,330 +31,17 @@ fn width_of(rules: &StyleRules) -> String {
         .unwrap_or_else(|| "none".into())
 }
 
-impl Backend for Mini {
-    type Node = u32;
-
-    fn create_view(&mut self, _a11y: &AccessibilityProps) -> u32 {
-        self.mint("view")
-    }
-
-    fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> u32 {
-        let n = self.next;
-        self.next += 1;
-        self.log
-            .borrow_mut()
-            .push(format!("create n{n} text {content:?}"));
-        n
-    }
-
-    fn create_styled_text(
-        &mut self,
-        runs: &[runtime_core::TextRun],
-        _a11y: &AccessibilityProps,
-    ) -> u32 {
-        let n = self.next;
-        self.next += 1;
-        let texts: Vec<&str> = runs.iter().map(|r| r.text.as_str()).collect();
-        self.log
-            .borrow_mut()
-            .push(format!("create n{n} styled_text {texts:?}"));
-        n
-    }
-
-    fn create_button(
-        &mut self,
-        label: &str,
-        _on_click: &runtime_core::Action,
-        _leading: Option<&runtime_core::IconData>,
-        _trailing: Option<&runtime_core::IconData>,
-        _a11y: &AccessibilityProps,
-    ) -> u32 {
-        let n = self.next;
-        self.next += 1;
-        self.log
-            .borrow_mut()
-            .push(format!("create n{n} button {label:?}"));
-        n
-    }
-
-    fn create_toggle(
-        &mut self,
-        initial_value: bool,
-        _on_change: Rc<dyn Fn(bool)>,
-        _a11y: &AccessibilityProps,
-    ) -> u32 {
-        let n = self.next;
-        self.next += 1;
-        self.log
-            .borrow_mut()
-            .push(format!("create n{n} toggle {initial_value}"));
-        n
-    }
-
-    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, _a11y: &AccessibilityProps) -> u32 {
-        self.press_handlers.borrow_mut().push(on_click);
-        self.mint("pressable")
-    }
-
-    // --- P5 identity-seam surface: the robot-registry tests mount
-    //     text_input / scroll_view, whose Backend DEFAULTS panic
-    //     (`missing_primitive_placeholder` -> `create_external`) ---
-
-    fn create_text_input(
-        &mut self,
-        _initial_value: &str,
-        _placeholder: Option<&str>,
-        _on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        _on_blur: Option<runtime_core::primitives::text_input::BlurHandler>,
-        _secure: bool,
-        _a11y: &AccessibilityProps,
-    ) -> u32 {
-        self.mint("text_input")
-    }
-
-    fn create_scroll_view(
-        &mut self,
-        _horizontal: bool,
-        _on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
-        _a11y: &AccessibilityProps,
-    ) -> u32 {
-        self.mint("scroll_view")
-    }
-
-    fn set_disabled(&mut self, node: &u32, disabled: bool) {
-        self.log
-            .borrow_mut()
-            .push(format!("set_disabled n{node} {disabled}"));
-    }
-
-    fn create_slider(
-        &mut self,
-        _initial: f32,
-        _min: f32,
-        _max: f32,
-        _step: Option<f32>,
-        on_change: Rc<dyn Fn(f32)>,
-        _a11y: &AccessibilityProps,
-    ) -> u32 {
-        self.slider_changes.borrow_mut().push(on_change);
-        self.mint("slider")
-    }
-
-    fn update_text(&mut self, node: &u32, content: &str) {
-        self.log
-            .borrow_mut()
-            .push(format!("update_text n{node} {content:?}"));
-    }
-
-    fn update_button_label(&mut self, node: &u32, label: &str) {
-        self.log
-            .borrow_mut()
-            .push(format!("update_button_label n{node} {label:?}"));
-    }
-
-    fn update_toggle_value(&mut self, node: &u32, value: bool) {
-        self.log
-            .borrow_mut()
-            .push(format!("update_toggle_value n{node} {value}"));
-    }
-
-    fn apply_style(&mut self, node: &u32, style: &Rc<StyleRules>) {
-        self.log
-            .borrow_mut()
-            .push(format!("apply_style n{node} width={}", width_of(style)));
-    }
-
-    fn on_node_unstyled(&mut self, node: &u32) {
-        self.log.borrow_mut().push(format!("on_node_unstyled n{node}"));
-    }
-
-    fn attach_states(&mut self, node: &u32, setter: Rc<dyn Fn(StateBits, bool)>) {
-        self.state_setters.borrow_mut().push(setter);
-        self.log.borrow_mut().push(format!("attach_states n{node}"));
-    }
-
-    fn insert(&mut self, parent: &mut u32, child: u32) {
-        self.log
-            .borrow_mut()
-            .push(format!("insert n{parent} <- n{child}"));
-    }
-
-    fn insert_many(&mut self, parent: &mut u32, children: Vec<u32>) {
-        let kids: Vec<String> = children.iter().map(|c| format!("n{c}")).collect();
-        self.log
-            .borrow_mut()
-            .push(format!("insert_many n{parent} <- [{}]", kids.join(", ")));
-    }
-
-    // --- batched-Repeat surface (repeat-handler suite) ---
-
-    fn supports_batched_repeat(&self) -> bool {
-        self.batched_repeat.get()
-    }
-
-    fn execute_batch(&mut self, batch: runtime_core::BackendBatch) -> Vec<u32> {
-        use runtime_core::BatchOp;
-        let mut nodes: Vec<u32> = Vec::with_capacity(batch.node_count as usize);
-        let mut digest: Vec<String> = Vec::new();
-        for op in &batch.ops {
-            match op {
-                BatchOp::CreateView { local_id } => {
-                    digest.push(format!("cv#{local_id}"));
-                }
-                BatchOp::CreateText { local_id, content } => {
-                    digest.push(format!("ct#{local_id}{content:?}"));
-                }
-                BatchOp::ApplyStyleStatic { node, class_name, .. } => {
-                    digest.push(format!("style#{node}={class_name}"));
-                }
-                BatchOp::Insert { parent, child } => {
-                    digest.push(format!("ins#{parent}<-#{child}"));
-                }
-            }
-        }
-        for _ in 0..batch.node_count {
-            nodes.push(self.next);
-            self.next += 1;
-        }
-        self.log.borrow_mut().push(format!(
-            "execute_batch nodes={} ops=[{}]",
-            batch.node_count,
-            digest.join(" ")
-        ));
-        nodes
-    }
-
-    fn mint_style_class(&mut self, style: &Rc<StyleRules>) -> Option<String> {
-        Some(format!("mint-w{}", width_of(style)))
-    }
-
-    fn clear_children(&mut self, node: &u32) {
-        self.log.borrow_mut().push(format!("clear_children n{node}"));
-    }
-
-    fn finish(&mut self, _root: u32) {}
-
-    // --- P3c style-engine surface (sheet registration + tokens +
-    //     preminted classes), recorded so the sheet-path tests can pin
-    //     the call streams the scene-parity alphabet leaves out ---
-
-    fn register_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-        self.log
-            .borrow_mut()
-            .push(format!("register_stylesheet rules={}", rules.len()));
-    }
-
-    fn unregister_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-        self.log
-            .borrow_mut()
-            .push(format!("unregister_stylesheet rules={}", rules.len()));
-    }
-
-    fn install_tokens(&mut self, tokens: &[runtime_core::TokenEntry]) {
-        let names: Vec<&str> = tokens.iter().map(|t| t.name).collect();
-        self.log
-            .borrow_mut()
-            .push(format!("install_tokens {names:?}"));
-    }
-
-    fn update_tokens(&mut self, tokens: &[runtime_core::TokenEntry]) {
-        let names: Vec<&str> = tokens.iter().map(|t| t.name).collect();
-        self.log
-            .borrow_mut()
-            .push(format!("update_tokens {names:?}"));
-    }
-
-    fn supports_preminted_styles(&self) -> bool {
-        true
-    }
-
-    fn attach_html_class(&self, node: &u32, class: &str) {
-        self.log
-            .borrow_mut()
-            .push(format!("attach_html_class n{node} {class}"));
-    }
-
-    fn make_view_handle(&self, node: &u32) -> runtime_core::ViewHandle {
-        // Real (recording) animated-prop ops, not the trait's no-op
-        // default — the animated-bind regression test asserts writes
-        // actually reach `ViewOps::set_animated_f32`.
-        runtime_core::ViewHandle::new(Rc::new(*node), &RECORDING_VIEW_OPS)
-    }
-}
-
-/// `ViewOps` whose animated-prop writers record into a thread-local log
-/// (`ViewHandle` ops must be `&'static`, so the log can't live in the
-/// harness).
-struct RecordingViewOps;
-
-thread_local! {
-    static ANIMATED_LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-}
-
-fn take_animated_log() -> Vec<String> {
-    ANIMATED_LOG.with(|l| std::mem::take(&mut *l.borrow_mut()))
-}
-
-impl runtime_core::ViewOps for RecordingViewOps {
-    fn set_animated_f32(
-        &self,
-        node: &dyn std::any::Any,
-        prop: runtime_core::animation::AnimProp,
-        value: f32,
-    ) {
-        let n = node.downcast_ref::<u32>().copied().unwrap_or(u32::MAX);
-        ANIMATED_LOG.with(|l| {
-            l.borrow_mut().push(format!("set_animated_f32 n{n} {prop:?} {value}"))
-        });
-    }
-}
-
-static RECORDING_VIEW_OPS: RecordingViewOps = RecordingViewOps;
-
-struct Harness {
-    world: World,
-    backend: Rc<RefCell<LegacyBridge<Mini>>>,
-    registry: Rc<Registry<LegacyBridge<Mini>>>,
-    log: Log,
-    state_setters: Rc<RefCell<Vec<Rc<dyn Fn(StateBits, bool)>>>>,
-    slider_changes: Rc<RefCell<Vec<Rc<dyn Fn(f32)>>>>,
-    press_handlers: Rc<RefCell<Vec<Rc<dyn Fn()>>>>,
-    batched_repeat: Rc<Cell<bool>>,
-}
-
+/// The old suite-local `Mini` backend reported
+/// `supports_preminted_styles() = true` and minted `mint-w{width}`
+/// classes; replicate both on the shared mock so the preminted and
+/// batched-Repeat expectations carry over byte-for-byte. host-mock's
+/// default `apply_style` digest is the `width=`-only line this suite
+/// originally defined, so every expected string is unchanged.
 fn harness() -> Harness {
-    let log: Log = Rc::new(RefCell::new(Vec::new()));
-    let state_setters = Rc::new(RefCell::new(Vec::new()));
-    let slider_changes = Rc::new(RefCell::new(Vec::new()));
-    let press_handlers = Rc::new(RefCell::new(Vec::new()));
-    let batched_repeat = Rc::new(Cell::new(false));
-    let backend = Rc::new(RefCell::new(LegacyBridge(Mini {
-        log: log.clone(),
-        next: 0,
-        state_setters: state_setters.clone(),
-        slider_changes: slider_changes.clone(),
-        press_handlers: press_handlers.clone(),
-        batched_repeat: batched_repeat.clone(),
-    })));
-    let mut registry = Registry::new();
-    register_builtins(&mut registry);
-    Harness {
-        world: World::new(),
-        backend,
-        registry: Rc::new(registry),
-        log,
-        state_setters,
-        slider_changes,
-        press_handlers,
-        batched_repeat,
-    }
-}
-
-impl Harness {
-    fn take_log(&self) -> Vec<String> {
-        std::mem::take(&mut *self.log.borrow_mut())
-    }
+    let h = Harness::new();
+    h.shared.preminted.set(true);
+    h.set_mint_class(|rules| Some(format!("mint-w{}", width_of(rules))));
+    h
 }
 
 fn px(w: f32) -> StyleRules {
@@ -532,7 +195,7 @@ fn dynamic_style_reapplies_on_signal_change_and_state_flip() {
     // A native state flip (through the attach_states setter) re-fires
     // the binding — the re-apply contract the old event-driven path
     // has. (Overlay resolution is deferred; the rules are unchanged.)
-    let setter = h.state_setters.borrow()[0].clone();
+    let setter = h.state_setter(0);
     setter(StateBits::HOVERED, true);
     world.flush();
     assert_eq!(
@@ -642,7 +305,7 @@ fn slider_on_change_snaps_to_step() {
         )
     });
     // Simulate a native drag reporting a raw, unsnapped value.
-    let native_on_change = h.slider_changes.borrow()[0].clone();
+    let native_on_change = h.slider_change(0);
     native_on_change(3.34);
     assert_eq!(
         *received.borrow(),
@@ -736,7 +399,7 @@ fn pressable_disabled_blocks_press_uniformly() {
         ]
     );
     // The wrapped callback the backend received fires while enabled…
-    let native_press = h.press_handlers.borrow()[0].clone();
+    let native_press = h.press_handler(0);
     native_press();
     assert_eq!(pressed.get(), 1);
     // …and is blocked once the disabled binding flips the shared flag.
@@ -749,8 +412,9 @@ fn pressable_disabled_blocks_press_uniformly() {
 }
 
 // ===========================================================================
-// Reactive text through the builder (fallback update_text path — Mini
-// has no batched-id support)
+// Reactive text through the builder (fallback update_text path —
+// host-mock leaves `create_text_with_id` at the trait default, so there
+// is no batched-id support)
 // ===========================================================================
 
 #[test]
@@ -939,7 +603,7 @@ fn regression_static_sheet_with_state_overlay_keeps_state_machine() {
     assert!(mount.contains("apply_style n0 width=Literal(Px(100.0))"), "{mount}");
 
     // Flip hover on like a native event source: the overlay applies.
-    let setter = h.state_setters.borrow()[0].clone();
+    let setter = h.state_setter(0);
     setter(StateBits::HOVERED, true);
     world.flush();
     assert_eq!(
@@ -1128,7 +792,7 @@ fn default_text_font_fills_absent_font_family() {
                 .build(),
         )
     });
-    // The Mini recorder only prints width; assert through the resolved
+    // The mock's apply_style digest only prints width; assert through the resolved
     // rules instead: attach a probing static rule check via a second
     // world would be heavier — instead verify the fill function through
     // the theme API surface.
@@ -1397,9 +1061,9 @@ mod robot_registry {
 
         let scroller = robot.find(Query::test_id("scroller")).unwrap();
         assert_eq!(scroller.kind, ElementKind::ScrollView);
-        // The action exists and routes through the scroll handle (Mini
-        // implements no scroll ops — the default handle is a no-op, so
-        // availability is the observable contract here).
+        // The action exists and routes through the scroll handle
+        // (host-mock records set_node_scroll; availability + routing
+        // through the handle is the observable contract here).
         robot.set_scroll(&scroller, 0.0, 10.0).unwrap();
         robot.reset();
     }
@@ -1439,7 +1103,7 @@ mod repeat_handler {
     #[test]
     fn batched_repeat_is_one_execute_batch() {
         let h = harness();
-        h.batched_repeat.set(true);
+        h.shared.batched_repeat.set(true);
         let realized = h.world.enter(|| {
             realize(&h.backend, &h.registry, styled_rows(3))
         });
@@ -1487,7 +1151,7 @@ mod repeat_handler {
     #[test]
     fn batched_rows_share_one_cohort_entry_that_reapplies() {
         let h = harness();
-        h.batched_repeat.set(true);
+        h.shared.batched_repeat.set(true);
         let world = h.world.clone();
         let _realized = world.enter(|| {
             theme::install_tokens(&[surface("#111")]);
@@ -1515,7 +1179,7 @@ mod repeat_handler {
     #[test]
     fn fallback_repeat_mounts_per_row_and_stays_reactive() {
         let h = harness();
-        h.batched_repeat.set(true); // backend supports it; the SHAPE bails
+        h.shared.batched_repeat.set(true); // backend supports it; the SHAPE bails
         let world = h.world.clone();
         let (realized, label) = world.enter(|| {
             let label = signal(String::from("a"));
@@ -1586,7 +1250,7 @@ mod repeat_handler {
     #[test]
     fn non_batching_backend_takes_fallback_for_batchable_shape() {
         let h = harness();
-        assert!(!h.batched_repeat.get());
+        assert!(!h.shared.batched_repeat.get());
         let _realized = h.world.enter(|| {
             realize(&h.backend, &h.registry, styled_rows(1))
         });
@@ -1609,7 +1273,7 @@ mod repeat_handler {
     #[test]
     fn empty_repeat_is_free() {
         let h = harness();
-        h.batched_repeat.set(true);
+        h.shared.batched_repeat.set(true);
         let _realized = h.world.enter(|| {
             realize(
                 &h.backend,
@@ -1797,7 +1461,7 @@ mod p6_glue {
                         >>()
                         .expect("icon prim");
                     match cell.take().style.expect("size sets a style") {
-                        StyleProp::Sheet(app) => app,
+                        StyleProp::Sheet(app) => *app,
                         _ => panic!("size mints a static sheet application"),
                     }
                 }

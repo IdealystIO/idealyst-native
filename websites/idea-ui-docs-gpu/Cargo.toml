@@ -25,7 +25,10 @@ path = "src/main.rs"
 # which (vs the non-instrumented runtime-core the GPU host crates pull)
 # splits runtime-core into two graph instances and trips an "Element vs
 # Element" type mismatch. The GPU preview doesn't need the phase-timer.
-idea-ui-docs = { path = "../idea-ui-docs", default-features = false }
+# `features = ["old-core"]`: the GPU desktop host mounts the old-core
+# walker; idea-ui-docs defaults to new-core since the runtime-v2 flip,
+# so this graph pins the old-core surface explicitly.
+idea-ui-docs = { path = "../idea-ui-docs", default-features = false, features = ["old-core"] }
 # The GPU backend + its desktop winit host. `headless` powers the
 # offscreen render test (`tests/render.rs`) — capturing the app to a PNG
 # with no window, so CI can prove it renders without a display.

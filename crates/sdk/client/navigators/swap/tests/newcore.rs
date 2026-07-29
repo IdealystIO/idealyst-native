@@ -1,8 +1,9 @@
 //! New-core suite (P6 SDK retarget): the SAME authored surface —
 //! `SwapNavigator::new(&route).screen(…).layout(|nav| …)
 //! .mount_policy(…).bind(nav)` — mounted through the vocabulary's
-//! swap handler on a minimal recording backend (the vocab-test harness
-//! pattern: old-core `Backend` mock bridged through `LegacyBridge`).
+//! swap handler on the shared `host-mock` recording substrate
+//! (crates/dev/host-mock): the caps surface implemented natively, no
+//! old-core `Backend`, no `LegacyBridge`.
 //! Covers: same-source mount + op-log shape, select round-trip through
 //! the bound `Ref<SwapHandle>`, URL-sync registration through the SDK
 //! path, and `link(route = …)` end-to-end (glue constructor → ambient
@@ -12,19 +13,14 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives::link::LinkConfig;
+use host_mock::Harness;
 use runtime_core::primitives::navigator::NavCommand;
-use runtime_core::{Backend, StyleRules};
-use runtime_scene::{realize, Realized, Registry};
+use runtime_scene::Realized;
 use runtime_vocabulary::builders::{text, view};
 use runtime_vocabulary::handlers::nav_url_sync::{
     clear_url_sync_service, install_url_sync_service, CommittedKind, NavSyncKind,
     NavSyncRegistration, UrlSyncService,
 };
-use runtime_vocabulary::register_builtins;
-use runtime_vocabulary::LegacyBridge;
-use runtime_world::World;
 use swap_navigator::{
     MountPolicy, Route, Screen, SwapBuilder, SwapContext, SwapHandle, SwapNavigator,
 };
@@ -33,122 +29,25 @@ use swap_navigator::{
 // from its per-core prelude).
 use runtime_vocabulary::glue::{IntoElement, Ref};
 
-// ===========================================================================
-// Minimal recording backend (vocab-test harness pattern)
-// ===========================================================================
-
-type Log = Rc<RefCell<Vec<String>>>;
-type Activations = Rc<RefCell<Vec<Rc<dyn Fn()>>>>;
-
-struct Mini {
-    log: Log,
-    next: u32,
-    /// Link activations the backend received (`create_link`), so the
-    /// test can fire a "user click" like a real platform would.
-    link_activations: Activations,
-}
-
-impl Mini {
-    fn mint(&mut self, kind: &str) -> u32 {
-        let n = self.next;
-        self.next += 1;
-        self.log.borrow_mut().push(format!("create n{n} {kind}"));
-        n
-    }
-}
-
-impl Backend for Mini {
-    type Node = u32;
-
-    fn create_view(&mut self, _a11y: &AccessibilityProps) -> u32 {
-        self.mint("view")
-    }
-
-    fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> u32 {
-        let n = self.next;
-        self.next += 1;
-        self.log
-            .borrow_mut()
-            .push(format!("create n{n} text {content:?}"));
-        n
-    }
-
-    fn create_button(
-        &mut self,
-        label: &str,
-        _on_click: &runtime_core::Action,
-        _leading: Option<&runtime_core::IconData>,
-        _trailing: Option<&runtime_core::IconData>,
-        _a11y: &AccessibilityProps,
-    ) -> u32 {
-        let n = self.next;
-        self.next += 1;
-        self.log
-            .borrow_mut()
-            .push(format!("create n{n} button {label:?}"));
-        n
-    }
-
-    fn create_link(&mut self, config: LinkConfig, _a11y: &AccessibilityProps) -> u32 {
-        self.link_activations.borrow_mut().push(config.on_activate);
-        let n = self.next;
-        self.next += 1;
-        self.log
-            .borrow_mut()
-            .push(format!("create n{n} link route={:?} url={:?}", config.route, config.url));
-        n
-    }
-
-    fn update_text(&mut self, _node: &u32, _content: &str) {}
-    fn update_link_url(&mut self, _node: &u32, _url: &str) {}
-    fn apply_style(&mut self, _node: &u32, _style: &Rc<StyleRules>) {}
-    fn on_node_unstyled(&mut self, _node: &u32) {}
-    fn mark_container(&mut self, _node: &u32) {}
-
-    fn insert(&mut self, parent: &mut u32, child: u32) {
-        self.log
-            .borrow_mut()
-            .push(format!("insert n{parent} <- n{child}"));
-    }
-
-    fn clear_children(&mut self, node: &u32) {
-        self.log.borrow_mut().push(format!("clear_children n{node}"));
-    }
-
-    fn finish(&mut self, _root: u32) {}
-}
-
-struct Harness {
-    world: World,
-    backend: Rc<RefCell<LegacyBridge<Mini>>>,
-    registry: Rc<Registry<LegacyBridge<Mini>>>,
-    log: Log,
-    link_activations: Activations,
-}
-
 fn harness() -> Harness {
-    let log: Log = Rc::new(RefCell::new(Vec::new()));
-    let link_activations: Activations = Rc::new(RefCell::new(Vec::new()));
-    let backend = Rc::new(RefCell::new(LegacyBridge(Mini {
-        log: log.clone(),
-        next: 0,
-        link_activations: link_activations.clone(),
-    })));
-    let mut registry = Registry::new();
-    register_builtins(&mut registry);
-    Harness {
-        world: World::new(),
-        backend,
-        registry: Rc::new(registry),
-        log,
-        link_activations,
-    }
-}
-
-impl Harness {
-    fn take_log(&self) -> Vec<String> {
-        std::mem::take(&mut *self.log.borrow_mut())
-    }
+    let h = Harness::new();
+    // Mirror the historical Mini's recorded op set (creates / insert /
+    // clear_children only): style + state families the mock now records
+    // stay out of the log so the suite's expectations carry unchanged.
+    h.mute(&[
+        "apply_style",
+        "on_node_unstyled",
+        "mark_container",
+        "attach_states",
+        "set_disabled",
+        "attach_html_class",
+        "register_stylesheet",
+        "unregister_stylesheet",
+        "install_tokens",
+        "update_tokens",
+        "update_text",
+    ]);
+    h
 }
 
 const HOME: Route<()> = Route::new("home", "/");
@@ -185,7 +84,7 @@ fn mount_app(h: &Harness, builds: (Rc<Cell<u32>>, Rc<Cell<u32>>)) -> (Realized<u
             .bind(nav)
             .into_element()
     };
-    let realized = h.world.enter(|| realize(&h.backend, &h.registry, element));
+    let realized = h.mount(element);
     (realized, nav)
 }
 
@@ -346,7 +245,7 @@ fn link_route_selects_in_a_swap_screen() {
             .bind(nav)
             .into_element()
     };
-    let _realized = h.world.enter(|| realize(&h.backend, &h.registry, element));
+    let _realized = h.mount(element);
 
     // The backend saw a real in-app link with route metadata + href.
     let log = h.take_log().join("\n");
@@ -354,7 +253,7 @@ fn link_route_selects_in_a_swap_screen() {
 
     // Fire the platform activation (outside enter, like a click) and
     // flush — the swap must SELECT the about screen.
-    let activate = h.link_activations.borrow()[0].clone();
+    let activate = h.shared.link_activations.borrow()[0].clone();
     activate();
     h.world.flush();
     assert_eq!(builds_about.get(), 1, "link activation selected /about");

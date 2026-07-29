@@ -151,7 +151,7 @@ where
             }
             b.borrow_mut().set_disabled(&n, d);
             if let Some(setter) = state_setter.as_ref() {
-                setter(runtime_core::StateBits::DISABLED, d);
+                setter(runtime_shared::StateBits::DISABLED, d);
             }
         });
     }

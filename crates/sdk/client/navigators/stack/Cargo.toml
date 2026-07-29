@@ -15,6 +15,14 @@ license.workspace = true
 # UINavigationController chrome); this is the outlet-model replacement.
 
 [features]
+# Runtime-v2 defaults flip: the new-core leg is the default surface;
+# the old-core leg is the opt-in (`--no-default-features` — in-repo
+# consumers ride the workspace dep spec, which pins defaults off and
+# selects a core explicitly per graph).
+default = ["new-core"]
+# Old-core marker for uniform `--no-default-features --features
+# old-core` invocations (the old-core deps are unconditional).
+old-core = []
 runtime-server = ["dep:dev-server", "dep:wire"]
 # Compile-checked usage recipes for the docs/MCP catalog. Off in every
 # production build (the `recipe!` macro then expands to nothing). Must be
@@ -38,11 +46,12 @@ dev-server = { workspace = true, optional = true }
 wire = { workspace = true, optional = true }
 
 [dev-dependencies]
-# New-core suite (tests/newcore.rs, `--features new-core`): a minimal
-# recording Backend bridged through LegacyBridge + a World drives the
-# same-source authored surface end-to-end (vocab-test harness pattern).
+# New-core suite (tests/newcore.rs, `--features new-core`): the shared
+# host-mock recording substrate drives the same-source authored surface
+# end-to-end.
 runtime-scene = { workspace = true }
 runtime-world = { workspace = true }
+host-mock = { workspace = true }
 # `tests/ssr.rs`: render-at-path + SSG crawl for the outlet-model stack.
 backend-ssr = { workspace = true }
 

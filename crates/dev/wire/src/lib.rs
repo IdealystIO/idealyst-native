@@ -21,6 +21,16 @@
 //! dependency. Conversion to/from in-memory types lives in
 //! `dev-client` (app side) and `dev-server` (dev
 //! side).
+//!
+//! **Core-agnostic by design.** The protocol carries backend
+//! operations, not walker/scene semantics, so the SAME `Command`
+//! stream is produced whether the dev side records an old-core walk
+//! (`runtime_core::mount`) or a new-core realize
+//! (`dev_server::newcore::SceneSession` — see dev-server's `new-core`
+//! feature), and a client replays it the same way either direction
+//! (`dev_client::newcore::CapsReplay` drives a caps-only backend).
+//! `mock-backend/tests/wire_behavior_newcore.rs` pins the
+//! cross-core snapshot identity.
 
 #![deny(missing_debug_implementations)]
 
@@ -1640,8 +1650,14 @@ pub struct WireHeaderButton {
     pub tint: Option<WireColor>,
 }
 
-/// Cross-axis lane subdivision for a virtualizer, wire form. Mirrors
-/// `runtime_core::Lanes`. `Fixed(1)` is a plain list.
+/// Cross-axis lane subdivision for a virtualizer, wire form. Serde
+/// mirror of `runtime_shared::primitives::virtualizer::Lanes` (the ONE
+/// in-memory definition, re-exported through `runtime_core` and shared
+/// by both cores). `Fixed(1)` is a plain list. Conversions live in
+/// `dev-server::convert_out::virtual_layout_to_wire` /
+/// `dev-client::convert::wire_virtual_layout` (exhaustive matches, so a
+/// new variant fails compile there); the bijection is pinned by
+/// `mock-backend/tests/wire_virtual_layout_roundtrip.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum WireLanes {
     Fixed(usize),
@@ -1654,10 +1670,14 @@ impl Default for WireLanes {
     }
 }
 
-/// Virtualizer layout descriptor, wire form. Mirrors
-/// `runtime_core::VirtualLayout`: scroll axis (as `horizontal`), lane
-/// subdivision, and gaps. All fields `#[serde(default)]` so an older
-/// peer that omits them decodes as a single-lane vertical list.
+/// Virtualizer layout descriptor, wire form. Serde mirror of
+/// `runtime_shared::primitives::virtualizer::VirtualLayout` (the ONE
+/// in-memory definition — this crate stays runtime-free, so the mirror
+/// carries the wire encoding: scroll axis as `horizontal`, lane
+/// subdivision, gaps). All fields `#[serde(default)]` so an older peer
+/// that omits them decodes as a single-lane vertical list. See
+/// [`WireLanes`] for where the conversions live and what pins the
+/// bijection.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct WireVirtualLayout {
     #[serde(default)]

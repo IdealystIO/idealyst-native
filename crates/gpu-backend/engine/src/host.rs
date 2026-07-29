@@ -387,6 +387,18 @@ impl Host {
     /// is.
     pub fn set_viewport(&mut self, w: f32, h: f32) {
         self.viewport = (w, h);
+        // New-core mirror: the logical viewport is this backend's
+        // author-visible viewport, and this method is its one source
+        // of truth — forward it into the mounted world's viewport ctx
+        // so breakpoint-dependent reactivity tracks it live (no-op TLS
+        // read on old-core and embedded boots; deliberately NOT an
+        // old-core TLS write — see newcore.rs, "Viewport source", for
+        // the embedded-simulator clobber rationale).
+        #[cfg(feature = "new-core")]
+        crate::newcore::forward_viewport(runtime_core::ViewportSize {
+            width: w,
+            height: h,
+        });
     }
 
     /// Is the simulator's on-screen keyboard currently visible

@@ -26,4 +26,6 @@ pub(crate) struct Recording;
 /// framework's External placeholder renders if a `PrivateLayer` is
 /// actually mounted, making the unbound layer obvious. macOS's
 /// `SCContentFilter(excludingWindows:)` exclusion is a later addition.
+/// (Old-core only — the new-core no-op lives at the crate root.)
+#[cfg(not(feature = "new-core"))]
 pub fn register<B: runtime_core::Backend>(_backend: &mut B) {}

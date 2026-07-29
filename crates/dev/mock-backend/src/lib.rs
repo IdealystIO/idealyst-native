@@ -971,6 +971,103 @@ impl WireHarness {
         n
     }
 
+    /// Canonical catch-up command stream for the CURRENT scene (the
+    /// recorder's `SceneModel::snapshot_commands`) — what a
+    /// late-joining client would receive. Counterpart of
+    /// [`NewCoreWireHarness::snapshot`] for cross-core comparisons.
+    pub fn snapshot(&self) -> Vec<wire::Command> {
+        self.recorder.snapshot()
+    }
+
+    /// Borrow the reconstructed scene for querying.
+    pub fn scene(&self) -> Ref<'_, MockBackend> {
+        self.client.backend().borrow()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// In-process wire harness — new-core leg
+// ---------------------------------------------------------------------------
+
+/// The new-core twin of [`WireHarness`]: mounts a **scene** tree
+/// (`runtime_scene::Element`) through `dev_server::newcore::SceneSession`
+/// — per-session `World`, `runtime_vocabulary::register_builtins`,
+/// `realize` — against the same `WireRecordingBackend`, ships the
+/// recorded commands through the same real `wire::codec`, and replays
+/// them into the same `WireBackend<MockBackend>`.
+///
+/// Everything downstream of the recorder is IDENTICAL to the old-core
+/// harness on purpose: the wire protocol is the compatibility contract,
+/// so the assertion surface (`scene()`, `sync()`) matches and a test can
+/// pin "same scene → same reconstructed client tree" across the cores.
+pub struct NewCoreWireHarness {
+    // Drop order: client/recorder first, the scene session (world +
+    // realized tree) last — cleanups fire against a live world.
+    client: WireBackend<MockBackend>,
+    recorder: WireRecordingBackend,
+    _session: dev_server::newcore::SceneSession,
+    _outbound_rx: mpsc::Receiver<AppToDev>,
+}
+
+impl NewCoreWireHarness {
+    /// Mount `app`'s scene and perform the initial realize → wire →
+    /// replay pass. The closure runs inside the session world's
+    /// `enter`, so free `runtime_world::signal()` calls work.
+    pub fn mount<F>(app: F) -> Self
+    where
+        F: FnOnce() -> runtime_scene::Element + 'static,
+    {
+        // Same scheduler the sidecar installs — deferred microtasks
+        // (navigator chrome et al.) queue instead of re-entering the
+        // recorder borrow, and `drain_commands` flushes them.
+        dev_server::scheduler::install();
+
+        let recorder = WireRecordingBackend::new();
+        let session = dev_server::newcore::SceneSession::mount(&recorder, |_r| {}, app);
+
+        let (tx, rx) = mpsc::channel();
+        let client = WireBackend::new(MockBackend::new(), tx);
+
+        let mut h = Self {
+            client,
+            recorder,
+            _session: session,
+            _outbound_rx: rx,
+        };
+        h.sync();
+        h
+    }
+
+    /// Commit pending world work (`World::flush` — the sidecar's
+    /// after-event commit), then drain + codec-round-trip + replay.
+    /// Returns the number of commands applied.
+    pub fn sync(&mut self) -> usize {
+        // World signals have no ambient flush driver in a test process
+        // — this is the same explicit commit `sidecar::run_newcore`
+        // performs after every dispatched event.
+        self._session.flush();
+        let cmds = self.recorder.drain_commands();
+        let n = cmds.len();
+        if n == 0 {
+            return 0;
+        }
+        let bytes = wire::codec::encode(&DevToApp::Commands(cmds)).expect("wire encode");
+        match wire::codec::decode::<DevToApp>(&bytes).expect("wire decode") {
+            DevToApp::Commands(c) => self.client.apply_batch(c).expect("replay into MockBackend"),
+            other => panic!("expected DevToApp::Commands, got {other:?}"),
+        }
+        n
+    }
+
+    /// Canonical catch-up command stream for the CURRENT scene (the
+    /// recorder's `SceneModel::snapshot_commands`) — what a
+    /// late-joining client would receive. Used by the cross-core
+    /// compatibility gate to compare old-core vs new-core wire
+    /// emission for the same logical scene.
+    pub fn snapshot(&self) -> Vec<wire::Command> {
+        self.recorder.snapshot()
+    }
+
     /// Borrow the reconstructed scene for querying.
     pub fn scene(&self) -> Ref<'_, MockBackend> {
         self.client.backend().borrow()

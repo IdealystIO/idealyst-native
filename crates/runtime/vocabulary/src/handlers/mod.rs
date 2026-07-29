@@ -24,6 +24,7 @@ use crate::prims::{
 };
 
 mod graphics;
+mod lazy;
 mod media;
 mod navigator;
 mod portal;
@@ -35,6 +36,7 @@ mod virtualizer;
 mod widgets;
 
 pub use graphics::{mount_graphics, register_graphics};
+pub use lazy::{mount_lazy, register_lazy};
 pub use media::{mount_icon, mount_image, mount_link};
 pub use navigator::{
     mount_navigator_outlet, mount_stack_navigator, mount_swap_navigator, register_navigator,
@@ -53,10 +55,10 @@ pub use widgets::{
     mount_activity_indicator, mount_slider, mount_text_area, mount_text_input, mount_toggle,
 };
 
-/// Install all 17 built-in handlers (the 13 P2 primitives + the P3-set
+/// Install all 18 built-in handlers (the 13 P2 primitives + the P3-set
 /// `virtualizer`, `graphics`, `portal` — which also serves the
-/// `overlay`/`anchored_overlay` compositions — and `presence`) on
-/// `registry`. Backends call this
+/// `overlay`/`anchored_overlay` compositions — `presence`, and the
+/// `lazy` chunk boundary) on `registry`. Backends call this
 /// once at startup (alongside their platform-specific registrations);
 /// [`LegacyBridge`](crate::bridge::LegacyBridge) around any existing
 /// `Backend` satisfies the bound automatically.
@@ -100,6 +102,7 @@ pub fn register_builtins<H: AllCaps + 'static>(registry: &mut Registry<H>) {
     register_presence(registry);
     register_navigator(registry);
     register_repeat(registry);
+    register_lazy(registry);
 }
 
 /// Bind a `Value` prop that the `create_*` call did NOT consume: the

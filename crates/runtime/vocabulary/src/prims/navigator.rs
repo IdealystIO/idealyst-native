@@ -12,7 +12,7 @@
 //!   Element-free and pure (`Route`, `RouteParams`, `NavCommand`,
 //!   `join_path`/`match_prefix`/`match_pattern`, the nav-base and
 //!   screen-state/route thread-local guards, the fill-rule constructors)
-//!   are REUSED from `runtime_core::primitives::navigator` — the
+//!   are REUSED from `runtime_shared::primitives::navigator` — the
 //!   sanctioned transitional dependency; they migrate here at P7.
 //! - `SwapContext`/`StackContext` become world-context values
 //!   ([`SwapNav`] / [`StackNav`], `provide`d by the handler around the
@@ -36,8 +36,8 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives::navigator::{NavCommand, Route, RouteParams};
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::primitives::navigator::{NavCommand, Route, RouteParams};
 use runtime_scene::Element;
 use runtime_world::Signal;
 
@@ -65,7 +65,7 @@ pub struct NavScreenEntry {
 
 // ===========================================================================
 // Screen — what a route's render closure returns (P6 header-options
-// carrier: the new-core port of `runtime_core::primitives::navigator::
+// carrier: the new-core port of `runtime_shared::primitives::navigator::
 // Screen`, with the body as a scene `Element`)
 // ===========================================================================
 

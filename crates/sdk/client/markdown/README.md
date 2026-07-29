@@ -18,6 +18,27 @@ ui! { Markdown(source = "# Hello\n\nWorld **bold**".to_string()) }
 markdown::markdown("# Hi", MdTheme::dark()).with_style(my_panel_style())
 ```
 
+## One authored surface, two cores
+
+The default build is the old-core implementation (`Element::External` +
+per-backend `ExternalRegistry`), byte-moved into `src/oldcore.rs`; the
+`new-core` feature swaps in `src/newcore.rs`, which re-expresses the SAME
+public names over the scene registry (the new core's unified
+primitive==external contract). The IR (`ir.rs`) and parser (`parse.rs`)
+are pure data and are shared between the cores untouched.
+
+Because the old web handler was generic over the `Backend` trait, the
+new-core handler is a **caps-generic** scene handler (`StyleServices +
+TextOps`) — one `register` for every caps-complete host, so web AND SSR
+mount the identical semantic DOM (old-core SSR could never register the
+wasm32-gated web handler and fell back to the External placeholder). The
+iOS/Android single-node handlers stay old-core-only until the new-core
+native boots grow an external story (codeblock precedent). On the new
+core, pass `markdown::register` at the boot seam
+(`backend_web::newcore::start_in("#app", markdown::register, app)`); the
+old-core wire serde (`register_external_serde`) has no new-core role —
+the new dev-wire path serializes through the recorder's caps.
+
 ## Why one node — the performance contract
 
 A markdown document is a deep tree: blocks (headings, paragraphs, lists,

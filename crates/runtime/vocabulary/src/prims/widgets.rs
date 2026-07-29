@@ -3,16 +3,16 @@
 
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives::activity_indicator::{
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::primitives::activity_indicator::{
     ActivityIndicatorHandle, ActivityIndicatorSize,
 };
-use runtime_core::primitives::key::KeyDownHandler;
-use runtime_core::primitives::slider::SliderHandle;
-use runtime_core::primitives::text_area::TextAreaHandle;
-use runtime_core::primitives::text_input::{BlurHandler, FocusHandler, TextInputHandle};
-use runtime_core::primitives::toggle::ToggleHandle;
-use runtime_core::Color;
+use runtime_shared::primitives::key::KeyDownHandler;
+use runtime_shared::primitives::slider::SliderHandle;
+use runtime_shared::primitives::text_area::TextAreaHandle;
+use runtime_shared::primitives::text_input::{BlurHandler, FocusHandler, TextInputHandle};
+use runtime_shared::primitives::toggle::ToggleHandle;
+use runtime_shared::Color;
 use runtime_world::Value;
 
 use crate::style_attach::StyleProp;

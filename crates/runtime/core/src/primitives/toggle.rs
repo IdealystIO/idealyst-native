@@ -9,27 +9,13 @@
 //! lives in the parent's signal.
 
 use crate::{Bound, Element, Ref, RefFill, Signal};
-use std::any::Any;
 use std::rc::Rc;
 
-#[derive(Clone)]
-pub struct ToggleHandle {
-    #[allow(dead_code)]
-    node: Rc<dyn Any>,
-    #[allow(dead_code)]
-    ops: &'static dyn ToggleOps,
-}
-
-impl ToggleHandle {
-    pub fn new(node: Rc<dyn Any>, ops: &'static dyn ToggleOps) -> Self {
-        Self { node, ops }
-    }
-}
-
-pub trait ToggleOps {
-    // No methods yet. Toggle state is fully reactive via the
-    // controlled signal; nothing imperative is needed.
-}
+// The data/handle/Ops types of this primitive moved to `runtime-shared`
+// (the walker-free half); this file keeps the Element/Bound builder
+// surface (and its tests). The wildcard re-export preserves every old
+// path.
+pub use runtime_shared::primitives::toggle::*;
 
 /// Construct a controlled toggle. `value` is the source of truth;
 /// `on_change` is called with the new value on every native flip.

@@ -1,5 +1,5 @@
 //! Live signal-watch registry for the NEW core — the vocabulary port of
-//! `runtime_core::robot::watch` (P5 `watch_signal` seam). Whole module
+//! `runtime_shared::robot::watch` (P5 `watch_signal` seam). Whole module
 //! compiles only under the vocabulary `robot` feature.
 //!
 //! # Author surface (unchanged from the old core)
@@ -48,7 +48,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::rc::Rc;
 
-use runtime_core::__serde_json as serde_json;
+use runtime_shared::__serde_json as serde_json;
 use runtime_world::{untrack, Memo, ReadSignal, Signal};
 use serde_json::Value;
 

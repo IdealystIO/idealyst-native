@@ -5901,6 +5901,18 @@ impl Backend for MacosBackend {
                         width: next.0,
                         height: next.1,
                     });
+                    // New-core mirror (see newcore.rs, "Viewport
+                    // source"): on a new-core boot this microtask is
+                    // the FIRST live push — it lands the real window
+                    // size in the world's viewport ctx right after
+                    // mount (the ctx seeded from the pre-`finish` TLS
+                    // value, which is stale on macOS because AppKit
+                    // can run `finish` before the first window paint).
+                    #[cfg(feature = "new-core")]
+                    crate::newcore::forward_viewport(runtime_core::ViewportSize {
+                        width: next.0,
+                        height: next.1,
+                    });
                 });
             }
         }

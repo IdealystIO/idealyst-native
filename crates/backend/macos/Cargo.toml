@@ -47,7 +47,15 @@ runtime-server = ["dep:runtime-server-shell-native", "runtime-server-shell-nativ
 # `backend-web`'s `new-core`. The module itself is additionally macOS-gated
 # (like `imp`), so enabling this on a non-macOS host only adds the unused
 # deps to the graph.
-new-core = ["dep:runtime-world", "dep:runtime-scene", "dep:runtime-vocabulary"]
+new-core = [
+    "dep:runtime-world",
+    "dep:runtime-scene",
+    "dep:runtime-vocabulary",
+    # `create_navigator` (old-Element-typed NavigatorHost) is behind the
+    # vocabulary's `legacy-bridge` gate; this backend's newcore.rs
+    # implements it by delegating to the old Backend impl.
+    "runtime-vocabulary/legacy-bridge",
+]
 
 [dependencies]
 runtime-core = { workspace = true }

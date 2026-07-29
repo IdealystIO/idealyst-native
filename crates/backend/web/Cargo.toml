@@ -111,7 +111,15 @@ robot = ["runtime-core/robot", "runtime-vocabulary?/robot"]
 # features ON — identical to this crate's own defaults, but visible to
 # consumers that disable them; a migration-transitional cost that goes
 # away when vocabulary sheds its runtime-core dependency (P7).
-new-core = ["dep:runtime-world", "dep:runtime-scene", "dep:runtime-vocabulary"]
+new-core = [
+    "dep:runtime-world",
+    "dep:runtime-scene",
+    "dep:runtime-vocabulary",
+    # `create_navigator` (old-Element-typed NavigatorHost) is behind the
+    # vocabulary's `legacy-bridge` gate; this backend's newcore.rs
+    # implements it by delegating to the old Backend impl.
+    "runtime-vocabulary/legacy-bridge",
+]
 
 [dependencies]
 # PATH dep with `default-features = false`, NOT `workspace = true`: the

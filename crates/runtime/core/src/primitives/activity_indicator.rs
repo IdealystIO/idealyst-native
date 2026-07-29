@@ -9,40 +9,12 @@
 //!   - Android: indeterminate `ProgressBar`.
 
 use crate::{Bound, Color, Element, Ref, RefFill};
-use std::any::Any;
-use std::rc::Rc;
 
-/// Two sizes matching RN's API. Maps to native sizes per-platform
-/// and to fixed px diameters on web (16px for Small, 36px for Large).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ActivityIndicatorSize {
-    Small,
-    Large,
-}
-
-impl Default for ActivityIndicatorSize {
-    fn default() -> Self {
-        ActivityIndicatorSize::Small
-    }
-}
-
-#[derive(Clone)]
-pub struct ActivityIndicatorHandle {
-    #[allow(dead_code)]
-    node: Rc<dyn Any>,
-    #[allow(dead_code)]
-    ops: &'static dyn ActivityIndicatorOps,
-}
-
-impl ActivityIndicatorHandle {
-    pub fn new(node: Rc<dyn Any>, ops: &'static dyn ActivityIndicatorOps) -> Self {
-        Self { node, ops }
-    }
-}
-
-pub trait ActivityIndicatorOps {
-    // Reserved.
-}
+// The data/handle/Ops types of this primitive moved to `runtime-shared`
+// (the walker-free half); this file keeps the Element/Bound builder
+// surface (and its tests). The wildcard re-export preserves every old
+// path.
+pub use runtime_shared::primitives::activity_indicator::*;
 
 /// Construct an indicator with default size (`Small`) and no color
 /// override (uses native default tint or theme on web).

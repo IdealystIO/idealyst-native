@@ -60,6 +60,18 @@ pub struct BuildOptions {
     /// `runtime-core/dev` so the Robot bridge auto-starts; left
     /// empty for plain `idealyst build`.
     pub user_features: Vec<String>,
+    /// Build against the NEW core (runtime v2, the default since the
+    /// defaults flip): the wrapper's `ios_main` boots through
+    /// `backend_ios::newcore::run_in_view` (world + scene registry +
+    /// dispatch-site flush driver) and the user crate compiles
+    /// single-core (`default-features = false, features =
+    /// ["new-core"]`). Requires the dual-core app convention: a
+    /// `new-core` cargo feature plus a registry-generic
+    /// `register_scene_extensions` seam (the scaffold/welcome shape).
+    /// `false` = the old-core wrapper, byte-identical to the pre-flip
+    /// template (modulo the `old-core` single-core pin for apps that
+    /// declare that feature).
+    pub new_core: bool,
 }
 
 #[derive(Debug)]
@@ -442,7 +454,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         .wrapper_root(&project_dir)
         .join(&manifest.name)
         .join("ios/wrapper");
-    generate_wrapper(&wrapper_dir, &project_dir, &opts.source, &manifest)?;
+    generate_wrapper(&wrapper_dir, &project_dir, &opts.source, &manifest, opts.new_core)?;
 
     let target = pick_target(opts.device);
     cargo_build(&wrapper_dir, target, opts.release, &opts.user_features)?;
@@ -585,6 +597,64 @@ struct RawLib {
 /// Read `<project_dir>/Cargo.toml` and pull out the bits we care
 /// about. Public so sibling crates can reuse the same parse instead
 /// of re-doing it.
+/// Does the project's Cargo.toml declare a `[features]` key named
+/// `feature`? Used by the wrapper generators to pick the user-crate dep
+/// line for a core:
+///
+/// - **New-core builds** compile the app `default-features = false,
+///   features = ["new-core"]` (the dual-core app convention; requires
+///   the app to declare `new-core`).
+/// - **Old-core builds** of an app that declares `old-core` compile it
+///   `default-features = false, features = ["old-core"]` — necessary
+///   because dual-core apps now DEFAULT to `new-core` (runtime-v2
+///   default flip) and one build graph carries exactly one core.
+///   Apps without an `old-core` feature (legacy old-core-only apps)
+///   keep the plain `{ path = … }` dep, byte-identical to the
+///   pre-flip wrappers.
+///
+/// Textual scan, not a full TOML parse — the generators only need a
+/// yes/no on a bare feature key (same approach as the terminal
+/// generator's long-standing `terminal` feature probe).
+pub fn declares_feature(project_dir: &Path, feature: &str) -> bool {
+    let Ok(text) = fs::read_to_string(project_dir.join("Cargo.toml")) else {
+        return false;
+    };
+    let mut in_features = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            // A new table header. `[features]` opens the section we care
+            // about; any other header (including `[features.x]` subtables,
+            // which don't list plain feature keys) closes it.
+            in_features = trimmed == "[features]";
+            continue;
+        }
+        if in_features {
+            // Match a bare key: `<feature> = [...]`. Strip anything
+            // after `=` and compare the key.
+            let key = trimmed.split('=').next().unwrap_or("").trim();
+            if key == feature {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// The user-crate dep line for an OLD-core wrapper build. Dual-core
+/// apps (declare `old-core`) get the single-core pin; legacy apps keep
+/// the historical plain path dep. See [`declares_feature`].
+pub fn old_core_user_dep(project_dir: &Path) -> String {
+    if declares_feature(project_dir, "old-core") {
+        format!(
+            "{{ path = \"{}\", default-features = false, features = [\"old-core\"] }}",
+            project_dir.display(),
+        )
+    } else {
+        format!("{{ path = \"{}\" }}", project_dir.display())
+    }
+}
+
 pub fn parse_manifest(project_dir: &Path) -> Result<Manifest> {
     let path = project_dir.join("Cargo.toml");
     let raw = fs::read_to_string(&path)
@@ -722,6 +792,7 @@ pub fn generate_wrapper(
     project_dir: &Path,
     source: &FrameworkSource,
     manifest: &Manifest,
+    new_core: bool,
 ) -> Result<()> {
     fs::create_dir_all(wrapper_dir.join("src"))
         .with_context(|| format!("create {}", wrapper_dir.display()))?;
@@ -733,7 +804,29 @@ pub fn generate_wrapper(
     // apple-core). Without it, `spawn_async` falls back to `pollster::block_on`
     // on the main thread and a long-running future (`use_sse` / `use_socket`
     // recv loop) freezes the UI.
-    let bios_dep = source.dep("crates/backend/ios/mobile", &["async-driver"]);
+    //
+    // `new-core` additionally compiles the backend's newcore module
+    // (Host + caps impls + `run_in_view` boot + dispatch-site flush
+    // driver) that the new-core `ios_main` below calls into.
+    let bios_features: &[&str] = if new_core {
+        &["async-driver", "new-core"]
+    } else {
+        &["async-driver"]
+    };
+    let bios_dep = source.dep("crates/backend/ios/mobile", bios_features);
+    // User-crate dep: one core per build graph. New-core builds pin the
+    // dual-core app convention's feature; old-core builds pin `old-core`
+    // when the app declares it (dual-core apps default to new-core since
+    // the runtime-v2 defaults flip) and keep the historical plain path
+    // dep otherwise.
+    let user_dep = if new_core {
+        format!(
+            "{{ path = \"{}\", default-features = false, features = [\"new-core\"] }}",
+            project_dir.display(),
+        )
+    } else {
+        old_core_user_dep(project_dir)
+    };
 
     let cargo_toml = format!(
         r#"# GENERATED by `idealyst build ios`. Do not edit — rewritten
@@ -757,7 +850,7 @@ crate-type = ["staticlib"]
 
 [dependencies]
 runtime-core = {fcore_dep}
-{user_name} = {{ path = "{user_path}" }}
+{user_name} = {user_dep}
 
 [target.'cfg(target_os = "ios")'.dependencies]
 backend-ios-mobile = {bios_dep}
@@ -768,10 +861,120 @@ objc2-ui-kit = {{ version = "0.2", features = ["UIResponder", "UIView"] }}
         fcore_dep = fcore_dep,
         bios_dep = bios_dep,
         user_name = manifest.name,
-        user_path = project_dir.display(),
+        user_dep = user_dep,
     );
 
-    let lib_rs = format!(
+    let lib_rs = if new_core {
+        format!(
+            r#"//! GENERATED by `idealyst build ios` (new core). Mounts
+//! `{lib}::app()` under a UIView provided by the Swift host through
+//! `backend_ios::newcore::run_in_view` — per-app `World`, scene
+//! registry (`register_builtins` + the app's
+//! `register_scene_extensions` seam), dispatch-site flush driver.
+//! Boilerplate is identical for every project — only the `app()` call
+//! site changes.
+
+#![cfg(target_os = "ios")]
+
+use std::cell::RefCell;
+
+thread_local! {{
+    /// `run_in_view` returns a `NewCoreApp` (world + realized tree +
+    /// flush-driver hooks) that must outlive the mounted UI. Stashed
+    /// here so it survives `ios_main` returning; `ios_teardown` (and a
+    /// re-entrant `ios_main`) `stop()` it — the new-core analogue of
+    /// the old wrapper's `Owner` slot.
+    static APP: RefCell<Option<backend_ios::newcore::NewCoreApp>> = const {{ RefCell::new(None) }};
+}}
+
+/// C-exported entry point called by the Swift host from `viewDidLoad`.
+///
+/// # Safety
+/// - Must be invoked on the main thread.
+/// - `root_view` must be a non-null, valid `UIView *`.
+#[no_mangle]
+pub unsafe extern "C" fn ios_main(root_view: *mut std::ffi::c_void) {{
+    std::panic::set_hook(Box::new(|info| {{
+        eprintln!("RUST PANIC: {{}}", info);
+    }}));
+
+    // Idempotent re-entry: tear down any previous mount first (the
+    // old wrapper's OWNER-slot take).
+    APP.with(|slot| {{
+        if let Some(app) = slot.borrow_mut().take() {{
+            app.stop();
+        }}
+    }});
+
+    // Register the project's identity for the Robot bridge mDNS
+    // advertisement (shared substrate — core-agnostic). No-op when the
+    // `dev` feature is off (bridge isn't built).
+    #[cfg(feature = "dev")]
+    {{
+        ::runtime_core::robot::bridge::set_app_identity(
+            ::runtime_core::robot::bridge::AppIdentity {{
+                name: "{app_name}".to_string(),
+                bundle_id: Some("{bundle_id}".to_string()),
+                project_root: ::std::option::Option::None,
+            }},
+        );
+    }}
+
+    // `run_in_view` performs the same idempotent installs the old
+    // wrapper performed (scheduler, logger, global self-handle), opens
+    // the mount-buffering window, runs `register_builtins` + the app's
+    // `register_scene_extensions` seam on the scene registry, and
+    // realizes `app()` inside `World::enter`.
+    let app = unsafe {{
+        backend_ios::newcore::run_in_view(
+            root_view,
+            {lib}::register_scene_extensions,
+            || {lib}::app(),
+        )
+    }};
+    APP.with(|slot| *slot.borrow_mut() = Some(app));
+}}
+
+/// Tear down the active mount. Safe to call from anywhere on the main
+/// thread; idempotent — a no-op if nothing is mounted.
+#[no_mangle]
+pub unsafe extern "C" fn ios_teardown() {{
+    APP.with(|slot| {{
+        if let Some(app) = slot.borrow_mut().take() {{
+            app.stop();
+        }}
+    }});
+}}
+
+/// Cold-start deep-link hook — identical contract to the old-core
+/// wrapper (the initial-path slot lives in the shared substrate; the
+/// vocabulary navigator handlers peek the same slot at mount).
+///
+/// # Safety
+/// - Must be invoked on the main thread, before `ios_main`.
+/// - `path` must be a non-null, valid, NUL-terminated C string, or null
+///   (treated as "no deep link").
+#[no_mangle]
+pub unsafe extern "C" fn ios_set_launch_path(path: *const std::os::raw::c_char) {{
+    if path.is_null() {{
+        return;
+    }}
+    match unsafe {{ std::ffi::CStr::from_ptr(path) }}.to_str() {{
+        Ok(s) if !s.is_empty() => runtime_core::set_initial_path(Some(s.to_string())),
+        _ => {{}}
+    }}
+}}
+"#,
+            lib = manifest.lib_name,
+            app_name = manifest.name,
+            bundle_id = manifest
+                .app
+                .bundle_id
+                .clone()
+                .unwrap_or_else(|| format!("com.example.{}", manifest.name)),
+        )
+    } else {
+        format!(
         r#"//! GENERATED by `idealyst build ios`. Mounts `{lib}::app()` under a
 //! UIView provided by the Swift host. Boilerplate is identical for
 //! every project — only the `app()` call site changes.
@@ -898,7 +1101,8 @@ pub unsafe extern "C" fn ios_set_launch_path(path: *const std::os::raw::c_char) 
             .bundle_id
             .clone()
             .unwrap_or_else(|| format!("com.example.{}", manifest.name)),
-    );
+        )
+    };
 
     fs::write(wrapper_dir.join("Cargo.toml"), cargo_toml)?;
     fs::write(wrapper_dir.join("src/lib.rs"), lib_rs)?;
@@ -988,6 +1192,10 @@ mod regression_tests {
     }
 
     fn run_generator() -> (std::path::PathBuf, tempfile::TempDir) {
+        run_generator_core(false)
+    }
+
+    fn run_generator_core(new_core: bool) -> (std::path::PathBuf, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project_dir = tmp.path().join("project");
         let wrapper_dir = tmp.path().join("wrapper");
@@ -996,9 +1204,61 @@ mod regression_tests {
         std::fs::create_dir_all(&workspace_root).unwrap();
         let manifest = fake_manifest();
         let source = FrameworkSource::Workspace { root: workspace_root };
-        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest)
+        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, new_core)
             .expect("generate wrapper");
         (wrapper_dir, tmp)
+    }
+
+    /// The runtime-v2 defaults flip: `--new-core` (the default) boots
+    /// `ios_main` through `backend_ios::newcore::run_in_view`, compiles
+    /// the user crate single-core, and enables the backend's `new-core`
+    /// feature. Old-core wrappers stay byte-compatible (separate leg).
+    #[test]
+    fn new_core_wrapper_boots_run_in_view_single_core() {
+        let (wrapper_dir, _tmp) = run_generator_core(true);
+        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
+        let lib_rs = std::fs::read_to_string(wrapper_dir.join("src/lib.rs")).unwrap();
+        assert!(
+            cargo.contains("default-features = false, features = [\"new-core\"]"),
+            "new-core wrapper must compile the user crate single-core:\n{cargo}",
+        );
+        assert!(
+            cargo.contains("\"new-core\"") && cargo.contains("backend-ios-mobile"),
+            "new-core wrapper must enable backend-ios-mobile/new-core:\n{cargo}",
+        );
+        assert!(
+            lib_rs.contains("backend_ios::newcore::run_in_view"),
+            "new-core ios_main must boot through newcore::run_in_view:\n{lib_rs}",
+        );
+        assert!(
+            lib_rs.contains("register_scene_extensions"),
+            "new-core ios_main must register through the scene seam:\n{lib_rs}",
+        );
+    }
+
+    /// Old-core builds of an app that declares an `old-core` feature
+    /// pin the user crate single-core (dual-core apps default to
+    /// new-core after the flip); apps without the feature keep the
+    /// historical plain path dep.
+    #[test]
+    fn old_core_wrapper_pins_old_core_feature_when_declared() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        // No Cargo.toml → no old-core feature → plain path dep.
+        assert!(!old_core_user_dep(&project_dir).contains("old-core"));
+        std::fs::write(
+            project_dir.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\n\n[features]\nold-core = []\nnew-core = []\n",
+        )
+        .unwrap();
+        let dep = old_core_user_dep(&project_dir);
+        assert!(
+            dep.contains("default-features = false, features = [\"old-core\"]"),
+            "expected the single-core old-core pin, got: {dep}",
+        );
+        assert!(declares_feature(&project_dir, "new-core"));
+        assert!(!declares_feature(&project_dir, "sidecar"));
     }
 
     #[test]

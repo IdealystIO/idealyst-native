@@ -2,8 +2,8 @@
 
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives::virtualizer::{ItemKey, ItemSize, VirtualLayout, VirtualizerHandle};
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::primitives::virtualizer::{ItemKey, ItemSize, VirtualLayout, VirtualizerHandle};
 use runtime_scene::Element;
 
 use crate::style_attach::StyleProp;

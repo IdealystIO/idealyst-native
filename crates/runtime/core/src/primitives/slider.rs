@@ -8,27 +8,13 @@
 //! platforms behave identically regardless of native step support.
 
 use crate::{Bound, Element, Ref, RefFill, Signal};
-use std::any::Any;
 use std::rc::Rc;
 
-#[derive(Clone)]
-pub struct SliderHandle {
-    #[allow(dead_code)]
-    node: Rc<dyn Any>,
-    #[allow(dead_code)]
-    ops: &'static dyn SliderOps,
-}
-
-impl SliderHandle {
-    pub fn new(node: Rc<dyn Any>, ops: &'static dyn SliderOps) -> Self {
-        Self { node, ops }
-    }
-}
-
-pub trait SliderOps {
-    // No methods yet — slider value is fully reactive via the
-    // controlled signal.
-}
+// The data/handle/Ops types of this primitive moved to `runtime-shared`
+// (the walker-free half); this file keeps the Element/Bound builder
+// surface (and its tests). The wildcard re-export preserves every old
+// path.
+pub use runtime_shared::primitives::slider::*;
 
 /// Construct a controlled slider with default range 0.0..=1.0 and
 /// no step (continuous). Use `.range(min, max)` and `.step(step)` to

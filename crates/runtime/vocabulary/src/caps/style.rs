@@ -3,9 +3,9 @@
 
 use std::rc::Rc;
 
-use runtime_core::assets::{AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId};
-use runtime_core::breakpoint::Breakpoint;
-use runtime_core::{FontFamily, StateBits, StyleApplication, StyleRules, TokenEntry};
+use runtime_shared::assets::{AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId};
+use runtime_shared::breakpoint::Breakpoint;
+use runtime_shared::{FontFamily, StateBits, StyleApplication, StyleRules, TokenEntry};
 use runtime_scene::Host;
 
 /// The style engine's backend surface: applying resolved rules, class

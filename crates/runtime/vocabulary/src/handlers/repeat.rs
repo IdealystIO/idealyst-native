@@ -40,7 +40,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use runtime_core::{resolve_style, BackendBatch, BatchOp, StyleApplication};
+use runtime_shared::{resolve_style, BackendBatch, BatchOp, StyleApplication};
 use runtime_scene::{Element, LiveNode, MountCx, Registry};
 use runtime_world::Value;
 
@@ -118,7 +118,10 @@ where
     // returns and bulk-registered as ONE cohort entry (the dominant
     // old-core mount cost before bulk registration — see
     // `register_static_cohort_batch`'s rationale in walker/style.rs).
-    let mut style_attachments: Vec<(u32, StyleApplication)> = Vec::with_capacity(count);
+    // Kept BOXED end-to-end (`StyleProp::Sheet` carries the box): an
+    // unboxed `StyleApplication` is ~2.3 KB, and moving it into this
+    // vec / the members vec re-copies it per styled row.
+    let mut style_attachments: Vec<(u32, Box<StyleApplication>)> = Vec::with_capacity(count);
     let mut row_top_ids: Vec<u32> = Vec::with_capacity(count);
 
     // ThemeCtx captured ONCE for the whole expansion (the per-node
@@ -131,18 +134,18 @@ where
     // per (sheet, variants) — so a tiny ptr-keyed list drops the
     // per-row `mint_style_class` backend lookup (~10k hash probes per
     // 10k-row expansion) to one per distinct style.
-    let mut minted: Vec<(*const runtime_core::StyleRules, String)> = Vec::new();
+    let mut minted: Vec<(*const runtime_shared::StyleRules, String)> = Vec::new();
 
     #[cfg(feature = "debug-stats")]
-    let _t_enqueue = runtime_core::debug::now_micros();
+    let _t_enqueue = runtime_shared::debug::now_micros();
     for i in 0..count {
         #[cfg(feature = "debug-stats")]
-        let _t_row = runtime_core::debug::now_micros();
+        let _t_row = runtime_shared::debug::now_micros();
         let row = row_builder(i);
         #[cfg(feature = "debug-stats")]
-        runtime_core::debug::record_apply_phase(
+        runtime_shared::debug::record_apply_phase(
             "nc_repeat_row_build",
-            runtime_core::debug::now_micros().saturating_sub(_t_row),
+            runtime_shared::debug::now_micros().saturating_sub(_t_row),
         );
         let queued = enqueue_element(
             backend,
@@ -155,37 +158,38 @@ where
         row_top_ids.push(queued);
     }
     #[cfg(feature = "debug-stats")]
-    runtime_core::debug::record_apply_phase(
+    runtime_shared::debug::record_apply_phase(
         "nc_repeat_enqueue_loop",
-        runtime_core::debug::now_micros().saturating_sub(_t_enqueue),
+        runtime_shared::debug::now_micros().saturating_sub(_t_enqueue),
     );
 
     // Submit batch AND attach row tops to parent in one backend call
     // (web folds both into a single FFI — see the cap's docs).
     #[cfg(feature = "debug-stats")]
-    let _t_exec = runtime_core::debug::now_micros();
+    let _t_exec = runtime_shared::debug::now_micros();
     let nodes = backend
         .borrow_mut()
         .execute_batch_with_attach(batch, parent, &row_top_ids);
     #[cfg(feature = "debug-stats")]
-    runtime_core::debug::record_apply_phase(
+    runtime_shared::debug::record_apply_phase(
         "nc_repeat_execute_and_attach",
-        runtime_core::debug::now_micros().saturating_sub(_t_exec),
+        runtime_shared::debug::now_micros().saturating_sub(_t_exec),
     );
 
     // Bulk cohort registration: ONE slab entry + ONE teardown probe for
     // every styled row, regardless of N.
     #[cfg(feature = "debug-stats")]
-    let _t_cohort = runtime_core::debug::now_micros();
-    let mut members: Vec<(H::Node, StyleApplication)> = Vec::with_capacity(style_attachments.len());
+    let _t_cohort = runtime_shared::debug::now_micros();
+    let mut members: Vec<(H::Node, Box<StyleApplication>)> =
+        Vec::with_capacity(style_attachments.len());
     for (local_id, app) in style_attachments {
         members.push((nodes[local_id as usize].clone(), app));
     }
     register_static_cohort_batch(backend, members);
     #[cfg(feature = "debug-stats")]
-    runtime_core::debug::record_apply_phase(
+    runtime_shared::debug::record_apply_phase(
         "nc_repeat_cohort_bulk",
-        runtime_core::debug::now_micros().saturating_sub(_t_cohort),
+        runtime_shared::debug::now_micros().saturating_sub(_t_cohort),
     );
 
     // The live tree is an EMPTY fragment on purpose: batched rows carry
@@ -208,9 +212,9 @@ fn enqueue_element<H>(
     backend: &Rc<RefCell<H>>,
     batch: &mut BackendBatch,
     element: Element,
-    style_attachments: &mut Vec<(u32, StyleApplication)>,
+    style_attachments: &mut Vec<(u32, Box<StyleApplication>)>,
     ctx: &theme::ThemeCtx,
-    minted: &mut Vec<(*const runtime_core::StyleRules, String)>,
+    minted: &mut Vec<(*const runtime_shared::StyleRules, String)>,
 ) -> Option<u32>
 where
     H: BatchOps + StyleServices,
@@ -261,7 +265,7 @@ where
     // For a styled view, resolve & mint the class up front so the batch
     // ships a class-name string. Only the static-sheet arm batches; the
     // old walker's exact set (reactive/signal-class/preminted bail).
-    let resolved_class: Option<(String, Rc<runtime_core::StyleRules>, StyleApplication)> =
+    let resolved_class: Option<(String, Rc<runtime_shared::StyleRules>, Box<StyleApplication>)> =
         match prim.style {
             None => None,
             Some(StyleProp::Sheet(app)) => {
@@ -326,7 +330,7 @@ where
 /// `BulkStyleHandle::drop` order).
 fn register_static_cohort_batch<H: StyleServices>(
     backend: &Rc<RefCell<H>>,
-    members: Vec<(H::Node, StyleApplication)>,
+    members: Vec<(H::Node, Box<StyleApplication>)>,
 ) {
     if members.is_empty() {
         return;
@@ -338,7 +342,7 @@ fn register_static_cohort_batch<H: StyleServices>(
     // Single Rc-wrapped Vec shared between the cohort reapply closure
     // and the teardown probe (the old code's rationale: no per-row Rc
     // wrapping, `apply_sheet` takes `&StyleApplication`).
-    let members: Rc<Vec<(H::Node, StyleApplication)>> = Rc::new(members);
+    let members: Rc<Vec<(H::Node, Box<StyleApplication>)>> = Rc::new(members);
     let members_for_cohort = members.clone();
     let backend_for_cohort = backend.clone();
     let ctx_for_cohort = ctx.clone();
@@ -383,6 +387,6 @@ fn register_static_cohort_batch<H: StyleServices>(
         // (unit tests, native without scheduler). Sheet pinning holds
         // until the timer fires — the nodes are gone by then, so the
         // registration Weak may die with them, exactly as before.
-        runtime_core::scheduling::after_ms_detached(0, move || drop(members));
+        runtime_shared::scheduling::after_ms_detached(0, move || drop(members));
     });
 }

@@ -170,6 +170,15 @@ pub fn generate_wrapper(
             user_name = manifest.name,
             user_path = project_dir.display(),
         )
+    } else if build_ios::declares_feature(project_dir, "old-core") {
+        // Dual-core apps default to new-core since the runtime-v2
+        // defaults flip — the old-core build must pin single-core.
+        format!(
+            "{user_name} = {{ path = \"{user_path}\", default-features = false, \
+             features = [\"ssr\", \"old-core\"] }}",
+            user_name = manifest.name,
+            user_path = project_dir.display(),
+        )
     } else {
         format!(
             "{user_name} = {{ path = \"{user_path}\", features = [\"ssr\"] }}",

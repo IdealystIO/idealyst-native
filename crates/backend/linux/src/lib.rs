@@ -38,6 +38,16 @@ use runtime_layout::LayoutTree;
 use gtk4::glib;
 use gtk4::prelude::*;
 
+// Post-dispatch flush-hook slot (new-core flush driver). Unconditional
+// — the fire sites live in the out-of-repo host shell, which cannot
+// see this crate's features; no-op default so the old core never pays.
+pub mod dispatch_hook;
+
+// New-core (idea-lite) adoption: Host + all 30 caps traits on
+// `LinuxBackend`, UFCS-delegating to the `Backend` impl below.
+#[cfg(feature = "new-core")]
+pub mod newcore;
+
 // =========================================================================
 // Node
 // =========================================================================

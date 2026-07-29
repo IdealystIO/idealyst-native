@@ -3,6 +3,13 @@ resolver = "2"
 members = [
     # Runtime — platform-agnostic upper half (above the Backend Interface).
     "crates/runtime/core",
+    # The permanent shared substrate: runtime-core's non-walker half
+    # (style engine, assets, animation, touch, scheduling, robot, the
+    # shared prop/handle types, …), extracted so the new core
+    # (world/scene/vocabulary/facade) can depend on it WITHOUT pulling
+    # the old walker/Backend machinery. runtime-core re-exports all of
+    # it at the old paths, so old-core consumers compile unchanged.
+    "crates/runtime/shared",
     "crates/runtime/macros",
     # New reactive kernel (idea-lite core migration, P0): worlds, staged
     # commits, derivation-class flush. Parallel to runtime-core until the
@@ -79,6 +86,10 @@ members = [
     "crates/dev/web-host",
     "crates/dev/runtime-server-shell",
     "crates/dev/mock-backend",
+    # New-core test substrate: scene Host + all-30-caps recording mock
+    # (replaces the per-suite `impl Backend for Mini` + LegacyBridge
+    # combos, so new-core tests survive the old Backend trait's deletion).
+    "crates/dev/host-mock",
     "crates/dev/headless-screenshot",
     "crates/dev/robot-e2e",
     "crates/dev/robot-relay",
@@ -88,6 +99,11 @@ members = [
     "crates/dev/scene-parity",
     # Smoke app for backend-web's new-core boot path (idea-lite P3b).
     "crates/dev/newcore-web-smoke",
+    # Smoke app for the External-SDK wave: the canvas SDK (scene-registry
+    # renderer) on the new-core web boot — the wave's live-verification
+    # vehicle (an author draw closure + reactive repaint through a world
+    # effect, rendered by canvas-native's Canvas2D handler).
+    "crates/dev/newcore-canvas-smoke",
     # Smoke app for backend-macos's new-core boot path (idea-lite P4a).
     "crates/dev/newcore-macos-smoke",
     # Smoke app for backend-ios-mobile's new-core boot path (idea-lite,
@@ -364,6 +380,7 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 runtime-core = { path = "crates/runtime/core" }
+runtime-shared = { path = "crates/runtime/shared" }
 runtime-world = { path = "crates/runtime/world" }
 runtime-scene = { path = "crates/runtime/scene" }
 runtime-vocabulary = { path = "crates/runtime/vocabulary" }
@@ -398,6 +415,7 @@ wire = { path = "crates/dev/wire" }
 dev-client = { path = "crates/dev/client" }
 dev-server = { path = "crates/dev/server" }
 mock-backend = { path = "crates/dev/mock-backend" }
+host-mock = { path = "crates/dev/host-mock" }
 headless-screenshot = { path = "crates/dev/headless-screenshot" }
 robot-e2e = { path = "crates/dev/robot-e2e" }
 robot-relay = { path = "crates/dev/robot-relay" }
@@ -445,7 +463,11 @@ backend-ssr = { path = "crates/backend/ssr" }
 backend-email = { path = "crates/backend/email" }
 backend-windows = { path = "crates/backend/windows" }
 backend-linux = { path = "crates/backend/linux" }
-welcome = { path = "examples/welcome" }
+# default-features = false: welcome defaults to `new-core` since the
+# runtime-v2 flip; in-repo consumers (the website's embedded-sim
+# cluster) choose a core explicitly per graph, so the workspace spec
+# pins defaults OFF and each consumer's own feature set decides.
+welcome = { path = "examples/welcome", default-features = false }
 render-api = { path = "crates/gpu-backend/api" }
 render-wgpu = { path = "crates/gpu-backend/engine" }
 ios-sim = { path = "crates/gpu-backend/painter/ios-sim" }
@@ -464,38 +486,48 @@ variant-tablet = { path = "crates/gpu-backend/variant/tablet" }
 variant-tv = { path = "crates/gpu-backend/variant/tv" }
 runtime-server-shell-native = { path = "crates/dev/runtime-server-shell" }
 posix-log-capture = { path = "crates/backend/posix-log-capture" }
-idea-theme = { path = "crates/ui/idea-theme" }
-idea-ui = { path = "crates/ui/idea-ui" }
+# ── Runtime-v2 defaults flip ─────────────────────────────────────────
+# The dual-core UI/SDK crates below default to their `new-core` leg
+# since the flip. The workspace specs pin `default-features = false`
+# (re-listing the historical non-core defaults where a crate had them)
+# so every `{ workspace = true }` consumer keeps selecting a core
+# explicitly per graph — old-core parity/test graphs stay on the old
+# walker, new-core graphs forward `<crate>/new-core` themselves.
+idea-theme = { path = "crates/ui/idea-theme", default-features = false }
+idea-ui = { path = "crates/ui/idea-ui", default-features = false, features = [
+    "prim-icon", "prim-image", "prim-text-input", "prim-activity",
+    "prim-portal", "prim-presence", "table",
+] }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail" }
-idea-ui-nav = { path = "crates/ui/idea-ui-nav" }
+idea-ui-nav = { path = "crates/ui/idea-ui-nav", default-features = false }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive" }
 icons-lucide = { path = "crates/ui/icons-lucide" }
 pan = { path = "crates/sdk/client/pan" }
 zoom = { path = "crates/sdk/client/zoom" }
 dnd = { path = "crates/sdk/client/dnd" }
-maps = { path = "crates/sdk/client/maps" }
+maps = { path = "crates/sdk/client/maps", default-features = false }
 maps-core = { path = "crates/sdk/client/maps/core" }
-maps-web = { path = "crates/sdk/client/maps/web" }
+maps-web = { path = "crates/sdk/client/maps/web", default-features = false }
 maps-ios = { path = "crates/sdk/client/maps/ios" }
-codeblock = { path = "crates/sdk/client/codeblock" }
-markdown = { path = "crates/sdk/client/markdown" }
-webview = { path = "crates/sdk/client/webview" }
-video = { path = "crates/sdk/client/video" }
-svg = { path = "crates/sdk/client/svg" }
-canvas = { path = "crates/sdk/client/canvas" }
-canvas-core = { path = "crates/sdk/client/canvas/core" }
-canvas-native = { path = "crates/sdk/client/canvas/native" }
+codeblock = { path = "crates/sdk/client/codeblock", default-features = false }
+markdown = { path = "crates/sdk/client/markdown", default-features = false }
+webview = { path = "crates/sdk/client/webview", default-features = false }
+video = { path = "crates/sdk/client/video", default-features = false }
+svg = { path = "crates/sdk/client/svg", default-features = false }
+canvas = { path = "crates/sdk/client/canvas", default-features = false }
+canvas-core = { path = "crates/sdk/client/canvas/core", default-features = false }
+canvas-native = { path = "crates/sdk/client/canvas/native", default-features = false, features = ["self-register"] }
 canvas-vello = { path = "crates/sdk/client/canvas/vello" }
-toolbar = { path = "crates/sdk/client/toolbar" }
+toolbar = { path = "crates/sdk/client/toolbar", default-features = false }
 pdf = { path = "crates/sdk/client/pdf" }
-form = { path = "crates/sdk/client/form" }
-table = { path = "crates/sdk/client/table" }
+form = { path = "crates/sdk/client/form", default-features = false }
+table = { path = "crates/sdk/client/table", default-features = false }
 virtualized = { path = "crates/sdk/client/virtualized" }
 menu = { path = "crates/sdk/client/menu" }
 net = { path = "crates/sdk/client/net" }
 storage = { path = "crates/sdk/client/storage" }
 sync = { path = "crates/sdk/client/sync" }
-graphql = { path = "crates/sdk/client/graphql" }
+graphql = { path = "crates/sdk/client/graphql", default-features = false }
 microphone = { path = "crates/sdk/client/microphone" }
 camera = { path = "crates/sdk/client/camera" }
 media-stream = { path = "crates/sdk/client/media-stream" }
@@ -508,7 +540,7 @@ file-picker = { path = "crates/sdk/client/file-picker" }
 auto-update = { path = "crates/sdk/client/auto-update" }
 credentials = { path = "crates/sdk/client/credentials" }
 biometrics = { path = "crates/sdk/client/biometrics" }
-screen-recorder = { path = "crates/sdk/client/screen-recorder" }
+screen-recorder = { path = "crates/sdk/client/screen-recorder", default-features = false }
 files = { path = "crates/sdk/client/files" }
 i18n = { path = "crates/sdk/client/i18n" }
 i18n-macros = { path = "crates/sdk/client/i18n/macros" }
@@ -535,8 +567,8 @@ pubsub = { path = "crates/sdk/server/pubsub" }
 email = { path = "crates/sdk/server/email" }
 cache = { path = "crates/sdk/server/cache" }
 idealyst-config = { path = "crates/sdk/server/config" }
-swap-navigator = { path = "crates/sdk/client/navigators/swap" }
-stack-navigator = { path = "crates/sdk/client/navigators/stack" }
+swap-navigator = { path = "crates/sdk/client/navigators/swap", default-features = false }
+stack-navigator = { path = "crates/sdk/client/navigators/stack", default-features = false }
 android-navigator-helpers = { path = "crates/sdk/client/navigators/helpers/android" }
 ios-navigator-helpers = { path = "crates/sdk/client/navigators/helpers/ios" }
 

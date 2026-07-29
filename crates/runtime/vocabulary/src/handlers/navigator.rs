@@ -92,13 +92,13 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
-use runtime_core::primitives::navigator::{
+use runtime_shared::primitives::navigator::{
     consumed_prefix, current_nav_base, join_path, match_pattern, match_prefix,
     navigator_fill_rules, outlet_fill_rules, peek_initial_path, record_route_paths,
     screen_flow_fill_rules, set_initial_path, NavBaseGuard, NavCommand, ScreenRouteGuard,
     ScreenStateGuard,
 };
-use runtime_core::StyleRules;
+use runtime_shared::StyleRules;
 use runtime_scene::{component_scope, realize, Element, MountCx, Realized, Registry};
 use runtime_world::{effect, inject, provide, signal, Signal};
 
@@ -202,7 +202,9 @@ fn fold_prop(prop: Option<StyleProp>, rules: &Rc<StyleRules>) -> StyleProp {
         Some(StyleProp::Dynamic(f)) => {
             StyleProp::Dynamic(Box::new(move || Rc::new((*f()).clone().merge(&rules))))
         }
-        Some(StyleProp::Sheet(app)) => StyleProp::Sheet(app.with_overrides((*rules).clone())),
+        Some(StyleProp::Sheet(app)) => {
+            StyleProp::Sheet(Box::new((*app).with_overrides((*rules).clone())))
+        }
         Some(StyleProp::SheetDynamic(f)) => {
             StyleProp::SheetDynamic(Box::new(move || f().with_overrides((*rules).clone())))
         }
@@ -1353,7 +1355,7 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
     // (resolved at mount, old handler contract).
     let retention = match prim.retention {
         StackRetention::PlatformDefault => {
-            if matches!(runtime_core::platform(), runtime_core::Platform::Web) {
+            if matches!(runtime_shared::platform(), runtime_shared::Platform::Web) {
                 StackRetention::Rebuild
             } else {
                 StackRetention::Retain
@@ -1606,16 +1608,16 @@ pub fn mount_navigator_outlet<H: NavCaps + 'static>(
     // to old-core SSR (raw-apply skipped the fill and hashed
     // differently).
     let style = prim.style.unwrap_or_else(|| {
-        fn empty_sheet() -> Rc<runtime_core::StyleSheet> {
+        fn empty_sheet() -> Rc<runtime_shared::StyleSheet> {
             static KEY: u8 = 0;
-            runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
-                Rc::new(runtime_core::StyleSheet::r#static(StyleRules::default()))
+            runtime_shared::cached_stylesheet(&KEY as *const u8 as usize, || {
+                Rc::new(runtime_shared::StyleSheet::r#static(StyleRules::default()))
             })
         }
-        StyleProp::Sheet(
-            runtime_core::StyleApplication::new(empty_sheet())
+        StyleProp::Sheet(Box::new(
+            runtime_shared::StyleApplication::new(empty_sheet())
                 .with_computed("__navigator_outlet_fill", outlet_fill_rules),
-        )
+        ))
     });
     attach_style(&backend, &node, style);
     // Record into the innermost active capture cell so the enclosing

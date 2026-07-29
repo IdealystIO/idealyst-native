@@ -1,6 +1,6 @@
 //! The batched-Repeat fast path (one FFI round-trip for N static rows).
 
-use runtime_core::BackendBatch;
+use runtime_shared::BackendBatch;
 use runtime_scene::Host;
 
 /// Batched materialization of static View+Text repeat rows. Serves the

@@ -33,10 +33,27 @@
 //! layout belongs in a component layer (`idea-ui-mail`) — the same way the
 //! web backend stays layout-neutral and idea-ui owns the opinions.
 
+//! # New core (`new-core` feature)
+//!
+//! The crate also carries the idea-lite (new-core) render leg:
+//! [`newcore::render_email`] / [`newcore::render_email_with`] mirror the
+//! old entries 1:1 but realize the tree on a fresh `runtime_world::World`
+//! through the vocabulary's builtin handlers, with [`EmailBackend`]
+//! implementing `runtime_scene::Host` + all 30 capability traits
+//! directly. Additive — the old-core render path is untouched with or
+//! without the feature, and `tests/newcore_golden.rs` pins the two legs
+//! to byte-identical output for the same logical template.
+
 use runtime_core::accessibility::AccessibilityProps;
 use runtime_core::{Backend, StyleRules};
 use std::cell::RefCell;
 use std::rc::Rc;
+
+// New-core (idea-lite) adoption: Host + the 30 capability traits on
+// `EmailBackend`, plus the one-shot-world render entries. Additive —
+// see the module docs.
+#[cfg(feature = "new-core")]
+pub mod newcore;
 
 /// A self-contained node handle — like a DOM node, not an arena index.
 /// Children splice in via interior mutability (so a deferred reactive build
@@ -78,6 +95,28 @@ impl HtmlNode {
 
 fn nref(n: HtmlNode) -> NodeRef {
     Rc::new(RefCell::new(n))
+}
+
+/// Append an author style, deduping an immediate re-application of
+/// value-identical rules. Reactive style delivery re-applies a node's
+/// rules without the node having "changed" — the old core's state
+/// re-fires and the new core's theme-cohort reapply (which re-delivers
+/// every registered node's rules on a token install during mount) both
+/// do this — and email's append-only model would otherwise duplicate
+/// the inline CSS (`background: X; width: Y; background: X; width: Y`).
+/// Visually harmless (CSS source order last-wins on equal rules) but it
+/// bloats every email and breaks old/new byte parity
+/// (`tests/newcore_golden.rs::corpus_tokens_and_dropped_overlays`).
+/// A genuinely CHANGED style still appends; later entries keep winning
+/// via source order.
+fn push_style_dedup(node: &NodeRef, style: &Rc<StyleRules>) {
+    let mut n = node.borrow_mut();
+    if let Some(last) = n.styles.last() {
+        if Rc::ptr_eq(last, style) || **last == **style {
+            return;
+        }
+    }
+    n.styles.push(style.clone());
 }
 
 /// Set (or replace) an attribute on a node.
@@ -497,7 +536,7 @@ impl Backend for EmailBackend {
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
         // Store the resolved base style; flattened to inline CSS (tokens baked
         // to literals) at serialize time. NO class, NO head stylesheet.
-        node.borrow_mut().styles.push(style.clone());
+        push_style_dedup(node, style);
     }
 
     // Email opts into the "native state" model only so the walker hands us the
@@ -513,7 +552,7 @@ impl Backend for EmailBackend {
         base: &Rc<StyleRules>,
         _overlays: &[(runtime_core::StateBits, Rc<StyleRules>)],
     ) {
-        node.borrow_mut().styles.push(base.clone());
+        push_style_dedup(node, base);
     }
 
     fn apply_styled_variants(
@@ -526,7 +565,7 @@ impl Backend for EmailBackend {
     ) {
         // Email has no interaction and unreliable `@media`/`@container`
         // support — emit only the resolved base, drop every overlay.
-        node.borrow_mut().styles.push(base.clone());
+        push_style_dedup(node, base);
     }
 
     fn create_link(
@@ -940,6 +979,33 @@ mod tests {
         assert!(!html.contains("#000000"), "hover overlay dropped: {html}");
         assert!(!html.contains("500px"), "breakpoint overlay dropped: {html}");
         assert!(!html.contains("@media"), "no media queries in email: {html}");
+    }
+
+    /// Regression: re-applying value-identical rules to a node (what a
+    /// reactive style re-delivery does — old-core state re-fires, new-core
+    /// theme-cohort reapply on an in-build token install) must NOT
+    /// duplicate the inline CSS. A genuinely changed style still appends
+    /// (later wins via CSS source order).
+    #[test]
+    fn reapplying_identical_style_does_not_duplicate_inline_css() {
+        let mut b = EmailBackend::new();
+        let v = b.create_view(&AccessibilityProps::default());
+        let mk = |bg: &str| {
+            Rc::new(StyleRules {
+                background: Some(Tokenized::Literal(Color(bg.into()))),
+                ..Default::default()
+            })
+        };
+        // Same value, DIFFERENT Rc — the theme cohort re-resolves per apply.
+        b.apply_style(&v, &mk("#ff0000"));
+        b.apply_style(&v, &mk("#ff0000"));
+        // Changed value appends.
+        b.apply_style(&v, &mk("#00ff00"));
+        b.finish(v);
+        assert_eq!(
+            b.body_html(),
+            r#"<div style="background: #ff0000; background: #00ff00"></div>"#,
+        );
     }
 
     /// `render_email` produces a complete, self-contained document and a

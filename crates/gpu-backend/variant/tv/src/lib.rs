@@ -10,6 +10,12 @@ use runtime_core::{ColorScheme, Element};
 use host_winit::{run as run_core, DeviceProfile, RunError};
 use render_wgpu::Painter;
 
+// idea-lite core migration: `newcore::run`/`run_at`/`run_with` — the
+// new-core boot entries over `host_winit::newcore`, same window
+// profile. Off by default so the old-core build path is unchanged.
+#[cfg(feature = "new-core")]
+pub mod newcore;
+
 pub const WIDTH: u32 = 1920;
 pub const HEIGHT: u32 = 1080;
 pub const TITLE: &str = "Idealyst Preview — TV";

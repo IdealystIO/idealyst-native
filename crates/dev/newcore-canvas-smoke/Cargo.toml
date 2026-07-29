@@ -1,0 +1,34 @@
+# newcore-canvas-smoke — live-verification vehicle for the External-SDK
+# wave (idea-lite migration): the canvas SDK rendered through the scene
+# registry on the new-core web boot. Direct vocabulary-builder calls (no
+# macros — the newcore-web-smoke posture) build a tree containing a
+# `canvas::Canvas` whose draw closure reads a signal; a button bumps the
+# signal, and the repaint must flow through the SDK's world effect →
+# canvas-native's Canvas2D handler.
+#
+# Build + serve (from the repo root):
+#   wasm-pack build --target web --dev crates/dev/newcore-canvas-smoke
+#   python3 -m http.server 8090 -d crates/dev/newcore-canvas-smoke
+[package]
+name = "newcore-canvas-smoke"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Smoke app: the canvas SDK on the new-core web boot (External-SDK wave)."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+backend-web = { workspace = true, features = ["new-core"] }
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-core = { workspace = true }
+canvas = { workspace = true, features = ["new-core"] }
+# (default `self-register` stays on but is inert under new-core — the
+# inventory submit sites are cfg-gated out with the old-core register.)
+canvas-native = { workspace = true, features = ["new-core"] }
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["Window"] }
+console_error_panic_hook = "0.1"

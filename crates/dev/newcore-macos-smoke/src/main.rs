@@ -12,9 +12,12 @@
 //! dispatch-site wrapper flush), a two-way `toggle`, a structural Dyn
 //! hole (closure child), a keyed list with add/remove/reverse (keyed
 //! reconciliation against live NSViews), one literal `StyleRules` (the
-//! `StyleOps` delegation on the native apply-style path), and a
+//! `StyleOps` delegation on the native apply-style path), a
 //! `scroll_view` with an `on_scroll` author callback (the dispatch-site
-//! glue's tracking-loop proof surface — see the self-test below).
+//! glue's tracking-loop proof surface — see the self-test below), and a
+//! breakpoint-reactive text fed by the live viewport source (self-test
+//! phase 4 resizes the real NSWindow across the Xl threshold and
+//! asserts the bucket + the on-screen NSTextField followed).
 
 use runtime_core::{Length, StyleRules, Tokenized};
 use runtime_scene::{keyed, Element};
@@ -52,9 +55,16 @@ pub fn app() -> Element {
     let rows = signal(vec![1u32, 2, 3]);
     let next_row = signal(4u32);
     let scroll_y = signal(0.0f32);
+    // Live-viewport surface (self-test phase 4): the per-world
+    // breakpoint bucket, captured at the sanctioned position (inside
+    // the build — the ctx's memo pins the breakpoint table here). The
+    // reactive text below re-renders when a window resize crosses a
+    // bucket boundary: AppKit `setFrameSize:` → both viewport sinks →
+    // the world ctx → this memo → the f-string closure.
+    let bp = runtime_vocabulary::viewport::viewport_ctx().breakpoint();
 
-    // Headless live-verification hook (`NEWCORE_SMOKE_SELFTEST=1`), two
-    // phases, from real NSTimers on the real run loop:
+    // Headless live-verification hook (`NEWCORE_SMOKE_SELFTEST=1`),
+    // four phases, from real NSTimers on the real run loop:
     //
     // 1. **Hook-route commit** — stage a write from an `after_ms` body
     //    and later assert it was COMMITTED (a staged `set` is only
@@ -77,6 +87,23 @@ pub fn app() -> Element {
     //    turn (the run-loop state an AppKit control tracking loop /
     //    scroll drag creates) is still running. See
     //    `selftest::run_tracking_loop_scroll_test`.
+    // 4. **Live viewport → breakpoint recompute** (regression: native
+    //    new-core breakpoints frozen at their seed) — resize the real
+    //    NSWindow across the default 1280 pt Xl threshold and assert
+    //    both the captured bucket `ReadSignal` AND the on-screen
+    //    reactive NSTextField ("breakpoint = Xl") followed: the full
+    //    `setFrameSize:` → dual-sink → world-ctx → memo → f-string
+    //    chain against live AppKit.
+    // 5. **Embedded new-core wgpu simulator** — the tree carries a
+    //    `graphics` surface whose `on_ready` mounts
+    //    `host_macos_desktop::mount_newcore` (a tiny wgpu scene
+    //    realized into THIS app's world — see `mod embed`). Asserts
+    //    the mount landed and the embed's raf-driven tick signal
+    //    ADVANCES between two samples: the embedded scene's staged
+    //    writes commit through the app's own flush driver, the
+    //    one-world-per-thread contract of `start_in_world`. Render
+    //    evidence is the host's "[host-macos-desktop] first frame
+    //    presented" stderr line.
     //
     // Exits 0 on success / 1 on failure so a CI-ish caller can gate.
     #[cfg(target_os = "macos")]
@@ -94,6 +121,10 @@ pub fn app() -> Element {
         });
 
         runtime_core::scheduling::after_ms_detached(1500, move || {
+            // Presentation prerequisite for phase 5 (see
+            // `bring_window_front`'s docs): surface the window so the
+            // embedded wgpu host's CAMetalLayer can acquire drawables.
+            selftest::bring_window_front();
             count.set(41); // stages — the dispatch hook must commit it
             runtime_core::scheduling::after_ms_detached(700, move || {
                 let committed = count.get() == 41;
@@ -105,34 +136,78 @@ pub fn app() -> Element {
                 runtime_core::scheduling::after_ms_detached(400, move || {
                     let press_committed = count.get() == 42;
                     let tracking = selftest::run_tracking_loop_scroll_test();
-                    let ok = committed
-                        && views > 10
-                        && pressed
-                        && press_committed
-                        && tracking.committed_during_tracking
-                        && tracking.mode_at_commit == "NSEventTrackingRunLoopMode";
-                    println!(
-                        "[SMOKE-SELFTEST] committed={committed} views={views} \
-                         press_commit={press_committed} tracking_commit={} \
-                         mode_at_commit={} scroll_y={} verdict={}",
-                        tracking.committed_during_tracking,
-                        tracking.mode_at_commit,
-                        tracking.scroll_y,
-                        if ok { "PASS" } else { "FAIL" }
-                    );
-                    // The static tree alone mounts well over 10 views
-                    // (column + texts + buttons + toggle + dyn hole +
-                    // scroll view + keyed rows); a low count means
-                    // realize/finish didn't attach.
-                    std::process::exit(if ok { 0 } else { 1 });
+                    // Phase 4: live viewport → breakpoint recompute
+                    // (regression: native new-core breakpoints frozen
+                    // at their seed). The 480 pt launch width
+                    // classifies Xs on the default table; resize the
+                    // REAL window across the 1280 pt Xl threshold and
+                    // the AppKit autoresize chain must drive
+                    // `LayoutObserverView::setFrameSize:` → both
+                    // viewport sinks → the world ctx → the bucket memo
+                    // → the reactive breakpoint text in the live tree.
+                    let bp_before = bp.get();
+                    let resized = selftest::resize_window(1300.0, 600.0);
+                    runtime_core::scheduling::after_ms_detached(500, move || {
+                        let bp_after = bp.get();
+                        let bp_flipped = bp_before == runtime_core::Breakpoint::Xs
+                            && bp_after == runtime_core::Breakpoint::Xl;
+                        let bp_text_live = selftest::find_text("breakpoint = Xl");
+                        // Phase 5: embedded new-core wgpu simulator
+                        // (`host_macos_desktop::mount_newcore` — see
+                        // `mod embed`). Sample the embed's tick signal
+                        // now and again after a delay: an advancing
+                        // count proves the embedded scene's scoped raf
+                        // loop stages writes that the APP's flush
+                        // driver commits (one world, one driver). The
+                        // "[host-macos-desktop] first frame presented"
+                        // stderr line is the render-side evidence.
+                        let embed_mounted = embed::is_mounted();
+                        let ticks_before = embed::ticks_now().unwrap_or(0);
+                        runtime_core::scheduling::after_ms_detached(600, move || {
+                            let ticks_after = embed::ticks_now().unwrap_or(0);
+                            let embed_animates =
+                                embed_mounted && ticks_after > ticks_before;
+                            let ok = committed
+                                && views > 10
+                                && pressed
+                                && press_committed
+                                && tracking.committed_during_tracking
+                                && tracking.mode_at_commit == "NSEventTrackingRunLoopMode"
+                                && resized
+                                && bp_flipped
+                                && bp_text_live
+                                && embed_animates;
+                            println!(
+                                "[SMOKE-SELFTEST] committed={committed} views={views} \
+                                 press_commit={press_committed} tracking_commit={} \
+                                 mode_at_commit={} scroll_y={} \
+                                 bp_before={bp_before:?} bp_after={bp_after:?} \
+                                 bp_text_live={bp_text_live} \
+                                 embed_mounted={embed_mounted} \
+                                 embed_ticks={ticks_before}->{ticks_after} \
+                                 occlusion={} verdict={}",
+                                tracking.committed_during_tracking,
+                                tracking.mode_at_commit,
+                                tracking.scroll_y,
+                                selftest::window_occlusion(),
+                                if ok { "PASS" } else { "FAIL" }
+                            );
+                            // The static tree alone mounts well over 10
+                            // views (column + texts + buttons + toggle +
+                            // dyn hole + scroll view + keyed rows); a low
+                            // count means realize/finish didn't attach.
+                            std::process::exit(if ok { 0 } else { 1 });
+                        });
+                    });
                 });
             });
         });
     }
 
-    view()
+    let tree = view()
         .style(padded_column())
         .child(text().content("New-core macOS smoke"))
+        .child(text().content(move || format!("breakpoint = {:?}", bp.get())))
         .child(text().content(move || format!("count = {}", count.get())))
         .child(
             button()
@@ -191,8 +266,121 @@ pub fn app() -> Element {
                         .map(|n| text().content(format!("scroll line {n}")).build())
                         .collect(),
                 ),
-        )
-        .build()
+        );
+
+    // Embedded new-core wgpu simulator (the native mirror of the
+    // website's in-page preview): a `graphics` surface whose `on_ready`
+    // mounts `host_macos_desktop::mount_newcore`, realizing a tiny
+    // scene into THIS app's world
+    // (`backend_macos::newcore::mounted_world`). Self-test phase 5
+    // asserts the mount landed and that the embed's raf-driven tick
+    // signal advances — the staged writes commit through the APP's
+    // flush driver (one thread, one world, one logical update stream).
+    #[cfg(target_os = "macos")]
+    let tree = tree.child(
+        runtime_vocabulary::graphics(embed::mount).style(embed::embed_region()),
+    );
+
+    tree.build()
+}
+
+/// Embedded new-core wgpu simulator — the smoke's live proof of the
+/// `host_macos_desktop::mount_newcore` seam (self-test phase 5).
+///
+/// The `graphics` primitive's `on_ready` hands over a CAMetalLayer
+/// surface; the async wgpu init rides `driver::spawn_async` (the
+/// libdispatch executor `install_scheduler` provides under
+/// `async-driver`), and the embedded tree realizes into THIS app's
+/// world via `backend_macos::newcore::mounted_world()` — no second
+/// flush driver, no viewport clobber (`start_in_world` installs
+/// neither).
+#[cfg(target_os = "macos")]
+mod embed {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    use runtime_core::primitives::graphics::OnReadyEvent;
+    use runtime_core::{Length, StyleRules, Tokenized};
+    use runtime_vocabulary::{text, view};
+    use runtime_world::Signal;
+
+    /// Embed viewport in logical px — small on purpose (a preview
+    /// strip, not a second app).
+    const EMBED_W: u32 = 220;
+    const EMBED_H: u32 = 120;
+
+    thread_local! {
+        /// The live embed handle (drop = unmount). `!Send` wgpu state —
+        /// a plain thread-local slot, same shape as the website
+        /// simulator's handle slot.
+        static HANDLE: RefCell<Option<host_macos_desktop::MacosHostHandle>> =
+            const { RefCell::new(None) };
+        /// The embedded scene's tick signal (`Copy` handle). Phase 5
+        /// reads it from the outer app to prove the embed animates
+        /// through the SHARED world's flush driver.
+        static TICKS: Cell<Option<Signal<i32>>> = const { Cell::new(None) };
+    }
+
+    /// Fixed-size region for the `graphics` surface.
+    pub fn embed_region() -> StyleRules {
+        StyleRules {
+            width: Some(Tokenized::Literal(Length::Px(EMBED_W as f32))),
+            height: Some(Tokenized::Literal(Length::Px(EMBED_H as f32))),
+            ..StyleRules::default()
+        }
+    }
+
+    /// True once `mount_newcore` resolved Ok.
+    pub fn is_mounted() -> bool {
+        HANDLE.with(|h| h.borrow().is_some())
+    }
+
+    /// Current embedded tick count (`None` until the embed built).
+    /// Bare `get()` is legal off-world: handles route to their own
+    /// world for reads.
+    pub fn ticks_now() -> Option<i32> {
+        TICKS.with(|t| t.get()).map(|s| s.get())
+    }
+
+    /// `graphics` `on_ready` → async wgpu init → `mount_newcore` into
+    /// the app's world.
+    pub fn mount(event: OnReadyEvent) {
+        let surface = event.surface;
+        let size = event.size;
+        runtime_core::driver::spawn_async(async move {
+            let profile = host_macos_desktop::DeviceProfile {
+                logical_size: (EMBED_W, EMBED_H),
+                position: None,
+                title: String::new(),
+                color_scheme: runtime_core::ColorScheme::Light,
+            };
+            let skin: Rc<dyn host_macos_desktop::Painter> =
+                Rc::new(render_wgpu::NativeSkin::new(runtime_core::Platform::MacOs));
+            let build = Rc::new(|| {
+                let ticks = runtime_world::signal(0i32);
+                TICKS.with(|t| t.set(Some(ticks)));
+                // Scoped raf loop: the build position anchors it to the
+                // embed's `collect_owned` harvest (collector-owned
+                // keepalive), so it dies at embed unmount. Each tick's
+                // staged write commits via the APP's flush driver — the
+                // one-world-per-thread seam phase 5 proves.
+                runtime_vocabulary::scoped_scheduling::raf_loop_scoped(move || {
+                    ticks.update(|n| n + 1);
+                });
+                view()
+                    .child(text().content(move || format!("embed ticks = {}", ticks.get())))
+                    .build()
+            });
+            match host_macos_desktop::mount_newcore(surface, size, profile, skin, build).await
+            {
+                Ok(handle) => {
+                    eprintln!("[SMOKE-EMBED] mounted (newcore, {}x{} px)", size.0, size.1);
+                    HANDLE.with(|h| *h.borrow_mut() = Some(handle));
+                }
+                Err(e) => eprintln!("[SMOKE-EMBED] mount failed: {e}"),
+            }
+        });
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -344,6 +532,95 @@ mod selftest {
             mode_at_commit: COMMIT_MODE.with(|m| m.borrow().clone()),
             scroll_y: COMMIT_SCROLL_Y.with(|c| c.get()),
         }
+    }
+
+    /// Resize the app's real NSWindow (phase 4's trigger).
+    /// `setFrame:display:` drives the same content-view autoresize
+    /// chain a user drag does — host root → `LayoutObserverView`'s
+    /// `setFrameSize:` — short of posting window-server drag events
+    /// (which need accessibility grants a headless self-test can't
+    /// assume). Returns false if no window is up.
+    /// Bring the smoke window on screen (activate the app + order the
+    /// window front). The embedded-wgpu phase presents through
+    /// `CAMetalLayer.nextDrawable`, which wgpu SKIPS
+    /// (`SurfaceError::Occluded`) while the window's `occlusionState`
+    /// lacks the visible bit — e.g. when the smoke launches behind a
+    /// fullscreen editor. A self-test that must PRESENT is entitled to
+    /// put its window where presentation is possible. (If the display
+    /// itself is asleep/locked, nothing can help — phase 5's verdict
+    /// therefore rides the tick signal, with presentation logged as
+    /// separate evidence.)
+    pub fn bring_window_front() {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let app = NSApplication::sharedApplication(mtm);
+        let _: () = unsafe { objc2::msg_send![&*app, activateIgnoringOtherApps: true] };
+        if let Some(window) = app.windows().iter().next() {
+            let _: () = unsafe { objc2::msg_send![&*window, orderFrontRegardless] };
+        }
+    }
+
+    /// Raw `NSWindow.occlusionState` bits (diagnostic — bit 1 set =
+    /// visible on screen, the gate wgpu's Metal acquire checks).
+    pub fn window_occlusion() -> usize {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return 0;
+        };
+        let app = NSApplication::sharedApplication(mtm);
+        let windows = app.windows();
+        let Some(window) = windows.iter().next() else {
+            return 0;
+        };
+        unsafe { objc2::msg_send![&*window, occlusionState] }
+    }
+
+    pub fn resize_window(width: f64, height: f64) -> bool {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return false;
+        };
+        let app = NSApplication::sharedApplication(mtm);
+        let windows = app.windows();
+        let Some(window) = windows.iter().next() else {
+            return false;
+        };
+        let mut frame: objc2_foundation::CGRect = unsafe { objc2::msg_send![&*window, frame] };
+        frame.size.width = width;
+        frame.size.height = height;
+        let _: () = unsafe { objc2::msg_send![&*window, setFrame: frame, display: true] };
+        true
+    }
+
+    /// True if any live NSTextField under the key window currently
+    /// shows exactly `want` — real-AppKit evidence that a reactive
+    /// f-string re-rendered (phase 4 reads "breakpoint = Xl" after the
+    /// resize).
+    pub fn find_text(want: &str) -> bool {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return false;
+        };
+        let app = NSApplication::sharedApplication(mtm);
+        let windows = app.windows();
+        let Some(window) = windows.iter().next() else {
+            return false;
+        };
+        let Some(content) = window.contentView() else {
+            return false;
+        };
+        fn walk(view: &NSView, want: &str) -> bool {
+            let is_field: bool =
+                unsafe { objc2::msg_send![view, isKindOfClass: objc2::class!(NSTextField)] };
+            if is_field {
+                let value: Option<objc2::rc::Retained<NSString>> =
+                    unsafe { objc2::msg_send_id![view, stringValue] };
+                if value.map(|v| v.to_string()).as_deref() == Some(want) {
+                    return true;
+                }
+            }
+            let subviews = unsafe { view.subviews() };
+            subviews.iter().any(|v| walk(&v, want))
+        }
+        walk(&content, want)
     }
 
     /// Find the live NSButton titled `title` under the key window and

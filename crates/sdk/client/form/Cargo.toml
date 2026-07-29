@@ -28,10 +28,52 @@ license.workspace = true
 # `<form>` element only contributes web UX/integration (Enter-to-submit,
 # autofill, preventDefault), never the source of truth for data.
 
+[features]
+# Runtime-v2 defaults flip: the new-core leg is the default surface;
+# the old-core leg is the opt-in (`--no-default-features` — in-repo
+# consumers ride the workspace dep spec, which pins defaults off and
+# selects a core explicitly per graph).
+default = ["new-core"]
+# Old-core marker for uniform `--no-default-features --features
+# old-core` invocations (the old-core deps are unconditional).
+old-core = []
+# Idea-lite migration: re-express the SAME authored surface (`FormProps`
+# / `form(props)` / the `Form` ui! tag / `FormHandle` + `.bind(r)` + a
+# bootstrap `register`) over the scene registry — the new core's unified
+# primitive==external contract. Default-off and MUTUALLY EXCLUSIVE with
+# the old-core surface (the two define the same public names — one core
+# per build, mirroring the runtime-macros/new-core build-graph-wide
+# switch; a consuming app crate forwards this from its own new-core
+# feature). The old-core modules are byte-untouched under the default
+# build. `backend-web/new-core` is needed because the wasm32 handler is
+# `WebBackend`-concrete (the real `<form>` + submit listener has no
+# caps-trait expression, and the listener must call
+# `backend_web::newcore::schedule_flush`) and `Registry<WebBackend>`
+# needs the backend's new-core `Host` impl.
+new-core = [
+    "dep:runtime-vocabulary",
+    "dep:runtime-scene",
+    "backend-web/new-core",
+]
+
 [dependencies]
 runtime-core = { workspace = true }
-# Self-registration of the per-backend external handler at construction.
+# New-core surface (feature `new-core`): the scene registry + the
+# vocabulary caps the handlers drive (`ExternalOps::create_external`
+# placeholder path) + `style_attach` for the author-style channel. No
+# `runtime-world` — the form handler runs no effects (the submit
+# listener is a plain DOM callback).
+runtime-scene = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
+# Self-registration of the per-backend external handler at construction
+# (old core only — the new core registers explicitly at the boot seam).
 inventory = "0.3"
+
+[dev-dependencies]
+# tests/newcore.rs (`--features new-core`) mounts `Form { .. }` through
+# the scene registry end-to-end on the shared host-mock recording
+# substrate; the old-core unit tests live inside src/oldcore.rs.
+host-mock = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }

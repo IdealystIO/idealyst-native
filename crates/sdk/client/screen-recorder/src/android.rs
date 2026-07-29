@@ -373,6 +373,11 @@ use backend_android::AndroidBackend;
 /// window decor view; a view added via `WindowManager.addView` lives in
 /// its own window outside that decor view, so it's visible to the user
 /// but absent from the recording.
+// Old-core only: the PixelCopy-excluded window rides the old
+// `ExternalRegistry`; the new-core leg renders the layer inline via
+// `private_layer::register_scene` until the new-core native boots grow
+// an external-window story (see private_layer_newcore.rs).
+#[cfg(not(feature = "new-core"))]
 pub fn register(backend: &mut AndroidBackend) {
     backend.register_external::<crate::PrivateLayerProps, _>(|_props, b| {
         b.create_private_layer_window()
@@ -381,6 +386,7 @@ pub fn register(backend: &mut AndroidBackend) {
 
 // Self-register at backend construction (no app-side `register` call needed).
 // See [[project_inventory_self_registration]].
+#[cfg(not(feature = "new-core"))]
 inventory::submit! {
     backend_android::AndroidExternalRegistrar(register)
 }

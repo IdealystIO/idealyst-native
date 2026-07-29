@@ -797,6 +797,12 @@ pub fn is_eof(e: &std::io::Error) -> bool {
 
 #[cfg(feature = "runtime-server")]
 pub use runtime::run;
+// `mod runtime` itself is `runtime-server`-gated, so the new-core
+// session entry needs BOTH features (the recorder-only `new-core`
+// consumer — mock-backend's harness — uses `newcore::SceneSession`
+// directly and never links the sidecar loop).
+#[cfg(all(feature = "runtime-server", feature = "new-core"))]
+pub use runtime::run_newcore;
 
 #[cfg(feature = "runtime-server")]
 mod runtime {
@@ -862,6 +868,56 @@ mod runtime {
         app: fn() -> Element,
         register_extensions: fn(&mut WireRecordingBackend),
     ) -> std::io::Result<()> {
+        run_loop(move |session, rx, out, viewport| {
+            run_session_thread(session, rx, out, app, register_extensions, viewport)
+        })
+    }
+
+    /// New-core sibling of [`run`] — same host IPC protocol, same
+    /// session lifecycle, but each session mounts the user's **scene**
+    /// tree through [`crate::newcore::SceneSession`] (per-session
+    /// `World` + `runtime_vocabulary::register_builtins` + `realize`)
+    /// instead of the old-core `runtime_core::mount` walker. The wire
+    /// output is the compatibility contract: the recorder's caps impls
+    /// delegate to the same `Backend` emission code, so clients can't
+    /// tell which core produced the stream.
+    ///
+    /// `register` is the scene-registry seam (the recorder twin of the
+    /// web wrapper's `register_scene_extensions`); the generated
+    /// `--new-core` sidecar wrapper passes the user crate's
+    /// `register_scene_extensions_recorder`.
+    ///
+    /// Hot-patch note: the `#[component]` macro's new-core emission has
+    /// no `dev_hot` split yet, so `ApplyPatch` frames are refused with a
+    /// log line (returning to the host's rebuild-and-respawn path)
+    /// instead of silently re-rendering unpatched code.
+    #[cfg(feature = "new-core")]
+    pub fn run_newcore(
+        app: fn() -> crate::newcore::SceneElement,
+        register: fn(&mut crate::newcore::SceneRegistry),
+    ) -> std::io::Result<()> {
+        run_loop(move |session, rx, out, viewport| {
+            run_session_thread_newcore(session, rx, out, app, register, viewport)
+        })
+    }
+
+    /// Shared host-IPC loop behind [`run`] / [`run_newcore`]. The only
+    /// per-core difference is the session-thread body, so it arrives as
+    /// a closure; everything else (crash handler, scheduler install,
+    /// ASLR hello, session routing, patch fan-out, screenshot /
+    /// device-frame correlation) is identical for both cores.
+    fn run_loop<F>(session_body: F) -> std::io::Result<()>
+    where
+        F: Fn(
+                String,
+                mpsc::Receiver<SessionMsg>,
+                Arc<Mutex<std::io::Stdout>>,
+                Option<wire::WireViewport>,
+            ) + Send
+            + Sync
+            + Clone
+            + 'static,
+    {
         // Install a SIGSEGV/SIGBUS handler so silent dylib-call
         // crashes (from a hot-patched function jumping to a bad
         // address) print the faulting address before the process
@@ -945,18 +1001,12 @@ mod runtime {
                     // `stp x29, x30, [sp, #-0x10]!`) with sp pointing
                     // outside the mapped stack region — classic
                     // stack-overflow signature on macOS aarch64.
+                    let body = session_body.clone();
                     let join = std::thread::Builder::new()
                         .name(format!("aas-session-{session}"))
                         .stack_size(16 * 1024 * 1024)
                         .spawn(move || {
-                            run_session_thread(
-                                session_for_thread,
-                                rx,
-                                out_clone,
-                                app,
-                                register_extensions,
-                                viewport,
-                            );
+                            body(session_for_thread, rx, out_clone, viewport);
                         })
                         .expect("spawn session thread");
                     sessions.insert(session.clone(), SessionHandle { tx, join });
@@ -1335,6 +1385,226 @@ mod runtime {
             }
         }
         drop(owner);
+    }
+
+    /// New-core session worker — the [`run_session_thread`] twin for
+    /// scene mounts. Owns a `WireRecordingBackend` plus a
+    /// [`crate::newcore::SceneSession`] (per-session `World` +
+    /// realized scene). Differences from the old-core body, each
+    /// deliberate:
+    ///
+    /// - **Mount**: `SceneSession::mount` (world + `register_builtins`
+    ///   + `realize` + `finish` + first flush) instead of
+    ///   `runtime_core::mount`. No `dev_hot::with_retry` wrapper — the
+    ///   new-core `#[component]` emission has no hot-dispatch split,
+    ///   so there is no stale-pointer panic to retry.
+    /// - **Event commit**: world signals have no ambient flush driver
+    ///   on this thread, so every dispatched message is followed by
+    ///   `session.flush()` BEFORE the command drain — that's what
+    ///   makes an event's effects emit their wire deltas into this
+    ///   drain instead of the next one.
+    /// - **Rerender**: drop the session (cleanups fire against the
+    ///   live world), reset the recorder log/scene, remount fresh.
+    ///   Node/style id memos survive the reset exactly as on the old
+    ///   core, but the new-core realize path doesn't set ambient
+    ///   identities yet, so remounts mint fresh ids and clients
+    ///   rebuild from the epoch-bumped snapshot (see
+    ///   `crate::newcore` module docs — named gap, not silent).
+    #[cfg(feature = "new-core")]
+    fn run_session_thread_newcore(
+        session: String,
+        rx: mpsc::Receiver<SessionMsg>,
+        out: Arc<Mutex<std::io::Stdout>>,
+        app: fn() -> crate::newcore::SceneElement,
+        register: fn(&mut crate::newcore::SceneRegistry),
+        initial_viewport: Option<wire::WireViewport>,
+    ) {
+        // Same thread-level installs as the old-core body: IPC sink for
+        // device-frame round-trips, the Tokio-backed async executor,
+        // and the session viewport (read by `RecordingViewOps::frame`).
+        set_session_sink(out.clone(), session.clone());
+        let recorder = WireRecordingBackend::new();
+        crate::async_executor::install();
+        if let Some(v) = initial_viewport {
+            crate::set_session_viewport(v.width, v.height);
+        }
+
+        let mount = || crate::newcore::SceneSession::mount(&recorder, |r| register(r), app);
+        // `Rc<RefCell<Option<...>>>` (not a plain local) so the Robot
+        // driver-env closures installed below can reach the CURRENT
+        // session across Rerender remounts.
+        let scene_session: Rc<RefCell<Option<crate::newcore::SceneSession>>> =
+            Rc::new(RefCell::new(None));
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(mount)) {
+            Ok(s) => *scene_session.borrow_mut() = Some(s),
+            Err(e) => {
+                let msg = panic_payload_to_string(&e);
+                eprintln!("[runtime-server-app] {session}: PANIC during scene mount: {msg}");
+                return;
+            }
+        };
+
+        // -------------------------------------------------------------
+        // Robot bridge + MCP catalog for the new-core session (wave 2b).
+        // The old-core path gets all of this from `runtime_core::mount`
+        // (bridge auto-start) + the walker (registry population); the
+        // scene mount does neither, so the session thread wires the
+        // three pieces explicitly:
+        //
+        // 1. DRIVER ENV — vocabulary robot queries must run with the
+        //    session's world entered (label_fn reads world signals) and
+        //    actions must settle synchronously (`SceneSession::flush`)
+        //    so a verb's staged writes commit before its reply — the
+        //    same contract backend-web installs in `robot_transport`.
+        // 2. VERB ROUTER — the shared TCP bridge dispatches against the
+        //    OLD registry, which a new-core session leaves empty (a
+        //    `find_element` would answer `null`, silently blinding
+        //    drivers). The router forwards verbs the vocabulary bridge
+        //    owns to `runtime_vocabulary::robot::bridge::invoke_command`
+        //    (wire-identical responses) and falls back — keyed on the
+        //    exact `unknown command:` marker so real verb errors are
+        //    never masked — for the registry-INDEPENDENT verbs the old
+        //    dispatch still owns: `get_catalog` (the MCP catalog, linked
+        //    via the wrapper's `catalog` features), `get_logs`, and
+        //    customs like the `screenshot` verb registered above.
+        // 3. BRIDGE TRANSPORT — relay dial-out when the dev tooling
+        //    injected `IDEALYST_ROBOT_RELAY_URL`, else a self-hosted
+        //    TCP listener + `~/.idealyst/apps` registration (byte-for-
+        //    byte the old `mount` auto-start block). The poll timer
+        //    rides the sidecar scheduler, driven by client
+        //    `RequestFrame`s like every other scheduled task.
+        {
+            crate::newcore::install_robot_env(&scene_session);
+            if let Some(url) = runtime_core::robot::bridge::relay_url_from_env() {
+                runtime_core::robot::bridge::start_relay_client(url);
+            } else {
+                runtime_core::robot::bridge::start_auto_polling(
+                    runtime_core::robot::bridge::DEFAULT_PORT,
+                );
+            }
+        }
+
+        // Headless `screenshot` Robot verb — identical to the old-core
+        // registration: the recorder's scene snapshot is core-agnostic.
+        #[cfg(feature = "screenshot")]
+        {
+            let snap_recorder = recorder.clone();
+            let size = initial_viewport
+                .map(|v| (v.width.round() as u32, v.height.round() as u32))
+                .unwrap_or((393, 800));
+            let out_for_shot = out.clone();
+            let session_for_shot = session.clone();
+            runtime_core::robot::bridge::register_command("screenshot", move |args| {
+                let source = args.get("source").and_then(|v| v.as_str()).unwrap_or("auto");
+                if source == "client" || source == "auto" {
+                    match capture_via_client(&out_for_shot, &session_for_shot) {
+                        Ok((png, w, h)) => return screenshot_json(&png, w, h),
+                        Err(e) => {
+                            if source == "client" {
+                                return Err(format!("real-client capture failed: {e}"));
+                            }
+                            eprintln!(
+                                "[runtime-server-app] screenshot: client capture unavailable \
+                                 ({e}); falling back to wgpu replay"
+                            );
+                        }
+                    }
+                }
+                let w = args.get("width").and_then(|v| v.as_u64()).unwrap_or(size.0 as u64) as u32;
+                let h = args.get("height").and_then(|v| v.as_u64()).unwrap_or(size.1 as u64) as u32;
+                let commands = snap_recorder.snapshot();
+                let png = headless_screenshot::screenshot_commands(w, h, commands)?;
+                screenshot_json(&png, w, h)
+            });
+        }
+
+        let mut cursor = recorder.command_count();
+        let initial = recorder.snapshot();
+        if !initial.is_empty() {
+            if let Ok(mut o) = out.lock() {
+                let _ = write_frame(
+                    &mut *o,
+                    &SidecarOut::Commands { session: session.clone(), cmds: initial },
+                );
+                let _ = o.flush();
+            }
+        }
+
+        while let Ok(msg) = rx.recv() {
+            match msg {
+                SessionMsg::Event(app_to_dev) => {
+                    dispatch_app_to_dev(&recorder, app_to_dev);
+                    // Commit: run the effects the dispatched event's
+                    // signal writes scheduled, so their wire deltas are
+                    // in the drain below.
+                    if let Some(s) = scene_session.borrow().as_ref() {
+                        s.flush();
+                    }
+                }
+                SessionMsg::Rerender => {
+                    // Reached only if the host applied a patch anyway —
+                    // `run_newcore` can't rebind new-core component
+                    // bodies (no hot-dispatch emission), but a full
+                    // re-realize against the current process image is
+                    // still coherent, so honour the request the same
+                    // way a respawn would: fresh scene, fresh snapshot.
+                    let drop_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                        || drop(scene_session.borrow_mut().take()),
+                    ));
+                    if let Err(e) = drop_result {
+                        let msg = panic_payload_to_string(&e);
+                        eprintln!(
+                            "[runtime-server-app] {session}: PANIC during scene-session drop: {msg}"
+                        );
+                        return;
+                    }
+                    recorder.reset_log_and_scene();
+                    let remount =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(mount));
+                    match remount {
+                        Ok(s) => *scene_session.borrow_mut() = Some(s),
+                        Err(e) => {
+                            let msg = panic_payload_to_string(&e);
+                            eprintln!(
+                                "[runtime-server-app] {session}: PANIC during scene remount: {msg}"
+                            );
+                            return;
+                        }
+                    };
+                    cursor = 0;
+                    if let Ok(mut o) = out.lock() {
+                        let _ = write_frame(
+                            &mut *o,
+                            &SidecarOut::SessionReset { session: session.clone() },
+                        );
+                        let _ = o.flush();
+                    }
+                }
+                SessionMsg::Shutdown => {
+                    eprintln!("[runtime-server-app] session {session} shutting down");
+                    runtime_core::robot::bridge::clear_verb_router();
+                    runtime_vocabulary::robot::clear_driver_env();
+                    drop(scene_session.borrow_mut().take());
+                    return;
+                }
+            }
+
+            let count_now = recorder.command_count();
+            if count_now > cursor {
+                let new_cmds = recorder.commands_since(cursor);
+                cursor = count_now;
+                if let Ok(mut o) = out.lock() {
+                    let _ = write_frame(
+                        &mut *o,
+                        &SidecarOut::Commands { session: session.clone(), cmds: new_cmds },
+                    );
+                    let _ = o.flush();
+                }
+            }
+        }
+        runtime_core::robot::bridge::clear_verb_router();
+        runtime_vocabulary::robot::clear_driver_env();
+        drop(scene_session.borrow_mut().take());
     }
 
     /// Mirror of the legacy `handle_app_msg` in

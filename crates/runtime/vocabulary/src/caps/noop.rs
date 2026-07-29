@@ -10,7 +10,7 @@
 
 use std::any::Any;
 
-use runtime_core::primitives;
+use runtime_shared::primitives;
 
 pub(crate) struct NoopIconOps;
 impl primitives::icon::IconOps for NoopIconOps {}
@@ -71,17 +71,17 @@ pub(crate) struct NoopPortalOps;
 impl primitives::portal::PortalOps for NoopPortalOps {}
 
 pub(crate) struct NoopButtonOps;
-impl runtime_core::ButtonOps for NoopButtonOps {
+impl runtime_shared::ButtonOps for NoopButtonOps {
     fn click(&self, _node: &dyn Any) {}
 }
 
 pub(crate) struct NoopPressableOps;
-impl runtime_core::PressableOps for NoopPressableOps {
+impl runtime_shared::PressableOps for NoopPressableOps {
     fn click(&self, _node: &dyn Any) {}
 }
 
 pub(crate) struct NoopViewOps;
-impl runtime_core::ViewOps for NoopViewOps {}
+impl runtime_shared::ViewOps for NoopViewOps {}
 
 pub(crate) struct NoopTextOps;
-impl runtime_core::TextOps for NoopTextOps {}
+impl runtime_shared::TextOps for NoopTextOps {}

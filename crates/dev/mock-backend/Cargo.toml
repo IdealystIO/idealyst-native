@@ -43,7 +43,16 @@ screenshot = ["dep:headless-screenshot"]
 runtime-core = { workspace = true, features = ["robot"] }
 wire = { workspace = true }
 dev-client = { workspace = true }
-dev-server = { workspace = true }
+# `new-core` compiles the recorder's caps adoption (`dev_server::newcore`)
+# so this crate's `NewCoreWireHarness` can mount scene trees through a
+# per-session `World` + `realize` — the new-core leg of the wire-behavior
+# gate (`tests/wire_behavior_newcore.rs`). Test-only crate, so the extra
+# deps cost nothing shipped.
+dev-server = { workspace = true, features = ["new-core"] }
+# Scene trees + world signals for the new-core harness / tests.
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-world = { workspace = true }
 # The over-socket harness drives the real native client shell against a
 # loopback dev-server. `runtime-server` activates the tungstenite worker.
 runtime-server-shell-native = { workspace = true, features = ["runtime-server"] }

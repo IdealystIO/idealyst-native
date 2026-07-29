@@ -44,7 +44,15 @@ debug-stats = ["runtime-core/debug-stats"]
 # of the module is additionally android-gated (like `imp`); the
 # flush-driver half compiles on the host so its regression tests run
 # from any platform (same rationale as `sticky_compute`).
-new-core = ["dep:runtime-world", "dep:runtime-scene", "dep:runtime-vocabulary"]
+new-core = [
+    "dep:runtime-world",
+    "dep:runtime-scene",
+    "dep:runtime-vocabulary",
+    # `create_navigator` (old-Element-typed NavigatorHost) is behind the
+    # vocabulary's `legacy-bridge` gate; this backend's newcore.rs
+    # implements it by delegating to the old Backend impl.
+    "runtime-vocabulary/legacy-bridge",
+]
 
 [dependencies]
 # `embed-font-bytes`: Android loads fonts by writing the raw bytes to

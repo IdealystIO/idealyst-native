@@ -2,12 +2,12 @@
 
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::assets::{kinds, Asset};
-use runtime_core::primitives::icon::{IconData, IconHandle, StrokeAnimation};
-use runtime_core::primitives::image::ImageHandle;
-use runtime_core::primitives::link::LinkHandle;
-use runtime_core::{Color, ImageErrorHandler, ImageLoadHandler};
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::assets::{kinds, Asset};
+use runtime_shared::primitives::icon::{IconData, IconHandle, StrokeAnimation};
+use runtime_shared::primitives::image::ImageHandle;
+use runtime_shared::primitives::link::LinkHandle;
+use runtime_shared::{Color, ImageErrorHandler, ImageLoadHandler};
 use runtime_world::Value;
 
 use crate::style_attach::StyleProp;

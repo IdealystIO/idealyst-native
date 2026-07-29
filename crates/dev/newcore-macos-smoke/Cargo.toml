@@ -27,6 +27,16 @@ runtime-vocabulary = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 host-appkit = { workspace = true, features = ["new-core"] }
+# Embedded-simulator phase (self-test phase 5): mount a new-core wgpu
+# preview INSIDE this new-core app via `host_macos_desktop::
+# mount_newcore` (realizes into this app's world through
+# `backend_macos::newcore::mounted_world`). `render-wgpu` supplies the
+# `NativeSkin` painter; `runtime-core/async-driver` names the
+# `driver::spawn_async` entry the async wgpu init rides (host-appkit
+# already installs the libdispatch executor via `install_scheduler`).
+host-macos-desktop = { workspace = true, features = ["new-core"] }
+render-wgpu = { workspace = true, features = ["new-core"] }
+runtime-core = { workspace = true, features = ["async-driver"] }
 objc2 = "0.5"
 # Self-test only (`NEWCORE_SMOKE_SELFTEST=1`): count the live NSView
 # tree under the key window to prove realize/finish attached real views.

@@ -78,6 +78,18 @@ pub struct Args {
     #[arg(long)]
     pub clean: bool,
 
+    /// DEPRECATED no-op alias: the NEW core (runtime v2) is the default
+    /// since the defaults flip for projects declaring the `new-core`
+    /// cargo feature. Errors on projects without the feature.
+    #[arg(long)]
+    pub new_core: bool,
+
+    /// Opt back onto the OLD core (the pre-runtime-v2 walker). Dual-core
+    /// apps compile `default-features = false, features = ["old-core"]`;
+    /// legacy apps are always old-core and don't need the flag.
+    #[arg(long)]
+    pub old_core: bool,
+
     /// Build the runtime-server-client variant and connect to an
     /// already-running dev-host. Requires `--runtime-server-port`
     /// (the dev-host's bound port). Default is local-render (the app
@@ -151,6 +163,10 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
     args.dir = std::fs::canonicalize(&args.dir).with_context(|| {
         format!("cannot resolve project dir {}", args.dir.display())
     })?;
+    // Runtime-v2 defaults flip: resolve the effective core once; every
+    // launcher below reads the resolved value through `args.new_core`.
+    args.new_core = crate::core_mode::resolve(&args.dir, args.new_core, args.old_core)?;
+    args.old_core = false;
     match args.platform {
         Platform::Ios if args.device => {
             // Physical-device path: build a signed .app via xcodebuild and
@@ -204,6 +220,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                     source,
                     user_features: Vec::new(),
                     clean: args.clean,
+                    new_core: args.new_core,
                 },
             )?;
             eprintln!();
@@ -302,6 +319,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                     user_features: Vec::new(),
                     // `idealyst run android` doesn't host a dev relay.
                     robot_relay_url: None,
+                    new_core: args.new_core,
                 },
             )?;
             eprintln!();
@@ -399,6 +417,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                     background: false,
                     user_features: Vec::new(),
                     env_vars,
+                    new_core: args.new_core,
                 },
             )?;
             eprintln!();
@@ -428,6 +447,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                     source,
                     user_features: Vec::new(),
                     env_vars,
+                    new_core: args.new_core,
                 },
             )?;
             eprintln!();
@@ -503,6 +523,7 @@ fn run_server(args: &Args) -> anyhow::Result<()> {
                 hydrate: false,
                 prune_dead_data_min: None,
                 premint: false,
+                new_core: args.new_core,
             },
         )
         .context("web bundle build for `run server` failed")?;

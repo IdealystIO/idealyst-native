@@ -39,8 +39,8 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use runtime_core::primitives::presence::PresenceState;
-use runtime_core::scheduling::{after_animation_frame, after_ms, ScheduledTask};
+use runtime_shared::primitives::presence::PresenceState;
+use runtime_shared::scheduling::{after_animation_frame, after_ms, ScheduledTask};
 use runtime_scene::{dyn_keyed, fragment, Element, LiveNode, MountCx, Registry, Retired};
 use runtime_world::effect;
 

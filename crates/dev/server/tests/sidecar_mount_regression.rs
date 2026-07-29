@@ -42,6 +42,7 @@ fn make_app(fired: Rc<Cell<bool>>) -> impl FnOnce() -> Element + 'static {
             safe_area_sides: SafeAreaSides::NONE,
             on_touch: None,
             on_wheel: None,
+            preserves_focus: false,
             on_file_drop: None,
             on_hover: None,
             is_container: false,

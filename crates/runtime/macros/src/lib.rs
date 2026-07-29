@@ -220,7 +220,10 @@ pub fn ui(input: TokenStream) -> TokenStream {
 )]
 #[proc_macro]
 pub fn lazy(input: TokenStream) -> TokenStream {
-    lazy::emit(input)
+    // Through `finish`: under `new-core` the emission's absolute
+    // `::runtime_core::…` paths retarget to the `glue` mirrors
+    // (`glue::primitives::lazy`, `glue::__wasm_split`).
+    finish(lazy::emit(input))
 }
 
 /// `jsx! { ... }` — JSX-flavored variant of `ui!`. Same emission backend,
@@ -351,23 +354,16 @@ fn emit_component(attr: component_attr::ComponentAttr, item: TokenStream) -> Tok
     // unmigrated feature must fail with its migration status).
     #[cfg(feature = "new-core")]
     {
-        if attr.lazy {
-            // Checked 2026-07-28: P3b (the new-core web backend) landed
-            // WITHOUT lazy chunking — the vocabulary has no lazy/
-            // chunk-mount prim, so `Element::Lazy`'s wasm-split driver
-            // still has no new-core target. Message updated to name the
-            // actual gap rather than a phase that already shipped.
-            return syn::Error::new_spanned(
-                &item_fn.sig.ident,
-                "#[component(lazy)] / #[lazy] is not yet available on the new core \
-                 (idea-lite migration: the vocabulary has no lazy/chunk-mount prim — \
-                 the wasm-split chunk driver retargets with the remaining web \
-                 deferred set, alongside hydration). Build without \
-                 `runtime-macros/new-core` or make the component eager.",
-            )
-            .to_compile_error()
-            .into();
-        }
+        // `#[component(lazy)]` / `#[lazy]` LOWERS on the new core: the
+        // emission (lazy_component.rs) swaps `__lazy_body` onto the
+        // thunk-returning shape and the retarget maps the
+        // `::runtime_core::primitives::lazy::…` / `::runtime_core::
+        // __wasm_split` paths to their `runtime_vocabulary::glue`
+        // mirrors (`glue::primitives::lazy`), mounted by the
+        // vocabulary's `lazy` handler. Same `#[wasm_split]` boundary +
+        // module naming on both cores, so wasm-split-cli's chunk
+        // classification is unchanged.
+        //
         // `#[method]` lowers on the new core (P5 robot remainder) for the
         // inline-props shape: the SAME emission as the old core, with the
         // retarget mapping `::runtime_core::robot::…` /

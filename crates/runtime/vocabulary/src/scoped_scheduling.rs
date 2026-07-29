@@ -54,7 +54,7 @@ use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use runtime_core::scheduling::{after_ms, raf_loop};
+use runtime_shared::scheduling::{after_ms, raf_loop};
 
 thread_local! {
     /// Stack of anchors whose deferred bodies are currently running —
@@ -160,7 +160,7 @@ fn with_deferred_anchor(anchor: &Anchor, f: impl FnOnce()) {
     f();
 }
 
-/// New-core mirror of `runtime_core::scheduling::after_ms_scoped` — a
+/// New-core mirror of `runtime_shared::scheduling::after_ms_scoped` — a
 /// one-shot timer that dies with the registering scope (see the module
 /// docs for the exact anchor rules).
 pub fn after_ms_scoped<F: FnOnce() + 'static>(delay_ms: i32, f: F) {
@@ -179,7 +179,7 @@ pub fn after_ms_scoped<F: FnOnce() + 'static>(delay_ms: i32, f: F) {
     anchor.own(task);
 }
 
-/// New-core mirror of `runtime_core::scheduling::raf_loop_scoped` — a
+/// New-core mirror of `runtime_shared::scheduling::raf_loop_scoped` — a
 /// recurring animation-frame loop that dies with the registering scope.
 pub fn raf_loop_scoped<F: FnMut() + 'static>(mut f: F) {
     let Some(anchor) = current_anchor() else {
@@ -195,7 +195,7 @@ pub fn raf_loop_scoped<F: FnMut() + 'static>(mut f: F) {
     anchor.own(handle);
 }
 
-/// New-core mirror of `runtime_core::session::after_ms` — schedule
+/// New-core mirror of `runtime_shared::session::after_ms` — schedule
 /// relative to the session epoch (already-elapsed offsets fire on the
 /// next tick), anchored like [`after_ms_scoped`]. The epoch/registry
 /// machinery is the shared old-core `session` module (pure
@@ -203,7 +203,7 @@ pub fn raf_loop_scoped<F: FnMut() + 'static>(mut f: F) {
 /// diverges — which is the entire reason this shadow exists.
 pub fn session_after_ms(at_session_ms: u64, body: impl FnOnce() + 'static) {
     let elapsed_us =
-        runtime_core::time::now_micros().saturating_sub(runtime_core::session::epoch_micros());
+        runtime_shared::time::now_micros().saturating_sub(runtime_shared::session::epoch_micros());
     let elapsed_ms = elapsed_us / 1000;
     let delay_ms = at_session_ms.saturating_sub(elapsed_ms);
     let delay_ms_i32 = delay_ms.min(i32::MAX as u64) as i32;

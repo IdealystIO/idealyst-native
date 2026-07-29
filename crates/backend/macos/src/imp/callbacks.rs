@@ -692,6 +692,16 @@ declare_class!(
                     width: next.0,
                     height: next.1,
                 });
+                // New-core mirror: forward the SAME size into the
+                // mounted world's viewport ctx so breakpoint-dependent
+                // author reactivity re-fires on resize (no-op TLS read
+                // when no new-core app is booted). See newcore.rs,
+                // "Viewport source".
+                #[cfg(feature = "new-core")]
+                crate::newcore::forward_viewport(runtime_core::ViewportSize {
+                    width: next.0,
+                    height: next.1,
+                });
             }
             if reaction.schedule_pass {
                 // Run the pass SYNCHRONOUSLY, in this same `setFrameSize:` turn,

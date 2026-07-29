@@ -2,9 +2,9 @@
 
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives::scroll_view::ScrollViewHandle;
-use runtime_core::{
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::primitives::scroll_view::ScrollViewHandle;
+use runtime_shared::{
     FileDropHandler, PressableHandle, SafeAreaSides, TouchHandler, ViewHandle,
     WheelHandler,
 };

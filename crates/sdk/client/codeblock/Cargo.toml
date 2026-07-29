@@ -20,6 +20,14 @@ license.workspace = true
 # lib.rs module doc) — handlers bake none in.
 
 [features]
+# Runtime-v2 defaults flip: the new-core leg is the default surface;
+# the old-core leg is the opt-in (`--no-default-features` — in-repo
+# consumers ride the workspace dep spec, which pins defaults off and
+# selects a core explicitly per graph).
+default = ["new-core"]
+# Old-core marker for uniform `--no-default-features --features
+# old-core` invocations (the old-core deps are unconditional).
+old-core = []
 # Idea-lite migration: re-express the SAME authored surface
 # (`code_block(spans).with_style(…)` + a bootstrap `register`) over the
 # scene registry — the new core's unified primitive==external contract.
@@ -46,11 +54,11 @@ inventory = "0.3"
 serde_json = { workspace = true }
 
 # tests/oldcore.rs runs on the default (old-core) surface; tests/newcore.rs
-# (`--features new-core`) is the vocab-test harness — a minimal recording
-# old-core Backend bridged through `LegacyBridge` + a `World` mounts
-# `code_block(...)` through the scene registry end-to-end.
+# (`--features new-core`) mounts `code_block(...)` through the scene
+# registry end-to-end on the shared host-mock recording substrate.
 [dev-dependencies]
 runtime-world = { workspace = true }
+host-mock = { workspace = true }
 
 # Web handler self-registers a `WebExternalRegistrar` (the generic
 # `register` monomorphized to `WebBackend`), so the web backend must be a

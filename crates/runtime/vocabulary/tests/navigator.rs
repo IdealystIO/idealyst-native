@@ -1,84 +1,36 @@
 //! Navigator handler unit tests (P3/P6 port of `walker/navigator.rs` +
 //! the swap/stack SDK handlers): screen lifecycle via `Realized`
 //! retention, the dispatch-on-flush command channel, world-context
-//! navigation state, and the screen style-overlay fold — against a
-//! minimal recording backend bridged through `LegacyBridge` (the op
-//! *sequence* parity lives in `scene-parity`'s nav goldens).
+//! navigation state, and the screen style-overlay fold — against the
+//! recording `host-mock` harness, which implements the caps surface
+//! natively (the op *sequence* parity lives in `scene-parity`'s nav
+//! goldens).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
+use host_mock::Harness;
 use runtime_core::primitives::navigator::Route;
-use runtime_core::{Backend, StyleRules, Tokenized};
-use runtime_scene::{realize, Realized, Registry};
+use runtime_core::{StyleRules, Tokenized};
+use runtime_scene::{realize, Realized};
 use runtime_vocabulary::builders::{navigator_outlet, stack_navigator, swap_navigator, text, view};
+use runtime_vocabulary::on_teardown;
 use runtime_vocabulary::prims::{MountPolicy, NavHandle, StackNav, StackRetention, SwapNav};
-use runtime_vocabulary::{on_teardown, register_builtins, LegacyBridge};
-use runtime_world::{inject, World};
+use runtime_world::inject;
 
 // ===========================================================================
-// Minimal recording backend
+// Harness
 // ===========================================================================
 
-type Log = Rc<RefCell<Vec<String>>>;
-
-struct Mini {
-    log: Log,
-    next: u32,
-    /// Link activations received via `create_link` (the P6 route-link
-    /// tests fire them like platform clicks).
-    link_activations: Rc<RefCell<Vec<Rc<dyn Fn()>>>>,
-}
-
-impl Mini {
-    fn mint(&mut self, kind: &str) -> u32 {
-        let n = self.next;
-        self.next += 1;
-        self.log.borrow_mut().push(format!("create n{n} {kind}"));
-        n
-    }
-}
-
-impl Backend for Mini {
-    type Node = u32;
-
-    fn create_view(&mut self, _a11y: &AccessibilityProps) -> u32 {
-        self.mint("view")
-    }
-
-    fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> u32 {
-        let n = self.next;
-        self.next += 1;
-        self.log
-            .borrow_mut()
-            .push(format!("create n{n} text {content:?}"));
-        n
-    }
-
-    fn update_text(&mut self, node: &u32, content: &str) {
-        self.log
-            .borrow_mut()
-            .push(format!("update_text n{node} {content:?}"));
-    }
-
-    fn create_button(
-        &mut self,
-        label: &str,
-        _on_click: &runtime_core::Action,
-        _leading: Option<&runtime_core::IconData>,
-        _trailing: Option<&runtime_core::IconData>,
-        _a11y: &AccessibilityProps,
-    ) -> u32 {
-        let n = self.next;
-        self.next += 1;
-        self.log
-            .borrow_mut()
-            .push(format!("create n{n} button {label:?}"));
-        n
-    }
-
-    fn apply_style(&mut self, node: &u32, style: &Rc<StyleRules>) {
+/// The stock host-mock harness with this suite's `apply_style` digest
+/// installed: width + height + flex_grow ("none" when absent) — enough
+/// to prove the overlay fold merged handler rules over the screen's
+/// own. Captured `create_link` activations land on
+/// `h.shared.link_activations` (the P6 route-link tests fire them like
+/// platform clicks).
+fn harness() -> Harness {
+    let h = Harness::new();
+    h.set_style_line(|node, style| {
         // Digest only the fields the tests assert on (width + height +
         // flex_grow — enough to prove the overlay fold merged handler
         // rules over the screen's own).
@@ -90,84 +42,16 @@ impl Backend for Mini {
         let height = style
             .height
             .as_ref()
-            .map(|h| format!("{h:?}"))
+            .map(|v| format!("{v:?}"))
             .unwrap_or_else(|| "none".into());
         let grow = style
             .flex_grow
             .as_ref()
             .map(|g| format!("{g:?}"))
             .unwrap_or_else(|| "none".into());
-        self.log.borrow_mut().push(format!(
-            "apply_style n{node} width={width} height={height} flex_grow={grow}"
-        ));
-    }
-
-    fn on_node_unstyled(&mut self, node: &u32) {
-        self.log.borrow_mut().push(format!("on_node_unstyled n{node}"));
-    }
-
-    fn mark_container(&mut self, node: &u32) {
-        self.log.borrow_mut().push(format!("mark_container n{node}"));
-    }
-
-    fn insert(&mut self, parent: &mut u32, child: u32) {
-        self.log.borrow_mut().push(format!("insert n{parent} <- n{child}"));
-    }
-
-    fn clear_children(&mut self, node: &u32) {
-        self.log.borrow_mut().push(format!("clear_children n{node}"));
-    }
-
-    fn create_link(
-        &mut self,
-        config: runtime_core::primitives::link::LinkConfig,
-        _a11y: &AccessibilityProps,
-    ) -> u32 {
-        self.link_activations.borrow_mut().push(config.on_activate);
-        let n = self.next;
-        self.next += 1;
-        self.log
-            .borrow_mut()
-            .push(format!("create n{n} link route={:?}", config.route));
-        n
-    }
-
-    fn update_link_url(&mut self, _node: &u32, _url: &str) {}
-
-    fn finish(&mut self, _root: u32) {}
-}
-
-struct Harness {
-    world: World,
-    backend: Rc<RefCell<LegacyBridge<Mini>>>,
-    registry: Rc<Registry<LegacyBridge<Mini>>>,
-    log: Log,
-    link_activations: Rc<RefCell<Vec<Rc<dyn Fn()>>>>,
-}
-
-fn harness() -> Harness {
-    let log: Log = Rc::new(RefCell::new(Vec::new()));
-    let link_activations: Rc<RefCell<Vec<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(Vec::new()));
-    let backend = Rc::new(RefCell::new(LegacyBridge(Mini {
-        log: log.clone(),
-        next: 0,
-        link_activations: link_activations.clone(),
-    })));
-    let mut registry = Registry::new();
-    register_builtins(&mut registry);
-    Harness {
-        world: World::new(),
-        backend,
-        registry: Rc::new(registry),
-        log,
-        link_activations,
-    }
-}
-
-impl Harness {
-    fn take_log(&self) -> Vec<String> {
-        std::mem::take(&mut *self.log.borrow_mut())
-    }
+        format!("apply_style n{node} width={width} height={height} flex_grow={grow}")
+    });
+    h
 }
 
 fn px(w: f32) -> StyleRules {
@@ -524,7 +408,7 @@ fn stack_screen_root_gets_the_flow_fill_overlay() {
         // overlay wins on conflicts (width → 100%, exactly like the old
         // override layer which resolves last), while fields the overlay
         // doesn't set survive from the screen's own style (height 20px).
-        let log = h.log.borrow().clone();
+        let log = h.ops();
         assert!(
             log.iter().any(|l| l.starts_with("apply_style")
                 && l.contains("width=Literal(Percent(100.0))")
@@ -827,9 +711,9 @@ fn link_activator_targets_the_innermost_navigator() {
 
         // Mount order: outer-link mounts first, then the nested
         // navigator's inner-link.
-        assert_eq!(h.link_activations.borrow().len(), 2);
-        let outer_activate = h.link_activations.borrow()[0].clone();
-        let inner_activate = h.link_activations.borrow()[1].clone();
+        assert_eq!(h.shared.link_activations.borrow().len(), 2);
+        let outer_activate = h.link_activation(0);
+        let inner_activate = h.link_activation(1);
 
         // Inner link → INNER navigator selects; the outer stays on HOME
         // (its ABOUT never builds).
@@ -860,7 +744,7 @@ fn link_route_outside_a_navigator_noops() {
             .child(text().content("orphan"))
             .build();
         let _realized = realize(&h.backend, &h.registry, element);
-        let activate = h.link_activations.borrow()[0].clone();
+        let activate = h.link_activation(0);
         activate(); // must not panic
         world.flush();
     });

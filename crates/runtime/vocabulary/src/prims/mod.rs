@@ -23,6 +23,7 @@
 use std::cell::RefCell;
 
 mod graphics;
+pub mod lazy;
 mod media;
 mod navigator;
 mod portal;
@@ -34,6 +35,7 @@ mod virtualizer;
 mod widgets;
 
 pub use graphics::GraphicsPrim;
+pub use lazy::LazyPrim;
 pub use media::{IconPrim, ImagePrim, LinkPrim, RouteLink};
 pub use navigator::{
     LinkActivator, MountPolicy, NavConfig, NavHandle, NavScreenEntry, NavigatorOutletPrim,
