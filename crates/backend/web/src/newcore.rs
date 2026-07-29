@@ -305,6 +305,19 @@ pub fn with_realized<R>(f: impl FnOnce(&Realized<web_sys::Node>) -> R) -> Option
     APP.with(|slot| slot.borrow().as_ref().map(|app| f(&app.realized)))
 }
 
+/// The world mounted by [`start`]/[`start_in`]/[`hydrate`] (a cheap
+/// handle clone; `None` before boot / after [`stop`]).
+///
+/// Host-integration seam: an embedded renderer mounted INSIDE this
+/// page's app — the wgpu simulator preview (`host_web::mount_newcore`)
+/// — realizes its scene into this SAME world, so the page's existing
+/// flush driver (dispatch-site glue + the scheduler/executor
+/// post-dispatch hook) commits the embedded app's staged writes with
+/// no second driver: one thread, one world, one logical update stream.
+pub fn mounted_world() -> Option<World> {
+    FLUSH_WORLD.with(|w| w.borrow().clone())
+}
+
 /// Run `f` with the mounted app's world ambient (`World::enter`).
 /// JS-interop seam: wasm-bindgen exports that must CREATE reactive
 /// state (`signal()`, `memo()`) run outside any handler/effect, where

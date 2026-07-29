@@ -2394,6 +2394,9 @@ dependencies = [
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
  "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
  "serde_json",
 ]
 
@@ -5215,12 +5218,15 @@ dependencies = [
 name = "host-web"
 version = "0.4.0"
 dependencies = [
+ "backend-web",
  "js-sys",
  "log",
  "raw-window-handle",
  "render-api",
  "render-wgpu",
  "runtime-core",
+ "runtime-scene",
+ "runtime-world",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -5238,6 +5244,7 @@ dependencies = [
  "render-api",
  "render-wgpu",
  "runtime-core",
+ "runtime-scene",
 ]
 
 [[package]]
@@ -11130,9 +11137,13 @@ dependencies = [
 name = "table"
 version = "0.4.0"
 dependencies = [
+ "backend-ssr",
  "backend-web",
  "inventory",
  "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -12941,7 +12952,6 @@ dependencies = [
  "render-api",
  "runtime-core",
  "runtime-facade",
- "runtime-scene",
  "runtime-vocabulary",
  "swap-navigator",
  "wasm-bindgen",
@@ -12980,6 +12990,8 @@ version = "0.4.0"
 dependencies = [
  "dev-server",
  "runtime-core",
+ "runtime-facade",
+ "runtime-vocabulary",
 ]
 
 [[package]]

@@ -893,3 +893,56 @@ fn robot_nav_snapshot_carries_the_sdk_presentation_label() {
     });
     robot.reset();
 }
+
+// ===========================================================================
+// SSG route discovery (the new-core leg of `backend_ssr::render_all`)
+// ===========================================================================
+
+/// Both navigator mounts publish their screen path patterns to the
+/// shared (old-core, thread-local) route collector — the hook the SSG
+/// crawl drains after each page render to discover the next literal
+/// paths. Without this, `backend_ssr::newcore::render_all` would only
+/// ever emit `/` for a new-core app.
+#[test]
+fn navigator_mounts_publish_routes_to_the_ssg_collector() {
+    use runtime_core::primitives::navigator::{enable_route_collector, take_route_collector};
+
+    // Swap.
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        enable_route_collector();
+        let element = swap_navigator(&HOME)
+            .screen(HOME, |_| view().build())
+            .screen(ABOUT, |_| view().build())
+            .build();
+        let _realized = realize(&h.backend, &h.registry, element);
+        let mut found = take_route_collector().expect("collector was enabled");
+        found.sort_unstable();
+        assert_eq!(found, vec!["/", "/about"], "swap mount publishes every screen path");
+    });
+
+    // Stack.
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        enable_route_collector();
+        let element = stack_navigator(&HOME)
+            .screen(HOME, |_| view().build())
+            .screen(DETAIL, |_| view().build())
+            .build();
+        let _realized = realize(&h.backend, &h.registry, element);
+        let mut found = take_route_collector().expect("collector was enabled");
+        found.sort_unstable();
+        assert_eq!(found, vec!["/", "/detail"], "stack mount publishes every screen path");
+    });
+
+    // Off = no-op (live backends never enable it).
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        let element = swap_navigator(&HOME).screen(HOME, |_| view().build()).build();
+        let _realized = realize(&h.backend, &h.registry, element);
+        assert!(take_route_collector().is_none(), "collector off: nothing recorded");
+    });
+}

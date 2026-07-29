@@ -1680,3 +1680,32 @@ fn memo_read_only_is_a_live_read_signal() {
         assert_eq!(seen.get(), 2, "equal recompute must not wake the reader");
     });
 }
+
+/// `in_effect()` — the scope-anchored-scheduling probe: true exactly
+/// while an effect body runs (creation-time first run AND flush
+/// re-runs), false during plain build code and outside any world.
+#[test]
+fn in_effect_tracks_effect_bodies_only() {
+    assert!(!in_effect(), "outside any world");
+    let world = World::new();
+    world.enter(|| {
+        assert!(!in_effect(), "entered but no effect running");
+        let observed_initial = Rc::new(Cell::new(false));
+        let observed_rerun = Rc::new(Cell::new(false));
+        let (oi, or) = (observed_initial.clone(), observed_rerun.clone());
+        let src = signal(0u32);
+        let _e = effect(move || {
+            if src.get() == 0 {
+                oi.set(in_effect());
+            } else {
+                or.set(in_effect());
+            }
+        });
+        assert!(observed_initial.get(), "true during the creation-time run");
+        assert!(!in_effect(), "false again after the run returns");
+        src.set(1);
+        world.flush();
+        assert!(observed_rerun.get(), "true during a flush re-run");
+    });
+    assert!(!in_effect());
+}

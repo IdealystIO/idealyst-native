@@ -237,6 +237,16 @@ pub mod animation {
         pub fn new(initial: T) -> Self {
             AnimatedValue { inner: runtime_core::animation::AnimatedValue::new(initial) }
         }
+
+        /// Wrap an old-core `AnimatedValue` handle in the new-core-safe
+        /// shadow. Glue-internal seam for surfaces that must return the
+        /// SHARED handle rather than a fresh one — `glue::session::animated`
+        /// hands out the session-registry instance so hot-patch rerenders
+        /// keep the AV's current value, exactly like the old core.
+        #[doc(hidden)]
+        pub fn __from_inner(inner: runtime_core::animation::AnimatedValue<T>) -> Self {
+            AnimatedValue { inner }
+        }
     }
 
     /// Anchor `guard` (subscription + strong AV clone) to the current
@@ -327,6 +337,46 @@ pub mod animation {
     }
 }
 
+/// Session-persistent state (`session::animated` AVs, the session
+/// epoch, hot-patch survival) — the registry/epoch machinery is the
+/// shared old-core `session` module (pure thread-local state, no
+/// reactive-arena dependency), so most names re-export. Two shadows:
+///
+/// - [`session::animated`] returns the glue [`animation::AnimatedValue`]
+///   wrapper (new-core-safe `bind*`) around the SAME session-registry
+///   instance, so hot-patch value survival is preserved.
+/// - [`session::after_ms`] anchors through
+///   [`crate::scoped_scheduling`] instead of the old-core scope (which
+///   is inert on a new-core mount — the "welcome acts never fire" bug).
+///
+/// `session::signal` is deliberately NOT mirrored: it returns an
+/// old-core `Signal` no world effect can subscribe to. A new-core
+/// session-persistent reactive scalar needs a world-signal port —
+/// unresolved use of `glue::session::signal` failing to compile is the
+/// loud marker for that seam.
+pub mod session {
+    pub use runtime_core::session::{
+        clear, clear_prefix, epoch_micros, get_or_init, push_scope, reset_epoch, ScopeGuard,
+    };
+
+    pub use crate::scoped_scheduling::session_after_ms as after_ms;
+
+    /// New-core mirror of `runtime_core::session::animated` — same
+    /// key-registry persistence, glue wrapper on the way out so `bind*`
+    /// anchors to the new core (see [`super::animation`]).
+    pub fn animated<T>(
+        key: &'static str,
+        initial: T,
+    ) -> super::animation::AnimatedValue<T>
+    where
+        T: runtime_core::animation::Animatable + 'static,
+    {
+        super::animation::AnimatedValue::__from_inner(runtime_core::session::animated(
+            key, initial,
+        ))
+    }
+}
+
 // Numeric helpers.
 pub use runtime_core::num;
 
@@ -357,11 +407,16 @@ pub fn current_breakpoint() -> ReadSignal<runtime_core::Breakpoint> {
 }
 
 // Root-level scheduling names (old runtime-core re-exported these at the
-// crate root as well as under `scheduling::`).
+// crate root as well as under `scheduling::`). The SCOPED variants are
+// NOT the old fns: their old-core scope anchoring is inert on a
+// new-core mount (outside an old-core scope the handle drops at
+// registration and the timer/loop never fires — the "welcome never
+// animates" bug), so they're shadowed by the new-core-anchored
+// versions in [`crate::scoped_scheduling`].
 pub use runtime_core::scheduling::{
-    after_animation_frame, after_ms, after_ms_detached, after_ms_scoped, raf_loop,
-    raf_loop_scoped, RafLoop, ScheduledTask,
+    after_animation_frame, after_ms, after_ms_detached, raf_loop, RafLoop, ScheduledTask,
 };
+pub use crate::scoped_scheduling::{after_ms_scoped, raf_loop_scoped};
 
 // Interaction handles (filled by the mount handlers' `ref_fill` via
 // `make_*_handle` — real handles, not sentinels, on the new core).
@@ -371,6 +426,44 @@ pub use runtime_core::{PressableHandle, TextHandle};
 // `StyleSource` is pure data (application + closure variants); the
 // vocabulary converts it to `StyleProp` at attach time.
 pub use runtime_core::{IntoTextSource, StyleSource, TextSource};
+
+// Styled-run data types at the root, exactly where the old core
+// re-exported them (`runtime_core::{TextRun, TextRunStyle}`).
+pub use runtime_core::{TextRun, TextRunStyle};
+
+/// Module mirror of old `runtime_core::styled_text` — the data helpers
+/// author code imports by path (`styled_text::plain_text_of`). The
+/// same-named CONSTRUCTOR fn below lives in the value namespace, the
+/// old core's exact shape (its `styled_text` fn + module coexist too).
+pub mod styled_text {
+    pub use runtime_core::styled_text::{plain_text_of, TextRun, TextRunStyle};
+}
+
+/// Builder-shaped mirror of the old `styled_text(runs)` return
+/// (`Bound<TextHandle>`): `.with_style(…)` then [`IntoElement`].
+pub struct StyledText(crate::builders::TextBuilder);
+
+/// One text node with inline-styled ranges — the new-core lowering is
+/// the vocabulary [`text()`](crate::builders::text) builder's `runs`
+/// channel, mounted via the caps `create_styled_text` (exactly the old
+/// primitive's backend call).
+pub fn styled_text(runs: Vec<TextRun>) -> StyledText {
+    StyledText(crate::builders::text().runs(runs))
+}
+
+impl StyledText {
+    /// Attach the author style — same call shape as `.with_style` on
+    /// the old-core `Bound<TextHandle>`.
+    pub fn with_style(self, style: impl crate::style_attach::IntoStyleProp) -> Self {
+        StyledText(self.0.style(style))
+    }
+}
+
+impl IntoElement for StyledText {
+    fn into_element(self) -> Element {
+        self.0.build()
+    }
+}
 
 // --- 2. Core-agnostic free fns ----------------------------------------------
 
@@ -611,6 +704,25 @@ pub use runtime_core::{
 // own apply paths perform; the reactive re-fire port follows the same
 // pattern as the viewport ctx when a native backend needs it).
 pub use runtime_core::safe_area_insets;
+
+// Ambient host identity + frame gating + clocks + the async driver:
+// pure thread-local / registry reads shared by both cores. `platform()`
+// reads the value the mounting host installed (the new-core native
+// boots install it from the backend's `platform()`, same as the old
+// mount; web installs it in `start_in`); `is_frame_active()` is the
+// embedded-host paint gate (the wgpu hosts flip it while their surface
+// is hidden so raf-driven author loops can freeze their clocks);
+// `time` / `driver` are the monotonic clock and the spawn/render-loop
+// registries — all core-agnostic by construction.
+pub use runtime_core::{is_frame_active, platform, ColorScheme, Platform};
+pub use runtime_core::time;
+// `driver` (spawn_async + render_loop) is feature-gated in runtime-core
+// itself (`async-driver`); this crate's same-named forwarding feature
+// keeps the gate. Apps that reach `runtime_core::driver` through the
+// facade enable `runtime-vocabulary/async-driver` (the website's
+// embedded-simulator new-core build is the precedent).
+#[cfg(feature = "async-driver")]
+pub use runtime_core::driver;
 
 /// The reactive viewport-size signal — new-core routing: the ambient
 /// world's [`ViewportCtx`](crate::viewport) signal (per-world; the web

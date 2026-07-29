@@ -124,6 +124,8 @@ Variants without `register` exist for the common case.
 | iOS | `backend_ios::newcore::run_in_view(root_view, register, build)` — called from the generated Swift shell | `crates/backend/ios/mobile/src/newcore.rs` |
 | Android | generated wrapper's `new-core` feature — `attach` mounts your lib's `scene_app()` via `backend_android::newcore::start` | `crates/tools/build/android`, `crates/backend/android/mobile/src/newcore.rs` |
 | SSR | `backend_ssr::newcore::render_to_string(build)` / `render_path(path, build)` / `render_path_with(path, register, build)` — fresh `World` per request, dropped after serialize | `crates/backend/ssr/src/newcore.rs` |
+| SSG crawl | `backend_ssr::newcore::render_all(register, build)` — same hierarchy-driven crawl as the old `render_all` (the vocabulary navigator mounts publish their routes into the shared collector); drives `idealyst build --ssg --new-core` | `crates/backend/ssr/src/newcore.rs` |
+| SSR server | `backend_ssr::newcore::serve(addr, config, register, build)` (feature `serve`) — the old server's HTTP loop with the new-core renderer; drives `idealyst build --ssr --new-core` (app exposes `register_ssr_scene_handlers`) | `crates/backend/ssr/src/{newcore,serve}.rs`, `crates/tools/build/ssr` |
 | GPU desktop | `host_winit::newcore::run(profile, skin, build)` / `run_with(profile, skin, register, build)` | `crates/gpu-backend/host/winit/src/newcore.rs` |
 
 A minimal web main:
@@ -458,10 +460,15 @@ Status at time of writing (all from checked-in gates):
   interactive-update path — granular bumps, shared/point restyles,
   signal-class flips, hierarchy updates, teardown — is at old-core
   parity.
-- **SSR:** output is byte-identical to the old renderer across the
-  6-scenario corpus, html and head CSS
-  (`crates/backend/ssr/tests/newcore_byte_identity.rs`) — which is also
-  the hydration-compatibility proof.
+- **SSR / SSG:** output is byte-identical to the old renderer across the
+  8-scenario corpus (html and head CSS, including a `render_all` crawl
+  pair — `crates/backend/ssr/tests/newcore_byte_identity.rs`) AND
+  across the ENTIRE website: all 33 routes crawled through the
+  production SSG drivers plus one route served over real HTTP, old vs
+  new byte-identical (`websites/website/tests/ssg_parity.rs`; the one
+  documented exception is `presence`'s Dyn-hole anchor, a layout-inert
+  `display: contents` wrapper each core's own hydration expects). This
+  is the hydration-compatibility proof.
 
 ---
 

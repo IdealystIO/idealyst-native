@@ -32,6 +32,11 @@ pub enum MountError {
     /// `request_device` rejected — usually the limits don't match
     /// what the browser exposes.
     RequestDevice,
+    /// `mount_newcore` was called before the page host booted a
+    /// new-core app (`backend_web::newcore::mounted_world()` returned
+    /// `None`). The embedded tree realizes into the page's world — no
+    /// page world, no embed.
+    NoHostWorld,
 }
 
 impl std::fmt::Display for MountError {
@@ -41,6 +46,11 @@ impl std::fmt::Display for MountError {
             MountError::CreateSurface => write!(f, "host-web: wgpu create_surface failed"),
             MountError::NoAdapter => write!(f, "host-web: no compatible WebGL2 adapter"),
             MountError::RequestDevice => write!(f, "host-web: wgpu request_device failed"),
+            MountError::NoHostWorld => write!(
+                f,
+                "host-web: mount_newcore before the page's new-core boot \
+                 (backend_web::newcore::mounted_world() is None)"
+            ),
         }
     }
 }
@@ -54,6 +64,14 @@ impl std::error::Error for MountError {}
 /// `!Send + !Sync` because every interior piece — wgpu handles, the
 /// JS closures, the `Rc` — is single-threaded.
 pub struct WebHostHandle {
+    /// New-core embeds only ([`mount_newcore`]): the mounted
+    /// `render_wgpu::newcore` app. Declared FIRST so the scene
+    /// unrealizes (author cleanups, node detach) while the wgpu host
+    /// in `inner` is still fully alive; `NewCoreGuard::drop` routes
+    /// through `NewCoreApp::stop`, whose embedded path leaves the
+    /// page-host flush driver alone.
+    #[cfg(feature = "new-core")]
+    _newcore: Option<NewCoreGuard>,
     inner: Rc<RefCell<HostInner>>,
     /// Held to keep the JS listeners alive and so `Drop` removes
     /// them. Declared BEFORE `_render_loop` so the loop survives
@@ -93,8 +111,19 @@ impl WebHostHandle {
     /// `IntersectionObserver`-driven hook can flip this on its own),
     /// so callers must wire it themselves — typically inside a
     /// reactive effect bound to `use_focus()`.
+    ///
+    /// Old-core mounts only: a [`mount_newcore`] handle's app is owned
+    /// by the handle itself (drop = full teardown), and `Host::unmount`
+    /// only knows the old walker's `Owner` — pause/resume on a new-core
+    /// embed is a documented no-op until a new-core visibility gate
+    /// lands (the same gap the iOS host closes cooperatively via
+    /// `is_frame_active`).
     pub fn pause(&self) {
         let mut inner = self.inner.borrow_mut();
+        if inner.build_ui.is_none() {
+            log::warn!("host-web: pause() is a no-op on a new-core embed");
+            return;
+        }
         inner.host.unmount();
         inner.renderer.reset_per_tree_caches();
         drop(inner);
@@ -102,13 +131,16 @@ impl WebHostHandle {
     }
 
     /// Re-mount the embedded app from its cached `build_ui`.
-    /// Idempotent. Pair with [`pause`].
+    /// Idempotent. Pair with [`pause`]. Old-core mounts only, exactly
+    /// like [`pause`].
     pub fn resume(&self) {
         let mut inner = self.inner.borrow_mut();
         if inner.host.is_mounted() {
             return;
         }
-        let build_ui = inner.build_ui.clone();
+        let Some(build_ui) = inner.build_ui.clone() else {
+            return;
+        };
         inner.host.mount(move || (&*build_ui)());
     }
 
@@ -132,13 +164,275 @@ pub async fn mount(
     // crate's signature is shared.
     build_ui: Rc<dyn Fn() -> Element + 'static>,
 ) -> Result<WebHostHandle, MountError> {
+    let WgpuInit {
+        canvas,
+        surface,
+        device,
+        queue,
+        config,
+    } = init_wgpu(surface_handle, size).await?;
+
+    // 3. Build the render-side stack + mount the user app.
+    //
+    // Before mounting, push a fresh `session::REGISTRY` scope so the
+    // embedded app's `session::animated(…)` / `session::epoch_micros()`
+    // calls land in a per-host registry that disappears when this
+    // host's `WebHostHandle` drops. Mirrors the iOS host's scope
+    // handling — see [[project-session-scope-stack]]. Without this,
+    // an outer page that mounts/unmounts an embedded wgpu app
+    // multiple times (carousel, modal-with-preview, tab) would have
+    // the embedded app's session AVs survive each unmount and
+    // resume mid-animation on remount instead of replaying from
+    // initial state.
+    //
+    // Hot-patch rerenders happen INSIDE the existing host (no new
+    // `mount(…)` call), so the scope persists and session-keyed
+    // state survives — preserving the existing
+    // `[[project-session-animated]]` "skip re-running acts on save"
+    // property for the dev edit loop.
+    let session_scope = runtime_core::session::push_scope();
+    let renderer = Renderer::new(&device, &queue, config.format);
+    let mut host = Host::new(skin, profile.color_scheme);
+    let logical = (
+        profile.logical_size.0 as f32,
+        profile.logical_size.1 as f32,
+    );
+    host.set_viewport(logical.0, logical.1);
+    {
+        let build_ui = build_ui.clone();
+        host.mount(move || (&*build_ui)());
+    }
+
+    let (inner, listeners, render_loop_handle) = finish_mount(
+        canvas,
+        surface,
+        device,
+        queue,
+        config,
+        renderer,
+        host,
+        logical,
+        Some(build_ui),
+        session_scope,
+    )
+    .await;
+
+    Ok(WebHostHandle {
+        #[cfg(feature = "new-core")]
+        _newcore: None,
+        inner,
+        _listeners: listeners,
+        _render_loop: render_loop_handle,
+    })
+}
+
+/// New-core sibling of [`mount`]: identical wgpu init, render loop,
+/// and input plumbing, but the embedded tree realizes through
+/// `render_wgpu::newcore::start_in_world` into the PAGE's own world
+/// (`backend_web::newcore::mounted_world()`), so the page host's flush
+/// driver commits writes the embedded app stages from timers, raf
+/// loops, and future polls — one thread, one world, one logical update
+/// stream. Input dispatched through the wgpu interaction `Host` (the
+/// canvas listeners installed here) flushes via the wgpu caps
+/// wrappers' own `schedule_flush`, which `start_in_world` pointed at
+/// the same world.
+///
+/// Dropping the returned handle unrealizes the embedded scene (its
+/// build-level effects, AV bind keepalives, and scoped timers die with
+/// it — the `collect_owned` harvest inside `start_in_world`), then
+/// tears the wgpu host down exactly like the old-core handle.
+#[cfg(feature = "new-core")]
+pub async fn mount_newcore(
+    surface_handle: GraphicsSurface,
+    size: (u32, u32),
+    profile: DeviceProfile,
+    skin: Rc<dyn Painter>,
+    build_ui: Rc<dyn Fn() -> runtime_scene::Element + 'static>,
+) -> Result<WebHostHandle, MountError> {
+    // The page's world must exist BEFORE the async wgpu init runs —
+    // fail fast on a mis-sequenced boot.
+    let world = backend_web::newcore::mounted_world().ok_or(MountError::NoHostWorld)?;
+    // The per-frame loop below rides `runtime_core::driver::render_loop`.
+    // The old-core CLI wrapper installs the web driver at boot; the
+    // new-core page boot (`backend_web::newcore::start_in`) does not,
+    // so install it here (idempotent, first install wins).
+    backend_web::install_render_loop();
+
+    let WgpuInit {
+        canvas,
+        surface,
+        device,
+        queue,
+        config,
+    } = init_wgpu(surface_handle, size).await?;
+
+    // Same per-host session scope as the old mount (see the comment
+    // there): the embedded app's `session::animated` AVs and epoch die
+    // with this handle, so a remount (skin toggle) replays from initial
+    // state instead of resuming mid-animation.
+    let session_scope = runtime_core::session::push_scope();
+    let renderer = Renderer::new(&device, &queue, config.format);
+    let mut host = Host::new(skin, profile.color_scheme);
+    let logical = (
+        profile.logical_size.0 as f32,
+        profile.logical_size.1 as f32,
+    );
+    host.set_viewport(logical.0, logical.1);
+    let app = render_wgpu::newcore::start_in_world(
+        host.backend().clone(),
+        |_| {},
+        move || (&*build_ui)(),
+        world,
+    );
+
+    let (inner, listeners, render_loop_handle) = finish_mount(
+        canvas,
+        surface,
+        device,
+        queue,
+        config,
+        renderer,
+        host,
+        logical,
+        // No re-callable builder: pause/resume are old-core-only (see
+        // `WebHostHandle::pause`); teardown goes through `_newcore`.
+        None,
+        session_scope,
+    )
+    .await;
+
+    Ok(WebHostHandle {
+        _newcore: Some(NewCoreGuard(Some(app))),
+        inner,
+        _listeners: listeners,
+        _render_loop: render_loop_handle,
+    })
+}
+
+/// Shared tail of both mounts: font fetch, `HostInner` assembly, the
+/// per-frame render loop, and the canvas input listeners.
+///
+/// 3a. Fonts. With `embed-font-bytes` off for web, `face!` fonts
+///     aren't baked into the wasm — they're served files at the
+///     same `/fonts/*.ttf` URLs the DOM backend links via
+///     `@font-face`. Mounting registered each font's URL; fetch
+///     them now and feed the wgpu text shaper *before* the first
+///     frame, so text shapes against its real face with no
+///     fallback-font flash. The engine's embedded default
+///     (Inter-Regular, baked unconditionally) covers any fetch
+///     that fails. Awaited here because the mounts are already async;
+///     the per-frame loop (step 4) starts only after fonts land.
+#[allow(clippy::too_many_arguments)]
+async fn finish_mount(
+    canvas: web_sys::HtmlCanvasElement,
+    surface: wgpu::Surface<'static>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    config: wgpu::SurfaceConfiguration,
+    renderer: Renderer,
+    host: Host,
+    logical: (f32, f32),
+    build_ui: Option<Rc<dyn Fn() -> Element + 'static>>,
+    session_scope: runtime_core::session::ScopeGuard,
+) -> (Rc<RefCell<HostInner>>, Vec<EventListener>, RenderLoop) {
+    let font_urls = host.take_pending_font_urls();
+    let mut loaded_any = false;
+    for url in &font_urls {
+        match fetch_font_bytes(url).await {
+            Some(bytes) => {
+                host.load_font_bytes(bytes);
+                loaded_any = true;
+            }
+            None => web_sys::console::warn_1(
+                &format!(
+                    "host-web: font fetch failed for {url}; \
+                     text falls back to the embedded default face"
+                )
+                .into(),
+            ),
+        }
+    }
+    if loaded_any {
+        // Text shaped during mount used only the embedded default;
+        // re-measure so the now-loaded faces take effect on frame 1.
+        host.invalidate_text_layout();
+    }
+
+    let inner = Rc::new(RefCell::new(HostInner {
+        surface,
+        device,
+        queue,
+        config,
+        renderer,
+        host,
+        logical,
+        canvas: canvas.clone(),
+        build_ui,
+        _session_scope: session_scope,
+    }));
+
+    // 4. Per-frame loop. The closure borrows the inner mut; pointer
+    //    listeners borrow it mut too, but JS dispatches them
+    //    sequentially with rAF so they never overlap.
+    let inner_for_frame = inner.clone();
+    let render_loop_handle = render_loop(move |_elapsed| {
+        let mut inner = inner_for_frame.borrow_mut();
+        draw_frame(&mut inner);
+    });
+
+    // 5. Input plumbing. The listeners' closures each hold their own
+    //    `Rc` clone of `inner` so events still flow even if the
+    //    caller drops the `inner` field of the handle (it won't,
+    //    but the `Rc` keeps the API forgiving).
+    let listeners = install_listeners(&canvas, inner.clone());
+
+    (inner, listeners, render_loop_handle)
+}
+
+/// Owns the embedded new-core app for a [`mount_newcore`] handle.
+/// Drop routes through [`render_wgpu::newcore::NewCoreApp::stop`]
+/// (the embedded path: unrealize + guarded diagnostic clear, page
+/// flush driver untouched).
+#[cfg(feature = "new-core")]
+struct NewCoreGuard(Option<render_wgpu::newcore::NewCoreApp>);
+
+#[cfg(feature = "new-core")]
+impl Drop for NewCoreGuard {
+    fn drop(&mut self) {
+        if let Some(app) = self.0.take() {
+            app.stop();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Internals
+// ---------------------------------------------------------------------------
+
+/// Everything the async wgpu init produces — shared by [`mount`] and
+/// [`mount_newcore`].
+struct WgpuInit {
+    canvas: web_sys::HtmlCanvasElement,
+    surface: wgpu::Surface<'static>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    config: wgpu::SurfaceConfiguration,
+}
+
+/// Steps 1–2 of the crate doc: canvas extraction + the async wgpu
+/// init (instance → surface → adapter → device → configure).
+/// WebGL2-only; see the crate doc for why.
+async fn init_wgpu(
+    surface_handle: GraphicsSurface,
+    size: (u32, u32),
+) -> Result<WgpuInit, MountError> {
     // 1. Extract the canvas. Keep a clone — the surface gets
     //    consumed by `create_surface` below; we need the canvas
     //    later to attach event listeners and read its bounding
     //    rect on every pointer event.
     let canvas = extract_canvas(&surface_handle).ok_or(MountError::NoCanvas)?;
 
-    // 2. wgpu init. WebGL2-only; see the crate doc for why.
+    // 2. wgpu init.
     //
     // wgpu 29: `InstanceDescriptor` no longer implements `Default`
     // and gained `memory_budget_thresholds` / `backend_options` /
@@ -206,108 +500,14 @@ pub async fn mount(
     };
     surface.configure(&device, &config);
 
-    // 3. Build the render-side stack + mount the user app.
-    //
-    // Before mounting, push a fresh `session::REGISTRY` scope so the
-    // embedded app's `session::animated(…)` / `session::epoch_micros()`
-    // calls land in a per-host registry that disappears when this
-    // host's `WebHostHandle` drops. Mirrors the iOS host's scope
-    // handling — see [[project-session-scope-stack]]. Without this,
-    // an outer page that mounts/unmounts an embedded wgpu app
-    // multiple times (carousel, modal-with-preview, tab) would have
-    // the embedded app's session AVs survive each unmount and
-    // resume mid-animation on remount instead of replaying from
-    // initial state.
-    //
-    // Hot-patch rerenders happen INSIDE the existing host (no new
-    // `mount(…)` call), so the scope persists and session-keyed
-    // state survives — preserving the existing
-    // `[[project-session-animated]]` "skip re-running acts on save"
-    // property for the dev edit loop.
-    let session_scope = runtime_core::session::push_scope();
-    let mut renderer = Renderer::new(&device, &queue, config.format);
-    let mut host = Host::new(skin, profile.color_scheme);
-    let logical = (
-        profile.logical_size.0 as f32,
-        profile.logical_size.1 as f32,
-    );
-    host.set_viewport(logical.0, logical.1);
-    {
-        let build_ui = build_ui.clone();
-        host.mount(move || (&*build_ui)());
-    }
-
-    // 3a. Fonts. With `embed-font-bytes` off for web, `face!` fonts
-    //     aren't baked into the wasm — they're served files at the
-    //     same `/fonts/*.ttf` URLs the DOM backend links via
-    //     `@font-face`. Mounting registered each font's URL; fetch
-    //     them now and feed the wgpu text shaper *before* the first
-    //     frame, so text shapes against its real face with no
-    //     fallback-font flash. The engine's embedded default
-    //     (Inter-Regular, baked unconditionally) covers any fetch
-    //     that fails. Awaited here because `mount` is already async;
-    //     the per-frame loop (step 4) starts only after fonts land.
-    let font_urls = host.take_pending_font_urls();
-    let mut loaded_any = false;
-    for url in &font_urls {
-        match fetch_font_bytes(url).await {
-            Some(bytes) => {
-                host.load_font_bytes(bytes);
-                loaded_any = true;
-            }
-            None => web_sys::console::warn_1(
-                &format!(
-                    "host-web: font fetch failed for {url}; \
-                     text falls back to the embedded default face"
-                )
-                .into(),
-            ),
-        }
-    }
-    if loaded_any {
-        // Text shaped during mount used only the embedded default;
-        // re-measure so the now-loaded faces take effect on frame 1.
-        host.invalidate_text_layout();
-    }
-
-    let inner = Rc::new(RefCell::new(HostInner {
+    Ok(WgpuInit {
+        canvas,
         surface,
         device,
         queue,
         config,
-        renderer,
-        host,
-        logical,
-        canvas: canvas.clone(),
-        build_ui,
-        _session_scope: session_scope,
-    }));
-
-    // 4. Per-frame loop. The closure borrows the inner mut; pointer
-    //    listeners borrow it mut too, but JS dispatches them
-    //    sequentially with rAF so they never overlap.
-    let inner_for_frame = inner.clone();
-    let render_loop_handle = render_loop(move |_elapsed| {
-        let mut inner = inner_for_frame.borrow_mut();
-        draw_frame(&mut inner);
-    });
-
-    // 5. Input plumbing. The listeners' closures each hold their own
-    //    `Rc` clone of `inner` so events still flow even if the
-    //    caller drops the `inner` field of the handle (it won't,
-    //    but the `Rc` keeps the API forgiving).
-    let listeners = install_listeners(&canvas, inner.clone());
-
-    Ok(WebHostHandle {
-        inner,
-        _listeners: listeners,
-        _render_loop: render_loop_handle,
     })
 }
-
-// ---------------------------------------------------------------------------
-// Internals
-// ---------------------------------------------------------------------------
 
 /// Fetch a served font file and return its raw bytes. Returns `None`
 /// on any failure (no window, network error, non-2xx, decode error) —
@@ -361,8 +561,9 @@ struct HostInner {
     /// a window resize, etc.).
     canvas: web_sys::HtmlCanvasElement,
     /// Re-callable embedded-app builder. Cached so [`WebHostHandle::resume`]
-    /// can re-mount after a [`pause`].
-    build_ui: Rc<dyn Fn() -> Element + 'static>,
+    /// can re-mount after a [`pause`]. `None` on a [`mount_newcore`]
+    /// handle (pause/resume are old-core-only — see those methods).
+    build_ui: Option<Rc<dyn Fn() -> Element + 'static>>,
     /// RAII guard for this host's `session::REGISTRY` scope. Pushed
     /// in `mount(…)` so the embedded app's `keyed(…)` AVs and
     /// `__epoch_us` are isolated to this host's lifetime. Declared

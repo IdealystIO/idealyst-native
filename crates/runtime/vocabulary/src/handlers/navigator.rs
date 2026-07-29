@@ -94,8 +94,9 @@ use std::rc::Rc;
 
 use runtime_core::primitives::navigator::{
     consumed_prefix, current_nav_base, join_path, match_pattern, match_prefix,
-    navigator_fill_rules, outlet_fill_rules, peek_initial_path, screen_flow_fill_rules,
-    set_initial_path, NavBaseGuard, NavCommand, ScreenRouteGuard, ScreenStateGuard,
+    navigator_fill_rules, outlet_fill_rules, peek_initial_path, record_route_paths,
+    screen_flow_fill_rules, set_initial_path, NavBaseGuard, NavCommand, ScreenRouteGuard,
+    ScreenStateGuard,
 };
 use runtime_core::StyleRules;
 use runtime_scene::{component_scope, realize, Element, MountCx, Realized, Registry};
@@ -834,6 +835,14 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         crate::robot::MountActions::default(),
     );
 
+    // SSG route discovery (the new-core leg of `backend_ssr::render_all`):
+    // publish this navigator's screen path patterns to the shared
+    // route collector — the same hook the old walker's
+    // `dispatch_navigator` fires (`record_routes`), so the crawl
+    // harvests nested navigators' routes as their parent screen mounts.
+    // No-op when no collector is enabled (live backends).
+    record_route_paths(prim.config.screens.values().map(|e| e.path));
+
     // Resolve the initial BEFORE creating the nav-state signals so a
     // cold-start deep link is their *committed* initial value (the new
     // core stages writes; creating-then-setting would leave chrome's
@@ -1353,6 +1362,9 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         resolved => resolved,
     };
 
+    // SSG route discovery — see the swap mount's note (`record_route_paths`).
+    record_route_paths(prim.config.screens.values().map(|e| e.path));
+
     let (initial_route, initial_params, initial_path) = resolve_initial(&prim.config, &base);
 
     let active_route = signal(initial_route);
@@ -1585,9 +1597,26 @@ pub fn mount_navigator_outlet<H: NavCaps + 'static>(
     let mut node = backend.borrow_mut().create_view(&prim.a11y);
     backend.borrow_mut().mark_container(&node);
     cx.realize_children_into(&mut node, children);
-    let style = prim
-        .style
-        .unwrap_or_else(|| StyleProp::Static(Rc::new(outlet_fill_rules())));
+    // The default rides the STATIC-SHEET path (not a raw
+    // `StyleProp::Static` apply) to mirror the old walker's
+    // `default_outlet_style` exactly: a cached empty sheet plus a
+    // computed `outlet_fill_rules` layer, resolved through `apply_sheet`
+    // — which enrolls the outlet in the theme cohort AND fills the
+    // theme's default text font, so the minted class is byte-identical
+    // to old-core SSR (raw-apply skipped the fill and hashed
+    // differently).
+    let style = prim.style.unwrap_or_else(|| {
+        fn empty_sheet() -> Rc<runtime_core::StyleSheet> {
+            static KEY: u8 = 0;
+            runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
+                Rc::new(runtime_core::StyleSheet::r#static(StyleRules::default()))
+            })
+        }
+        StyleProp::Sheet(
+            runtime_core::StyleApplication::new(empty_sheet())
+                .with_computed("__navigator_outlet_fill", outlet_fill_rules),
+        )
+    });
     attach_style(&backend, &node, style);
     // Record into the innermost active capture cell so the enclosing
     // navigator can address this node for screen swaps.

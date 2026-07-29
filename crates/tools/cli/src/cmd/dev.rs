@@ -1481,6 +1481,9 @@ fn launch_ssr(
             release: false,
             source: source.clone(),
             user_features: Vec::new(),
+            // Dev SSR always runs the shipped (old-core) leg; the
+            // new-core wrapper is a `build`-flow opt-in (`--new-core`).
+            new_core: false,
         },
     )
     .with_context(|| "SSR wrapper build failed")?;

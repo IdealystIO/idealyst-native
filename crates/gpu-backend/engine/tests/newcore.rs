@@ -856,3 +856,185 @@ fn regression_virtualizer_rows_realize_world_entered() {
     );
     app.stop();
 }
+
+// ===========================================================================
+// Embedded boot — `start_in_world` (the website wgpu-Simulator seam)
+// ===========================================================================
+
+/// `start_in_world` realizes into an EXTERNALLY-owned world and both
+/// flush routes commit against it: the embedding host's own driver
+/// (modeled by a direct `world.flush()` — on web that's backend-web's
+/// dispatch hook) and this backend's `schedule_flush` (the
+/// canvas-input route the wgpu caps wrappers use).
+#[test]
+fn start_in_world_realizes_into_the_host_world_and_shares_its_flush() {
+    ensure_test_scheduler();
+    let world = runtime_world::World::new();
+    let slot: Rc<Cell<Option<runtime_world::Signal<i32>>>> = Rc::new(Cell::new(None));
+    let s = slot.clone();
+    let app = newcore::start_in_world(
+        make_backend(),
+        |_| {},
+        move || {
+            let count = signal(0i32);
+            s.set(Some(count));
+            view()
+                .child(text().content(move || format!("count = {}", count.get())))
+                .build()
+        },
+        world.clone(),
+    );
+    let count = slot.get().expect("signal smuggled out of build");
+    let root = root_of(&app);
+    assert_eq!(texts_of(&root), vec!["count = 0".to_string()]);
+
+    // Route 1: the embedding host's driver flushes the shared world.
+    count.set(1);
+    assert_eq!(texts_of(&root), vec!["count = 0".to_string()], "staged");
+    world.flush();
+    assert_eq!(texts_of(&root), vec!["count = 1".to_string()]);
+
+    // Route 2: this backend's own schedule_flush (wgpu-dispatched
+    // author callbacks) flushes the SAME world.
+    count.set(2);
+    newcore::schedule_flush();
+    drain();
+    assert_eq!(texts_of(&root), vec!["count = 2".to_string()]);
+
+    // Embedded stop leaves the host-lifetime driver state in place
+    // (documented on `stop`): the world belongs to the page.
+    app.stop();
+    assert!(
+        newcore::is_booted(),
+        "embedded stop must NOT clear FLUSH_WORLD — it points at the host's world"
+    );
+    // Hygiene for later tests in this process.
+    newcore::flush_sync();
+}
+
+/// Regression (embedded lifetime): build-level state — a free effect's
+/// cleanup and a glue `after_ms_scoped` timer — dies with the embedded
+/// app's `stop()`, NOT with the (page-lifetime) world. Without the
+/// `collect_owned` harvest in `start_in_world` both would be
+/// world-root-owned and leak past the unmount; without the
+/// scoped-scheduling anchor the timer would either never fire (old-core
+/// anchoring is inert on the new core) or fire after teardown.
+#[test]
+fn start_in_world_stop_disposes_build_level_effects_and_scoped_timers() {
+    ensure_test_scheduler();
+    let world = runtime_world::World::new();
+    let cleaned: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+    let fired: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+    let (cl, fi) = (cleaned.clone(), fired.clone());
+    let app = newcore::start_in_world(
+        make_backend(),
+        |_| {},
+        move || {
+            // Build-level (non-component) effect with a cleanup.
+            let cl2 = cl.clone();
+            let _ = runtime_world::effect(move || {
+                let cl3 = cl2.clone();
+                move || cl3.set(true)
+            });
+            // Build-level scoped timer (the welcome app's `timeline!`
+            // shape rides this exact path).
+            let fi2 = fi.clone();
+            runtime_vocabulary::glue::after_ms_scoped(0, move || fi2.set(true));
+            view().child(text().content("embedded")).build()
+        },
+        world.clone(),
+    );
+    assert!(!cleaned.get());
+
+    app.stop();
+    assert!(
+        cleaned.get(),
+        "build-level effect cleanup fired on embedded stop (Owned harvest)"
+    );
+    // The queued timer body must be inert after teardown (the anchor's
+    // dead flag — cancellation can't unqueue an already-dispatched
+    // browser tick, so the flag is load-bearing).
+    pump_timers();
+    assert!(
+        !fired.get(),
+        "scoped timer registered at build must not fire after the embedded app stopped"
+    );
+    drop(world);
+}
+
+/// Positive control for the scoped-timer path: while the embedded app
+/// is mounted, a build-level `after_ms_scoped` fires when the host
+/// scheduler dispatches it.
+#[test]
+fn start_in_world_scoped_timer_fires_while_mounted() {
+    ensure_test_scheduler();
+    let world = runtime_world::World::new();
+    let fired: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+    let fi = fired.clone();
+    let app = newcore::start_in_world(
+        make_backend(),
+        |_| {},
+        move || {
+            let fi2 = fi.clone();
+            runtime_vocabulary::glue::after_ms_scoped(0, move || fi2.set(true));
+            view().child(text().content("embedded")).build()
+        },
+        world.clone(),
+    );
+    pump_timers();
+    assert!(fired.get(), "scoped timer fires while the embedded app is live");
+    app.stop();
+    newcore::flush_sync();
+}
+
+/// Regression (the skin-toggle remount race): a REPLACEMENT embedded
+/// app can mount before the old one drops. The old app's `stop()` must
+/// not sever the replacement's flush driver (`FLUSH_WORLD`) or its
+/// diagnostic backend handle.
+#[test]
+fn embedded_stop_keeps_replacement_flush_driver_alive() {
+    ensure_test_scheduler();
+    let world = runtime_world::World::new();
+
+    let app_a = newcore::start_in_world(
+        make_backend(),
+        |_| {},
+        || view().child(text().content("A")).build(),
+        world.clone(),
+    );
+
+    // Replacement mounts BEFORE the old app drops.
+    let slot: Rc<Cell<Option<runtime_world::Signal<i32>>>> = Rc::new(Cell::new(None));
+    let s = slot.clone();
+    let app_b = newcore::start_in_world(
+        make_backend(),
+        |_| {},
+        move || {
+            let n = signal(0i32);
+            s.set(Some(n));
+            view()
+                .child(text().content(move || format!("B = {}", n.get())))
+                .build()
+        },
+        world.clone(),
+    );
+    let n = slot.get().expect("signal");
+    let root_b = root_of(&app_b);
+
+    app_a.stop();
+
+    // The replacement's canvas-input flush route still works.
+    n.set(7);
+    newcore::schedule_flush();
+    drain();
+    assert_eq!(texts_of(&root_b), vec!["B = 7".to_string()]);
+
+    // The diagnostic backend handle survived A's guarded clear and
+    // points at B's backend.
+    let b_ptr = newcore::with_backend(|rc| Rc::as_ptr(rc)).expect("backend handle live");
+    app_b.with_realized(|_| {}); // keep app_b alive to here
+    let _ = b_ptr;
+
+    app_b.stop();
+    newcore::flush_sync();
+}

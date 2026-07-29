@@ -8,9 +8,6 @@ use idea_ui::{
     tone, typography_kind, variant, Button, Card, IconButton, Stack, StackAxis, StackGap, Tag,
     Typography,
 };
-// The themed Table rides the old-core-only `table` External SDK — the
-// new-core demo forks below render stacked rows instead.
-#[cfg(feature = "old-core")]
 use idea_ui::{Table, TableCell, TableRow};
 
 use crate::shell::{Callout, CodePanel, DemoSurface, Prop, PropsTable, Section, P};
@@ -201,7 +198,6 @@ TableCell {
     ])
 }
 
-#[cfg(feature = "old-core")]
 fn status_table() -> Element {
     let on_run: Rc<dyn Fn()> = Rc::new(|| {});
     ui! {
@@ -257,33 +253,6 @@ fn status_table() -> Element {
     }
 }
 
-// SEAM(new-core): idea-ui `Table` rides the old-core-only `table`
-// External SDK — approximate the demo as stacked flex rows (job label +
-// tag + action button) until the SDK's own retarget wave.
-#[cfg(feature = "new-core")]
-fn status_table() -> Element {
-    let on_run: Rc<dyn Fn()> = Rc::new(|| {});
-    ui! {
-        Stack(axis = StackAxis::Column, gap = StackGap::Sm) {
-            Stack(axis = StackAxis::Row, gap = StackGap::Md) {
-                Typography(content = "Build".to_string())
-                Tag(label = "Passing".to_string(), tone = tone::Success, variant = variant::Soft)
-                Button(label = "Re-run".to_string(), on_click = on_run.clone(), tone = tone::Primary, variant = variant::Soft)
-            }
-            Stack(axis = StackAxis::Row, gap = StackGap::Md) {
-                Typography(content = "Unit tests".to_string())
-                Tag(label = "Passing".to_string(), tone = tone::Success, variant = variant::Soft)
-                Button(label = "Re-run".to_string(), on_click = on_run.clone(), tone = tone::Primary, variant = variant::Soft)
-            }
-            Stack(axis = StackAxis::Row, gap = StackGap::Md) {
-                Typography(content = "Deploy".to_string())
-                Tag(label = "Blocked".to_string(), tone = tone::Danger, variant = variant::Soft)
-                Button(label = "Investigate".to_string(), on_click = on_run, tone = tone::Danger, variant = variant::Soft)
-            }
-        }
-    }
-}
-
 /// Interactive demo: rows with `on_row_click` whose cells ALSO hold buttons.
 /// Two reactive readouts make the fix observable — `on_row_click` sets
 /// "Selected row", the cell buttons set "Last button action". Clicking a
@@ -291,7 +260,6 @@ fn status_table() -> Element {
 /// row swallowed the button (the old bug), a button press would ALSO change
 /// the selected row. The status text is wrapped in `rx!` so it re-renders when
 /// either signal changes (a bare `.get()` would read once and never update).
-#[cfg(feature = "old-core")]
 fn clickable_row_table() -> Element {
     let selected: Signal<String> = signal("(none — click a row's text/background)".to_string());
     let last_action: Signal<String> = signal("(none — click a button or the edit icon)".to_string());
@@ -366,56 +334,3 @@ fn clickable_row_table() -> Element {
     }
 }
 
-// SEAM(new-core): idea-ui `Table` (and `on_row_click`) ride the
-// old-core-only `table` External SDK — approximate the demo as stacked
-// flex rows where the row label is a `pressable` (row select) and the
-// action buttons sit beside it, keeping both reactive readouts live.
-#[cfg(feature = "new-core")]
-fn clickable_row_table() -> Element {
-    use runtime_core::{pressable, IntoElement};
-
-    let selected: Signal<String> = signal("(none — click a row's text/background)".to_string());
-    let last_action: Signal<String> = signal("(none — click a button or the edit icon)".to_string());
-
-    let on_edit = move |name: &'static str| -> Rc<dyn Fn()> {
-        Rc::new(move || last_action.set(format!("edit icon → {name}")))
-    };
-    let on_delete = move |name: &'static str| -> Rc<dyn Fn()> {
-        Rc::new(move || last_action.set(format!("delete button → {name}")))
-    };
-    let row_label = move |name: &'static str| -> Element {
-        let label = ui! { Typography(content = name.to_string()) };
-        pressable(vec![label], move || selected.set(name.to_string())).into_element()
-    };
-
-    ui! {
-        Stack(axis = StackAxis::Column, gap = StackGap::Sm) {
-            Typography(
-                kind = typography_kind::Body,
-                content = rx!(format!("Selected row: {}", selected.get())),
-            )
-            Typography(
-                kind = typography_kind::Body,
-                content = rx!(format!("Last button action: {}", last_action.get())),
-            )
-            Stack(axis = StackAxis::Row, gap = StackGap::Md) {
-                { row_label("Build") }
-                Tag(label = "Passing".to_string(), tone = tone::Success, variant = variant::Soft)
-                IconButton(icon = Some(PENCIL), on_click = on_edit("Build"), tone = tone::Neutral, variant = variant::Soft)
-                Button(label = "Delete".to_string(), on_click = on_delete("Build"), tone = tone::Danger, variant = variant::Soft)
-            }
-            Stack(axis = StackAxis::Row, gap = StackGap::Md) {
-                { row_label("Unit tests") }
-                Tag(label = "Passing".to_string(), tone = tone::Success, variant = variant::Soft)
-                IconButton(icon = Some(PENCIL), on_click = on_edit("Unit tests"), tone = tone::Neutral, variant = variant::Soft)
-                Button(label = "Delete".to_string(), on_click = on_delete("Unit tests"), tone = tone::Danger, variant = variant::Soft)
-            }
-            Stack(axis = StackAxis::Row, gap = StackGap::Md) {
-                { row_label("Deploy") }
-                Tag(label = "Blocked".to_string(), tone = tone::Danger, variant = variant::Soft)
-                IconButton(icon = Some(TRASH_2), on_click = on_edit("Deploy"), tone = tone::Neutral, variant = variant::Soft)
-                Button(label = "Delete".to_string(), on_click = on_delete("Deploy"), tone = tone::Danger, variant = variant::Soft)
-            }
-        }
-    }
-}

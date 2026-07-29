@@ -256,15 +256,13 @@ pub fn CodeBlock(props: CodeBlockProps) -> Element {
         let palette = if is_dark { DARK_PALETTE } else { LIGHT_PALETTE };
         let spans = highlight(&src_owned, palette);
         let code_style = move || StyleApplication::new(CodeText::sheet());
-        // The `codeblock` SDK is old-core-only (Element::External); the
-        // new-core build renders the identical `<pre>`/span DOM through
-        // the website's own scene-registry handler (src/newcore.rs) —
-        // same spans, same call shape.
-        #[cfg(not(feature = "new-core"))]
-        let block = codeblock::code_block(spans);
-        #[cfg(feature = "new-core")]
-        let block = crate::newcore::code_block(spans);
-        block.with_style(code_style).into_element()
+        // Dual-core `codeblock` SDK: old core dispatches the
+        // Element::External per-backend handler, new core the SDK's
+        // scene-registry handler — identical `<pre>`/span DOM, same
+        // spans, same call shape.
+        codeblock::code_block(spans)
+            .with_style(code_style)
+            .into_element()
     })
 }
 

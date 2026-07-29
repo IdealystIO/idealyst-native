@@ -29,11 +29,15 @@ pub use runtime_macros::{
     component, doc_scope, idealyst_tool, jsx, props, recipe, stylesheet, ui, IdealystSchema,
 };
 
-// `rx!` / `effect!` — defined in the vocabulary (their `$crate`
-// expansions target `runtime_vocabulary::glue`), re-exported under the
-// old names. (`effect` the MACRO coexists with glue's `effect` FN — the
-// imports occupy different namespaces.)
-pub use runtime_vocabulary::{effect, rx};
+// `rx!` / `effect!` / `timeline!` — defined in the vocabulary (their
+// `$crate` expansions target `runtime_vocabulary::glue`), re-exported
+// under the old names. (`effect` the MACRO coexists with glue's
+// `effect` FN — the imports occupy different namespaces.) `timeline!`
+// must be the vocabulary's mirror, NOT runtime-core's macro: the old
+// expansion's `$crate::session::after_ms` anchors to the old-core
+// scope, which is inert on a new-core mount (see
+// `runtime_vocabulary::scoped_scheduling`).
+pub use runtime_vocabulary::{effect, rx, timeline};
 
 // Old-core `#[macro_export]` decl macros whose `$crate::…` expansions
 // resolve against runtime-core itself and construct types glue already

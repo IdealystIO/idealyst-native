@@ -35,6 +35,12 @@ robot = []
 # runtime-core's thread-local phase map, zero code when off.
 debug-stats = ["runtime-core/debug-stats"]
 
+# Forward runtime-core's `async-driver` gate so glue can mirror the old
+# root's feature-gated `driver` module (`spawn_async` / `render_loop`).
+# Apps whose aliased sources spell `runtime_core::driver::…` enable this
+# (the website's embedded-simulator new-core build is the consumer).
+async-driver = ["runtime-core/async-driver"]
+
 [dependencies]
 # SANCTIONED, migration-transitional (see lib.rs): the frozen Backend
 # signatures reference runtime-core's prop/data types (StyleRules,

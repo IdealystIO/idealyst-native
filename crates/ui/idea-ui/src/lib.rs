@@ -66,19 +66,6 @@ extern crate self as idea_ui;
 #[cfg(feature = "new-core")]
 extern crate runtime_facade as runtime_core;
 
-// The `table` SDK is old-core-authored: pulling it into a new-core
-// graph would retarget ITS `ui!` call sites too (proc-macro feature
-// unification) and break the build. The themed `Table` component is
-// therefore excluded from new-core graphs until the SDK's own retarget
-// wave — combining the features is a configuration error, not a silent
-// downgrade.
-#[cfg(all(feature = "new-core", feature = "table"))]
-compile_error!(
-    "idea-ui: the `table` component feature cannot join a `new-core` build \
-     (the table SDK is old-core-authored; its retarget is a later P6 wave). \
-     Build with --no-default-features and re-enable the prim-* features you need."
-);
-
 pub mod breakpoint;
 pub mod components;
 #[cfg(feature = "docs")]

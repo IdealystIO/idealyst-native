@@ -22,13 +22,10 @@
 use runtime_core::{
     component, Color, Element, FontFamily, Reactive, StyleApplication, Tokenized,
 };
-// `styled_text` + the run types: old-core root re-exports vs the
-// website's new-core shim over the vocabulary text builder (same
-// old-core `TextRun` type — see src/newcore.rs).
-#[cfg(not(feature = "new-core"))]
+// `styled_text` + the run types resolve on BOTH cores: old-core root
+// re-exports, or the glue facade's `styled_text(runs)` mirror over the
+// vocabulary text builder (same old-core `TextRun` type either way).
 use runtime_core::{styled_text, TextRun, TextRunStyle};
-#[cfg(feature = "new-core")]
-use crate::newcore::{styled_text, TextRun, TextRunStyle};
 
 use idea_ui::{
     installed_typography_sheet, Typography, TypographyKindRef, TypographyProps,

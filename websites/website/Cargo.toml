@@ -19,9 +19,6 @@ runtime-core = { workspace = true, features = ["async-driver"] }
 # the alias in lib.rs — the nav-showcase / idea-ui-docs pattern).
 runtime-facade = { workspace = true, optional = true }
 runtime-vocabulary = { workspace = true, optional = true }
-# `runtime-scene` for the website-local codeblock scene handler
-# (`Element::item` + `MountCx`/`Registry` in src/newcore.rs).
-runtime-scene = { workspace = true, optional = true }
 # `default-features = false` + the explicit prim list (the contract
 # idea-ui documents on its own runtime-core dep): idea-ui's `table`
 # default is old-core-authored and must stay out of new-core graphs.
@@ -33,22 +30,23 @@ idea-ui = { path = "../../crates/ui/idea-ui", default-features = false, features
 ] }
 swap-navigator = { workspace = true }
 idea-ui-nav = { workspace = true }
-# `codeblock` is an old-core External SDK (`Element::External` payload +
-# per-backend registry) — it cannot join a new-core graph. Owned by the
-# `old-core` feature; the new-core build renders the same `<pre>`/span
-# DOM through a website-local scene-registry handler (src/newcore.rs).
+# `codeblock` is DUAL-CORE: the old core dispatches its
+# `Element::External` payload through the per-backend registry; the
+# `codeblock/new-core` leg registers the identical `<pre>`/span handler
+# on the scene registry (`codeblock::register` is the boot registration
+# seam — see the new-core web entry in lib.rs + tests/ssg_parity.rs).
 codeblock = { workspace = true, optional = true }
 # Embedded `welcome` app — the canonical scaffold from `idealyst new`.
 # Re-mounted inside the home-page Simulator so visitors can preview
 # the scene without installing the CLI. Pure rlib, no platform-specific
 # code, compiles the same bytes everywhere.
 #
-# Old-core-only: `welcome` authors its tree with `ui!` against the old
-# runtime-core, and proc-macro features unify per build graph — a
-# new-core graph would retarget welcome's emissions at the glue paths
-# its dep set can't resolve. The whole embedded-Simulator preview stack
-# below is owned by `old-core` for the same reason (the wgpu hosts
-# mount through the old walker).
+# Dual-core: both features enable the dep; `new-core` additionally
+# flips `welcome/new-core` so its `ui!` emissions retarget with the
+# rest of the graph (proc-macro feature unification) and its dep set
+# can resolve the glue paths. The wgpu hosts below mount it through
+# `host_wgpu::mount` (old walker) or `host_wgpu::mount_newcore`
+# (`render_wgpu::newcore::start_in_world` into the page's world).
 welcome = { workspace = true, optional = true }
 
 # Embedded-Simulator preview stack. These crates self-gate their
@@ -92,7 +90,7 @@ default = ["debug-stats", "old-core"]
 # conformance pattern): exactly one per build. `old-core` is the
 # default (CLI dev/build flows unchanged); `new-core` is the idea-lite
 # migration build, booted on web via `backend_web::newcore::start_in`
-# (see src/newcore.rs + newcore.html):
+# (see the `web_entry_newcore` module in lib.rs + newcore.html):
 #
 #   cargo check -p website                                       # old core
 #   cargo check -p website --no-default-features \
@@ -101,13 +99,14 @@ default = ["debug-stats", "old-core"]
 #       --out-dir pkg-newcore -- --no-default-features \
 #       --features new-core                                      # new-core web
 #
-# `old-core` owns the old-core-only dep clusters: the embedded-
-# Simulator preview stack (welcome + wgpu hosts — welcome's `ui!`
-# emissions retarget under proc-macro feature unification, and the
-# wgpu hosts mount through the old walker) and the `codeblock`
-# External SDK. Under `new-core` the home hero renders the simulator
-# placeholder chassis and code panels render through a website-local
-# scene-registry handler with the identical `<pre>`/span DOM.
+# The embedded-Simulator preview stack (welcome + the wgpu hosts +
+# sim painters) and `codeblock` are DUAL-CORE: both features enable
+# the deps, and `new-core` additionally flips each crate's own
+# `new-core` leg. The hero's live preview mounts through
+# `host_wgpu::mount` (old walker) or `host_wgpu::mount_newcore`
+# (`render_wgpu::newcore::start_in_world` into the page's own world —
+# the new-core wgpu-host mount seam), so BOTH builds render the real
+# embedded simulator.
 old-core = [
     "dep:welcome",
     "dep:host-web",
@@ -125,11 +124,34 @@ old-core = [
 new-core = [
     "dep:runtime-facade",
     "dep:runtime-vocabulary",
-    "dep:runtime-scene",
+    # `runtime_core::driver::spawn_async` through the facade — glue
+    # mirrors the old root's feature-gated `driver` module behind the
+    # vocabulary's forwarding feature (the Simulator's mount rides it).
+    "runtime-vocabulary/async-driver",
+    "dep:codeblock",
+    "codeblock/new-core",
     "swap-navigator/new-core",
     "idea-ui/new-core",
     "idea-ui-nav/new-core",
     "backend-web/new-core",
+    # The embedded-Simulator preview stack, new-core legs (see the
+    # cluster comment above `old-core`). The sim painters (ios-sim /
+    # android-sim) are pure `Painter` impls with no macro emissions —
+    # no leg to flip.
+    "dep:welcome",
+    "welcome/new-core",
+    "dep:host-web",
+    "host-web/new-core",
+    "dep:host-wgpu",
+    "host-wgpu/new-core",
+    "dep:render-api",
+    "dep:ios-sim",
+    "dep:android-sim",
+    # Weak forward: when the `ssr` feature also activates backend-ssr,
+    # flip its new-core leg on so `--features new-core,ssr` alone builds
+    # the newcore SSG/serve entries (tests/ssg_parity.rs + the CLI's
+    # `--new-core` wrapper). No-op when `ssr` is off.
+    "backend-ssr?/new-core",
 ]
 # Opt into the project-wide `debug-stats` instrumentation. Routes
 # through every dep that has its own `debug-stats` feature, so the

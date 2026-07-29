@@ -18,9 +18,6 @@ use idea_ui::{
     dark_theme, light_theme, set_idea_theme, typography_kind, Icon, Modal, Spacer, Stack, StackGap,
     Switch, Typography,
 };
-// The themed Table rides the old-core-only `table` External SDK — the
-// new-core PropsTable fork renders stacked rows instead (see below).
-#[cfg(feature = "old-core")]
 use idea_ui::{Table, TableCell, TableRow};
 use icons_lucide::SEARCH;
 
@@ -478,7 +475,6 @@ pub struct CodePanelProps {
     pub src: String,
 }
 
-#[cfg(feature = "old-core")]
 #[derive(Copy, Clone)]
 struct Palette {
     ink: &'static str,
@@ -487,7 +483,6 @@ struct Palette {
     accent: &'static str,
 }
 
-#[cfg(feature = "old-core")]
 const LIGHT_PALETTE: Palette = Palette {
     ink: "#1f2328",
     comment: "#8a8270",
@@ -495,7 +490,6 @@ const LIGHT_PALETTE: Palette = Palette {
     accent: "#5a4fcf",
 };
 
-#[cfg(feature = "old-core")]
 const DARK_PALETTE: Palette = Palette {
     ink: "#e8eaf0",
     comment: "#9099a8",
@@ -521,7 +515,6 @@ fn is_dark_color(s: &str) -> bool {
     luma < 128.0
 }
 
-#[cfg(feature = "old-core")]
 fn highlight(src: &str, palette: Palette) -> Vec<(String, Color)> {
     let keywords = [
         "fn", "let", "pub", "use", "mod", "struct", "enum", "impl", "trait", "for", "in", "if",
@@ -600,7 +593,10 @@ fn highlight(src: &str, palette: Palette) -> Vec<(String, Color)> {
     out
 }
 
-#[cfg(feature = "old-core")]
+// Dual-core `codeblock` SDK (the new-core leg registers the identical
+// `<pre>`/span handler on the scene registry — `codeblock::register`
+// at boot), so ONE CodePanel body serves both cores with the per-span
+// highlight intact.
 #[component]
 pub fn CodePanel(props: &CodePanelProps) -> Element {
     let panel_style = CodePanelBox();
@@ -612,23 +608,6 @@ pub fn CodePanel(props: &CodePanelProps) -> Element {
         codeblock::code_block(spans)
             .with_style(code_style)
             .into_element()
-    });
-    ui! { view(style = panel_style) { dynamic } }
-}
-
-// SEAM(new-core): `codeblock` is an old-core External SDK (the External
-// port is a later wave) — render the snippet as a mono-styled `text`
-// inside the same panel styling. The theme switch is kept so the panel
-// still re-renders on Light/Dark (the ink color rides `CodeText`'s
-// tokens either way; the per-span highlight returns with the SDK).
-#[cfg(feature = "new-core")]
-#[component]
-pub fn CodePanel(props: &CodePanelProps) -> Element {
-    let panel_style = CodePanelBox();
-    let src = props.src.clone();
-    let dynamic = switch(theme_is_dark, move |&_is_dark| {
-        let code = src.clone();
-        ui! { text(style = StyleApplication::new(CodeText::sheet())) { code } }
     });
     ui! { view(style = panel_style) { dynamic } }
 }
@@ -722,45 +701,23 @@ pub struct PropsTableProps {
     pub rows: Vec<Prop>,
 }
 
-#[cfg(feature = "old-core")]
-#[component]
-pub fn PropsTable(props: PropsTableProps) -> Element {
-    let mut rows: Vec<Element> = Vec::with_capacity(props.rows.len() + 1);
-    rows.push(ui! {
-        TableRow {
-            TableCell(header = true, text = Some("Prop".to_string()))
-            TableCell(header = true, text = Some("Type".to_string()))
-            TableCell(header = true, text = Some("Description".to_string()))
-        }
-    });
-    for p in props.rows {
-        let name = p.name.to_string();
-        let ty = p.ty.to_string();
-        let desc = p.desc.to_string();
-        rows.push(ui! {
-            TableRow {
-                TableCell(text = Some(name))
-                TableCell(text = Some(ty))
-                TableCell(text = Some(desc))
-            }
-        });
-    }
-    ui! { Table { rows } }
-}
-
-// SEAM(new-core): idea-ui's `Table` rides the old-core-only `table`
-// External SDK — render the same prop data as stacked definition rows
-// (name + type on one line, description under it) until the SDK's own
-// retarget wave.
-#[cfg(feature = "new-core")]
+// Same-source on both cores: the table SDK is dual-core (real
+// `<table>` on web via the External registry / the scene Registry, a
+// shared-track CSS-grid on native).
 #[component]
 pub fn PropsTable(props: PropsTableProps) -> Element {
     ui! {
-        Stack(gap = StackGap::Md) {
+        Table {
+            TableRow {
+                TableCell(header = true, text = Some("Prop".to_string()))
+                TableCell(header = true, text = Some("Type".to_string()))
+                TableCell(header = true, text = Some("Description".to_string()))
+            }
             for p in props.rows {
-                view {
-                    Typography(content = format!("{} — {}", p.name, p.ty), kind = typography_kind::H3)
-                    Typography(content = p.desc.to_string(), muted = true)
+                TableRow {
+                    TableCell(text = Some(p.name.to_string()))
+                    TableCell(text = Some(p.ty.to_string()))
+                    TableCell(text = Some(p.desc.to_string()))
                 }
             }
         }

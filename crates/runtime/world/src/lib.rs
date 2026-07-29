@@ -369,6 +369,19 @@ pub fn is_entered() -> bool {
     .unwrap_or(false)
 }
 
+/// True while an effect body (any world's) is running on this thread —
+/// exactly the window where [`on_cleanup`] is legal.
+///
+/// This is the probe scope-anchored scheduling helpers fork on (the
+/// vocabulary's `after_ms_scoped` / `raf_loop_scoped` shadows): inside
+/// an effect run they anchor their cancellation via [`on_cleanup`]
+/// (dies on the effect's re-run or its owner's drop); outside one they
+/// must fall back to a collector-owned keepalive instead — calling
+/// [`on_cleanup`] there would panic.
+pub fn in_effect() -> bool {
+    TLS.try_with(|t| !t.borrow().effect_stack.is_empty()).unwrap_or(false)
+}
+
 // ============================================================================
 // Arena — the per-world slot storage. Signals and effects live in parallel
 // generational Vecs; the staged queue holds slot indices awaiting commit.

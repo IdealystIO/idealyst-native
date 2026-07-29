@@ -68,6 +68,17 @@ pub struct HtmlNode {
     /// node lowers to `text-shadow` (hugging the glyphs) instead of
     /// `box-shadow`, matching the web backend; see `apply_style`.
     is_text: bool,
+    /// The minted style class currently applied through
+    /// `apply_style`/`apply_styled_variants` (ONE mutable styled-class
+    /// slot per node — the web backend's per-node dynamic-slot model).
+    /// A re-apply REPLACES this class instead of accumulating: a
+    /// reactive style whose value changes between the mount-time apply
+    /// and the request's flush (e.g. a scroll-spy TOC link resolving
+    /// its `active` variant) must serialize wearing only the FINAL
+    /// class, exactly like the live DOM after the same flush. Classes
+    /// stamped via `attach_html_class` (structural markers,
+    /// `ui-cq-container`) live outside this slot and are never removed.
+    styled_class: Option<String>,
     children: Vec<NodeRef>,
 }
 
@@ -80,6 +91,7 @@ impl HtmlNode {
             attrs: Vec::new(),
             scroll: false,
             is_text: false,
+            styled_class: None,
             children: Vec::new(),
         }
     }
@@ -124,6 +136,47 @@ fn add_class(node: &NodeRef, class: &str) {
     } else {
         n.attrs.push(("class", class.to_string()));
     }
+}
+
+/// Remove a single class token from a node's `class` attribute (keeps
+/// the attribute, possibly empty-cleaned, and every other token).
+fn remove_class(node: &NodeRef, class: &str) {
+    let mut n = node.borrow_mut();
+    if let Some(slot) = n.attrs.iter_mut().find(|(k, _)| *k == "class") {
+        let remaining: Vec<&str> = slot.1.split(' ').filter(|c| *c != class && !c.is_empty()).collect();
+        slot.1 = remaining.join(" ");
+    }
+    n.attrs.retain(|(k, v)| *k != "class" || !v.is_empty());
+}
+
+/// Outcome of [`set_styled_class`] — what happened to the node's
+/// minted-class slot, so the backend can keep rule refcounts exact.
+enum StyledClassChange {
+    /// Same class as before — no ref changes.
+    Unchanged,
+    /// First minted class on this node.
+    Fresh,
+    /// Replaced a different minted class (the removed one).
+    Swapped(String),
+}
+
+/// Swap the node's minted styled class (the ONE mutable slot
+/// `apply_style`/`apply_styled_variants` own — see
+/// [`HtmlNode::styled_class`]): removes the previously-minted class if
+/// it differs, records + stamps the new one.
+fn set_styled_class(node: &NodeRef, class: &str) -> StyledClassChange {
+    let prev = node.borrow().styled_class.clone();
+    let change = match prev {
+        Some(prev) if prev == class => StyledClassChange::Unchanged,
+        Some(prev) => {
+            remove_class(node, &prev);
+            StyledClassChange::Swapped(prev)
+        }
+        None => StyledClassChange::Fresh,
+    };
+    node.borrow_mut().styled_class = Some(class.to_string());
+    add_class(node, class);
+    change
 }
 
 /// Append an inline CSS declaration (`prop:value`) to a node's inline
@@ -241,6 +294,15 @@ pub struct SsrBackend {
     /// plain class rules in `head_css` so a matching `@media` overrides the
     /// base declaration.
     media_rules: std::collections::BTreeMap<String, String>,
+    /// Wearer counts per minted class (how many nodes currently carry
+    /// it in their [`HtmlNode::styled_class`] slot). When a re-apply
+    /// swaps a node's class and the count hits zero, the superseded
+    /// rule (plus its pseudo/media derivatives) is dropped from the
+    /// head stylesheet — the web backend's dynamic-slot refcount model.
+    /// Without this, a reactive style resolving to its final value at
+    /// flush left the mount-time rule behind as a dead head entry that
+    /// old-core SSR (single final apply) never emits.
+    style_rule_refs: HashMap<String, u32>,
     /// Third-party `Element::External` handlers (e.g. `codeblock`),
     /// so externals SERVER-RENDER their real DOM (a code block's
     /// `<pre>`+spans) instead of an empty host — matching web so
@@ -266,6 +328,43 @@ pub struct SsrBackend {
 impl SsrBackend {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Book a node's minted-class change into the rule refcounts,
+    /// dropping a superseded class's rules once nothing wears it (see
+    /// [`Self::style_rule_refs`]). Node teardown does NOT decrement —
+    /// the old core keeps rules of dropped nodes in the head too, and
+    /// the cross-core byte gate compares against that behavior.
+    fn book_styled_class(&mut self, class: &str, change: StyledClassChange) {
+        match change {
+            StyledClassChange::Unchanged => {}
+            StyledClassChange::Fresh => {
+                *self.style_rule_refs.entry(class.to_string()).or_insert(0) += 1;
+            }
+            StyledClassChange::Swapped(prev) => {
+                *self.style_rule_refs.entry(class.to_string()).or_insert(0) += 1;
+                let dead = match self.style_rule_refs.get_mut(&prev) {
+                    Some(n) => {
+                        *n = n.saturating_sub(1);
+                        *n == 0
+                    }
+                    None => false,
+                };
+                if dead {
+                    self.style_rule_refs.remove(&prev);
+                    // The base rule, its pseudo-class derivatives
+                    // (`{class}:hover`, `{class}[disabled]`), and its
+                    // media/container derivatives (`{class}@…`).
+                    let pseudo_colon = format!("{prev}:");
+                    let pseudo_attr = format!("{prev}[");
+                    self.style_rules.retain(|k, _| {
+                        k != &prev && !k.starts_with(&pseudo_colon) && !k.starts_with(&pseudo_attr)
+                    });
+                    let media_prefix = format!("{prev}@");
+                    self.media_rules.retain(|k, _| !k.starts_with(&media_prefix));
+                }
+            }
+        }
     }
 
     /// Serialize the tree to an HTML string, rooted at the node passed to
@@ -703,7 +802,8 @@ impl Backend for SsrBackend {
         if !self.style_rules.contains_key(&class) {
             self.style_rules.insert(class.clone(), body(style));
         }
-        add_class(node, &class);
+        let change = set_styled_class(node, &class);
+        self.book_styled_class(&class, change);
     }
 
     // SSR opts into the web's declarative state model: interaction-state
@@ -810,7 +910,8 @@ impl Backend for SsrBackend {
                 .entry(format!("{class}@cq{:08x}", threshold.to_bits()))
                 .or_insert(rule);
         }
-        add_class(node, &class);
+        let change = set_styled_class(node, &class);
+        self.book_styled_class(&class, change);
     }
 
     fn mark_container(&mut self, node: &Self::Node) {
@@ -1638,6 +1739,79 @@ mod tests {
         let head = b.head_css();
         assert!(head.contains(&format!(".{class}{{background: #ffffff}}")), "base rule, got: {head}");
         assert!(head.contains(&format!(".{class}:hover{{background: #eeeeee}}")), "hover rule, got: {head}");
+    }
+
+    /// REGRESSION: re-applying a style to a node REPLACES its minted
+    /// class (the web backend's one-mutable-dynamic-slot-per-node
+    /// model) instead of accumulating both. The bug: a reactive style
+    /// whose value changed between the mount-time apply and the
+    /// request's flush (the new core stages writes — e.g. a scroll-spy
+    /// TOC link resolving its `active` variant post-mount) serialized
+    /// wearing BOTH classes, while old-core SSR (and the live DOM
+    /// after the same flush) carries only the final one — breaking SSG
+    /// byte-parity and hydration adoption. Structural classes stamped
+    /// via `attach_html_class` must survive the swap.
+    #[test]
+    fn regression_reapply_replaces_minted_class_keeps_structural() {
+        let mut b = SsrBackend::new();
+        let v = b.create_view(&AccessibilityProps::default());
+        b.attach_html_class(&v, "ui-cq-container");
+
+        let mut first = StyleRules::default();
+        first.background = Some(Tokenized::Literal(Color("#111111".into())));
+        let mut second = StyleRules::default();
+        second.background = Some(Tokenized::Literal(Color("#222222".into())));
+        let first = Rc::new(first);
+        let second = Rc::new(second);
+        let first_class = css::hash_class_name(&first.content_key());
+        let second_class = css::hash_class_name(&second.content_key());
+
+        b.apply_style(&v, &first);
+        b.apply_style(&v, &second);
+
+        let html = { let mut s = String::new(); serialize(&v, &mut s); s };
+        assert!(
+            html.contains(&format!("class=\"ui-cq-container {second_class}\"")),
+            "node wears the structural class + ONLY the final minted class: {html}"
+        );
+        assert!(
+            !html.contains(&first_class),
+            "the superseded minted class must be removed: {html}"
+        );
+
+        // The superseded rule leaves the head stylesheet once nothing
+        // wears it (web's dynamic-slot refcount model): old-core SSR
+        // applies only the final style, so a lingering first-apply rule
+        // breaks head_css byte-parity.
+        let head = b.head_css();
+        assert!(
+            !head.contains(&first_class),
+            "superseded rule must be dropped from head_css: {head}"
+        );
+        assert!(head.contains(&second_class), "final rule stays: {head}");
+
+        // Same contract through the variants entry (the path reactive
+        // sheet styles actually take).
+        let v2 = b.create_view(&AccessibilityProps::default());
+        b.apply_styled_variants(&v2, &first, &[], &[], &[]);
+        b.apply_styled_variants(&v2, &second, &[], &[], &[]);
+        let html2 = { let mut s = String::new(); serialize(&v2, &mut s); s };
+        assert!(
+            html2.contains(&second_class) && !html2.contains(&first_class),
+            "apply_styled_variants re-apply swaps the minted class too: {html2}"
+        );
+
+        // Shared classes survive a swap by ONE of their wearers: v2
+        // still wears `second`; re-applying `first` to a third node and
+        // back must not delete `second`'s rule while v2 wears it.
+        let v3 = b.create_view(&AccessibilityProps::default());
+        b.apply_style(&v3, &second); // second: worn by v, v2, v3
+        b.apply_style(&v3, &first); // v3 swaps away; second still worn
+        let head = b.head_css();
+        assert!(
+            head.contains(&second_class),
+            "rule with remaining wearers must survive another node's swap: {head}"
+        );
     }
 
     /// A disabled-state overlay must select on the `[disabled]`

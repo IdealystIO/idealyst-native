@@ -77,6 +77,25 @@ where
     A: Fn() -> Element + Send + Sync + Clone + 'static,
     R: Fn(&mut SsrBackend) + Send + Sync + Clone + 'static,
 {
+    let bundle = config.bundle_module.clone();
+    let extra_head = config.extra_head.clone();
+    serve_loop(addr, config, move |path| {
+        let page = render_path_with(path, register.clone(), app.clone());
+        render_document(&page, bundle.as_deref(), extra_head.as_deref())
+    })
+}
+
+/// The HTTP mechanism both cores' `serve` entries share: accept loop,
+/// static-asset resolution under `static_dir`, and a fresh-thread
+/// render per route request (a thread per request is the isolation
+/// contract for the OLD core's thread-local reactive arena; the new
+/// core's per-request `World` doesn't need it but is unaffected —
+/// worlds are per-thread-table entries torn down with the render).
+/// `render_page` maps a route path to the complete HTML document.
+pub(crate) fn serve_loop<P>(addr: &str, config: ServeConfig, render_page: P) -> std::io::Result<()>
+where
+    P: Fn(&str) -> String + Send + Sync + Clone + 'static,
+{
     let server = Server::http(addr)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
     eprintln!("SSR server listening on http://{addr}");
@@ -101,20 +120,15 @@ where
         }
 
         // 2) Otherwise render the route. Fresh thread = clean thread-local
-        //    reactive arena per request.
-        let app = app.clone();
-        let register = register.clone();
-        let bundle = config.bundle_module.clone();
-        let extra_head = config.extra_head.clone();
+        //    reactive state per request (see the fn docs).
+        let render_page = render_page.clone();
         let req_path = path.clone();
-        let html = std::thread::spawn(move || {
-            let page = render_path_with(&req_path, register, app);
-            render_document(&page, bundle.as_deref(), extra_head.as_deref())
-        })
-        .join()
-        .unwrap_or_else(|_| {
-            "<!DOCTYPE html><html><body><h1>500 — render panicked</h1></body></html>".to_string()
-        });
+        let html = std::thread::spawn(move || render_page(&req_path))
+            .join()
+            .unwrap_or_else(|_| {
+                "<!DOCTYPE html><html><body><h1>500 — render panicked</h1></body></html>"
+                    .to_string()
+            });
 
         let header =
             Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap();

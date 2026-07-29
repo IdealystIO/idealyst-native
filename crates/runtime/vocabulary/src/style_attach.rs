@@ -45,9 +45,14 @@
 //!   FIRST, `on_node_unstyled` second.
 //! - **Registration fast path** (`is_registered`): steady-state
 //!   re-fires skip `ensure_registered_with`'s sweep/flush prologue.
-//! - **Default-font fill** (`fill_default_text_font`): a resolved rule
-//!   with no `font_family` inherits the per-world theme font at apply
-//!   time on every backend (native has no CSS inheritance).
+//! - **Default-font fill** (`fill_default_text_font`): a STATIC sheet
+//!   application whose resolved rules set no `font_family` inherits the
+//!   per-world theme font at apply time (`apply_sheet`, the old
+//!   `apply_one`). The DYNAMIC path deliberately does NOT fill — the
+//!   old `attach_style_reactive` never did on either branch (reactive
+//!   nodes ride the `apply_default_text_font` document channel), and
+//!   filling there minted class hashes old-core SSR never mints,
+//!   breaking SSG byte-parity.
 //!
 //! # Deferred (loud, not silent)
 //!
@@ -313,6 +318,20 @@ pub fn attach_style<H: StyleServices>(
 ) -> Rc<dyn Fn(StateBits, bool)> {
     match style {
         StyleProp::Static(rules) => {
+            // Old-core parity: every STATIC style there is a
+            // `StyleSource::Static` application riding `apply_one`,
+            // which fills the theme's default text font into rules that
+            // set none (the reactive path doesn't — module docs). The
+            // `is_none` guard skips the world-context lookup for rules
+            // that carry their own font. Without this fill, e.g. the
+            // empty-`if`-branch absolute placeholder minted a
+            // font-less class old-core SSR never mints (SSG
+            // byte-parity).
+            let rules = if rules.font_family.is_none() {
+                fill_default_text_font(rules, theme::theme_ctx().default_text_font())
+            } else {
+                rules
+            };
             backend.borrow_mut().apply_style(node, &rules);
             // Teardown notification — the backend frees per-node style
             // state (the old path's `StyleHandle` drop).
@@ -685,9 +704,19 @@ fn attach_sheet_dynamic<H: StyleServices>(
             // Web: resolve base + every overlay axis; the browser does
             // the state/breakpoint/container switching in CSS. NOT
             // subscribed to the states signal — CSS owns transitions.
+            //
+            // NO default-font fill on this path (unlike `apply_sheet`):
+            // the old core's `attach_style_reactive` resolves the base
+            // WITHOUT `with_default_text_font` on both branches — only
+            // the static `apply_one` fills. Reactive nodes inherit the
+            // document default through the `apply_default_text_font`
+            // channel instead. Filling here minted DIFFERENT class
+            // hashes than old-core SSR for every reactive-styled node
+            // (visually inert, but it broke SSG byte-parity — pinned by
+            // `dynamic_sheet_path_does_not_fold_default_font`).
             #[cfg(feature = "debug-stats")]
             let _t_resolve = runtime_core::debug::now_micros();
-            let base = fill_default_text_font(resolve_style(&app), ctx.default_text_font());
+            let base = resolve_style(&app);
             let state_overlays = resolve_state_overlays(&app);
             let bp_overlays = resolve_breakpoint_overlays(&app);
             let cq_overlays = resolve_container_overlays(&app);
@@ -731,7 +760,8 @@ fn attach_sheet_dynamic<H: StyleServices>(
             // old-core node with no container ancestor.
             let cq_overlays = resolve_container_overlays(&app);
             let resolved = merge_active_containers(resolved, &cq_overlays, 0.0);
-            let resolved = fill_default_text_font(resolved, ctx.default_text_font());
+            // No default-font fill — old-core `attach_style_reactive`
+            // parity (see the natively-handled branch above).
             backend_for_effect
                 .borrow_mut()
                 .apply_style(&node_for_effect, &resolved);

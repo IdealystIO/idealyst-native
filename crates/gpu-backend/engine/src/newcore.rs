@@ -216,15 +216,26 @@ thread_local! {
 }
 
 /// Everything the boot path must keep alive. Field order is drop order:
-/// the realized tree unmounts before the world (its slots' owner) dies.
+/// the realized tree unmounts before the collected top-level state
+/// (embedded boots) and the world (its slots' owner) die.
 /// The windowed host typically `std::mem::forget`s this before entering
 /// the event loop (same retention as the old boot's `forget(owner)` —
 /// the process exits with the event loop).
 pub struct NewCoreApp {
     realized: Realized<WgpuNode>,
+    /// Embedded boots only ([`start_in_world`]): the `collect_owned`
+    /// harvest of the build — top-level effects (AV bind keepalives,
+    /// scoped-scheduling anchors) that would otherwise be owned by the
+    /// EMBEDDING world's root and leak past this app's unmount. `None`
+    /// on the windowed [`start`] path, where the world is app-lifetime
+    /// and root ownership is exactly right.
+    owned: Option<runtime_world::Owned>,
     _backend: Rc<RefCell<WgpuBackend>>,
     _registry: Rc<Registry<WgpuBackend>>,
     world: World,
+    /// True for [`start_in_world`] boots — [`stop`] then leaves the
+    /// host-lifetime driver state alone (see `stop`'s comments).
+    embedded: bool,
 }
 
 impl NewCoreApp {
@@ -242,10 +253,34 @@ impl NewCoreApp {
     /// the live tree's point of view), uninstalls the flush driver, and
     /// drops the world. Primarily for tests; a windowed app forgets the
     /// value instead.
+    ///
+    /// Embedded boots ([`start_in_world`]) deliberately do NOT clear
+    /// `FLUSH_WORLD` or the dispatch hook: the world belongs to the
+    /// embedding host and outlives this app, and a REPLACEMENT embedded
+    /// app may already have mounted before this one drops (the
+    /// swap-remount ordering isn't guaranteed) — clearing here would
+    /// sever the replacement's author-callback flush path. A stray
+    /// `schedule_flush` against the host world is a benign no-op-shaped
+    /// flush. The `BACKEND` diagnostic weak IS cleared when it still
+    /// points at this app's backend (pointer-compared, so a
+    /// replacement's install survives).
     pub fn stop(self) {
-        crate::dispatch_hook::clear_dispatch_hook();
-        set_flush_world(None);
-        BACKEND.with(|b| *b.borrow_mut() = None);
+        if !self.embedded {
+            crate::dispatch_hook::clear_dispatch_hook();
+            set_flush_world(None);
+            BACKEND.with(|b| *b.borrow_mut() = None);
+        } else {
+            BACKEND.with(|b| {
+                let mut slot = b.borrow_mut();
+                let is_this = slot
+                    .as_ref()
+                    .and_then(Weak::upgrade)
+                    .is_some_and(|rc| Rc::ptr_eq(&rc, &self._backend));
+                if is_this {
+                    *slot = None;
+                }
+            });
+        }
         drop(self);
     }
 }
@@ -323,9 +358,95 @@ pub fn start(
     BACKEND.with(|b| *b.borrow_mut() = Some(Rc::downgrade(&backend)));
     NewCoreApp {
         realized,
+        owned: None,
         _backend: backend,
         _registry: registry,
         world,
+        embedded: false,
+    }
+}
+
+/// Mount a new-core element tree into an already-constructed backend,
+/// realizing it into an EXISTING world owned by an embedding host —
+/// the embedded-preview seam (the marketing website's wgpu Simulator
+/// running the `welcome` app inside a `backend-web` page is the
+/// consumer, via `host_web::mount_newcore`).
+///
+/// Differences from [`start`], each load-bearing:
+///
+/// - **No `World::new()`** — the tree realizes into `world` (for the
+///   web embed: the page's own mounted world). One thread, one world,
+///   one logical update stream: the embedding host's existing flush
+///   driver (backend-web's dispatch-site glue + scheduler/executor
+///   post-dispatch hook) commits writes staged by the embedded app's
+///   timers, raf loops, and future polls with no second driver. This
+///   backend's own author-callback wrappers still call
+///   [`schedule_flush`], which now flushes the same shared world
+///   (`FLUSH_WORLD` is set below), covering input dispatched through
+///   the wgpu interaction `Host` (canvas pointer/wheel listeners) that
+///   never crosses the embedding backend's glue.
+/// - **`collect_owned` around the build** — top-level creations
+///   (`AnimatedValue::bind` keepalives, scoped-scheduling anchors,
+///   free effects in the app's root fn) must die when THIS app
+///   unmounts, not when the page-lifetime world does. The harvest
+///   rides in [`NewCoreApp::owned`]; drop order (realized first)
+///   preserves the unmount-before-owner contract.
+/// - **No dispatch-hook install** — the hook slot belongs to whichever
+///   host scheduler drives the thread. On web that's backend-web's
+///   (already installed by its boot); this crate's own slot is only
+///   fired by `host-winit`, which is not present in an embed.
+///
+/// The host must have constructed the backend (via [`crate::Host::new`],
+/// which installs the global self-handle) and a scheduler + time source
+/// must be installed (the embedding page host's boot did both).
+pub fn start_in_world(
+    backend: Rc<RefCell<WgpuBackend>>,
+    register: impl FnOnce(&mut Registry<WgpuBackend>),
+    build: impl FnOnce() -> Element,
+    world: World,
+) -> NewCoreApp {
+    let mut registry: Registry<WgpuBackend> = Registry::new();
+    runtime_vocabulary::register_builtins(&mut registry);
+    register(&mut registry);
+    let registry = Rc::new(registry);
+
+    let (realized, owned) = world.enter(|| {
+        runtime_world::collect_owned(|| {
+            let element = build();
+            realize(&backend, &registry, element)
+        })
+    });
+
+    // Buffered-microtask drain — same contract as `start` (a no-op on
+    // real-microtask schedulers like the web's; load-bearing under a
+    // buffering test/headless scheduler). Entered for the same
+    // creation-side reasons.
+    world.enter(runtime_core::scheduling::drain_buffered_microtasks);
+
+    let mut roots = realized.collect_nodes();
+    let root = match roots.len() {
+        1 => roots.pop().expect("len checked"),
+        n => panic!(
+            "render_wgpu::newcore::start_in_world: the app root must contribute exactly \
+             one top-level node (got {n}) — wrap fragment/multi-root trees in a view"
+        ),
+    };
+    Backend::finish(&mut *backend.borrow_mut(), root);
+
+    // Commit anything staged during mount before the first paint. The
+    // shared world can't be mid-flush here: embeds mount from async
+    // host init (executor callback), never from inside an effect.
+    world.flush();
+
+    set_flush_world(Some(world.clone()));
+    BACKEND.with(|b| *b.borrow_mut() = Some(Rc::downgrade(&backend)));
+    NewCoreApp {
+        realized,
+        owned: Some(owned),
+        _backend: backend,
+        _registry: registry,
+        world,
+        embedded: true,
     }
 }
 

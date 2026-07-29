@@ -216,6 +216,17 @@ pub struct Args {
     /// targets.
     #[arg(long)]
     pub robot: bool,
+
+    /// `--ssr` / `--ssg` only: build the SSR wrapper against the NEW
+    /// core (idea-lite migration) — renders through
+    /// `backend_ssr::newcore::{render_all, serve}` on per-request
+    /// worlds. Requires the dual-core app convention: the app crate
+    /// exposes a `new-core` cargo feature (its defaults are disabled
+    /// for this build — one core per build graph) plus
+    /// `register_ssr_scene_handlers(&mut runtime_scene::Registry<backend_ssr::SsrBackend>)`.
+    /// No effect on other targets.
+    #[arg(long)]
+    pub new_core: bool,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -592,6 +603,7 @@ fn build_ssr_binary(dir: &std::path::Path, args: &Args, web_built: bool) -> Resu
             release: args.release,
             source,
             user_features: Vec::new(),
+            new_core: args.new_core,
         },
     )?;
     eprintln!(
@@ -631,6 +643,7 @@ fn build_ssg_export(
             release: args.release,
             source,
             user_features: Vec::new(),
+            new_core: args.new_core,
         },
     )?;
     let out_dir = args

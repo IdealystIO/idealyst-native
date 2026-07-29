@@ -332,11 +332,16 @@ fn result_card(h: crate::catalog::SearchHit, close: Rc<dyn Fn()>) -> Element {
     let kind_label = h.kind.noun().to_string();
     let module = h.module_path.clone();
     let summary = h.summary.clone();
+    // Hoisted so the `if`s lower statically (borrowed-capture plain `if`) —
+    // the 0.4.0 reactive-by-default gate would otherwise demand 'static
+    // move-captures for `module`/`summary` (see emit_if in runtime-macros).
+    let has_module = !module.is_empty();
+    let has_summary = !summary.is_empty();
     let card = ui! {
         Card {
             Stack(gap = StackGap::Xs) {
                 // Crate / namespace — a small label above the result.
-                if !module.is_empty() {
+                if has_module {
                     text(style = ResultNamespace()) { module }
                 }
                 // Name + kind tag, inline.
@@ -344,7 +349,7 @@ fn result_card(h: crate::catalog::SearchHit, close: Rc<dyn Fn()>) -> Element {
                     text(style = LinkText()) { name }
                     Tag(label = kind_label, tone = tone::Neutral, variant = variant::Soft)
                 }
-                if !summary.is_empty() {
+                if has_summary {
                     Typography(content = summary, muted = true)
                 }
             }
@@ -756,6 +761,8 @@ pub fn entry_page(model: &CatalogModel, kind: Kind, slug: &str) -> Element {
         let members = entry.members.clone();
         let count = members.len();
         let docs = entry.docs.clone();
+        // Hoisted for static `if` lowering (borrowed capture; see result_card).
+        let has_docs = !docs.is_empty();
         let groups: Vec<(Kind, Vec<crate::catalog::EntryLink>)> = [
             Kind::Component,
             Kind::Primitive,
@@ -779,7 +786,7 @@ pub fn entry_page(model: &CatalogModel, kind: Kind, slug: &str) -> Element {
                     Typography(content = entry.name.clone(), kind = typography_kind::H1)
                     Typography(content = format!("scope · {} members", count), muted = true)
                 }
-                if !docs.is_empty() {
+                if has_docs {
                     render_markdown(&docs)
                 }
                 Divider()
@@ -801,6 +808,16 @@ pub fn entry_page(model: &CatalogModel, kind: Kind, slug: &str) -> Element {
     let docs = entry.docs.clone();
     let scope = entry.scope.clone();
     let kind_label = entry.kind.noun().to_string();
+    // Hoisted so every `if` lowers statically — the branches borrow `entry`
+    // (a `&Entry` that can't be moved into a 'static reactive closure) and
+    // render one-shot Strings; catalog data never changes after build.
+    let has_docs = !docs.is_empty();
+    let has_variants = !entry.variants.is_empty();
+    let has_return = !entry.return_type.is_empty();
+    let has_composes = !entry.composes.is_empty();
+    let has_methods = !entry.methods.is_empty();
+    let has_animations = !entry.animations.is_empty();
+    let has_recipes = !entry.recipes.is_empty();
 
     layout(ui! {
         view(style = pad) {
@@ -813,36 +830,36 @@ pub fn entry_page(model: &CatalogModel, kind: Kind, slug: &str) -> Element {
                 scope_member_link(s)
             }
             // Docs paragraph(s).
-            if !docs.is_empty() {
+            if has_docs {
                 render_markdown(&docs)
             }
             Divider()
             // Fields / props / params table.
             fields_section(entry)
             // Enum variants.
-            if !entry.variants.is_empty() {
+            if has_variants {
                 variants_section(entry)
             }
             // Return type (utilities).
-            if !entry.return_type.is_empty() {
+            if has_return {
                 Section(title = "Returns".to_string()) {
                     CodePanel(src = tidy_type(&entry.return_type))
                 }
             }
             // Composition graph (components).
-            if !entry.composes.is_empty() {
+            if has_composes {
                 composes_section(entry)
             }
             // Methods (components).
-            if !entry.methods.is_empty() {
+            if has_methods {
                 methods_section(entry)
             }
             // Animations (components).
-            if !entry.animations.is_empty() {
+            if has_animations {
                 animations_section(entry)
             }
             // Usage recipes (components).
-            if !entry.recipes.is_empty() {
+            if has_recipes {
                 recipes_section(entry)
             }
         }
@@ -869,6 +886,8 @@ fn icon_set_page(entry: &Entry) -> Element {
     let meta = entry.icon_set.clone().unwrap_or_default();
     let title = entry.name.clone();
     let docs = entry.docs.clone();
+    // Hoisted for static `if` lowering (borrowed capture; see result_card).
+    let has_docs = !docs.is_empty();
     let count = meta.count;
 
     // Pack registered in the catalog but its crate isn't linked here — show
@@ -881,7 +900,7 @@ fn icon_set_page(entry: &Entry) -> Element {
                     Typography(content = title, kind = typography_kind::H1)
                     Typography(content = format!("icon set · {} icons", count), muted = true)
                 }
-                if !docs.is_empty() {
+                if has_docs {
                     render_markdown(&docs)
                 }
                 Callout(label = "Preview unavailable".to_string()) {
@@ -1182,11 +1201,13 @@ fn method_row(m: crate::catalog::Method) -> Element {
     };
     let sig = format!("fn {}({}){}", m.name, params, ret);
     let doc = m.doc.clone();
+    // Hoisted for static `if` lowering (borrowed capture; see result_card).
+    let has_doc = !doc.is_empty();
     ui! {
         Card {
             Stack(gap = StackGap::Xs) {
                 CodePanel(src = sig)
-                if !doc.is_empty() {
+                if has_doc {
                     Typography(content = doc, muted = true)
                 }
             }
@@ -1196,25 +1217,28 @@ fn method_row(m: crate::catalog::Method) -> Element {
 
 fn animations_section(entry: &Entry) -> Element {
     let animations = entry.animations.clone();
-    let mut rows: Vec<Element> = Vec::with_capacity(animations.len() + 1);
-    rows.push(ui! {
-        TableRow {
-            TableCell(header = true, text = Some("Binding".to_string()))
-            TableCell(header = true, text = Some("Initial value".to_string()))
-        }
-    });
-    for a in animations {
-        let binding = if a.binding.is_empty() { "(inline)".to_string() } else { a.binding.clone() };
-        rows.push(ui! {
-            TableRow {
-                TableCell(text = Some(binding))
-                TableCell(text = Some(a.initial.clone()))
-            }
-        });
-    }
     ui! {
         Section(title = "Animations".to_string()) {
-            Table { rows }
+            Table {
+                TableRow {
+                    TableCell(header = true, text = Some("Binding".to_string()))
+                    TableCell(header = true, text = Some("Initial value".to_string()))
+                }
+                for a in animations {
+                    animation_row(a)
+                }
+            }
+        }
+    }
+}
+
+fn animation_row(a: crate::catalog::Animation) -> Element {
+    let binding =
+        if a.binding.is_empty() { "(inline)".to_string() } else { a.binding.clone() };
+    ui! {
+        TableRow {
+            TableCell(text = Some(binding))
+            TableCell(text = Some(a.initial))
         }
     }
 }
@@ -1246,6 +1270,8 @@ fn recipe_card(recipe: crate::catalog::Recipe) -> Element {
     let title = recipe.name.replace('_', " ");
     let heading = if recipe.primary { format!("{} · primary", title) } else { title };
     let docs = recipe.docs.clone();
+    // Hoisted for static `if` lowering (borrowed capture; see result_card).
+    let has_docs = !docs.is_empty();
     let source = strip_leading_doc(&recipe.source);
     // A live preview, when this recipe is a zero-arg renderable one the
     // build-time map could address. Props-defining recipes (those whose
@@ -1255,7 +1281,7 @@ fn recipe_card(recipe: crate::catalog::Recipe) -> Element {
         Card {
             Stack(gap = StackGap::Sm) {
                 Typography(content = heading, kind = typography_kind::H3)
-                if !docs.is_empty() {
+                if has_docs {
                     render_markdown(&docs)
                 }
                 if let Some(preview) = preview {

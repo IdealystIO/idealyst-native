@@ -82,19 +82,29 @@
 //!   drives animation after hydration, and the world drop frees
 //!   everything a dropped timer would have released.
 //!
+//! # Server flows (SSG crawl + per-request serving)
+//!
+//! Both CLI-facing server flows have native new-core legs mirroring
+//! the old entries 1:1:
+//!
+//! - **SSG crawl** ([`render_all`]): same hierarchy-driven loop as
+//!   [`crate::render_all`], over the SAME route collector — the
+//!   vocabulary navigator handlers publish their screen path patterns
+//!   at mount via `record_route_paths` (the new-core twin of the old
+//!   walker's `record_routes` hook), so nested navigators surface
+//!   their routes when their parent screen mounts. No
+//!   `reset_for_ssg_render` between pages: the per-world theme tables
+//!   own registration/typeface dedup, so every fresh `World`
+//!   re-registers against its fresh backend by construction.
+//! - **Per-request serving** ([`serve`], feature `serve`): delegates to
+//!   the same HTTP loop as the old [`crate::serve`]
+//!   (`serve::serve_loop` — asset resolution, thread-per-request,
+//!   panic fallback) with this module's [`render_path_with`] as the
+//!   route renderer. The CLI's generated SSR wrapper selects the leg
+//!   via its `new-core` feature (see `crates/tools/build/ssr`).
+//!
 //! # Residual seams (each named, none silent)
 //!
-//! - **Server-crate wiring (P6, SDK retarget).** `serve.rs` and the
-//!   server SDK call [`crate::render_path`] with an OLD-core
-//!   `Element` closure; they can only switch to this module once app
-//!   entry points emit scene `Element`s (the `ui!`/SDK retarget). The
-//!   entry signatures here mirror the old ones 1:1 so that switch is a
-//!   call-site substitution.
-//! - **SSG crawl** ([`crate::render_all`]): the route collector is
-//!   old-core walker state; the new-core crawl lands with the same P6
-//!   wiring (the vocabulary navigator handlers already resolve
-//!   `peek_initial_path`, so per-path rendering — the crawl's inner
-//!   loop — works today via [`render_path`]).
 //! - **Streaming SSR**: out of scope for both cores; the accumulated
 //!   `HtmlNode` tree serializes at the end of the request.
 
@@ -233,6 +243,86 @@ where
     drop(realized);
     drop(world);
     page
+}
+
+/// Crawl every route reachable from the app's navigator hierarchy and
+/// render each as an SSG'd page — the new-core leg of
+/// [`crate::render_all`], driving `idealyst build --ssg` for new-core
+/// apps.
+///
+/// Identical crawl contract: the route collector
+/// (`runtime_core::primitives::navigator`, shared by both cores) is
+/// enabled before each render; the vocabulary navigator handlers
+/// publish every mounting navigator's `NavScreenEntry.path` set; the
+/// loop drains discovered literal paths and queues the unrendered
+/// ones, so nested navigators fall out of the same loop. Routes with
+/// `:placeholder` segments are returned in
+/// [`skipped_parameterized`](crate::CrawlResult::skipped_parameterized).
+///
+/// Unlike the old leg there is NO per-page `reset_for_ssg_render`:
+/// registration/typeface dedup lives in the per-world theme context,
+/// and each page renders on a fresh [`World`] (module docs).
+pub fn render_all<S, F>(register: S, app: F) -> crate::CrawlResult
+where
+    S: Fn(&mut Registry<SsrBackend>),
+    F: Fn() -> Element,
+{
+    use runtime_core::primitives::navigator::{enable_route_collector, take_route_collector};
+    use std::collections::{HashMap, HashSet, VecDeque};
+
+    let mut pages: HashMap<String, RenderedPage> = HashMap::new();
+    let mut skipped: Vec<&'static str> = Vec::new();
+    let mut queue: VecDeque<String> = VecDeque::from(["/".to_string()]);
+    let mut seen: HashSet<String> = HashSet::new();
+    seen.insert("/".to_string());
+
+    while let Some(path) = queue.pop_front() {
+        enable_route_collector();
+        let page = render_path_with(&path, |r| register(r), || app());
+        let discovered = take_route_collector().unwrap_or_default();
+        pages.insert(path, page);
+
+        for p in discovered {
+            if p.contains(':') {
+                if !skipped.contains(&p) {
+                    skipped.push(p);
+                }
+                continue;
+            }
+            let ps = p.to_string();
+            if seen.insert(ps.clone()) {
+                queue.push_back(ps);
+            }
+        }
+    }
+
+    crate::CrawlResult { pages, skipped_parameterized: skipped }
+}
+
+/// Serve a new-core `app` over HTTP at `addr` — the new-core leg of
+/// [`crate::serve`] (feature `serve`), sharing its HTTP loop
+/// (`serve_loop`: static assets under `static_dir`, thread-per-request
+/// render, panic → 500 fallback) with this module's
+/// [`render_path_with`] as the per-request renderer. `register` is the
+/// scene-registry seam ([`render_path_with`]'s `register`, cloned per
+/// request).
+#[cfg(feature = "serve")]
+pub fn serve<A, R>(
+    addr: &str,
+    config: crate::ServeConfig,
+    register: R,
+    app: A,
+) -> std::io::Result<()>
+where
+    A: Fn() -> Element + Send + Sync + Clone + 'static,
+    R: Fn(&mut Registry<SsrBackend>) + Send + Sync + Clone + 'static,
+{
+    let bundle = config.bundle_module.clone();
+    let extra_head = config.extra_head.clone();
+    crate::serve::serve_loop(addr, config, move |path| {
+        let page = render_path_with(path, |r| register(r), || app());
+        crate::render_document(&page, bundle.as_deref(), extra_head.as_deref())
+    })
 }
 
 // ===========================================================================

@@ -327,6 +327,20 @@ mod web_entry_newcore {
         // Console logger so framework log lines reach devtools (the CLI
         // wrapper normally installs this).
         backend_web::install_logger();
-        backend_web::newcore::start(crate::app_newcore);
+        // Boot-time scene-registry seam (the new core's analogue of the
+        // old `register_extensions` call): `codeblock::register` so
+        // `shell::CodePanel` renders the SDK's `<pre>`/span handler, and
+        // `table::register_handlers` so PropsTable / the Table pages
+        // render the SDK's real `<table>`/`<tr>`/`<td>` handlers —
+        // without a registration the pages' items have no registry
+        // entry and realization panics.
+        backend_web::newcore::start_in(
+            "#app",
+            |registry| {
+                codeblock::register(registry);
+                table::register_handlers(registry);
+            },
+            crate::app_newcore,
+        );
     }
 }

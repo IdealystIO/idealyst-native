@@ -19,14 +19,6 @@
 #[cfg(feature = "new-core")]
 extern crate runtime_facade as runtime_core;
 
-// The REAL runtime-core under an unshadowed name: `extern crate` items
-// resolve against the crates Cargo hands rustc (`--extern`), not the
-// crate-root alias above, so this binds the old core even while the
-// facade owns the `runtime_core` path. Used by src/newcore.rs for the
-// transitional prop types the vocabulary consumes (`TextRun`, …).
-#[cfg(feature = "new-core")]
-extern crate runtime_core as old_runtime_core;
-
 #[cfg(all(feature = "new-core", feature = "old-core"))]
 compile_error!(
     "website: enable exactly one of `new-core` / `old-core` — one core per build \
@@ -64,10 +56,6 @@ fn titled(route: &'static Route<()>, el: Element) -> Screen {
 #[macro_use]
 mod components;
 mod branding;
-// `pub` so the SSG parity test (tests/ssg_parity.rs) can pass
-// `newcore::register_handlers` as the SSR register seam.
-#[cfg(feature = "new-core")]
-pub mod newcore;
 mod pages;
 mod responsive;
 mod routes;
@@ -329,4 +317,43 @@ pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBacke
 #[cfg(feature = "ssr")]
 pub fn register_ssr_extensions(backend: &mut backend_ssr::SsrBackend) {
     swap_navigator::register_generic(backend);
+    // Host-side codeblock handler (old core): code panels server-render
+    // their real `<pre>`/span DOM instead of the External placeholder —
+    // same generic handler the wasm32 `codeblock::register` wires on
+    // web, so SSR/SSG output, the hydrating client, and the new-core
+    // scene handler all share one byte-identical DOM shape (the SSG
+    // parity gate in tests/ssg_parity.rs compares old vs new on it).
+    #[cfg(feature = "old-core")]
+    codeblock::register_generic(backend);
+}
+
+/// New-core SSR/SSG registration seam for the CLI wrapper
+/// (`idealyst build --ssr/--ssg --new-core`): the scene-registry
+/// counterpart of [`register_ssr_extensions`], invoked per request /
+/// per crawled page with the fresh registry. Navigators are vocabulary
+/// built-ins on the new core; the codeblock payload handler is the
+/// website's one third-party scene primitive.
+#[cfg(all(feature = "ssr", feature = "new-core"))]
+pub use codeblock::register as register_ssr_scene_handlers;
+
+// =============================================================================
+// New-core web boot entry.
+// =============================================================================
+
+#[cfg(all(target_arch = "wasm32", feature = "new-core"))]
+mod web_entry_newcore {
+    use wasm_bindgen::prelude::*;
+
+    /// New-core web boot: mounts into `#app` (newcore.html). The
+    /// wasm-pack module's start fn — the CLI wrapper (old core) is not
+    /// involved in this build. `codeblock::register` (the SDK's
+    /// new-core scene-registry leg) is the boot registration seam, so
+    /// code panels render the SDK's `<pre>`/span handler.
+    #[wasm_bindgen(start)]
+    pub fn boot() {
+        // Console logger so framework warnings reach devtools (the CLI
+        // wrapper normally installs this).
+        backend_web::install_logger();
+        backend_web::newcore::start_in("#app", codeblock::register, || crate::app());
+    }
 }

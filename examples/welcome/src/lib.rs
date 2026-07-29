@@ -11,6 +11,14 @@
 //! this project is pure platform-agnostic Rust; the per-target entry
 //! points are in the wrapper crates the CLI generates at build time.
 
+// idea-lite core migration: under `new-core` this alias shadows the
+// extern-prelude `runtime-core` for the WHOLE crate, so the same source
+// compiles against `runtime_vocabulary::glue`'s mirrors of the old
+// author surface (the idea-ui / website pattern). The default build has
+// no alias and is byte-identical old-core.
+#[cfg(feature = "new-core")]
+extern crate runtime_facade as runtime_core;
+
 mod color;
 #[macro_use]
 mod components;
@@ -29,6 +37,11 @@ pub use app::app;
 // pass the concrete backend per platform (web/iOS by value, android via
 // `&mut *b`), so `B` resolves to that backend. A project that adds a
 // navigator / external SDK specializes this to that backend's concrete type.
+// Old-core only: the `Backend` mega-trait doesn't exist on the new
+// core — a new-core embedding passes its own register seam to the
+// scene `Registry` instead (this app registers no third-party SDKs
+// either way, so there is nothing to mirror).
+#[cfg(not(feature = "new-core"))]
 pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
 
 // Recorder-side registration for the runtime-server sidecar. Gated by

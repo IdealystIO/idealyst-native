@@ -71,6 +71,20 @@ impl Backend for Mini {
         n
     }
 
+    fn create_styled_text(
+        &mut self,
+        runs: &[runtime_core::TextRun],
+        _a11y: &AccessibilityProps,
+    ) -> u32 {
+        let n = self.next;
+        self.next += 1;
+        let texts: Vec<&str> = runs.iter().map(|r| r.text.as_str()).collect();
+        self.log
+            .borrow_mut()
+            .push(format!("create n{n} styled_text {texts:?}"));
+        n
+    }
+
     fn create_button(
         &mut self,
         label: &str,
@@ -415,6 +429,41 @@ fn style_prop_coercions() {
         (|| Rc::new(px(1.0))).into_style_prop(),
         StyleProp::Dynamic(_)
     ));
+}
+
+// ===========================================================================
+// glue::styled_text — the old `styled_text(runs)` author mirror
+// ===========================================================================
+
+/// The glue mirror of old `styled_text(runs).with_style(…)` (the
+/// website Prose surface) lowers through the text builder's `runs`
+/// channel to ONE `create_styled_text` with the runs intact — not the
+/// plain-concat `create_text` degradation — and the author style lands
+/// on that node.
+#[test]
+fn glue_styled_text_mounts_runs_through_create_styled_text() {
+    use runtime_vocabulary::glue::{styled_text, IntoElement, TextRun};
+
+    let h = harness();
+    let element = styled_text(vec![
+        TextRun::plain("the "),
+        TextRun::styled("ui!", runtime_core::TextRunStyle::default()),
+        TextRun::plain(" macro"),
+    ])
+    .with_style(px(7.0))
+    .into_element();
+    let _realized = h.world.enter(|| realize(&h.backend, &h.registry, element));
+
+    let log = h.take_log();
+    assert_eq!(
+        log[0],
+        "create n0 styled_text [\"the \", \"ui!\", \" macro\"]",
+        "runs must reach create_styled_text intact: {log:?}"
+    );
+    assert!(
+        log.iter().any(|l| l.starts_with("apply_style n0")),
+        "author style must land on the styled-text node: {log:?}"
+    );
 }
 
 // ===========================================================================

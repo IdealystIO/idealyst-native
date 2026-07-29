@@ -529,3 +529,147 @@ fn corpus_swap_navigator_at_path() {
         );
     }
 }
+
+// ===========================================================================
+// 7. SSG crawl (`render_all` old ↔ `newcore::render_all` new): route
+//    discovery through the shared collector + per-page byte identity
+// ===========================================================================
+
+const NAV_DOCS: Route<()> = Route::new("docs", "/docs");
+/// Parameterized pattern — the crawl must SKIP it (no param values),
+/// reporting it in `skipped_parameterized` on both cores.
+const NAV_ITEM: Route<()> = Route::new("item", "/item/:id");
+
+fn crawl_old() -> runtime_core::Element {
+    use runtime_core::{text, view, IntoElement};
+    use swap_navigator::{SwapBuilder, SwapNavigator};
+    SwapNavigator::new(&NAV_HOME)
+        .screen(NAV_HOME, |_| {
+            view(vec![text("home").into_element()]).into_element()
+        })
+        .screen(NAV_ABOUT, |_| {
+            view(vec![text("about").into_element()]).into_element()
+        })
+        .screen(NAV_DOCS, |_| {
+            view(vec![text("docs").into_element()]).into_element()
+        })
+        .screen(NAV_ITEM, |_| {
+            view(vec![text("item").into_element()]).into_element()
+        })
+        .layout(|ctx| view(vec![text("chrome").into_element(), ctx.outlet]).into_element())
+        .into_element()
+}
+
+fn crawl_new() -> runtime_scene::Element {
+    use runtime_vocabulary::builders::{navigator_outlet, swap_navigator, text, view};
+    swap_navigator(&NAV_HOME)
+        .screen(NAV_HOME, |_| view().child(text().content("home")).build())
+        .screen(NAV_ABOUT, |_| view().child(text().content("about")).build())
+        .screen(NAV_DOCS, |_| view().child(text().content("docs")).build())
+        .screen(NAV_ITEM, |_| view().child(text().content("item")).build())
+        .layout(|| {
+            view()
+                .child(text().content("chrome"))
+                .child(navigator_outlet())
+                .build()
+        })
+        .build()
+}
+
+/// The new-core SSG crawl mirrors the old one end-to-end: same route
+/// discovery (the vocabulary navigator mounts publish their screen
+/// paths into the SAME collector `dispatch_navigator` feeds), same
+/// parameterized-skip behavior, and byte-identical rendered pages.
+#[test]
+fn corpus_render_all_crawl_discovers_and_matches() {
+    let old = backend_ssr::render_all(
+        |b| {
+            runtime_core::reset_for_ssg_render();
+            swap_navigator::register_generic(b);
+        },
+        crawl_old,
+    );
+    let new = backend_ssr::newcore::render_all(|_| {}, crawl_new);
+
+    let mut old_routes: Vec<&str> = old.pages.keys().map(|s| s.as_str()).collect();
+    let mut new_routes: Vec<&str> = new.pages.keys().map(|s| s.as_str()).collect();
+    old_routes.sort_unstable();
+    new_routes.sort_unstable();
+    assert_eq!(old_routes, vec!["/", "/about", "/docs"], "old crawl discovers the literals");
+    assert_eq!(new_routes, old_routes, "new crawl discovers the same routes");
+    assert_eq!(
+        old.skipped_parameterized, new.skipped_parameterized,
+        "both crawls skip the same parameterized patterns"
+    );
+    assert_eq!(old.skipped_parameterized, vec!["/item/:id"]);
+
+    for route in old_routes {
+        let old_page = &old.pages[route];
+        let new_page = &new.pages[route];
+        assert_pages_identical(&format!("render_all@{route}"), old_page, new_page);
+        assert!(!old_page.html.is_empty(), "crawled page {route} rendered");
+    }
+}
+
+// ===========================================================================
+// 8. Default-text-font fill contract: STATIC applications fold the
+//    theme default into font-less rules; DYNAMIC (reactive) ones don't
+// ===========================================================================
+
+/// Pins the old walker's asymmetric fill contract on BOTH cores —
+/// `apply_one` (static) runs `with_default_text_font`, while
+/// `attach_style_reactive` never does (reactive nodes ride the
+/// `apply_default_text_font` document channel). The new core's
+/// `style_attach` briefly folded the default into the DYNAMIC path too,
+/// minting class hashes old-core SSR never mints — which broke website
+/// SSG byte-parity site-wide (every reactive-styled node hashed
+/// differently). Byte-comparing a static + dynamic pair with a default
+/// font installed is the regression net for that whole class of drift.
+#[test]
+fn corpus_default_font_fill_static_folds_dynamic_does_not() {
+    let test_font = || runtime_core::FontFamily::System("TestFont, serif".to_string());
+
+    let old = render_old("/", move || {
+        use runtime_core::{view, IntoElement};
+        runtime_core::set_default_text_font(Some(test_font()));
+        let sheet = themed_sheet();
+        view(vec![
+            // Static rules + static sheet: both fold the default font.
+            view(vec![]).with_style(static_style(40.0, "#123123")).into_element(),
+            view(vec![])
+                .with_style(StyleApplication::new(sheet.clone()))
+                .into_element(),
+            // Reactive sheet closure: must NOT fold.
+            view(vec![])
+                .with_style(move || StyleApplication::new(sheet.clone()))
+                .into_element(),
+        ])
+        .into_element()
+    });
+    // Thread-local hygiene: later corpus tests on this thread must not
+    // inherit the default font.
+    runtime_core::set_default_text_font(None);
+
+    let new = render_new("/", move || {
+        use runtime_vocabulary::builders::view;
+        runtime_vocabulary::theme::set_default_text_font(Some(test_font()));
+        let sheet = themed_sheet();
+        let sheet_for_dyn = sheet.clone();
+        view()
+            .child(view().style(test_rules(40.0, "#123123")))
+            .child(view().style(StyleApplication::new(sheet)))
+            .child(view().style(move || StyleApplication::new(sheet_for_dyn.clone())))
+            .build()
+    });
+
+    assert_pages_identical("default_font_fill", &old, &new);
+    // Sanity on the contract itself (not just old==new): the static
+    // nodes' rules carry the folded font, the dynamic node's rule
+    // doesn't.
+    let folds = old.head_css.matches("TestFont, serif").count();
+    assert_eq!(
+        folds, 2,
+        "exactly the two STATIC applications fold the default font: {}",
+        old.head_css
+    );
+}

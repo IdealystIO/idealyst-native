@@ -58,11 +58,16 @@ default = ["debug-stats", "old-core"]
 #       --out-dir pkg-newcore -- --no-default-features \
 #       --features new-core                                        # new-core web
 #
-# `old-core` owns the old-core-only External SDKs (swap-navigator,
-# codeblock, table) plus idea-ui's `table` component feature — all of
-# them are old-core-authored and cannot join a new-core graph (proc-macro
-# feature unification would retarget THEIR `ui!` sites too).
-# `idea-ui/docs` is ALSO old-core-only for now: the DocControls derive
+# `old-core` owns the old-core-only External SDK (swap-navigator) —
+# old-core-authored, cannot join a new-core graph (proc-macro feature
+# unification would retarget ITS `ui!` sites too).
+# `codeblock` and `table` are DUAL-CORE: both features enable the dep,
+# `new-core` flips their scene-registry leg (`codeblock/new-core`,
+# `table/new-core`), so CodePanel renders the SDK's identical
+# `<pre>`/span DOM and PropsTable/the Table pages render the same real
+# `<table>` on either core (the table handlers register through
+# `backend_web::newcore::start_in`'s seam — see `web_entry_newcore`).
+# `idea-ui/docs` is old-core-only for now: the DocControls derive
 # expands `::runtime_core::Signal::new(…)`, which the glue facade's
 # `Signal` doesn't provide (glue gap — the app never consumes
 # `doc_controls` itself, so new-core simply builds without the derive).
@@ -77,6 +82,11 @@ new-core = [
     "dep:runtime-facade",
     "dep:runtime-vocabulary",
     "dep:runtime-world",
+    "dep:codeblock",
+    "codeblock/new-core",
+    "dep:table",
+    "table/new-core",
+    "idea-ui/table",
     "backend-web/new-core",
 ]
 
@@ -90,9 +100,10 @@ serde_json = "1"
 [dependencies]
 runtime-core = { workspace = true }
 # PATH dep with `default-features = false` (the documented cargo gotcha:
-# the flag is ignored on `workspace = true` lines): idea-ui's `table` and
-# `docs` features are old-core-only (see the `old-core` feature above,
-# which re-enables both), so the base dep carries just the full prim
+# the flag is ignored on `workspace = true` lines): idea-ui's `docs`
+# feature is old-core-only and `table` is re-enabled per-core by the
+# feature blocks above (both cores turn it on; `new-core` also flips the
+# SDK's own new-core leg), so the base dep carries just the full prim
 # family set both cores render.
 idea-ui = { path = "../../crates/ui/idea-ui", default-features = false, features = [
     "prim-icon", "prim-image", "prim-text-input", "prim-activity",
@@ -117,11 +128,14 @@ idea-ui-nav = { workspace = true }
 # never compiled for device/web targets.
 dev-server = { workspace = true, optional = true }
 # Theme-aware syntax-highlighted code panels for the snippet blocks
-# in every component page. Old-core External SDK.
+# in every component page. Dual-core SDK: External registry on the old
+# core, scene-registry handler (`codeblock::register` at boot) on the
+# new core — identical `<pre>`/span DOM.
 codeblock = { workspace = true, optional = true }
-# Real HTML <table> on web via Element::External; flex fallback on
-# native. Powers PropsTable on every component page. Old-core External
-# SDK.
+# Real HTML <table> on web; shared-track CSS-grid on native. Powers
+# PropsTable on every component page. Dual-core SDK: External registry
+# on the old core, scene-registry handlers (`table::register_handlers`
+# at boot) on the new core — identical `<table>`/`<tr>`/`<td>` DOM.
 table = { workspace = true, optional = true }
 # Lucide icon pack — provides the `MENU` glyph for the mobile
 # hamburger that opens the collapsed drawer.

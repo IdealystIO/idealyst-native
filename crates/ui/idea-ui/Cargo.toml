@@ -71,19 +71,21 @@ robot = ["runtime-core/robot", "runtime-facade?/robot"]
 # retargeted `ui!` emission spells absolute
 # `::runtime_vocabulary::glue::…` paths.
 #
-# Combine with `--no-default-features` + the prim features you need:
-# the `table` component feature (a default) cannot join a new-core graph
-# — the table SDK is old-core-authored and macro unification would
-# retarget ITS ui! sites too (compile_error guard in lib.rs).
+# Combine with `--no-default-features` + the prim features you need
+# (plus `table` if you want the themed Table — the SDK is dual-core, so
+# the weak forward below flips it onto its own new-core surface when
+# both features are on).
 new-core = [
     "idea-theme/new-core",
     "dep:runtime-facade",
     "dep:runtime-vocabulary",
+    "table?/new-core",
 ]
 
 # The themed `Table` component + its `table` SDK dep (ON by default —
-# the pre-gating behavior). A feature so the new-core graph can exclude
-# the old-core-authored SDK; see `new-core`.
+# the pre-gating behavior). The SDK is dual-core: under `new-core` the
+# weak forward above retargets it onto the scene-Registry/glue surface,
+# so `table` joins either core's graph.
 table = ["dep:table"]
 
 [dependencies]
@@ -99,10 +101,11 @@ runtime-core = { path = "../../runtime/core", default-features = false }
 idea-theme = { workspace = true }
 idea-ui-docs-derive = { workspace = true, optional = true }
 # Themed `Table` component layers on the cross-platform `table` SDK
-# (real HTML `<table>` on web, flex passthrough on native). idea-ui
+# (real HTML `<table>` on web, shared-track CSS-grid on native). idea-ui
 # wraps it the same way it wraps `activity_indicator` (as `Spinner`)
-# and `toggle` (as `Switch`). Optional only for the `new-core` graph
-# (see the `table` feature) — the default build keeps it on.
+# and `toggle` (as `Switch`). Optional so a size-restricted build can
+# drop it (the `table` feature); dual-core — `new-core` weak-forwards
+# `table?/new-core`.
 table = { workspace = true, optional = true }
 # The new-core alias target (see the `new-core` feature).
 runtime-facade = { workspace = true, optional = true }

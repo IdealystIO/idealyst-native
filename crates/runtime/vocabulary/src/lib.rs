@@ -194,6 +194,7 @@ pub mod robot_methods;
 #[cfg(feature = "robot")]
 #[doc(hidden)]
 pub mod robot_watch;
+pub mod scoped_scheduling;
 pub mod style_attach;
 pub mod theme;
 pub mod viewport;
@@ -234,4 +235,32 @@ macro_rules! effect {
             $body;
         });
     };
+}
+
+/// New-core mirror of `runtime_core::timeline!` — same grammar, same
+/// session-epoch-relative act schedule, but routed through
+/// [`glue::session::after_ms`] so the tasks anchor to the NEW core's
+/// scope (the old macro's `$crate::session::after_ms` resolves against
+/// the real runtime-core, whose scope anchoring is old-core-only and
+/// inert on a new-core mount — see [`scoped_scheduling`]). Defined here
+/// (not in `runtime-facade`) for the same reason as [`rx!`]/[`effect!`]:
+/// the `$crate::…` expansion must resolve against the vocabulary; the
+/// facade re-exports it under the old `runtime_core::timeline` name.
+#[macro_export]
+macro_rules! timeline {
+    ( $( $at:expr => { $( $av:ident : $animator:expr ),* $(,)? } ),* $(,)? ) => {{
+        $(
+            {
+                let __at: u64 = $at as u64;
+                $(
+                    {
+                        let __av = $av.clone();
+                        $crate::glue::session::after_ms(__at, move || {
+                            __av.animate($animator);
+                        });
+                    }
+                )*
+            }
+        )*
+    }};
 }

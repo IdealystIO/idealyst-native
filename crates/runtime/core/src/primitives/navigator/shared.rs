@@ -1615,11 +1615,18 @@ pub fn take_route_collector() -> Option<Vec<&'static str>> {
 /// enabled. Called by `dispatch_navigator` at mount time; a no-op when
 /// the collector is off (live backends).
 pub fn record_routes(config: &NavigatorConfig) {
+    record_route_paths(config.screens.values().map(|entry| entry.path));
+}
+
+/// Path-iterator form of [`record_routes`] — the hook the NEW core's
+/// vocabulary navigator handlers fire at mount (their `NavConfig` is a
+/// vocabulary type this old-core module can't name, but the collector
+/// and the crawl driver are shared across both cores, so both publish
+/// through this one thread-local). A no-op when the collector is off.
+pub fn record_route_paths<I: IntoIterator<Item = &'static str>>(paths: I) {
     ROUTE_COLLECTOR.with(|c| {
         if let Some(buf) = c.borrow_mut().as_mut() {
-            for entry in config.screens.values() {
-                buf.push(entry.path);
-            }
+            buf.extend(paths);
         }
     });
 }

@@ -28,12 +28,29 @@ license.workspace = true
 #              by per-cell styles, same as the docs' hand-rolled
 #              table — no column-fits-widest behavior, but the
 #              author-supplied flex weights still apply).
-description = "Cross-platform table SDK on Element::External — real <table> on web."
+description = "Cross-platform table SDK — real <table> on web, shared-track CSS-grid on native. Dual-core (old-core Element::External / new-core scene Registry)."
 
 [lib]
 crate-type = ["rlib"]
 
+[features]
+# Idea-lite migration (P6 SDK retarget): re-express the SAME authored
+# surface over the scene Registry (web `<table>` handlers) + the
+# vocabulary glue's view builder (native CSS-grid). Default-off and
+# MUTUALLY EXCLUSIVE with the old-core surface (the two define the same
+# public names — one core per build graph, mirroring the navigator
+# SDKs; a consuming crate forwards this from its own new-core feature,
+# e.g. idea-ui's `new-core = [… "table?/new-core"]`). The old-core
+# module is byte-untouched under the default build.
+new-core = ["dep:runtime-vocabulary", "dep:runtime-scene"]
+
 [dependencies]
+# New-core surface (feature `new-core`): scene Element/Registry/item +
+# vocabulary glue (view builder, style attach, caps traits). Workspace
+# deps are fine here — they only enter the graph under `new-core`,
+# where the vocabulary subtree is already present (idea-ui pulls it).
+runtime-vocabulary = { workspace = true, optional = true }
+runtime-scene = { workspace = true, optional = true }
 # PATH dep with `default-features = false`, NOT `workspace = true`: cargo
 # ignores `default-features = false` on workspace-inherited lines, so a
 # workspace dep here would force every `prim-*` family back ON for any
@@ -44,6 +61,17 @@ crate-type = ["rlib"]
 runtime-core = { path = "../../../runtime/core", default-features = false }
 # Self-registration of the per-backend external handler at construction.
 inventory = "0.3"
+
+[dev-dependencies]
+# New-core suite (tests/newcore.rs, `--features new-core`): the scene
+# handlers are generic over the caps traits, so the SSR backend — a
+# real caps-complete host — drives them on the host target (the
+# navigator-SDK test pattern). Inert for the default (old-core) test
+# run: the suite is `#![cfg(feature = "new-core")]`.
+backend-ssr = { workspace = true, features = ["new-core"] }
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Same unification contract as the runtime-core line above — the

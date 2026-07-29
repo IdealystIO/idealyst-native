@@ -19,12 +19,10 @@ use runtime_core::primitives::presence::PresenceAnim;
 use runtime_core::{
     component, signal, ui, Color, Easing, Element, FontFamily, Ref, Tokenized, ViewHandle,
 };
-// `styled_text` + run types: old-core root re-exports vs the website's
-// new-core shim (same old-core `TextRun` type — see src/newcore.rs).
-#[cfg(not(feature = "new-core"))]
+// `styled_text` + run types resolve on BOTH cores: old-core root
+// re-exports, or the glue facade's mirror (same old-core `TextRun`
+// type either way).
 use runtime_core::{styled_text, TextRun, TextRunStyle};
-#[cfg(feature = "new-core")]
-use crate::newcore::{styled_text, TextRun, TextRunStyle};
 use idea_ui::{Stack, StackGap, Typography};
 
 use crate::branding::LIGHT_LOGO;

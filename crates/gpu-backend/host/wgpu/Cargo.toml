@@ -28,10 +28,23 @@ license.workspace = true
 # keeps author code uniform without silently no-opping in a way that
 # would hide configuration mistakes.
 
+# idea-lite core migration: `mount_newcore` — the new-core mount seam,
+# routed like `mount`. Only the web host has a new-core port today; the
+# other targets return `NewCoreMountError::Unsupported` (see lib.rs for
+# the seam documentation). `dep:runtime-scene` because the new-core
+# build closure returns a `runtime_scene::Element`.
+[features]
+new-core = [
+    "render-wgpu/new-core",
+    "dep:runtime-scene",
+    "host-web/new-core",
+]
+
 [dependencies]
 render-api = { workspace = true }
 render-wgpu = { workspace = true }
 runtime-core = { workspace = true }
+runtime-scene = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 host-web = { workspace = true }

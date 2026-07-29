@@ -20,10 +20,33 @@ license.workspace = true
 # preview embeds) collapse to a single `mount(...).await` call inside
 # their `Graphics` primitive's `on_ready`.
 
+# idea-lite core migration: `mount_newcore` — the new-core sibling of
+# `mount`. Same wgpu init / render loop / listeners, but the embedded
+# tree realizes through `render_wgpu::newcore::start_in_world` into the
+# PAGE's own world (`backend_web::newcore::mounted_world`), so the
+# page's flush driver commits the embedded app's staged writes. The
+# `backend-web` dep is legitimate here (not in author code): this crate
+# IS the web-specific host shell, and on web the embedding page host is
+# backend-web by definition.
+[features]
+new-core = [
+    "render-wgpu/new-core",
+    "dep:runtime-scene",
+    "dep:runtime-world",
+    "dep:backend-web",
+    # The page-host surfaces `mount_newcore` reaches: the mounted-world
+    # accessor (backend-web's own new-core boot) and the render-loop
+    # driver install (gated behind backend-web's async-driver).
+    "backend-web/new-core",
+    "backend-web/async-driver",
+]
+
 [dependencies]
 render-api = { workspace = true }
 render-wgpu = { workspace = true }
 runtime-core = { workspace = true, features = ["async-driver"] }
+runtime-scene = { workspace = true, optional = true }
+runtime-world = { workspace = true, optional = true }
 
 # Browser-only — same target gate as `backend-web` follows. The
 # `wgpu` major MUST match `render-wgpu`'s (currently 29) so the
@@ -34,6 +57,10 @@ runtime-core = { workspace = true, features = ["async-driver"] }
 # under any browser, same as before — wgpu 29 ships the same
 # `webgl` feature flag.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# The embedding page host — `mount_newcore` reads its mounted world +
+# installs its render-loop driver. Optional: only the `new-core`
+# feature pulls it (the old-core mount has no backend-web coupling).
+backend-web = { workspace = true, optional = true }
 wgpu = { version = "29", default-features = false, features = ["webgl", "wgsl"] }
 wasm-bindgen = "0.2"
 # `embed-font-bytes` is off for web, so `face!` fonts are served files,

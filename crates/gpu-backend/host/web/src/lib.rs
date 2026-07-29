@@ -45,6 +45,12 @@ mod web;
 #[cfg(target_arch = "wasm32")]
 pub use web::{mount, MountError, WebHostHandle};
 
+// idea-lite core migration: the new-core mount seam. Same handle type,
+// same wgpu path — the tree realizes into the embedding page's world
+// through `render_wgpu::newcore::start_in_world` (see `web.rs`).
+#[cfg(all(target_arch = "wasm32", feature = "new-core"))]
+pub use web::mount_newcore;
+
 // Re-export the shapes consumers most often need so they can depend
 // on `host-web` alone and not also pull `render-wgpu` / `render-api`
 // directly. The Simulator-style consumer only needs `Painter` and

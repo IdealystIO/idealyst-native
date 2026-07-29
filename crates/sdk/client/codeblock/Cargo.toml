@@ -19,14 +19,38 @@ license.workspace = true
 # `lib.rs` behind `#[cfg(...)]`. Padding is author-driven (see the
 # lib.rs module doc) — handlers bake none in.
 
+[features]
+# Idea-lite migration: re-express the SAME authored surface
+# (`code_block(spans).with_style(…)` + a bootstrap `register`) over the
+# scene registry — the new core's unified primitive==external contract.
+# Default-off and MUTUALLY EXCLUSIVE with the old-core surface (the two
+# define the same public names — one core per build, mirroring the
+# runtime-macros/new-core build-graph-wide switch; a consuming app crate
+# forwards this from its own new-core feature). The old-core modules are
+# byte-untouched under the default build.
+new-core = ["dep:runtime-vocabulary", "dep:runtime-scene"]
+
 [dependencies]
 runtime-core = { workspace = true }
+# New-core surface (feature `new-core`): the scene registry (`item` +
+# `MountCx`/`Registry`) + the vocabulary caps the mount handler drives
+# (`DocumentOps::create_element`, `TextOps::create_text`, `StyleOps::
+# apply_style`) + `style_attach` for the author-style channel.
+runtime-scene = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
 # Self-registration of the per-backend external handler at construction.
 inventory = "0.3"
 # Wire serde for `CodeBlockProps` so a `code_block(...)` external renders
 # over the runtime-server wire (recorder serializes the spans; the device
 # deserializes them back + dispatches to its real per-backend handler).
 serde_json = { workspace = true }
+
+# tests/oldcore.rs runs on the default (old-core) surface; tests/newcore.rs
+# (`--features new-core`) is the vocab-test harness — a minimal recording
+# old-core Backend bridged through `LegacyBridge` + a `World` mounts
+# `code_block(...)` through the scene registry end-to-end.
+[dev-dependencies]
+runtime-world = { workspace = true }
 
 # Web handler self-registers a `WebExternalRegistrar` (the generic
 # `register` monomorphized to `WebBackend`), so the web backend must be a

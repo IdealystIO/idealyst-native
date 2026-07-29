@@ -21,8 +21,23 @@ crate-type = ["rlib"]
 # `register_extensions_recorder` is compiled against the recorder backend.
 sidecar = ["dep:dev-server"]
 
+# idea-lite core migration: compile this crate's SAME source against the
+# new core via the `extern crate runtime_facade as runtime_core;` alias
+# in lib.rs (the idea-ui / website pattern). Default-off; one core per
+# build graph (runtime-facade enables `runtime-macros/new-core`, which
+# unifies). `dep:runtime-vocabulary` because the retargeted `ui!`
+# emission spells absolute `::runtime_vocabulary::glue::…` paths.
+#
+# Consumer: the marketing website's new-core build, which re-mounts this
+# app inside its embedded wgpu Simulator through
+# `host_wgpu::mount_newcore` (the new-core wgpu-host mount seam).
+new-core = ["dep:runtime-facade", "dep:runtime-vocabulary"]
+
 [dependencies]
 runtime-core = { workspace = true }
+# The new-core alias target + glue-path dep (see the `new-core` feature).
+runtime-facade = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
 # Recorder backend for the runtime-server sidecar wrapper. Optional —
 # pulled in only by the `sidecar` feature (host-side sidecar build);
 # never compiled for device/web targets.
