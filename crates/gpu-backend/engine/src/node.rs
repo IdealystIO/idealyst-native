@@ -428,8 +428,14 @@ pub enum NodeKind {
         on_dismiss: Option<Rc<dyn Fn()>>,
     },
     /// Virtualizer container. The simulator mounts every item
-    /// eagerly (no actual windowing) — fine for the moderate
-    /// list sizes a smoke preview uses.
+    /// (no actual windowing) — fine for the moderate list sizes a
+    /// smoke preview uses. The fill is DEFERRED to a scheduled
+    /// microtask (`schedule_virtualizer_fill`), never run inside
+    /// `create_virtualizer` / `virtualizer_data_changed`: the
+    /// vocabulary contract requires `mount_item`/`release_item` to be
+    /// invoked with the backend UNBORROWED (they realize/release rows
+    /// through the shared `Rc<RefCell<WgpuBackend>>`), and both entry
+    /// points are called under `backend.borrow_mut()` on the new core.
     Virtualizer {
         horizontal: bool,
         /// `mount_item(idx) -> (node, scope_id)`. Kept so
@@ -445,6 +451,10 @@ pub enum NodeKind {
         /// Scope ids for currently-mounted items, in insertion
         /// order. Parallel to `NodeData.children`.
         scope_ids: std::cell::RefCell<Vec<u64>>,
+        /// Dedup flag for the deferred fill: one queued refill at a
+        /// time (create + the handler's first data-effect fire both
+        /// request one — a single refill serves both).
+        fill_queued: std::cell::Cell<bool>,
     },
     /// Stack-based navigator. The renderer paints only the
     /// last child (top of stack); older screens stay mounted

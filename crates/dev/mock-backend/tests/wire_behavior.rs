@@ -68,6 +68,7 @@ fn view(children: Vec<Element>) -> Element {
         safe_area_sides: SafeAreaSides::NONE,
         on_touch: None,
         on_wheel: None,
+        preserves_focus: false,
         on_file_drop: None,
         on_hover: None,
         is_container: false,

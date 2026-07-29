@@ -42,6 +42,7 @@ fn list_screen() -> Element {
         safe_area_sides: runtime_core::SafeAreaSides::NONE,
         on_touch: None,
         on_wheel: None,
+        preserves_focus: false,
         on_hover: None,
         on_file_drop: None,
         is_container: false,

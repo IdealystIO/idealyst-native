@@ -347,6 +347,28 @@ pub fn is_flushing() -> bool {
     TLS.try_with(|t| t.borrow().flush_depth > 0).unwrap_or(false)
 }
 
+/// True while a live world is ambient on this thread (inside
+/// [`World::enter`]) — i.e. while creation-side APIs (`signal()`,
+/// `effect()`, `provide()`/`inject()`) are legal.
+///
+/// This is the probe the vocabulary's handler-safe surfaces fork on:
+/// platform event handlers run OUTSIDE `World::enter` (the flush driver
+/// commits afterwards), so an ambient-convenience free fn that also
+/// wants to work from a handler checks `is_entered()` and falls back to
+/// a handle/ctx captured at build time when it returns `false`. Found
+/// live: idea-theme's `set_theme` panicked "outside World::enter"
+/// through the ambient `inject` when called from a button handler.
+pub fn is_entered() -> bool {
+    TLS.try_with(|t| {
+        let t = t.borrow();
+        t.enter_stack
+            .last()
+            .map(|id| t.worlds.contains_key(id))
+            .unwrap_or(false)
+    })
+    .unwrap_or(false)
+}
+
 // ============================================================================
 // Arena — the per-world slot storage. Signals and effects live in parallel
 // generational Vecs; the staged queue holds slot indices awaiting commit.
@@ -1652,6 +1674,16 @@ impl<T: PartialEq + 'static> Memo<T> {
     /// tables) subscribe a memo slot exactly like a plain signal.
     pub fn raw_id(&self) -> u64 {
         self.value.raw_id()
+    }
+
+    /// The memo's cached value as a plain [`ReadSignal`] — the observe
+    /// half, mirroring [`Signal::read_only`]. Lets a derived value flow
+    /// into `ReadSignal<T>`-typed surfaces (a component prop, an
+    /// old-core-signature mirror like the glue's `current_breakpoint`)
+    /// without exposing the recompute effect. The effect handle stays
+    /// with whoever owns the memo; the returned handle only reads.
+    pub fn read_only(&self) -> ReadSignal<T> {
+        self.value
     }
 }
 

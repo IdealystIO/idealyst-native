@@ -292,6 +292,8 @@ pub fn Slider(props: &SliderProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P};
+    use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
     use runtime_core::FillRule;
 
@@ -303,8 +305,8 @@ mod tests {
     };
 
     fn view_children(el: Element) -> Vec<Element> {
-        match el {
-            Element::View { children, .. } => children,
+        match classify(el) {
+            P::View { children, .. } => children,
             _ => panic!("Slider renders a View"),
         }
     }
@@ -314,18 +316,21 @@ mod tests {
     // drag math relative to the track intact.
     #[test]
     fn icons_flank_the_track_outside_the_drag_container() {
-        install_idea_theme(light_theme());
-        let kids = view_children(Slider(&SliderProps {
-            leading_icon: Reactive::Static(Some(DOT)),
-            trailing_icon: Reactive::Static(Some(DOT)),
-            ..Default::default()
-        }));
-        assert_eq!(kids.len(), 3, "leading icon + slider + trailing icon");
-        assert!(matches!(kids[0], Element::Icon { .. }), "leading icon");
-        assert!(matches!(kids[2], Element::Icon { .. }), "trailing icon");
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let kids = view_children(Slider(&SliderProps {
+                leading_icon: Reactive::Static(Some(DOT)),
+                trailing_icon: Reactive::Static(Some(DOT)),
+                ..Default::default()
+            }));
+            assert_eq!(kids.len(), 3, "leading icon + slider + trailing icon");
+            let kinds: Vec<P> = kids.into_iter().map(classify).collect();
+            assert!(matches!(kinds[0], P::Icon { .. }), "leading icon");
+            assert!(matches!(kinds[2], P::Icon { .. }), "trailing icon");
 
-        // No icons → no wrapping row; the bare slider container (track + thumb).
-        let plain = view_children(Slider(&SliderProps::default()));
-        assert_eq!(plain.len(), 2, "track + thumb, no icon row");
+            // No icons → no wrapping row; the bare slider container (track + thumb).
+            let plain = view_children(Slider(&SliderProps::default()));
+            assert_eq!(plain.len(), 2, "track + thumb, no icon row");
+    });
     }
 }

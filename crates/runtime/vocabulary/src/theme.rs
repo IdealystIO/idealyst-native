@@ -68,9 +68,13 @@
 //!   new core (P4).
 //! - **Native breakpoint re-application**: the old driver subscribes to
 //!   `current_breakpoint()` (an old-core signal); a world effect cannot
-//!   subscribe to it. Values are still honored at apply time; the
-//!   re-fire arrives with the viewport-signal port (P4). Web needs
-//!   neither (`@media` CSS).
+//!   subscribe to it. Values are still honored at apply time. The
+//!   per-world reactive viewport/breakpoint source now exists
+//!   ([`crate::viewport`], author-surface re-fire wired + web-sourced);
+//!   re-pointing the native style-overlay MERGE onto it lands with the
+//!   first native backend that wires a live viewport push (viewport
+//!   module docs list the per-platform status). Web needs neither
+//!   (`@media` CSS).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -170,11 +174,29 @@ pub struct ThemeCtx {
     version: Signal<u64>,
 }
 
+thread_local! {
+    /// The most recent ambient world's `ThemeCtx` — the HANDLER fallback.
+    /// Platform event handlers run OUTSIDE `World::enter` (the flush
+    /// driver commits afterwards), so the ambient free fns below cannot
+    /// `inject` there; they fall back to this capture instead — capture,
+    /// don't inject. Refreshed on every ambient [`theme_ctx`] call, so it
+    /// tracks whichever world was ambient last; entered callers never
+    /// consult it (per-world isolation is preserved wherever a world IS
+    /// ambient), and a stale capture is inert, not dangerous — the ctx
+    /// state is plain `Rc` memory and its version signal's writes no-op
+    /// on a dead world. Found live: idea-theme's `set_theme` from the
+    /// docs-shell dark-theme button panicked "outside World::enter"
+    /// through the ambient `inject`.
+    static LAST_CTX: RefCell<Option<ThemeCtx>> = const { RefCell::new(None) };
+}
+
 /// The ambient world's theme context, created (and `provide`d) on first
 /// use. Must run inside `World::enter` — same contract as every
-/// creation-side kernel API.
+/// creation-side kernel API. (Handler-side callers go through the free
+/// fns below, which fall back to the last ambient world's ctx.)
 pub fn theme_ctx() -> ThemeCtx {
     if let Some(ctx) = inject::<ThemeCtx>() {
+        LAST_CTX.with(|c| *c.borrow_mut() = Some(ctx.clone()));
         return ctx;
     }
     let ctx = ThemeCtx {
@@ -184,7 +206,22 @@ pub fn theme_ctx() -> ThemeCtx {
         version: unscoped(|| signal(0u64)),
     };
     provide(ctx.clone());
+    LAST_CTX.with(|c| *c.borrow_mut() = Some(ctx.clone()));
     ctx
+}
+
+/// The handler-safe ctx resolution every ambient free fn in this module
+/// uses: the ambient world's ctx when entered, else the thread's last
+/// ambient ctx. Only when NO world ever created a theme ctx does this
+/// fall through to the ambient path's canonical outside-enter panic
+/// (there is genuinely nothing to stage into).
+fn theme_ctx_handler_safe() -> ThemeCtx {
+    if !runtime_world::is_entered() {
+        if let Some(ctx) = LAST_CTX.with(|c| c.borrow().clone()) {
+            return ctx;
+        }
+    }
+    theme_ctx()
 }
 
 /// The ambient world's theme VERSION signal. Reading it inside an
@@ -297,7 +334,7 @@ impl ThemeCtx {
 /// Ambient convenience — from an event handler, capture [`theme_ctx`]
 /// at build time and use [`ThemeCtx::install_tokens`].
 pub fn install_tokens(tokens: &[TokenEntry]) {
-    theme_ctx().install_tokens(tokens);
+    theme_ctx_handler_safe().install_tokens(tokens);
 }
 
 /// Push updated token values (a theme swap). Recorded per-world, queued
@@ -308,7 +345,7 @@ pub fn install_tokens(tokens: &[TokenEntry]) {
 /// convenience — from an event handler, capture [`theme_ctx`] at build
 /// time and use [`ThemeCtx::update_tokens`].
 pub fn update_tokens(tokens: &[TokenEntry]) {
-    theme_ctx().update_tokens(tokens);
+    theme_ctx_handler_safe().update_tokens(tokens);
 }
 
 /// Install the theme's default text [`FontFamily`] for the ambient
@@ -317,32 +354,32 @@ pub fn update_tokens(tokens: &[TokenEntry]) {
 /// (old `set_default_text_font`, per-world now). Bumps the version so
 /// already-applied nodes re-fill.
 pub fn set_default_text_font(font: Option<FontFamily>) {
-    theme_ctx().set_default_text_font(font);
+    theme_ctx_handler_safe().set_default_text_font(font);
 }
 
 /// The ambient world's default text font, if any.
 pub fn default_text_font() -> Option<FontFamily> {
-    theme_ctx().state.borrow().default_text_font.clone()
+    theme_ctx_handler_safe().state.borrow().default_text_font.clone()
 }
 
 /// Theme the host surface behind the rendered tree (old
 /// `set_app_background`): single pending slot, delivered on the next
 /// sheet attach / driver run, after tokens.
 pub fn set_app_background(color: Tokenized<Color>) {
-    theme_ctx().set_app_background(color);
+    theme_ctx_handler_safe().set_app_background(color);
 }
 
 /// Theme the platform scrollbar (old `set_scrollbar_theme`): single
 /// pending slot, same delivery as [`set_app_background`].
 pub fn set_scrollbar_theme(thumb: Tokenized<Color>, track: Tokenized<Color>) {
-    theme_ctx().set_scrollbar_theme(thumb, track);
+    theme_ctx_handler_safe().set_scrollbar_theme(thumb, track);
 }
 
 /// The ambient world's current value for a token name, if installed.
 /// (The per-world table; native `Tokenized::resolve` re-pointing lands
 /// at P4 — module docs.)
 pub fn token_value(name: &str) -> Option<TokenValue> {
-    theme_ctx().token_value(name)
+    theme_ctx_handler_safe().token_value(name)
 }
 
 /// Drain the pending host-level state into `backend` — tokens first
@@ -621,6 +658,72 @@ mod tests {
             world.flush();
             assert_eq!(ctx.version.get(), v0 + 1, "one bump per update batch");
         });
+    }
+
+    /// The idea-ui-docs dark-theme-button crash: `set_theme` →
+    /// `update_tokens` runs from a platform event handler, OUTSIDE
+    /// `World::enter` — the ambient `inject` used to panic "outside
+    /// World::enter". The swap must instead stage into the last ambient
+    /// world's ctx (capture, don't inject), notify the version
+    /// subscribers on that world's next flush, and keep per-world
+    /// isolation for entered callers.
+    #[test]
+    fn regression_theme_swap_outside_enter_stages_and_commits_on_flush() {
+        let world = World::new();
+        let (ctx, fires) = world.enter(|| {
+            install_tokens(&[TokenEntry {
+                name: "color-surface",
+                value: TokenValue::Color(Color("#fff".into())),
+            }]);
+            let ctx = theme_ctx();
+            let version = ctx.version;
+            let fires = Rc::new(std::cell::Cell::new(0usize));
+            let fires_c = fires.clone();
+            // Stand-in for the theme driver: subscribes to the version.
+            let _d = unscoped(|| {
+                effect(move || {
+                    let _ = version.get();
+                    fires_c.set(fires_c.get() + 1);
+                })
+            });
+            (ctx, fires)
+        });
+        world.flush();
+        let baseline = fires.get();
+
+        // The handler: no ambient world. Must not panic, must stage.
+        update_tokens(&[TokenEntry {
+            name: "color-surface",
+            value: TokenValue::Color(Color("#0a0e17".into())),
+        }]);
+        assert_eq!(
+            world.enter(|| token_value("color-surface")),
+            Some(TokenValue::Color(Color("#0a0e17".into()))),
+            "the value table updates immediately (Rc state, not staged)"
+        );
+
+        // Commit on flush: the version subscribers (driver) re-fire once.
+        world.flush();
+        assert_eq!(fires.get(), baseline + 1, "swap committed on the owning world's flush");
+
+        // Handler-safe pending delivery: the update batch is queued for
+        // the backend drain.
+        assert_eq!(ctx.state.borrow().pending_updates.len(), 1);
+
+        // Entered callers still resolve per-world: a second world's
+        // install lands in ITS ctx, not the captured one.
+        let other = World::new();
+        other.enter(|| {
+            install_tokens(&[TokenEntry {
+                name: "color-surface",
+                value: TokenValue::Color(Color("#123".into())),
+            }]);
+        });
+        assert_eq!(
+            world.enter(|| token_value("color-surface")),
+            Some(TokenValue::Color(Color("#0a0e17".into()))),
+            "per-world isolation preserved for entered callers"
+        );
     }
 
     #[test]

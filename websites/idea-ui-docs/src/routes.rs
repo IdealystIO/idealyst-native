@@ -13,7 +13,13 @@
 //!   * the **navigator** wiring + central **page frame** in `lib.rs`
 //!     (group overline, title, status badge, lead, body, Usage panel).
 
-use runtime_core::{Element, Route};
+use runtime_core::Element;
+#[cfg(feature = "old-core")]
+use runtime_core::Route;
+// SEAM(new-core): `Route` isn't mirrored by the glue facade — same type,
+// pulled from the real runtime-core rebinding in lib.rs.
+#[cfg(feature = "new-core")]
+use crate::runtime_core_real::Route;
 
 use crate::pages;
 

@@ -58,16 +58,32 @@ pub struct IconPrim {
     pub ref_fill: Option<Box<dyn FnOnce(IconHandle)>>,
 }
 
+/// An in-app route destination riding on [`LinkPrim`] (`link(route =
+/// …)`, P6). The mount handler composes the activation: it captures the
+/// ambient [`LinkActivator`](crate::prims::LinkActivator) at mount and
+/// dispatches `(name, url, make_params())` through it — push-vs-select
+/// decided by the enclosing navigator, the old ambient-navigator
+/// contract. No activator ambient ⇒ activation silently no-ops (old
+/// `link()` posture).
+pub struct RouteLink {
+    /// `Route::name()` — also surfaced as `LinkConfig::route`.
+    pub name: &'static str,
+    /// Fresh boxed params per activation (`P: Clone` reproduces).
+    pub make_params: Rc<dyn Fn() -> Box<dyn std::any::Any>>,
+}
+
 /// The `link` primitive (`walker/link.rs`). P2 carries the activation
 /// callback directly: `external` links default `on_activate` to the
-/// platform URL opener (the walker's port); non-external links REQUIRE
-/// `on_activate` — the old walker's navigator dispatch is composed by the
-/// navigation layer, which mounts through this same payload when it lands
-/// (deferred set: navigator).
+/// platform URL opener (the walker's port); in-app route links carry a
+/// [`RouteLink`] the mount handler resolves against the ambient
+/// `LinkActivator` (P6); links with NONE of callback/external/route
+/// panic at mount — a link that silently does nothing is a footgun.
 pub struct LinkPrim {
     pub url: Value<String>,
     pub external: bool,
     pub on_activate: Option<Rc<dyn Fn()>>,
+    /// In-app route destination (see [`RouteLink`]).
+    pub route_link: Option<RouteLink>,
     pub style: Option<StyleProp>,
     pub a11y: AccessibilityProps,
     pub ref_fill: Option<Box<dyn FnOnce(LinkHandle)>>,

@@ -39,17 +39,19 @@ fn main() {
         // cross-render signal-slot recycling).
         let path = path.to_string();
         let doc = std::thread::spawn(move || {
+            // The same registration the CLI's SSR wrapper calls
+            // (navigator chrome). The codeblock SDK registers no
+            // host-side SSR handler (wasm32-only), so code panels
+            // render the standard External placeholder.
             let page = render_path_with(
                 &path,
-                |b| {
-                    swap_navigator::register_generic(b);
-                    codeblock::register(b);
-                },
+                |b| website::register_ssr_extensions(b),
                 website::app,
             );
-            // Pure rendered screen (no bundle script) — these files are
-            // opened directly as a static SSR/SEO preview, not hydrated.
-            render_document(&page, None)
+            // Pure rendered screen (no bundle script, no extra head) —
+            // these files are opened directly as a static SSR/SEO
+            // preview, not hydrated.
+            render_document(&page, None, None)
         })
         .join()
         .expect("render thread panicked");

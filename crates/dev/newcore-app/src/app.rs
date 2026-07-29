@@ -51,6 +51,39 @@ fn StyledCard(
     }
 }
 
+/// Regression fixture (glue `StaticCond` `FnOnce`): a `String` local
+/// moved into a STATIC `if` branch — the documented 0.4.0 form (a
+/// method-call condition hoisted to a `let bool` so the bare-path
+/// dispatch takes the static arm). The old core always compiled this
+/// (`builder.rs::StaticCond` takes `FnOnce` thunks); the new-core
+/// glue's original `Fn + 'static` bounds made the by-move `String`
+/// capture E0507 ("cannot move out of a captured variable in an `Fn`
+/// closure"), forcing `.clone()` workarounds (website architecture.rs,
+/// tutorial chart.rs). Same-source: COMPILING on both cores is the
+/// regression test; the e2e test additionally pins that the taken
+/// branch mounts.
+#[component]
+fn StaticIfMovedString(
+    /// Static presence-checked prop, moved into the taken branch.
+    #[prop(static)]
+    eyebrow: String,
+) -> Element {
+    let has_eyebrow = !eyebrow.is_empty();
+    ui! {
+        view {
+            if has_eyebrow {
+                text { eyebrow }
+            }
+            text { "static-if-body" }
+        }
+    }
+}
+
+/// Build the [`StaticIfMovedString`] fixture (tests mount it standalone).
+pub fn build_static_if_moved_string() -> Element {
+    ui! { StaticIfMovedString(eyebrow = "moved-kicker".to_string()) }
+}
+
 /// One todo item. Rows are keyed by `id`.
 #[derive(Clone, PartialEq)]
 pub struct Todo {

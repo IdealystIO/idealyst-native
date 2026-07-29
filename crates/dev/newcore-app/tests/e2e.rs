@@ -187,6 +187,28 @@ fn mount_realizes_full_authored_structure() {
     assert!(!log.contains("nothing to do"), "empty state absent:\n{log}");
 }
 
+/// Regression (glue `StaticCond` FnOnce — the new-core E0507 class): a
+/// `String` local moved into a STATIC `if` branch compiles (that's the
+/// core of the regression — the fixture is same-source and the old-core
+/// leg checks it too) and the taken branch mounts its moved text.
+#[test]
+fn regression_static_if_branch_moves_string_capture() {
+    let rec = Recorder::default();
+    let backend = Rc::new(RefCell::new(LegacyBridge(FullRecorder::new(
+        rec.clone(),
+        Mode::Spliced,
+    ))));
+    let mut registry: Registry<Bridged> = Registry::new();
+    runtime_vocabulary::register_builtins(&mut registry);
+    let registry = Rc::new(registry);
+    let world = World::new();
+    let root = world.enter(newcore_app::app::build_static_if_moved_string);
+    let _realized = world.enter(|| realize(&backend, &registry, root));
+    let log = joined(&rec.take_ops());
+    assert!(log.contains("\"moved-kicker\""), "taken static branch mounts:\n{log}");
+    assert!(log.contains("\"static-if-body\""), "sibling text mounts:\n{log}");
+}
+
 /// The add button's authored `on_click` (captured by the backend at
 /// create, fired like a real press) reads the draft, appends a keyed
 /// row, and clears the draft — all through the staged-commit flush.

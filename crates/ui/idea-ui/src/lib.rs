@@ -57,6 +57,28 @@
 #[cfg(feature = "docs")]
 extern crate self as idea_ui;
 
+// idea-lite core migration (P6 SDK retarget): under `new-core` this
+// alias shadows the extern-prelude `runtime-core` for the WHOLE crate
+// (use paths, inline paths, `::runtime_core::…` absolute paths alike),
+// so the same source compiles against `runtime_vocabulary::glue`'s
+// mirrors of the old author surface. The default build has no alias and
+// is byte-identical old-core.
+#[cfg(feature = "new-core")]
+extern crate runtime_facade as runtime_core;
+
+// The `table` SDK is old-core-authored: pulling it into a new-core
+// graph would retarget ITS `ui!` call sites too (proc-macro feature
+// unification) and break the build. The themed `Table` component is
+// therefore excluded from new-core graphs until the SDK's own retarget
+// wave — combining the features is a configuration error, not a silent
+// downgrade.
+#[cfg(all(feature = "new-core", feature = "table"))]
+compile_error!(
+    "idea-ui: the `table` component feature cannot join a `new-core` build \
+     (the table SDK is old-core-authored; its retarget is a later P6 wave). \
+     Build with --no-default-features and re-enable the prim-* features you need."
+);
+
 pub mod breakpoint;
 pub mod components;
 #[cfg(feature = "docs")]
@@ -70,6 +92,10 @@ pub mod intent;
 // the whole module is still nothing in production (catalog off).
 pub mod recipes;
 pub mod slot_override;
+/// Build-tree introspection for this crate's (and idea-ui-nav's) unit
+/// tests — see the module docs. Hidden: test support, not surface.
+#[doc(hidden)]
+pub mod test_support;
 pub mod stylesheets;
 pub mod theme;
 mod theme_runtime;
@@ -194,6 +220,7 @@ pub use components::stack::{
 pub use components::surface::{Surface, SurfaceColor, SurfaceProps};
 #[cfg(feature = "prim-icon")]
 pub use components::switch::{Switch, SwitchProps};
+#[cfg(feature = "table")]
 pub use components::table::{Table, TableCell, TableCellProps, TableProps, TableRow, TableRowProps};
 pub use components::tabs::{Tab, TabIndicator, Tabs, TabsProps};
 pub use components::tag::{Tag, TagProps};

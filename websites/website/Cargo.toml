@@ -14,38 +14,66 @@ crate-type = ["cdylib", "rlib"]
 # render backend). The Simulator uses `runtime_core::driver::spawn_async`
 # to wait on `host_web::mount` without blocking the build walker.
 runtime-core = { workspace = true, features = ["async-driver"] }
-idea-ui = { workspace = true }
+# The new-core alias target + the retargeted `ui!` emission's absolute
+# `::runtime_vocabulary::glue::…` paths (see the `new-core` feature and
+# the alias in lib.rs — the nav-showcase / idea-ui-docs pattern).
+runtime-facade = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
+# `runtime-scene` for the website-local codeblock scene handler
+# (`Element::item` + `MountCx`/`Registry` in src/newcore.rs).
+runtime-scene = { workspace = true, optional = true }
+# `default-features = false` + the explicit prim list (the contract
+# idea-ui documents on its own runtime-core dep): idea-ui's `table`
+# default is old-core-authored and must stay out of new-core graphs.
+# The website renders no idea-ui Table, so the old-core build is
+# behavior-identical without it (the nav-showcase precedent).
+idea-ui = { path = "../../crates/ui/idea-ui", default-features = false, features = [
+    "prim-icon", "prim-image", "prim-text-input", "prim-activity",
+    "prim-portal", "prim-presence",
+] }
 swap-navigator = { workspace = true }
 idea-ui-nav = { workspace = true }
-codeblock = { workspace = true }
+# `codeblock` is an old-core External SDK (`Element::External` payload +
+# per-backend registry) — it cannot join a new-core graph. Owned by the
+# `old-core` feature; the new-core build renders the same `<pre>`/span
+# DOM through a website-local scene-registry handler (src/newcore.rs).
+codeblock = { workspace = true, optional = true }
 # Embedded `welcome` app — the canonical scaffold from `idealyst new`.
 # Re-mounted inside the home-page Simulator so visitors can preview
 # the scene without installing the CLI. Pure rlib, no platform-specific
 # code, compiles the same bytes everywhere.
-welcome = { workspace = true }
+#
+# Old-core-only: `welcome` authors its tree with `ui!` against the old
+# runtime-core, and proc-macro features unify per build graph — a
+# new-core graph would retarget welcome's emissions at the glue paths
+# its dep set can't resolve. The whole embedded-Simulator preview stack
+# below is owned by `old-core` for the same reason (the wgpu hosts
+# mount through the old walker).
+welcome = { workspace = true, optional = true }
 
 # Embedded-Simulator preview stack. These crates self-gate their
 # wasm-only innards (see e.g. `host-web/src/lib.rs`'s `cfg(target_arch
 # = "wasm32")` blocks), so they compile to empty surfaces on
 # native targets and the `Simulator` component's compile-time
 # imports stay portable. Matches the docs example's Cargo wiring.
-host-web = { workspace = true }
+host-web = { workspace = true, optional = true }
 # Target-agnostic wgpu host umbrella. Internally cfg-routes to
 # `host-web` on wasm, `host-ios-mobile` on iOS, etc. The Simulator
 # component calls `host_wgpu::mount(...)` cross-target without any
 # per-platform `cfg` in author code — see §7 of CLAUDE.md +
 # `[[feedback_cfg_hack_signals_missing_backend_method]]`.
-host-wgpu = { workspace = true }
-render-api = { workspace = true }
-ios-sim = { workspace = true }
-android-sim = { workspace = true }
+host-wgpu = { workspace = true, optional = true }
+render-api = { workspace = true, optional = true }
+ios-sim = { workspace = true, optional = true }
+android-sim = { workspace = true, optional = true }
 
 # SSR build target. Optional dep so wasm/native builds don't pull the
 # tiny_http machinery into their dep graph; the `ssr` feature flips it
 # on and `register_ssr_extensions` (gated by the same feature in
 # `lib.rs`) becomes visible to the CLI-generated SSR wrapper binary
-# (and to `examples/serve.rs`, which compiles examples with all
-# regular features active).
+# and to the examples (see `[[example]]` below — examples do NOT
+# compile with optional features active, so they declare
+# `required-features` and are skipped when `ssr` is off).
 backend-ssr = { workspace = true, features = ["serve"], optional = true }
 
 # Recorder backend for the runtime-server sidecar wrapper. Optional —
@@ -59,7 +87,50 @@ dev-server = { workspace = true, optional = true }
 # the iOS backends, here) so it's a single toggle: this `default`
 # entry threads it through every backend that ships PhaseTimer
 # instrumentation. Drop this entry once the perf chase is over.
-default = ["debug-stats"]
+default = ["debug-stats", "old-core"]
+# The two cores — SAME-SOURCE dual-core app (the idea-ui-docs /
+# conformance pattern): exactly one per build. `old-core` is the
+# default (CLI dev/build flows unchanged); `new-core` is the idea-lite
+# migration build, booted on web via `backend_web::newcore::start_in`
+# (see src/newcore.rs + newcore.html):
+#
+#   cargo check -p website                                       # old core
+#   cargo check -p website --no-default-features \
+#       --features new-core                                      # new core
+#   wasm-pack build --target web --dev websites/website \
+#       --out-dir pkg-newcore -- --no-default-features \
+#       --features new-core                                      # new-core web
+#
+# `old-core` owns the old-core-only dep clusters: the embedded-
+# Simulator preview stack (welcome + wgpu hosts — welcome's `ui!`
+# emissions retarget under proc-macro feature unification, and the
+# wgpu hosts mount through the old walker) and the `codeblock`
+# External SDK. Under `new-core` the home hero renders the simulator
+# placeholder chassis and code panels render through a website-local
+# scene-registry handler with the identical `<pre>`/span DOM.
+old-core = [
+    "dep:welcome",
+    "dep:host-web",
+    "dep:host-wgpu",
+    "dep:render-api",
+    "dep:ios-sim",
+    "dep:android-sim",
+    "dep:codeblock",
+]
+# `new-core` flips the whole idea-* + navigator subtree onto the glue
+# facade (`extern crate runtime_facade as runtime_core;` in lib.rs) and
+# pulls the vocabulary surface. `backend-web/new-core` is forwarded to
+# the wasm-target dep (feature forwarding to target-specific deps
+# works — the idea-ui-docs precedent).
+new-core = [
+    "dep:runtime-facade",
+    "dep:runtime-vocabulary",
+    "dep:runtime-scene",
+    "swap-navigator/new-core",
+    "idea-ui/new-core",
+    "idea-ui-nav/new-core",
+    "backend-web/new-core",
+]
 # Opt into the project-wide `debug-stats` instrumentation. Routes
 # through every dep that has its own `debug-stats` feature, so the
 # whole transitive build records into the same
@@ -143,6 +214,24 @@ backend-macos = { workspace = true }
 [dependencies.backend-terminal]
 workspace = true
 optional = true
+
+# The SSR demo examples need the optional `backend-ssr` dep (`ssr`
+# feature) and register through the old-core SSR path
+# (`register_ssr_extensions` → `swap_navigator::register_generic`), so
+# they also require `old-core`. With `required-features`, a plain
+# `cargo test -p website` (either core) SKIPS them instead of failing
+# on the unresolved optional dep — they broke silently for months
+# because the old comment wrongly claimed examples compile "with all
+# regular features active". Build them with:
+#   cargo run -p website --features ssr --example serve
+#   cargo run -p website --features ssr --example ssr
+[[example]]
+name = "serve"
+required-features = ["ssr", "old-core"]
+
+[[example]]
+name = "ssr"
+required-features = ["ssr", "old-core"]
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false

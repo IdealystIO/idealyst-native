@@ -212,7 +212,7 @@ where
     // typed `value` into `shadow` via an Effect, and the reverse
     // direction goes through the Select's `on_change` callback.
     let initial = value.get().as_variant_str().to_string();
-    let shadow: Signal<String> = Signal::new(initial);
+    let shadow: Signal<String> = runtime_core::signal(initial);
 
     // Forward typed → string. The framework's `run_effect`
     // short-circuits re-entrant invocations for the same effect id,
@@ -281,7 +281,7 @@ pub fn ref_picker_control<T: idea_theme::extensible::RefBuiltins>(
     // Select binds to a `Signal<String>` while the typed `*Ref` value
     // is mirrored via an Effect.
     let initial = value.get().current_key().to_string();
-    let shadow: Signal<String> = Signal::new(initial);
+    let shadow: Signal<String> = runtime_core::signal(initial);
 
     // Scope-owned; see `variant_enum_control` above.
     effect!({

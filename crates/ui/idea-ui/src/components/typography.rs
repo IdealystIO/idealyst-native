@@ -194,15 +194,17 @@ pub fn Typography(props: &TypographyProps) -> Element {
         None => None,
     };
 
-    let apply_role = |el: runtime_core::Bound<_>| match role {
-        Some(r) => el.a11y_role(r),
-        None => el,
-    };
-
-    if style_is_reactive {
-        apply_role(text(content).with_style(make_style)).into_element()
+    // Both branches produce the same wrapper type, so the role is folded
+    // in after the style split (spelled without the old `Bound<_>` type
+    // annotation, which has no single new-core counterpart).
+    let styled = if style_is_reactive {
+        text(content).with_style(make_style)
     } else {
-        apply_role(text(content).with_style(make_style())).into_element()
+        text(content).with_style(make_style())
+    };
+    match role {
+        Some(r) => styled.a11y_role(r).into_element(),
+        None => styled.into_element(),
     }
 }
 
@@ -221,20 +223,22 @@ fn font_override_key(font: &FontFamily) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P, TStyle};
+    use idea_theme::testing::with_test_world;
     use idea_theme::{install_idea_theme, light_theme, DEFAULT_FONT_STACK};
-    use runtime_core::{resolve_style, StyleSource};
+    use runtime_core::resolve_style;
 
-    /// Pull the `StyleSource` off the `text` node a `Typography` renders.
-    fn typography_style(t: Element) -> StyleSource {
-        match t {
-            Element::Text { style, .. } => style.expect("Typography text always carries a style"),
+    /// Pull the normalized style slot off the `text` node a `Typography` renders.
+    fn typography_style(t: Element) -> TStyle {
+        match classify(t) {
+            P::Text { style, .. } => style.expect("Typography text always carries a style"),
             _ => panic!("Typography renders a text node"),
         }
     }
 
     fn resolve(t: Element) -> runtime_core::StyleRules {
         match typography_style(t) {
-            StyleSource::Static(app) => (*resolve_style(&app)).clone(),
+            TStyle::App(app) => (*resolve_style(&app)).clone(),
             _ => panic!("Typography uses a static style source"),
         }
     }
@@ -244,60 +248,66 @@ mod tests {
     /// sans stack — so web text isn't left in the browser serif fallback.
     #[test]
     fn default_typography_inherits_theme_sans_font() {
-        install_idea_theme(light_theme());
-        let rules = resolve(Typography(&TypographyProps::default()));
-        match rules.font_family {
-            Some(FontFamily::System(stack)) => {
-                assert_eq!(stack, DEFAULT_FONT_STACK);
-                assert!(stack.contains("sans-serif"));
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let rules = resolve(Typography(&TypographyProps::default()));
+            match rules.font_family {
+                Some(FontFamily::System(stack)) => {
+                    assert_eq!(stack, DEFAULT_FONT_STACK);
+                    assert!(stack.contains("sans-serif"));
+                }
+                other => panic!("expected the theme's sans font_family, got {other:?}"),
             }
-            other => panic!("expected the theme's sans font_family, got {other:?}"),
-        }
+    });
     }
 
     /// Field report 3.1(a): a per-instance `font` override carries into
     /// the resolved style's `font_family`, overriding the theme default.
     #[test]
     fn font_prop_override_carries_into_resolved_style() {
-        install_idea_theme(light_theme());
-        let props = TypographyProps {
-            font: Reactive::Static(Some(FontFamily::System("Courier New, monospace".to_string()))),
-            ..Default::default()
-        };
-        let rules = resolve(Typography(&props));
-        match rules.font_family {
-            Some(FontFamily::System(stack)) => assert_eq!(stack, "Courier New, monospace"),
-            other => panic!("expected the overridden font_family, got {other:?}"),
-        }
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let props = TypographyProps {
+                font: Reactive::Static(Some(FontFamily::System("Courier New, monospace".to_string()))),
+                ..Default::default()
+            };
+            let rules = resolve(Typography(&props));
+            match rules.font_family {
+                Some(FontFamily::System(stack)) => assert_eq!(stack, "Courier New, monospace"),
+                other => panic!("expected the overridden font_family, got {other:?}"),
+            }
+    });
     }
 
     /// A registered `Typeface` override resolves through too — the path
     /// authors use for a real brand face (`typeface!` → `.into()`).
     #[test]
     fn typeface_override_carries_into_resolved_style() {
-        install_idea_theme(light_theme());
-        // Minimal Typeface value; only `id`/family identity matters for
-        // resolution + cache keying.
-        let tf = runtime_core::Typeface {
-            id: runtime_core::TypefaceId(0xBEEF),
-            family_name: "BrandSans",
-            faces: &[],
-            fallback: runtime_core::SystemFallback::SansSerif,
-        };
-        let props = TypographyProps {
-            font: Reactive::Static(Some(FontFamily::Typeface(tf))),
-            ..Default::default()
-        };
-        let rules = resolve(Typography(&props));
-        match rules.font_family {
-            Some(FontFamily::Typeface(got)) => assert_eq!(got.id, tf.id),
-            other => panic!("expected the typeface font_family, got {other:?}"),
-        }
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            // Minimal Typeface value; only `id`/family identity matters for
+            // resolution + cache keying.
+            let tf = runtime_core::Typeface {
+                id: runtime_core::TypefaceId(0xBEEF),
+                family_name: "BrandSans",
+                faces: &[],
+                fallback: runtime_core::SystemFallback::SansSerif,
+            };
+            let props = TypographyProps {
+                font: Reactive::Static(Some(FontFamily::Typeface(tf))),
+                ..Default::default()
+            };
+            let rules = resolve(Typography(&props));
+            match rules.font_family {
+                Some(FontFamily::Typeface(got)) => assert_eq!(got.id, tf.id),
+                other => panic!("expected the typeface font_family, got {other:?}"),
+            }
+    });
     }
 
     fn a11y_role(t: Element) -> Option<Role> {
-        match t {
-            Element::Text { accessibility, .. } => accessibility.role,
+        match classify(t) {
+            P::Text { accessibility, .. } => accessibility.role,
             _ => panic!("Typography renders a text node"),
         }
     }
@@ -308,40 +318,44 @@ mod tests {
     /// A heading kind must now auto-attach `Role::Header`.
     #[test]
     fn regression_heading_kind_auto_attaches_header_role() {
-        install_idea_theme(light_theme());
-        for kind in [
-            TypographyKindRef::from(idea_theme::extensible::typography::H1),
-            TypographyKindRef::from(idea_theme::extensible::typography::H2),
-            TypographyKindRef::from(idea_theme::extensible::typography::H3),
-            TypographyKindRef::from(idea_theme::extensible::typography::Display),
-        ] {
-            let props = TypographyProps {
-                kind: Reactive::Static(kind.clone()),
-                ..Default::default()
-            };
-            assert_eq!(
-                a11y_role(Typography(&props)),
-                Some(Role::Header),
-                "kind {:?} must auto-attach Role::Header",
-                kind.key()
-            );
-        }
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            for kind in [
+                TypographyKindRef::from(idea_theme::extensible::typography::H1),
+                TypographyKindRef::from(idea_theme::extensible::typography::H2),
+                TypographyKindRef::from(idea_theme::extensible::typography::H3),
+                TypographyKindRef::from(idea_theme::extensible::typography::Display),
+            ] {
+                let props = TypographyProps {
+                    kind: Reactive::Static(kind.clone()),
+                    ..Default::default()
+                };
+                assert_eq!(
+                    a11y_role(Typography(&props)),
+                    Some(Role::Header),
+                    "kind {:?} must auto-attach Role::Header",
+                    kind.key()
+                );
+            }
+    });
     }
 
     #[test]
     fn body_kind_gets_no_role_and_explicit_override_wins() {
-        install_idea_theme(light_theme());
-        // Body (non-heading) → natural text, no role.
-        assert_eq!(a11y_role(Typography(&TypographyProps::default())), None);
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            // Body (non-heading) → natural text, no role.
+            assert_eq!(a11y_role(Typography(&TypographyProps::default())), None);
 
-        // Explicit Role::Text opts a heading kind OUT of the heading role.
-        let opted_out = TypographyProps {
-            kind: Reactive::Static(TypographyKindRef::from(
-                idea_theme::extensible::typography::H1,
-            )),
-            a11y_role: Reactive::Static(Some(Role::Text)),
-            ..Default::default()
-        };
-        assert_eq!(a11y_role(Typography(&opted_out)), Some(Role::Text));
+            // Explicit Role::Text opts a heading kind OUT of the heading role.
+            let opted_out = TypographyProps {
+                kind: Reactive::Static(TypographyKindRef::from(
+                    idea_theme::extensible::typography::H1,
+                )),
+                a11y_role: Reactive::Static(Some(Role::Text)),
+                ..Default::default()
+            };
+            assert_eq!(a11y_role(Typography(&opted_out)), Some(Role::Text));
+    });
     }
 }

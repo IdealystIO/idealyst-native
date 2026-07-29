@@ -6,14 +6,15 @@
 //! differentiators, and a "platforms" strip listing every supported
 //! target.
 
+#[cfg(feature = "old-core")]
 use std::rc::Rc;
 
 use runtime_core::{component, ui, Element, IntoElement, Route, StyleApplication};
 use idea_ui::Typography;
 
-use crate::components::simulator::{
-    Simulator, simulator_placeholder, SimulatorSkin,
-};
+#[cfg(feature = "old-core")]
+use crate::components::simulator::{Simulator, SimulatorSkin};
+use crate::components::simulator::simulator_placeholder;
 use crate::pages::common::CodePanel;
 use crate::routes::{
     AGENTIC_ROUTE, BACKENDS_ROUTE, COMPARISONS_ROUTE, CONCEPTS_ROUTE, INSTALL_ROUTE,
@@ -49,16 +50,16 @@ fn hero() -> Element {
     let subhead_style = crate::responsive::responsive_style(HeroSubhead::sheet());
     let cta_style = HeroCtaRow();
 
-    let text_children: Vec<Element> = vec![
-        ui! { text(style = headline_style) { "One codebase, native everywhere." } },
-        ui! {
+    // Children authored inside the macro (CLAUDE.md §9.3) — this used
+    // to pre-build a `Vec<Element>` and splat it.
+    let text_column = ui! {
+        view(style = text_style) {
+            text(style = headline_style) { "One codebase, native everywhere." }
             text(style = subhead_style) {
                 "Idealyst is a reactive UI framework that runs natively on every \
                  target. The platform implementations are extensible by design: use the \
                  ones we ship, or write your own to target anything else."
             }
-        },
-        ui! {
             view(style = cta_style) {
                 link(route = &INSTALL_ROUTE, params = ()) {
                     text { "Install the CLI \u{2192}" }
@@ -67,9 +68,8 @@ fn hero() -> Element {
                     text { "Quickstart" }
                 }
             }
-        },
-    ];
-    let text_column = ui! { view(style = text_style) { text_children } };
+        }
+    };
 
     // Live preview: an embedded wgpu simulator running the `welcome`
     // scaffold project, with an iOS/Android skin toggle. The same
@@ -104,6 +104,7 @@ fn hero() -> Element {
 // (and its transitive wgpu / welcome / ios_sim deps) into a separate
 // chunk wasm loaded on demand. On native targets the attribute is
 // transparent: the body compiles inline and runs synchronously.
+#[cfg(feature = "old-core")]
 #[component(lazy)]
 fn HeroSimulator() -> Element {
     let build_ui: Rc<dyn Fn() -> Element> = Rc::new(welcome::app);
@@ -117,6 +118,7 @@ fn HeroSimulator() -> Element {
     }
 }
 
+#[cfg(feature = "old-core")]
 fn hero_simulator() -> Element {
     // While the chunk loads, render the device chassis with an "off"
     // screen inside (from `simulator_placeholder`). Reserving the
@@ -131,6 +133,21 @@ fn hero_simulator() -> Element {
                 }
             },
         )
+    }
+}
+
+/// New-core hero device: the live wgpu Simulator cluster is
+/// old-core-only (see `components/simulator.rs` — welcome's macro
+/// emissions + the old-walker wgpu host mount), so the hero renders
+/// the same chassis + "off" screen the lazy path shows while its
+/// chunk loads. Documented divergence in the migration log; lifting
+/// it needs a new-core wgpu-host mount seam (framework work).
+#[cfg(feature = "new-core")]
+fn hero_simulator() -> Element {
+    ui! {
+        view(style = crate::styles::SimulatorStage()) {
+            { simulator_placeholder(None) }
+        }
     }
 }
 
@@ -151,23 +168,23 @@ fn quickstart_section() -> Element {
          idealyst run ios      # build + boot in the iOS simulator\n\
          idealyst run android  # build + install on emulator or device";
 
-    // Vec<Element> children — Typography(...) followed by a brace-block
-    // sibling in the same `ui!` scope would otherwise be parsed as
-    // children of Body, which doesn't have a `children` field.
-    let children: Vec<Element> = vec![
-        ui! { Typography(content = "Build an iOS, Web, and Android app in five commands.".to_string(), kind = idea_ui::typography_kind::H2) },
-        ui! {
+    // Children authored inside the macro (CLAUDE.md §9.3) — this used
+    // to pre-build a `Vec<Element>` and splat it.
+    ui! {
+        view(style = section_style) {
+            Typography(
+                content = "Build an iOS, Web, and Android app in five commands.".to_string(),
+                kind = idea_ui::typography_kind::H2,
+            )
             Typography(
                 content = "The same `app()` function runs unchanged on web, iOS, and \
                            Android. The CLI handles the build pipeline and the per-target \
                            wrappers \u{2014} your code stays platform-agnostic.".to_string(),
                 muted = true,
             )
-        },
-        ui! { CodePanel(src = install_snippet) },
-    ];
-
-    ui! { view(style = section_style) { children } }
+            CodePanel(src = install_snippet)
+        }
+    }
 }
 
 // =============================================================================

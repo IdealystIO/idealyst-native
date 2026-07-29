@@ -111,6 +111,7 @@ fn collapse_variant(collapsed: bool) -> &'static str {
     }
 }
 
+#[cfg(not(feature = "new-core"))]
 thread_local! {
     /// Memoized `Signal<bool>` — `true` while the sidebar is collapsed.
     /// Derived from [`runtime_core::viewport_size`] like
@@ -122,7 +123,10 @@ thread_local! {
 
 /// Reactive flag: is the sidebar collapsed into the drawer overlay?
 /// Read inside a style closure / effect to subscribe to crossings of
-/// the collapse breakpoint.
+/// the collapse breakpoint. Old-core-only shape — new-core callers use
+/// [`sidebar_collapsed_now`] (a thread-cached cross-world signal handle
+/// would be a dead-world read under per-request SSR worlds).
+#[cfg(not(feature = "new-core"))]
 pub fn sidebar_collapsed() -> ReadSignal<bool> {
     COLLAPSED_MEMO.with(|cell| {
         // Root-anchor this thread-lifetime cached memo so it isn't owned
@@ -137,6 +141,30 @@ pub fn sidebar_collapsed() -> ReadSignal<bool> {
     })
 }
 
+/// Tracked read: is the sidebar collapsed *right now*? Subscribes the
+/// surrounding reactive scope on both cores.
+///
+/// - Old core: reads the thread-memoized collapse signal above.
+/// - New core: reads the PER-WORLD breakpoint ctx (`current_breakpoint`)
+///   instead — `app()` aligns the `Lg` minimum to
+///   [`SIDEBAR_COLLAPSE_PX`] via `install_breakpoints`, so
+///   `bucket < Lg` is exactly [`sidebar_collapsed_at`]. A thread-cached
+///   world signal (the old shape) dangles across the new core's
+///   per-request SSR worlds (dead-world read on the second render).
+pub fn sidebar_collapsed_now() -> bool {
+    #[cfg(not(feature = "new-core"))]
+    {
+        sidebar_collapsed().get()
+    }
+    #[cfg(feature = "new-core")]
+    {
+        !matches!(
+            current_breakpoint().get(),
+            Breakpoint::Lg | Breakpoint::Xl
+        )
+    }
+}
+
 /// Build a reactive style closure for a `variant size { wide, narrow }`
 /// stylesheet whose visibility tracks the sidebar-collapse breakpoint
 /// (e.g. the mobile header). Reads [`sidebar_collapsed`] on every fire
@@ -146,7 +174,7 @@ pub fn collapse_responsive_style(
     sheet: Rc<StyleSheet>,
 ) -> impl Fn() -> StyleApplication + Clone + 'static {
     move || {
-        let variant = collapse_variant(sidebar_collapsed().get());
+        let variant = collapse_variant(sidebar_collapsed_now());
         StyleApplication::new(sheet.clone()).with("size", variant.to_string())
     }
 }

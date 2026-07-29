@@ -124,7 +124,7 @@ pub struct SelectProps {
 impl Default for SelectProps {
     fn default() -> Self {
         Self {
-            value: Signal::new(String::new()),
+            value: runtime_core::signal(String::new()),
             on_change: Rc::new(|_| {}),
             options: Vec::new(),
             size: Reactive::Static(SelectSize::default()),
@@ -165,16 +165,17 @@ pub fn Select(props: SelectProps) -> Element {
     let label_placeholder = placeholder.clone();
     // `placeholder` is read LIVE inside the trigger's label source, so a
     // reactive placeholder re-paints the empty-trigger text in place.
-    let label_source: runtime_core::TextSource = runtime_core::IntoTextSource::into_text_source(
-        move || {
-            label_options
-                .iter()
-                .find(|o| o.id == value.get())
-                .map(|o| o.label.get())
-                .or_else(|| label_placeholder.get())
-                .unwrap_or_default()
-        },
-    );
+    // (Plain closure into `text(...)` — the same reactive Bound/Dyn text
+    // source conversion on both cores; the old explicit
+    // `IntoTextSource::into_text_source` spelling was redundant.)
+    let label_source = move || {
+        label_options
+            .iter()
+            .find(|o| o.id == value.get())
+            .map(|o| o.label.get())
+            .or_else(|| label_placeholder.get())
+            .unwrap_or_default()
+    };
     let label_child = runtime_core::text(label_source).into_element();
 
     // Trailing chevron that rotates 180° while the menu is open. Bound to a
@@ -326,6 +327,7 @@ fn menu_build(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
     use runtime_core::{resolve_style, FontFamily};
 
@@ -341,36 +343,38 @@ mod tests {
     // need a main-thread NSApp, so they're covered by the robot screenshot pass.
     #[test]
     fn regression_select_trigger_focus_paints_focus_ring_border() {
-        install_idea_theme(light_theme());
+        with_test_world(|| {
+            install_idea_theme(light_theme());
 
-        // The focus-ring color the trigger must resolve to when focused.
-        let ring = Tokenized::token("color-focus-ring", Color("#5b6cff".into())).resolve();
+            // The focus-ring color the trigger must resolve to when focused.
+            let ring = Tokenized::token("color-focus-ring", Color("#5b6cff".into())).resolve();
 
-        let focused = resolve_style(
-            &StyleApplication::new(SelectTrigger::sheet()).with("__state_focused", "on"),
-        );
-        let focused_border = focused
-            .border_top_color
-            .clone()
-            .expect("a focused trigger must set a border color")
-            .resolve();
-        assert_eq!(
-            focused_border, ring,
-            "a focused Select trigger must paint the theme focus-ring border, not the native ring"
-        );
+            let focused = resolve_style(
+                &StyleApplication::new(SelectTrigger::sheet()).with("__state_focused", "on"),
+            );
+            let focused_border = focused
+                .border_top_color
+                .clone()
+                .expect("a focused trigger must set a border color")
+                .resolve();
+            assert_eq!(
+                focused_border, ring,
+                "a focused Select trigger must paint the theme focus-ring border, not the native ring"
+            );
 
-        // Without focus the border is the resting neutral border — proving the
-        // ring comes from the `focused` state, not the base.
-        let base = resolve_style(&StyleApplication::new(SelectTrigger::sheet()));
-        let base_border = base
-            .border_top_color
-            .clone()
-            .expect("the trigger reserves a border in its base")
-            .resolve();
-        assert_ne!(
-            base_border, ring,
-            "the resting trigger border must NOT already be the focus ring"
-        );
+            // Without focus the border is the resting neutral border — proving the
+            // ring comes from the `focused` state, not the base.
+            let base = resolve_style(&StyleApplication::new(SelectTrigger::sheet()));
+            let base_border = base
+                .border_top_color
+                .clone()
+                .expect("the trigger reserves a border in its base")
+                .resolve();
+            assert_ne!(
+                base_border, ring,
+                "the resting trigger border must NOT already be the focus ring"
+            );
+    });
     }
 
     // Field report: on web the Select dropdown options rendered in the
@@ -382,28 +386,30 @@ mod tests {
     // inherits it. This test fails before the fix (`font_family` is `None`).
     #[test]
     fn regression_select_menu_pins_theme_font_for_portal() {
-        install_idea_theme(light_theme());
+        with_test_world(|| {
+            install_idea_theme(light_theme());
 
-        let resolved = resolve_style(&StyleApplication::new(SelectMenu::sheet()));
-        let family = resolved.font_family.clone().expect(
-            "the Select menu must pin a font_family so its portal'd options don't \
-             fall back to the browser serif default",
-        );
+            let resolved = resolve_style(&StyleApplication::new(SelectMenu::sheet()));
+            let family = resolved.font_family.clone().expect(
+                "the Select menu must pin a font_family so its portal'd options don't \
+                 fall back to the browser serif default",
+            );
 
-        // It must be the theme's body font (a non-empty system sans stack),
-        // not an empty/serif fallback.
-        match (&family, &idea_theme::active_font_family()) {
-            (FontFamily::System(got), FontFamily::System(want)) => {
-                assert_eq!(got, want, "menu font must match the active theme's body font");
-                assert!(!got.is_empty(), "an empty family resolves to the browser serif default");
+            // It must be the theme's body font (a non-empty system sans stack),
+            // not an empty/serif fallback.
+            match (&family, &idea_theme::active_font_family()) {
+                (FontFamily::System(got), FontFamily::System(want)) => {
+                    assert_eq!(got, want, "menu font must match the active theme's body font");
+                    assert!(!got.is_empty(), "an empty family resolves to the browser serif default");
+                }
+                (FontFamily::Typeface(got), FontFamily::Typeface(want)) => {
+                    assert_eq!(
+                        got.family_name, want.family_name,
+                        "menu typeface must match the active theme's body typeface"
+                    );
+                }
+                (got, want) => panic!("menu font kind {got:?} differs from the theme font {want:?}"),
             }
-            (FontFamily::Typeface(got), FontFamily::Typeface(want)) => {
-                assert_eq!(
-                    got.family_name, want.family_name,
-                    "menu typeface must match the active theme's body typeface"
-                );
-            }
-            (got, want) => panic!("menu font kind {got:?} differs from the theme font {want:?}"),
-        }
+    });
     }
 }

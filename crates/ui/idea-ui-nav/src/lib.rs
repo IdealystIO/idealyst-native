@@ -32,6 +32,14 @@
 
 #![deny(missing_docs)]
 
+// idea-lite core migration (P6 SDK retarget): under `new-core` this
+// alias shadows the extern-prelude `runtime-core` for the WHOLE crate,
+// so the same source compiles against `runtime_vocabulary::glue`'s
+// mirrors of the old author surface. The default build has no alias and
+// is byte-identical old-core.
+#[cfg(feature = "new-core")]
+extern crate runtime_facade as runtime_core;
+
 mod app_shell;
 mod drawer;
 mod stack_header;

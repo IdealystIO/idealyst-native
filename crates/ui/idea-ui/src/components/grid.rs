@@ -90,32 +90,22 @@ pub fn Grid(props: GridProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P};
+    use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{resolve_style, view, Element, StyleRules as RCStyleRules, StyleSource};
-
-    fn view_children(el: &Element) -> &Vec<Element> {
-        match el {
-            Element::View { children, .. } => children,
-            _ => panic!("expected a View"),
-        }
-    }
+    use runtime_core::{view, StyleRules as RCStyleRules};
 
     fn leaf() -> Element {
         view(vec![]).into_element()
     }
 
     /// Resolve the grid container's (reactive) style to its `StyleRules`.
-    fn container_rules(el: &Element) -> std::rc::Rc<RCStyleRules> {
-        let style = match el {
-            Element::View { style, .. } => style.as_ref().expect("Grid attaches a style"),
+    /// `TStyle::resolve` evaluates the reactive-or-static style either way.
+    fn container_rules(el: Element) -> std::rc::Rc<RCStyleRules> {
+        match classify(el) {
+            P::View { style, .. } => style.expect("Grid attaches a style").resolve(),
             _ => panic!("Grid renders a View"),
-        };
-        let app = match style {
-            StyleSource::Reactive(f) => f(),
-            StyleSource::Static(a) => a.clone(),
-            _ => panic!("Grid uses a reactive style closure"),
-        };
-        resolve_style(&app)
+        }
     }
 
     // The Grid is a real CSS grid: `display: grid` with one `1fr` track per
@@ -124,19 +114,21 @@ mod tests {
     // lists — see the module docs).
     #[test]
     fn grid_is_a_css_grid_with_one_fr_track_per_column() {
-        install_idea_theme(light_theme());
-        let grid = Grid(GridProps {
-            columns: Reactive::Static(3),
-            gap: Reactive::Static(StackGap::Md),
-            children: vec![leaf(), leaf(), leaf(), leaf()],
-        });
-        let rules = container_rules(&grid);
-        assert_eq!(rules.display, Some(DisplayKind::Grid), "container is display:grid");
-        assert_eq!(
-            rules.grid_template_columns.as_deref(),
-            Some([TrackSize::Fr(1.0), TrackSize::Fr(1.0), TrackSize::Fr(1.0)].as_slice()),
-            "3 columns → three equal 1fr tracks",
-        );
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let grid = Grid(GridProps {
+                columns: Reactive::Static(3),
+                gap: Reactive::Static(StackGap::Md),
+                children: vec![leaf(), leaf(), leaf(), leaf()],
+            });
+            let rules = container_rules(grid);
+            assert_eq!(rules.display, Some(DisplayKind::Grid), "container is display:grid");
+            assert_eq!(
+                rules.grid_template_columns.as_deref(),
+                Some([TrackSize::Fr(1.0), TrackSize::Fr(1.0), TrackSize::Fr(1.0)].as_slice()),
+                "3 columns → three equal 1fr tracks",
+            );
+    });
     }
 
     // Children pass through as DIRECT grid items — no per-cell wrapper views and
@@ -146,42 +138,46 @@ mod tests {
     // cell.
     #[test]
     fn children_are_direct_grid_items_not_wrapped() {
-        install_idea_theme(light_theme());
-        let grid = Grid(GridProps {
-            columns: Reactive::Static(2),
-            gap: Reactive::Static(StackGap::Md),
-            children: vec![leaf(), leaf(), leaf()],
-        });
-        // 3 children in → 3 direct children out (no padding fillers, no row
-        // views, no cell wrappers).
-        assert_eq!(view_children(&grid).len(), 3, "children are the grid items themselves");
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let grid = Grid(GridProps {
+                columns: Reactive::Static(2),
+                gap: Reactive::Static(StackGap::Md),
+                children: vec![leaf(), leaf(), leaf()],
+            });
+            // 3 children in → 3 direct children out (no padding fillers, no row
+            // views, no cell wrappers).
+            assert_eq!(classify(grid).children().len(), 3, "children are the grid items themselves");
+    });
     }
 
     // `columns` drives the track count directly.
     #[test]
     fn columns_prop_sets_track_count() {
-        install_idea_theme(light_theme());
-        let grid = Grid(GridProps {
-            columns: Reactive::Static(5),
-            gap: Reactive::Static(StackGap::Sm),
-            children: vec![leaf()],
-        });
-        assert_eq!(
-            container_rules(&grid).grid_template_columns.as_ref().map(|t| t.len()),
-            Some(5),
-            "5 columns → five tracks",
-        );
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let grid = Grid(GridProps {
+                columns: Reactive::Static(5),
+                gap: Reactive::Static(StackGap::Sm),
+                children: vec![leaf()],
+            });
+            assert_eq!(
+                container_rules(grid).grid_template_columns.as_ref().map(|t| t.len()),
+                Some(5),
+                "5 columns → five tracks",
+            );
 
-        // Clamps to at least one track.
-        let zero = Grid(GridProps {
-            columns: Reactive::Static(0),
-            gap: Reactive::Static(StackGap::Sm),
-            children: vec![],
-        });
-        assert_eq!(
-            container_rules(&zero).grid_template_columns.as_ref().map(|t| t.len()),
-            Some(1),
-            "columns is clamped to >= 1",
-        );
+            // Clamps to at least one track.
+            let zero = Grid(GridProps {
+                columns: Reactive::Static(0),
+                gap: Reactive::Static(StackGap::Sm),
+                children: vec![],
+            });
+            assert_eq!(
+                container_rules(zero).grid_template_columns.as_ref().map(|t| t.len()),
+                Some(1),
+                "columns is clamped to >= 1",
+            );
+    });
     }
 }

@@ -173,34 +173,49 @@ where
 /// Mount a `link` — port of `walker/link.rs::build`.
 ///
 /// Sequence: build [`LinkConfig`] (external links default activation to
-/// the platform URL opener, the walker's port; non-external links
-/// REQUIRE `.on_activate(...)` — the navigator dispatch the walker
-/// builds is the deferred navigation layer's job) → `create_link` →
-/// children → attach_style → `Dyn` url binding (`update_link_url`,
-/// first fire at mount) → ref-fill.
+/// the platform URL opener, the walker's port; route links resolve the
+/// ambient [`LinkActivator`](crate::prims::LinkActivator) AT MOUNT —
+/// the new-core counterpart of the old construction-time ambient
+/// capture, and mounted-outside-any-navigator links silently no-op on
+/// activation, the old `link()` posture; links with none of
+/// callback/external/route panic) → `create_link` → children →
+/// attach_style → `Dyn` url binding (`update_link_url`, first fire at
+/// mount) → ref-fill.
 pub fn mount_link<H>(cx: &mut MountCx<'_, H>, prim: LinkPrim, children: Vec<Element>) -> H::Node
 where
     H: LinkOps + StyleServices + IntrospectionOps,
 {
     let backend = cx.backend().clone();
     let initial_url = initial_of(&prim.url);
-    let on_activate: Rc<dyn Fn()> = match prim.on_activate {
-        Some(cb) => cb,
-        None if prim.external => {
+    let route_name = prim.route_link.as_ref().map(|r| r.name).unwrap_or("");
+    let on_activate: Rc<dyn Fn()> = match (prim.on_activate, prim.route_link) {
+        (Some(cb), _) => cb,
+        (None, Some(route_link)) => {
+            // Capture the enclosing navigator's activator NOW (mount
+            // runs inside the navigator's provide window); each
+            // activation reproduces fresh params and stages the
+            // navigator-kind command (swap Select / stack Push).
+            let ambient = runtime_world::inject::<crate::prims::LinkActivator>();
+            let url = initial_url.clone();
+            Rc::new(move || {
+                if let Some(activator) = &ambient {
+                    activator.activate(route_link.name, url.clone(), (route_link.make_params)());
+                }
+            })
+        }
+        (None, None) if prim.external => {
             let url = initial_url.clone();
             Rc::new(move || runtime_core::open_url(&url))
         }
-        None => panic!(
-            "link(): a non-external link needs .on_activate(...) — the navigator dispatch \
-             layer that supplies it for route links mounts through this payload when the \
-             navigation port lands (deferred set); a link that silently does nothing is a \
-             footgun"
+        (None, None) => panic!(
+            "link(): a non-external link needs .route(...) or .on_activate(...) — a link \
+             that silently does nothing is a footgun"
         ),
     };
     #[cfg(feature = "robot")]
     let robot_click = on_activate.clone();
     let config = LinkConfig {
-        route: "",
+        route: route_name,
         url: initial_url,
         external: prim.external,
         on_activate,

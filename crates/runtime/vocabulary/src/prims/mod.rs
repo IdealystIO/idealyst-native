@@ -34,10 +34,11 @@ mod virtualizer;
 mod widgets;
 
 pub use graphics::GraphicsPrim;
-pub use media::{IconPrim, ImagePrim, LinkPrim};
+pub use media::{IconPrim, ImagePrim, LinkPrim, RouteLink};
 pub use navigator::{
-    MountPolicy, NavConfig, NavHandle, NavScreenEntry, NavigatorOutletPrim, ParamsFromSegments,
-    SelectArgs, StackNav, StackNavigatorPrim, StackRetention, SwapNav, SwapNavigatorPrim,
+    LinkActivator, MountPolicy, NavConfig, NavHandle, NavScreenEntry, NavigatorOutletPrim,
+    ParamsFromSegments, Screen, ScreenChrome, SelectArgs, StackNav, StackNavigatorPrim,
+    StackRetention, SwapNav, SwapNavigatorPrim,
 };
 pub use portal::{PortalPrim, ScreenNav};
 pub use presence::PresencePrim;

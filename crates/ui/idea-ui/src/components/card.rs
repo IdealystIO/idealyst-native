@@ -336,18 +336,20 @@ pub fn Card(props: CardProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P, TStyle};
     use idea_theme::extensible::{tone, Tone};
+    use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{resolve_style, StyleSource};
+    use runtime_core::resolve_style;
 
     fn theme() {
         install_idea_theme(light_theme());
     }
 
     fn view_style(card: Element) -> StyleApplication {
-        match card {
-            Element::View { style, .. } => match style.expect("Card view has a style") {
-                StyleSource::Static(a) => a,
+        match classify(card) {
+            P::View { style, .. } => match style.expect("Card view has a style") {
+                TStyle::App(a) => a,
                 _ => panic!("Card uses a static style source"),
             },
             _ => panic!("Card renders a view"),
@@ -358,45 +360,49 @@ mod tests {
     // distinct from the surface bg a tone-less Flat card renders.
     #[test]
     fn tone_tints_background_distinct_from_surface() {
-        theme();
-        let toned = CardProps {
-            tone: Reactive::Static(Some(tone::Danger.into())),
-            ..Default::default()
-        };
-        let toned_bg = resolve_style(&view_style(Card(toned)))
-            .background
-            .clone()
-            .expect("toned card sets a background");
+        with_test_world(|| {
+            theme();
+            let toned = CardProps {
+                tone: Reactive::Static(Some(tone::Danger.into())),
+                ..Default::default()
+            };
+            let toned_bg = resolve_style(&view_style(Card(toned)))
+                .background
+                .clone()
+                .expect("toned card sets a background");
 
-        let plain = CardProps::default();
-        let plain_bg = resolve_style(&view_style(Card(plain)))
-            .background
-            .clone()
-            .expect("Flat card sets a surface background");
+            let plain = CardProps::default();
+            let plain_bg = resolve_style(&view_style(Card(plain)))
+                .background
+                .clone()
+                .expect("Flat card sets a surface background");
 
-        assert_ne!(
-            toned_bg, plain_bg,
-            "a Danger-toned card must read differently from a plain surface card"
-        );
-        // The tint matches the Danger tone's Soft slot (the same tint
-        // Alert's Soft variant uses).
-        let theme_rc = active_theme();
-        let expected =
-            tone::Danger.soft_bg(theme_rc.downcast_ref::<IdeaThemeRef>().unwrap());
-        assert_eq!(toned_bg, expected, "tint is the tone's soft_bg");
+            assert_ne!(
+                toned_bg, plain_bg,
+                "a Danger-toned card must read differently from a plain surface card"
+            );
+            // The tint matches the Danger tone's Soft slot (the same tint
+            // Alert's Soft variant uses).
+            let theme_rc = active_theme();
+            let expected =
+                tone::Danger.soft_bg(theme_rc.downcast_ref::<IdeaThemeRef>().unwrap());
+            assert_eq!(toned_bg, expected, "tint is the tone's soft_bg");
+    });
     }
 
     // D7: with no tone, Flat/Elevated keep their surface look unchanged —
     // the computed tint layer is absent entirely.
     #[test]
     fn no_tone_keeps_surface_look() {
-        theme();
-        let plain = CardProps::default();
-        let app = view_style(Card(plain));
-        assert!(
-            app.computed().is_none(),
-            "a tone-less Card attaches no tint layer"
-        );
+        with_test_world(|| {
+            theme();
+            let plain = CardProps::default();
+            let app = view_style(Card(plain));
+            assert!(
+                app.computed().is_none(),
+                "a tone-less Card attaches no tint layer"
+            );
+    });
     }
 
     // Clipping is a style attribute, not a bespoke prop: an `overflow: hidden`
@@ -404,27 +410,29 @@ mod tests {
     // the default (no override) leaves overflow unset so content may overhang.
     #[test]
     fn style_override_overflow_clips_to_radius() {
-        theme();
-        let clip = Rc::new(StyleSheet::r#static(StyleRules {
-            overflow: Some(Overflow::Hidden),
-            ..Default::default()
-        }));
-        let clipped = CardProps {
-            style: Some(clip),
-            ..Default::default()
-        };
-        assert_eq!(
-            resolve_style(&view_style(Card(clipped))).overflow,
-            Some(Overflow::Hidden),
-            "overflow:hidden in the style override clips children to the radius",
-        );
+        with_test_world(|| {
+            theme();
+            let clip = Rc::new(StyleSheet::r#static(StyleRules {
+                overflow: Some(Overflow::Hidden),
+                ..Default::default()
+            }));
+            let clipped = CardProps {
+                style: Some(clip),
+                ..Default::default()
+            };
+            assert_eq!(
+                resolve_style(&view_style(Card(clipped))).overflow,
+                Some(Overflow::Hidden),
+                "overflow:hidden in the style override clips children to the radius",
+            );
 
-        let default = CardProps::default();
-        assert_eq!(
-            resolve_style(&view_style(Card(default))).overflow,
-            None,
-            "the default doesn't clip — content may extend past the radius",
-        );
+            let default = CardProps::default();
+            assert_eq!(
+                resolve_style(&view_style(Card(default))).overflow,
+                None,
+                "the default doesn't clip — content may extend past the radius",
+            );
+    });
     }
 
     // Slot override: the root `style` layers onto the card surface and wins
@@ -432,22 +440,24 @@ mod tests {
     // off, since it's the top resolution layer.
     #[test]
     fn style_override_wins_over_variant() {
-        theme();
-        let ovr = Rc::new(StyleSheet::r#static(StyleRules {
-            background: Some(Tokenized::Literal(runtime_core::Color("#123456".into()))),
-            ..Default::default()
-        }));
-        let props = CardProps {
-            style: Some(ovr),
-            ..Default::default()
-        };
-        assert_eq!(
-            resolve_style(&view_style(Card(props)))
-                .background
-                .as_ref()
-                .map(|c| c.resolve().0.to_ascii_lowercase()),
-            Some("#123456".to_string()),
-            "style override sets the card background over the variant surface",
-        );
+        with_test_world(|| {
+            theme();
+            let ovr = Rc::new(StyleSheet::r#static(StyleRules {
+                background: Some(Tokenized::Literal(runtime_core::Color("#123456".into()))),
+                ..Default::default()
+            }));
+            let props = CardProps {
+                style: Some(ovr),
+                ..Default::default()
+            };
+            assert_eq!(
+                resolve_style(&view_style(Card(props)))
+                    .background
+                    .as_ref()
+                    .map(|c| c.resolve().0.to_ascii_lowercase()),
+                Some("#123456".to_string()),
+                "style override sets the card background over the variant surface",
+            );
+    });
     }
 }

@@ -672,69 +672,85 @@ fn assemble_overlay(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P, TStyle};
+    use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
     use runtime_core::resolve_style;
 
     #[test]
     fn props_default_is_dismissable_with_default_width() {
-        let p = ModalProps::default();
-        assert!(p.dismissable.get());
-        assert!(p.backdrop_style.is_none());
-        assert!(p.on_backdrop_press.is_none());
-        assert_eq!(p.width.get(), DEFAULT_MODAL_WIDTH);
+        with_test_world(|| {
+            let p = ModalProps::default();
+            assert!(p.dismissable.get());
+            assert!(p.backdrop_style.is_none());
+            assert!(p.on_backdrop_press.is_none());
+            assert_eq!(p.width.get(), DEFAULT_MODAL_WIDTH);
+    });
     }
 
     #[test]
     fn width_unclamped_when_viewport_has_room() {
-        assert_eq!(effective_modal_width(520.0, 1280.0), 520.0);
-        assert_eq!(effective_modal_width(440.0, 1280.0), 440.0);
+        with_test_world(|| {
+            assert_eq!(effective_modal_width(520.0, 1280.0), 520.0);
+            assert_eq!(effective_modal_width(440.0, 1280.0), 440.0);
+    });
     }
 
     #[test]
     fn regression_width_caps_to_viewport_on_a_phone() {
-        // The bug: a 520-wide surface centered on a 393pt phone overflowed
-        // ~63pt off each edge because `max_width: 100%` didn't clamp against
-        // the auto-sized portal wrapper on the native backends. The cap must
-        // bring it to viewport - 2*margin so it fits with breathing room.
-        let eff = effective_modal_width(520.0, 393.0);
-        assert_eq!(eff, 393.0 - MODAL_EDGE_MARGIN * 2.0);
-        assert!(eff < 393.0, "surface must fit within the viewport");
+        with_test_world(|| {
+            // The bug: a 520-wide surface centered on a 393pt phone overflowed
+            // ~63pt off each edge because `max_width: 100%` didn't clamp against
+            // the auto-sized portal wrapper on the native backends. The cap must
+            // bring it to viewport - 2*margin so it fits with breathing room.
+            let eff = effective_modal_width(520.0, 393.0);
+            assert_eq!(eff, 393.0 - MODAL_EDGE_MARGIN * 2.0);
+            assert!(eff < 393.0, "surface must fit within the viewport");
+    });
     }
 
     #[test]
     fn width_never_shrinks_below_min_fit_on_tiny_viewports() {
-        let eff = effective_modal_width(520.0, 300.0);
-        assert_eq!(eff, MODAL_MIN_FIT);
+        with_test_world(|| {
+            let eff = effective_modal_width(520.0, 300.0);
+            assert_eq!(eff, MODAL_MIN_FIT);
+    });
     }
 
     #[test]
     fn max_height_caps_to_viewport_minus_margin() {
-        // A roomy phone in portrait: the surface may grow to the viewport
-        // height minus the top+bottom margin, then scroll past that.
-        let h = effective_modal_max_height(852.0);
-        assert_eq!(h, 852.0 - MODAL_EDGE_MARGIN * 2.0);
-        assert!(h < 852.0, "the surface must fit within the viewport height");
+        with_test_world(|| {
+            // A roomy phone in portrait: the surface may grow to the viewport
+            // height minus the top+bottom margin, then scroll past that.
+            let h = effective_modal_max_height(852.0);
+            assert_eq!(h, 852.0 - MODAL_EDGE_MARGIN * 2.0);
+            assert!(h < 852.0, "the surface must fit within the viewport height");
+    });
     }
 
     #[test]
     fn regression_tall_modal_caps_to_viewport_height() {
-        // The bug: `ModalStyle` capped WIDTH (`max_width: 560`) but never
-        // height, so a modal whose content was taller than the screen ran
-        // off the top and bottom edges with no way to reach the clipped
-        // parts. The height cap brings it to viewport - 2*margin so it fits;
-        // the internal scroll_view then reaches the overflow.
-        let short_viewport = 500.0;
-        let h = effective_modal_max_height(short_viewport);
-        assert_eq!(h, short_viewport - MODAL_EDGE_MARGIN * 2.0);
-        assert!(h < short_viewport);
+        with_test_world(|| {
+            // The bug: `ModalStyle` capped WIDTH (`max_width: 560`) but never
+            // height, so a modal whose content was taller than the screen ran
+            // off the top and bottom edges with no way to reach the clipped
+            // parts. The height cap brings it to viewport - 2*margin so it fits;
+            // the internal scroll_view then reaches the overflow.
+            let short_viewport = 500.0;
+            let h = effective_modal_max_height(short_viewport);
+            assert_eq!(h, short_viewport - MODAL_EDGE_MARGIN * 2.0);
+            assert!(h < short_viewport);
+    });
     }
 
     #[test]
     fn max_height_never_shrinks_below_min_on_tiny_viewports() {
-        // A very short viewport (e.g. a landscape phone) still leaves a
-        // usable, scrollable surface rather than collapsing to a sliver.
-        let h = effective_modal_max_height(150.0);
-        assert_eq!(h, MODAL_MIN_HEIGHT_FIT);
+        with_test_world(|| {
+            // A very short viewport (e.g. a landscape phone) still leaves a
+            // usable, scrollable surface rather than collapsing to a sliver.
+            let h = effective_modal_max_height(150.0);
+            assert_eq!(h, MODAL_MIN_HEIGHT_FIT);
+    });
     }
 
     /// Regression: the Modal's card layer must be a touch-CONSUMING
@@ -758,83 +774,82 @@ mod tests {
     /// Android tap-through regression returns and this test fails.
     #[test]
     fn regression_modal_card_layer_consumes_touches() {
-        use runtime_core::Element;
+        with_test_world(|| {
+            // Assemble the portal structure directly. We call `assemble_overlay`
+            // (the pure structural half) rather than the full Modal because
+            // `build_overlay` creates an `effect!`, which requires a live reactive
+            // scope (provided by the walker in real use, absent in a unit test).
+            // `AnimatedValue::bind` no-ops without a backend and `viewport_size`
+            // just returns a signal, so the structure builds fine here.
+            let portal = assemble_overlay(
+                runtime_core::text("hi").into_element(),
+                Ref::new(),
+                Ref::new(),
+                None,
+                None,
+                DEFAULT_MODAL_WIDTH,
+                None,
+                None,
+                None,
+            );
 
-        // Assemble the portal structure directly. We call `assemble_overlay`
-        // (the pure structural half) rather than the full Modal because
-        // `build_overlay` creates an `effect!`, which requires a live reactive
-        // scope (provided by the walker in real use, absent in a unit test).
-        // `AnimatedValue::bind` no-ops without a backend and `viewport_size`
-        // just returns a signal, so the structure builds fine here.
-        let portal = assemble_overlay(
-            runtime_core::text("hi").into_element(),
-            Ref::new(),
-            Ref::new(),
-            None,
-            None,
-            DEFAULT_MODAL_WIDTH,
-            None,
-            None,
-            None,
-        );
-
-        // The portal wraps the Modal's content in a single flex-center
-        // content view, so it has ONE child (the center container) whose
-        // children are [backdrop, card].
-        let portal_children = match &portal {
-            Element::Portal { children, .. } => children,
-            _ => panic!("assemble_overlay should build a Portal"),
-        };
-        assert_eq!(
-            portal_children.len(),
-            1,
-            "overlay wraps the Modal's children in one center-container view"
-        );
-        let layers = match &portal_children[0] {
-            Element::View { children, .. } => children,
-            _ => panic!("portal child should be the center-container view"),
-        };
-        assert_eq!(
-            layers.len(),
-            2,
-            "center container should hold [backdrop, card] as siblings"
-        );
-        // layer 0 = backdrop (a view wrapping the hit pressable),
-        // layer 1 = card layer (must be a Pressable so card taps don't
-        // fall through to the backdrop).
-        assert!(
-            matches!(layers[1], Element::Pressable { .. }),
-            "card layer must be a touch-consuming Pressable so a tap on \
-             the card doesn't fall through to the backdrop and dismiss \
-             the modal (Android FrameLayout fall-through)"
-        );
+            // The portal wraps the Modal's content in a single flex-center
+            // content view, so it has ONE child (the center container) whose
+            // children are [backdrop, card].
+            let mut portal_children = match classify(portal) {
+                P::Portal { children, .. } => children,
+                _ => panic!("assemble_overlay should build a Portal"),
+            };
+            assert_eq!(
+                portal_children.len(),
+                1,
+                "overlay wraps the Modal's children in one center-container view"
+            );
+            let mut layers = match classify(portal_children.remove(0)) {
+                P::View { children, .. } => children,
+                _ => panic!("portal child should be the center-container view"),
+            };
+            assert_eq!(
+                layers.len(),
+                2,
+                "center container should hold [backdrop, card] as siblings"
+            );
+            // layer 0 = backdrop (a view wrapping the hit pressable),
+            // layer 1 = card layer (must be a Pressable so card taps don't
+            // fall through to the backdrop).
+            assert!(
+                matches!(classify(layers.remove(1)), P::Pressable { .. }),
+                "card layer must be a touch-consuming Pressable so a tap on \
+                 the card doesn't fall through to the backdrop and dismiss \
+                 the modal (Android FrameLayout fall-through)"
+            );
+    });
     }
 
     /// Find the body view — the first `View` with a direct `Text` child (the
     /// modal wraps `content` in the padded body view) — and return its resolved
     /// top padding in px.
-    fn body_padding_top(portal: &Element) -> f32 {
-        fn find_body(el: &Element) -> Option<&Element> {
-            match el {
-                Element::View { children, .. }
-                    if children.iter().any(|c| matches!(c, Element::Text { .. })) =>
-                {
-                    Some(el)
-                }
-                Element::View { children, .. }
-                | Element::Pressable { children, .. }
-                | Element::ScrollView { children, .. }
-                | Element::Portal { children, .. } => children.iter().find_map(find_body),
-                _ => None,
+    fn body_padding_top(portal: Element) -> f32 {
+        // `classify` consumes, so the walk classifies each node once and
+        // recurses over the normalized kinds.
+        fn find_body(node: P) -> Option<TStyle> {
+            let (children, style, is_view) = match node {
+                P::View { children, style, .. } => (children, style, true),
+                P::Pressable { children, .. }
+                | P::ScrollView { children, .. }
+                | P::Portal { children, .. } => (children, None, false),
+                _ => return None,
+            };
+            let kids: Vec<P> = children.into_iter().map(classify).collect();
+            if is_view && kids.iter().any(|k| matches!(k, P::Text { .. })) {
+                return Some(style.expect("body carries a style"));
             }
+            kids.into_iter().find_map(find_body)
         }
-        let body = find_body(portal).expect("modal has a body view wrapping the content");
-        let style = match body {
-            Element::View { style, .. } => style.as_ref().expect("body carries a style"),
-            _ => unreachable!(),
-        };
+        let style =
+            find_body(classify(portal)).expect("modal has a body view wrapping the content");
         let app = match style {
-            runtime_core::StyleSource::Static(a) => a.clone(),
+            TStyle::App(a) => a,
             _ => panic!("body uses a static style"),
         };
         match resolve_style(&app).padding_top.as_ref().map(|t| t.resolve()) {
@@ -849,46 +864,48 @@ mod tests {
     // slot-override system applied to Modal's body slot.
     #[test]
     fn content_style_override_makes_body_flush() {
-        install_idea_theme(light_theme());
+        with_test_world(|| {
+            install_idea_theme(light_theme());
 
-        let default_portal = assemble_overlay(
-            runtime_core::text("hi").into_element(),
-            Ref::new(),
-            Ref::new(),
-            None,
-            None,
-            DEFAULT_MODAL_WIDTH,
-            None,
-            None,
-            None,
-        );
-        assert!(
-            body_padding_top(&default_portal) > 0.0,
-            "the default body has non-zero padding (spacing-lg)"
-        );
+            let default_portal = assemble_overlay(
+                runtime_core::text("hi").into_element(),
+                Ref::new(),
+                Ref::new(),
+                None,
+                None,
+                DEFAULT_MODAL_WIDTH,
+                None,
+                None,
+                None,
+            );
+            assert!(
+                body_padding_top(default_portal) > 0.0,
+                "the default body has non-zero padding (spacing-lg)"
+            );
 
-        let flush = Rc::new(StyleSheet::r#static(StyleRules {
-            padding_top: Some(Tokenized::Literal(Length::Px(0.0))),
-            padding_right: Some(Tokenized::Literal(Length::Px(0.0))),
-            padding_bottom: Some(Tokenized::Literal(Length::Px(0.0))),
-            padding_left: Some(Tokenized::Literal(Length::Px(0.0))),
-            ..Default::default()
-        }));
-        let flush_portal = assemble_overlay(
-            runtime_core::text("hi").into_element(),
-            Ref::new(),
-            Ref::new(),
-            None,
-            None,
-            DEFAULT_MODAL_WIDTH,
-            None,
-            None,
-            Some(flush),
-        );
-        assert_eq!(
-            body_padding_top(&flush_portal),
-            0.0,
-            "content_style padding:0 override makes the body flush"
-        );
+            let flush = Rc::new(StyleSheet::r#static(StyleRules {
+                padding_top: Some(Tokenized::Literal(Length::Px(0.0))),
+                padding_right: Some(Tokenized::Literal(Length::Px(0.0))),
+                padding_bottom: Some(Tokenized::Literal(Length::Px(0.0))),
+                padding_left: Some(Tokenized::Literal(Length::Px(0.0))),
+                ..Default::default()
+            }));
+            let flush_portal = assemble_overlay(
+                runtime_core::text("hi").into_element(),
+                Ref::new(),
+                Ref::new(),
+                None,
+                None,
+                DEFAULT_MODAL_WIDTH,
+                None,
+                None,
+                Some(flush),
+            );
+            assert_eq!(
+                body_padding_top(flush_portal),
+                0.0,
+                "content_style padding:0 override makes the body flush"
+            );
+    });
     }
 }

@@ -8,6 +8,11 @@
 //! Browser-run (`wasm_bindgen_test_configure!(run_in_browser)`) — run
 //! with `wasm-pack test --headless --chrome`.
 
+// Old-core suite: the `new-core` feature swaps the crate to the
+// vocabulary-backed surface (mutually exclusive names) — these tests
+// exercise the old walker/registry path only.
+#![cfg(not(feature = "new-core"))]
+
 #![cfg(target_arch = "wasm32")]
 
 use std::cell::{Cell, RefCell};

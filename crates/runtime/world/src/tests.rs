@@ -1627,3 +1627,56 @@ fn shared_signal_fan_out_reruns_each_subscriber_once_per_commit() {
         assert_eq!(total.get(), 50 + 3 * 50, "once per subscriber per commit");
     });
 }
+
+/// `is_entered` — the handler-safety probe: true only while a live world
+/// is ambient. Event handlers run OUTSIDE `World::enter`, and the
+/// vocabulary's handler-safe surfaces (theme swap, viewport source) fork
+/// on this probe instead of letting the ambient `inject` panic — the
+/// "set_theme from a button handler aborts" bug class.
+#[test]
+fn is_entered_tracks_ambient_world() {
+    assert!(!is_entered(), "no world entered at test start");
+    let world = World::new();
+    world.enter(|| {
+        assert!(is_entered(), "inside enter the ambient world is live");
+        let inner = World::new();
+        inner.enter(|| assert!(is_entered(), "nested enter stays true"));
+        assert!(is_entered(), "back to the outer enter");
+    });
+    assert!(!is_entered(), "exiting the last enter clears the probe");
+}
+
+/// `Memo::read_only` hands out the cache signal's observe half: tracked
+/// reads subscribe like any ReadSignal, and the memo's derivation-class
+/// recompute still settles before reactions (the value a reaction sees
+/// through the ReadSignal is never stale within a flush).
+#[test]
+fn memo_read_only_is_a_live_read_signal() {
+    let world = World::new();
+    world.enter(|| {
+        let src = signal(1u32);
+        let doubled = memo(move || src.get() * 2);
+        let read: ReadSignal<u32> = doubled.read_only();
+        assert_eq!(read.get(), 2);
+
+        let seen = counter();
+        let seen_c = seen.clone();
+        let last = Rc::new(Cell::new(0u32));
+        let last_c = last.clone();
+        let _e = effect(move || {
+            last_c.set(read.get());
+            bump(&seen_c);
+        });
+        assert_eq!(seen.get(), 1);
+
+        src.set(5);
+        world.flush();
+        assert_eq!(last.get(), 10, "reaction sees the settled memo value");
+        assert_eq!(seen.get(), 2);
+
+        // Equality cut still holds through the ReadSignal view.
+        src.set_always(5);
+        world.flush();
+        assert_eq!(seen.get(), 2, "equal recompute must not wake the reader");
+    });
+}

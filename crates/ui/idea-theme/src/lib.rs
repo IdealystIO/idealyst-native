@@ -37,9 +37,89 @@
 //!   [`install_themes`], plus [`ThemeTokens`] / [`TokenEntry`] /
 //!   [`TokenValue`] for theme installation and live swap.
 
+// idea-lite core migration (P6 SDK retarget): under `new-core` this
+// alias shadows the extern-prelude `runtime-core` for the WHOLE crate
+// (use paths, inline paths, `::runtime_core::…` absolute paths alike),
+// so the same source compiles against `runtime_vocabulary::glue`'s
+// mirrors of the old author surface. The default build has no alias and
+// is byte-identical old-core.
+#[cfg(feature = "new-core")]
+extern crate runtime_facade as runtime_core;
+
 pub mod extensible;
 pub mod intent;
 mod theme_runtime;
+
+/// Same-source signal read-modify-write across cores.
+///
+/// The two cores' `Signal::update` closure shapes differ and CANNOT be
+/// unified by the glue alias: old core `update(FnOnce(&mut T))` mutates
+/// in place; the new core's inherent `update(FnOnce(&T) -> T)` stages a
+/// returned value, and an inherent method always shadows any trait
+/// method of the same name. `modify` is the shared spelling — the ONE
+/// sanctioned per-core fork for this API, kept here so every idea-*
+/// crate (and app code built on them) shares a single definition.
+pub mod compat {
+    /// In-place read-modify-write: `sig.modify(|v| v.push(x))`.
+    pub trait SignalModify<T> {
+        fn modify(&self, f: impl FnOnce(&mut T));
+    }
+
+    #[cfg(not(feature = "new-core"))]
+    impl<T: Clone + 'static> SignalModify<T> for runtime_core::Signal<T> {
+        fn modify(&self, f: impl FnOnce(&mut T)) {
+            self.update(f);
+        }
+    }
+
+    #[cfg(feature = "new-core")]
+    impl<T: PartialEq + Clone + 'static> SignalModify<T> for runtime_core::Signal<T> {
+        fn modify(&self, f: impl FnOnce(&mut T)) {
+            // The kernel's `update` reads the CURRENT (staged-aware)
+            // value and stages the returned one — the correct
+            // read-modify-write primitive under staged commits (a bare
+            // `set(get()+…)` would lose earlier same-turn writes).
+            self.update(|v| {
+                let mut next = v.clone();
+                f(&mut next);
+                next
+            });
+        }
+    }
+}
+
+/// Test-support for same-source dual-core suites (this crate's own unit
+/// tests, and idea-ui's — which depends on idea-theme, so the correct
+/// per-core impl is selected by feature unification). Hidden: not part
+/// of the theming surface.
+#[doc(hidden)]
+pub mod testing {
+    /// Run a test body in a reactive context valid for the active core.
+    ///
+    /// Old core: reactive state is ambient thread-local — identity.
+    /// New core: signals/effects need an ambient world — runs `f`
+    /// inside a fresh `World` (entered, flushed, dropped afterwards).
+    #[cfg(not(feature = "new-core"))]
+    pub fn with_test_world<R>(f: impl FnOnce() -> R) -> R {
+        f()
+    }
+
+    #[cfg(feature = "new-core")]
+    pub fn with_test_world<R>(f: impl FnOnce() -> R) -> R {
+        runtime_core::__with_fresh_world(f)
+    }
+
+    /// Commit staged signal writes mid-test. Old core: writes apply
+    /// immediately — no-op. New core: flushes the innermost
+    /// `with_test_world` world (set-then-assert parity).
+    #[cfg(not(feature = "new-core"))]
+    pub fn commit() {}
+
+    #[cfg(feature = "new-core")]
+    pub fn commit() {
+        runtime_core::__flush_test_world();
+    }
+}
 
 /// Compile-checked usage recipes (docs / MCP catalog). Present only under
 /// the `catalog` feature — see [`recipes`].

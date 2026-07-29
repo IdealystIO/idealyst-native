@@ -60,9 +60,7 @@
 //!
 //! Author constructs that reach an unmigrated subsystem fail to compile
 //! with a message naming the migration status (emitted by the macro
-//! under `new-core`): in-app `link(route = …)` (the ambient
-//! link-activator seam lives in the old routing registry — navigation
-//! SDK retarget, P6), `web_view` (old-core SDK component, P6), the
+//! under `new-core`): `web_view` (old-core SDK component, P6), the
 //! virtualizer `for i in count(sig)` sugar (generator-backend
 //! `Derived<usize>` metadata, post-P7), `#[component(lazy)]` (no
 //! lazy/chunk-mount prim in the vocabulary yet) and `#[method]` blocks
@@ -74,11 +72,14 @@
 
 use std::rc::Rc;
 
-use runtime_core::accessibility::{
-    AccessibilityProps, AccessibilityTraits, LiveRegionPriority, Role,
+// Accessibility prop bag + icon/activity data types: shared with the
+// old core and part of its ROOT author surface, so `pub` (the P6 alias
+// crates import them by the old root paths).
+pub use runtime_core::accessibility::{
+    AccessibilityAction, AccessibilityProps, AccessibilityTraits, LiveRegionPriority, Role,
 };
-use runtime_core::primitives::activity_indicator::ActivityIndicatorSize;
-use runtime_core::primitives::icon::{IconData, StrokeAnimation};
+pub use runtime_core::primitives::activity_indicator::ActivityIndicatorSize;
+pub use runtime_core::primitives::icon::{FillRule, IconData, IconHandle, StrokeAnimation};
 // `Easing` is re-exported (not just imported): the `stylesheet!`
 // emitter spells `::runtime_core::Easing::…` for `transitions { … }`
 // blocks, which the new-core retarget maps here.
@@ -86,8 +87,18 @@ pub use runtime_core::Easing;
 // `Color` re-exported for the same reason (stylesheet bodies and app
 // preludes reference it; the type is shared with the old core).
 pub use runtime_core::Color;
-use runtime_core::{FileDropHandler, IntoAction, SafeAreaSides, TouchHandler, WheelHandler};
-use runtime_scene::{dyn_element, dyn_keyed, fragment, Key};
+pub use runtime_core::{FileDropHandler, IntoAction, SafeAreaSides, TouchHandler, WheelHandler};
+use runtime_scene::{dyn_element, dyn_keyed, Key};
+// `fragment(children)` — flat siblings, no node: part of the old root
+// author surface (mirrored 1:1 by the scene fragment).
+pub use runtime_scene::fragment;
+
+/// Mirror of the old root `dynamic(build)` — a structural hole rebuilt
+/// on every dependency change (the scene's un-keyed Dyn driver; same
+/// "the closure IS the dependency source" contract).
+pub fn dynamic(build: impl Fn() -> Element + 'static) -> Element {
+    runtime_scene::dyn_element(build)
+}
 use runtime_world::{IntoValue, Value};
 
 use crate::builders::{self, TextContent};
@@ -132,6 +143,584 @@ pub use runtime_core::{Ref, ViewHandle};
 // schedule against (presence anims, portal anchor tracking). Re-exported
 // so a new-core crate needs no direct runtime-core dependency.
 pub use runtime_core::scheduling;
+
+// ============================================================================
+// P6 SDK-retarget surface — the rest of the old runtime-core AUTHOR
+// surface that aliased SDK crates (`extern crate runtime_facade as
+// runtime_core;` — idea-theme / idea-ui / idea-ui-nav) reach for
+// directly, outside the macro emission. Three kinds of entry:
+//
+//   1. SHARED data types/modules (style enums, animation, handles,
+//      assets, num, breakpoints) — plain re-exports; the types are the
+//      same on both cores (sanctioned transitional dep, crate docs).
+//   2. Old free fns whose machinery is core-agnostic (`resolve_style`,
+//      scheduling entries, `current_breakpoint` value reads — the same
+//      value-read the vocabulary's own `merge_active_breakpoints`
+//      performs, with the same documented "bucket flip does not
+//      re-fire" limitation).
+//   3. New-core REIMPLEMENTATIONS where the old fn touched old-core
+//      reactive state: the theme-install family (routed through the
+//      per-world `ThemeCtx` + a documented seed of the shared
+//      `Tokenized::resolve` registry) and `watch`/`Subscription`
+//      (world-effect-backed). These carry logic → covered by the
+//      vocabulary test suite.
+// ============================================================================
+
+// --- 1. Shared data types & modules -----------------------------------------
+
+// Style vocabulary not already re-exported above (the style DATA MODEL
+// is runtime-core's on both cores).
+pub use runtime_core::{
+    AlignContent, AlignItems, AlignSelf, Cursor, Derive, DisplayKind, FlexDirection, FlexWrap,
+    FontFamily, FontStyle, FontWeight, Gradient, GradientKind, GradientStop, JustifyContent,
+    ObjectFit, Overflow, PointerEvents, Position, RadialExtent, Shadow, TextAlign, TextTransform,
+    TrackSize, Transform, UserSelect, VariantAxis, VariantValue,
+};
+
+// Typefaces + assets (fonts, images): shared asset model.
+pub use runtime_core::assets;
+pub use runtime_core::assets::{SystemFallback, Typeface, TypefaceId};
+
+// The animation driver (AnimatedValue + tweens): pure handle + shared
+// `scheduling`-registry machinery — no reactive-arena dependency — so it
+// runs unchanged on new-core mounts (vocabulary handlers fill the same
+// `ViewHandle`s through `make_view_handle`)… EXCEPT `AnimatedValue`'s
+// `bind*` family, whose lifetime anchoring is old-core-scope-based. The
+// module mirror below re-exports everything shared and shadows
+// `AnimatedValue` with a wrapper whose `bind*` anchors to the NEW
+// core's component scope.
+//
+// WHY (the "Switch thumb never travels" bug): old
+// `animation/binding.rs` keeps the per-frame subscription alive by
+// handing it to old-core `on_cleanup`, which OUTSIDE any old-core
+// Scope silently drops its callback immediately — and a new-core build
+// never has an old-core Scope active. So on the new core every
+// `av.bind(ref, AnimProp::…)` tore its listener down at bind time: the
+// tween ticked, nobody wrote `set_animated_f32`, and idea-ui's Switch
+// thumb (Collapsible height, Select chevron, Modal fade, …) never
+// moved. runtime-core is read-only this phase, so the fix lives here:
+// same subscribe machinery, keepalive owned by a world effect collected
+// into the surrounding `component_scope` `Owned` (the
+// `__component_keepalive_effect` pattern) — dropped exactly at
+// unrealize, which restores the old "subscription dies with the
+// component" contract, including the recycled-`Ref` protection the old
+// anchoring existed for.
+pub mod animation {
+    use std::ops::Deref;
+
+    pub use runtime_core::animation::*;
+
+    use runtime_core::{Ref, TextHandle, ViewHandle};
+
+    /// New-core `AnimatedValue`: same construction/animate/get surface
+    /// (via `Deref`), new-core-safe `bind*`. See the module-mirror
+    /// comment above for why this exists.
+    pub struct AnimatedValue<T: Animatable> {
+        inner: runtime_core::animation::AnimatedValue<T>,
+    }
+
+    impl<T: Animatable> Clone for AnimatedValue<T> {
+        fn clone(&self) -> Self {
+            AnimatedValue { inner: self.inner.clone() }
+        }
+    }
+
+    impl<T: Animatable> Deref for AnimatedValue<T> {
+        type Target = runtime_core::animation::AnimatedValue<T>;
+        fn deref(&self) -> &Self::Target {
+            &self.inner
+        }
+    }
+
+    impl<T: Animatable> AnimatedValue<T> {
+        /// Mirror of [`runtime_core::animation::AnimatedValue::new`].
+        pub fn new(initial: T) -> Self {
+            AnimatedValue { inner: runtime_core::animation::AnimatedValue::new(initial) }
+        }
+    }
+
+    /// Anchor `guard` (subscription + strong AV clone) to the current
+    /// component scope: a dependency-free world effect owns it, the
+    /// surrounding `component_scope`/realize collector owns the effect,
+    /// so the guard drops exactly when the component's subtree
+    /// unrealizes. Outside any world, mirror the old contract — "bind
+    /// outside a scope is effectively a no-op" — by dropping the guard
+    /// immediately instead of panicking in `effect()`.
+    fn scope_keepalive(guard: impl Sized + 'static) {
+        if !runtime_world::is_entered() {
+            drop(guard);
+            return;
+        }
+        let _ = runtime_world::effect(move || {
+            // Owns `guard` for the effect's lifetime; reads no signals,
+            // so it fires once and never re-runs.
+            let _ = &guard;
+        });
+    }
+
+    /// Re-apply the CURRENT value once the mount has filled the ref —
+    /// the old `reapply_after_mount_note` contract (the immediate apply
+    /// at bind time no-ops on an unfilled ref, and a static value never
+    /// ticks again). Detached 0-delay task: on the new core `Ref` slots
+    /// are never freed/recycled (no old-core Scope ever drops them —
+    /// the documented `Ref::new` leak rule), so a post-teardown fire
+    /// writes through a stale handle at worst, a visual no-op on a
+    /// detached node.
+    fn reapply_after_mount(apply: impl FnOnce() + 'static) {
+        runtime_core::scheduling::after_ms_detached(0, apply);
+    }
+
+    impl AnimatedValue<f32> {
+        /// New-core mirror of the old scalar `bind` — see
+        /// `runtime_core::animation::binding` for the author-facing
+        /// docs; delivery is identical (`ViewHandle::set_animated_f32`
+        /// per fire), only the keepalive differs (module comment).
+        pub fn bind(&self, target: Ref<ViewHandle>, prop: AnimProp) {
+            let sub: Subscription<f32> = self.inner.subscribe_and_apply(move |v, _vel| {
+                let value = *v;
+                target.with(|handle| handle.set_animated_f32(prop, value));
+            });
+            scope_keepalive((sub, self.inner.clone()));
+            let av = self.inner.clone();
+            reapply_after_mount(move || {
+                target.with(|handle| handle.set_animated_f32(prop, av.get()));
+            });
+        }
+    }
+
+    impl AnimatedValue<(f32, f32, f32, f32)> {
+        /// New-core mirror of the old `bind_color`.
+        pub fn bind_color(&self, target: Ref<ViewHandle>, prop: AnimProp) {
+            let sub: Subscription<(f32, f32, f32, f32)> =
+                self.inner.subscribe_and_apply(move |v, _vel| {
+                    let (r, g, b, a) = *v;
+                    target.with(|handle| handle.set_animated_color(prop, [r, g, b, a]));
+                });
+            scope_keepalive((sub, self.inner.clone()));
+            let av = self.inner.clone();
+            reapply_after_mount(move || {
+                let (r, g, b, a) = av.get();
+                target.with(|handle| handle.set_animated_color(prop, [r, g, b, a]));
+            });
+        }
+
+        /// New-core mirror of the old `bind_gradient_stop`.
+        pub fn bind_gradient_stop(&self, target: Ref<ViewHandle>, stop_idx: u8) {
+            self.bind_color(target, AnimProp::GradientStopColor(stop_idx));
+        }
+
+        /// New-core mirror of the old `bind_text_color` (routes through
+        /// `TextOps::set_animated_color` — see the old impl's docs).
+        pub fn bind_text_color(&self, target: Ref<TextHandle>, prop: AnimProp) {
+            let sub: Subscription<(f32, f32, f32, f32)> =
+                self.inner.subscribe_and_apply(move |v, _vel| {
+                    let (r, g, b, a) = *v;
+                    target.with(|handle| handle.set_animated_color(prop, [r, g, b, a]));
+                });
+            scope_keepalive((sub, self.inner.clone()));
+            let av = self.inner.clone();
+            reapply_after_mount(move || {
+                let (r, g, b, a) = av.get();
+                target.with(|handle| handle.set_animated_color(prop, [r, g, b, a]));
+            });
+        }
+    }
+}
+
+// Numeric helpers.
+pub use runtime_core::num;
+
+// Accessibility prop bag (the payload types the a11y setters carry).
+pub use runtime_core::accessibility;
+
+// Breakpoints: the enum/threshold table are shared re-exports, but
+// `current_breakpoint` is a new-core REIMPLEMENTATION (§3 below): the
+// old fn returns an old-core signal a world effect cannot subscribe to,
+// which froze every breakpoint-dependent `when` at its seed (the
+// idea-ui-docs "hamburger visible at desktop width" bug). The module
+// mirror re-exports the shared items and shadows the signal fn.
+pub mod breakpoint {
+    pub use runtime_core::breakpoint::*;
+    // Explicit re-export shadows the glob's old-core `current_breakpoint`.
+    pub use super::current_breakpoint;
+}
+pub use runtime_core::{breakpoints, install_breakpoints, Breakpoints};
+
+/// Reactive current-breakpoint bucket — new-core routing: the ambient
+/// world's [`ViewportCtx`](crate::viewport) memo (per-world, re-fires
+/// only on bucket flips). Old-core signature parity (`ReadSignal`, read
+/// via `.get()`); handler-safe like the theme surface — outside
+/// `World::enter` it resolves the last ambient world's ctx (drawer-link
+/// handlers call `sidebar_pinned`, which lands here).
+pub fn current_breakpoint() -> ReadSignal<runtime_core::Breakpoint> {
+    crate::viewport::viewport_ctx().breakpoint()
+}
+
+// Root-level scheduling names (old runtime-core re-exported these at the
+// crate root as well as under `scheduling::`).
+pub use runtime_core::scheduling::{
+    after_animation_frame, after_ms, after_ms_detached, after_ms_scoped, raf_loop,
+    raf_loop_scoped, RafLoop, ScheduledTask,
+};
+
+// Interaction handles (filled by the mount handlers' `ref_fill` via
+// `make_*_handle` — real handles, not sentinels, on the new core).
+pub use runtime_core::{PressableHandle, TextHandle};
+
+// Text/style source data types old component code stores and matches on.
+// `StyleSource` is pure data (application + closure variants); the
+// vocabulary converts it to `StyleProp` at attach time.
+pub use runtime_core::{IntoTextSource, StyleSource, TextSource};
+
+// --- 2. Core-agnostic free fns ----------------------------------------------
+
+// The style resolution engine: the SAME entry the vocabulary's
+// `style_attach` resolves every sheet application through on the new
+// core. Token values inside resolve against the shared
+// `Tokenized::resolve` registry, which the theme-install family below
+// seeds per install/update.
+pub use runtime_core::resolve_style;
+
+// --- 3. New-core reimplementations ------------------------------------------
+
+/// Install the app's theme tokens. New-core routing: the ambient world's
+/// [`ThemeCtx`](crate::theme) records + queues them for the backend
+/// (`StyleOps::install_tokens`, delivered by the theme driver / next
+/// sheet attach), and the values are ALSO seeded into runtime-core's
+/// shared token registry — see [`seed_shared_token_registry`] for why
+/// that second write exists and why it is safe.
+pub fn install_tokens(tokens: &[runtime_core::TokenEntry]) {
+    theme::install_tokens(tokens);
+    seed_shared_token_registry(tokens, false);
+}
+
+/// Swap/patch theme tokens. Mirror of [`install_tokens`] — per-world
+/// ThemeCtx first (version bump → driver flush → cohort re-apply), then
+/// the shared-registry seed so re-resolution reads the new values.
+pub fn update_tokens(tokens: &[runtime_core::TokenEntry]) {
+    theme::update_tokens(tokens);
+    seed_shared_token_registry(tokens, true);
+}
+
+/// See [`crate::theme::set_app_background`].
+pub fn set_app_background(color: runtime_core::Tokenized<runtime_core::Color>) {
+    theme::set_app_background(color);
+}
+
+/// See [`crate::theme::set_default_text_font`].
+pub fn set_default_text_font(font: Option<FontFamily>) {
+    theme::set_default_text_font(font);
+}
+
+/// See [`crate::theme::set_scrollbar_theme`].
+pub fn set_scrollbar_theme(
+    thumb: runtime_core::Tokenized<runtime_core::Color>,
+    track: runtime_core::Tokenized<runtime_core::Color>,
+) {
+    theme::set_scrollbar_theme(thumb, track);
+}
+
+/// Seed runtime-core's token-signal registry with the installed values.
+///
+/// WHY (P6): `Tokenized::{resolve, value}` — called by author/component
+/// code at build time (`resolve_style(&app).color.resolve()` for icon
+/// tints, tab indicators, …) and by non-cascading backends at
+/// `apply_style` time — reads runtime-core's thread-local token
+/// registry, not the per-world ThemeCtx. Without this seed those reads
+/// return the compile-time FALLBACK palette (the `theme_token!` light
+/// defaults), so a dark-theme install would leave every Rust-side
+/// resolved color light. The old-core writer (`install_tokens` /
+/// `update_tokens`) is safe to reuse here: token signals live outside
+/// any old-core scope by design, no old-core effects exist in a
+/// new-core build (so `update`'s subscriber fan-out is a no-op), and
+/// the pending-delivery queues those writers fill for the OLD walker's
+/// backend flush are drained immediately below so repeated theme swaps
+/// can't accumulate them.
+fn seed_shared_token_registry(tokens: &[runtime_core::TokenEntry], update: bool) {
+    if update {
+        runtime_core::update_tokens(tokens);
+    } else {
+        runtime_core::install_tokens(tokens);
+    }
+    // Drain the old walker-flush queues nothing consumes on this core.
+    let _ = runtime_core::take_pending_token_updates();
+}
+
+/// Caller-owned reactive subscription — the new-core mirror of
+/// `runtime_core::watch`. Runs `f` now and re-runs it when a signal it
+/// read changes, until the handle drops. Backed by a world effect
+/// collected into a private [`Owned`](runtime_world::Owned) scope (never
+/// adopted by the caller's scope — the old contract), so it must be
+/// created where effect creation is legal (inside the ambient world:
+/// component builds, effects, flushes).
+#[must_use = "a Subscription disposes its effect when dropped — store it (or call \
+              `.leak()`) to keep the effect running"]
+pub struct Subscription {
+    owned: Option<runtime_world::Owned>,
+}
+
+impl Subscription {
+    /// Keep the subscription alive for the world's lifetime, giving up
+    /// the handle (mirror of the old `Subscription::leak`). Forgetting
+    /// the `Owned` skips its retiring Drop, pinning the effect slot.
+    pub fn leak(mut self) {
+        if let Some(owned) = self.owned.take() {
+            std::mem::forget(owned);
+        }
+    }
+}
+
+/// See [`Subscription`]. Mirror of `runtime_core::watch`.
+#[must_use = "a Subscription disposes its effect when dropped — store it (or call \
+              `.leak()`) to keep the effect running"]
+pub fn watch<F: FnMut() + 'static>(mut f: F) -> Subscription {
+    let ((), owned) = runtime_world::collect_owned(|| {
+        let _ = effect(move || {
+            f();
+        });
+    });
+    Subscription { owned: Some(owned) }
+}
+
+/// Old-core `unscope` disabled scope OWNERSHIP (thread-lifetime slots
+/// for global caches). The world kernel's [`runtime_world::unscoped`]
+/// is the same contract — slots created inside are owned by the world
+/// root instead of the enclosing collector.
+pub fn unscope<R>(f: impl FnOnce() -> R) -> R {
+    runtime_world::unscoped(f)
+}
+
+// Kernel value/scope types for SDK test-support introspection (prim
+// payloads carry `Value<T>` props; classified component subtrees retain
+// their `Owned`). Hidden: not author surface.
+#[doc(hidden)]
+pub use runtime_world::Owned;
+#[doc(hidden)]
+pub use runtime_world::Value as __Value;
+
+// World-context storage (typed provide/inject): the sanctioned home for
+// per-app singletons that the old core kept in thread-locals. Worlds
+// are transient on the new core (one per SSR request), so an SDK's
+// "global" (e.g. idea-theme's active-theme signal) must live with the
+// world, exactly like the vocabulary's own ThemeCtx.
+pub use runtime_world::{inject, provide};
+
+// The handler-safety probe for aliased crates' per-core fork modules
+// (idea-theme's active-theme slot): platform event handlers run OUTSIDE
+// `World::enter`, where `inject`/`provide` panic — code that must serve
+// both build-time and handler-time callers forks on this and uses a
+// build-time-captured handle in the `false` branch (capture, don't
+// inject). Double-underscored: migration-internal, no old-core
+// counterpart exists (old-core code never needs the fork — its state is
+// thread-local).
+#[doc(hidden)]
+pub use runtime_world::is_entered as __world_is_entered;
+
+// TEST-SUPPORT mirror of the kernel `World` for aliased crates' own
+// dual-core suites that need enter/EXIT control — `__with_fresh_world`
+// keeps the world ambient for the whole body, which cannot express "the
+// handler runs outside enter" (idea-theme's set-theme-from-handler
+// regression). Doc-hidden: not an author surface.
+#[doc(hidden)]
+pub use runtime_world::World as __World;
+
+/// TEST-HARNESS seam: run `f` inside a fresh world (created, entered,
+/// dropped afterwards). SDK crates' unit tests are same-source across
+/// cores; on the old core reactive state is ambient thread-local, on
+/// the new core it needs a `World::enter`. Their per-core test-support
+/// shim routes here (no old-core counterpart exists — the old leg is
+/// the identity fn). Returns `f`'s value; staged writes that `f` makes
+/// are committed with a final flush before the world drops so
+/// assertions on committed state hold.
+#[doc(hidden)]
+pub fn __with_fresh_world<R>(f: impl FnOnce() -> R) -> R {
+    // Panic-safe pop (a failing `#[should_panic]` test must not leave a
+    // dead world on the stack for the next test on the same thread).
+    struct PopGuard;
+    impl Drop for PopGuard {
+        fn drop(&mut self) {
+            TEST_WORLDS.with(|w| {
+                let _ = w.borrow_mut().pop();
+            });
+        }
+    }
+    let world = Rc::new(runtime_world::World::new());
+    TEST_WORLDS.with(|w| w.borrow_mut().push(world.clone()));
+    let _guard = PopGuard;
+    let r = world.enter(f);
+    world.flush();
+    r
+}
+
+thread_local! {
+    /// The stack of live [`__with_fresh_world`] worlds (nested test
+    /// helpers), so [`__flush_test_world`] can commit mid-test.
+    /// Test-support only — never touched by production mounts, so its
+    /// TLS key is never created outside test runs.
+    static TEST_WORLDS: std::cell::RefCell<Vec<Rc<runtime_world::World>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// TEST-HARNESS seam: commit staged writes on the innermost
+/// `__with_fresh_world` world — the new-core analogue of "old-core
+/// writes apply immediately" for set-then-assert test bodies. Returns
+/// whether a test world was live.
+#[doc(hidden)]
+pub fn __flush_test_world() -> bool {
+    TEST_WORLDS.with(|w| match w.borrow().last() {
+        Some(world) => {
+            world.flush();
+            true
+        }
+        None => false,
+    })
+}
+// --- P6 root-surface mirrors (data types + handle types) --------------------
+//
+// The old runtime-core re-exported its primitives' data/handle types at
+// the crate ROOT as well as under `primitives::…`; aliased SDK crates
+// import both spellings. All shared types (sanctioned transitional dep).
+
+pub use runtime_core::{
+    ImageErrorHandler, ImageHandle, ImageLoadEvent, ImageLoadHandler, ImageSource,
+};
+pub use runtime_core::{KeyEvent, KeyOutcome};
+pub use runtime_core::{ScrollViewHandle, TextAreaHandle, TextInputHandle, ToggleHandle};
+pub use runtime_core::{
+    AnchorTarget, AnchorableHandle, BackdropMode, ElementAlign, ElementSide, PortalHandle,
+    PortalTarget, ViewportPlacement, ViewportRect,
+};
+pub use runtime_core::{PresenceAnim, PresenceHandle, PresenceState};
+pub use runtime_core::{LayoutSubscription, NavKind};
+pub use runtime_core::{EdgeInsets, ViewportSize};
+
+// Touch model + gesture recognizers: pure event-fed state machines over
+// the `on_touch` channel (which the vocabulary's view handler installs
+// through `InputOps` on every backend) — core-agnostic by construction.
+pub use runtime_core::{
+    long_press, pan, pinch, rotate, swipe, tap, LongPress, LongPressRecognizer, Pan, PanEvent,
+    PanRecognizer, Pinch, PinchEvent, PinchRecognizer, Rotate, RotateEvent, RotateRecognizer,
+    Swipe, SwipeDirection, SwipeDirs, SwipeRecognizer, Tap, TapRecognizer,
+};
+pub use runtime_core::{
+    pointer_modifiers, PointerModifiers, TouchEvent, TouchId, TouchPhase, TouchPoint,
+    TouchResponse,
+};
+
+// Safe-area: still the old-core value read (same read the vocabulary's
+// own apply paths perform; the reactive re-fire port follows the same
+// pattern as the viewport ctx when a native backend needs it).
+pub use runtime_core::safe_area_insets;
+
+/// The reactive viewport-size signal — new-core routing: the ambient
+/// world's [`ViewportCtx`](crate::viewport) signal (per-world; the web
+/// backend's newcore resize source pushes into it — see the viewport
+/// module docs for the per-platform wiring status). Old-core signature
+/// parity: returns a `Signal<ViewportSize>` read via `.get()`.
+/// Handler-safe outside `World::enter` via the last-ambient fallback.
+pub fn viewport_size() -> Signal<runtime_core::ViewportSize> {
+    crate::viewport::viewport_ctx().size_signal()
+}
+
+// `IntoStyleSource` — on the old core, "the trait `.with_style(…)`
+// accepts". The new-core counterpart of that ROLE is `IntoStyleProp`,
+// so the old name aliases it here: helper fns bounded
+// `impl IntoStyleSource` keep accepting exactly what the glue wrappers'
+// `.with_style` takes (resolved rules, sheets, sheet-builder outputs,
+// closures). The `StyleSource` DATA enum stays the shared runtime-core
+// type (re-exported above) — only the conversion-trait role moves.
+pub use crate::style_attach::IntoStyleProp as IntoStyleSource;
+
+// --- P6 root-surface mirrors (primitive constructors) -----------------------
+//
+// Root spellings of the glue's `primitives::…` wrappers (the old core
+// exported both), plus wrappers the P3 set didn't need yet.
+
+pub use primitives::image::{image, image_asset};
+pub use primitives::link::{external_link, link};
+// Old-core root spellings of the navigation data surface (`use
+// runtime_core::{Route, Screen}` in app crates): `Route` is the shared
+// runtime-core type; `Screen` is the new-core carrier (scene `Element`
+// + opaque options) at the same name.
+pub use primitives::navigator::{Route, RouteParams, Screen};
+pub use primitives::overlay::{anchored_overlay, overlay};
+pub use primitives::presence::presence;
+pub use primitives::scroll_view::scroll_view;
+pub use primitives::text_area::text_area;
+pub use primitives::text_input::text_input;
+pub use primitives::toggle::toggle;
+
+/// Mirror of the old root `image_from`: dispatch an [`ImageSource`] to
+/// the url / asset constructor. `ImageSource` is shared DATA — its
+/// `Url` variant carries the OLD core's `Reactive<String>`, which is
+/// inert data here (`Static` clones; a `Dynamic` closure could only
+/// have been built against old-core signals, which a new-core crate
+/// cannot construct — the caller-side conversion fails to compile
+/// instead of dangling).
+pub fn image_from(src: impl Into<ImageSource>) -> primitives::image::GlueImage {
+    match src.into() {
+        ImageSource::Url(r) => primitives::image::image(move || r.get()),
+        ImageSource::Asset(a) => primitives::image::image_asset(a),
+        // `ImageSource` is `#[non_exhaustive]`-shaped upstream; new
+        // variants must be wired here deliberately, not silently
+        // rendered as an empty URL.
+        _ => panic!("image_from: unsupported ImageSource variant (added upstream; wire it here)"),
+    }
+}
+
+/// Mirror of old `on_defer(deps, f)`: fire `f(new, Some(prev))` on every
+/// dependency change AFTER the first run (the first run only records the
+/// baseline). Same skip-first contract, expressed as a world effect.
+pub fn on_defer<D, F>(deps: D, mut f: F) -> Effect
+where
+    D: Trackable + 'static,
+    F: FnMut(&D::Value, Option<&D::Value>) + 'static,
+{
+    let prev: Rc<std::cell::RefCell<Option<D::Value>>> = Rc::new(std::cell::RefCell::new(None));
+    effect(move || {
+        let new = deps.track();
+        let prev_value = prev.borrow().clone();
+        if prev_value.is_some() {
+            untrack(|| f(&new, prev_value.as_ref()));
+        }
+        *prev.borrow_mut() = Some(new);
+    })
+}
+
+/// Mirror of the old `Trackable` (the dependency-source trait `on_defer`
+/// is generic over): a tracked read of the current value.
+pub trait Trackable {
+    type Value: Clone;
+    fn track(&self) -> Self::Value;
+}
+
+impl<T: PartialEq + Clone + 'static> Trackable for Signal<T> {
+    type Value = T;
+    fn track(&self) -> T {
+        self.get()
+    }
+}
+
+impl<T: PartialEq + Clone + 'static> Trackable for ReadSignal<T> {
+    type Value = T;
+    fn track(&self) -> T {
+        self.get()
+    }
+}
+
+impl<T: PartialEq + Clone + 'static> Trackable for Memo<T> {
+    type Value = T;
+    fn track(&self) -> T {
+        self.get()
+    }
+}
+
+impl<T: Clone + 'static> Trackable for Reactive<T> {
+    type Value = T;
+    fn track(&self) -> T {
+        self.get()
+    }
+}
 
 // ============================================================================
 // `#[method]` emission surface (P5). The `#[component]` macro emits, for a
@@ -451,13 +1040,22 @@ impl GlueView {
         self
     }
 
-    pub fn on_touch(mut self, handler: TouchHandler) -> Self {
-        self.b = self.b.on_touch(handler);
+    /// Mirror of `Bound::on_touch` (author closures, not pre-wrapped
+    /// `TouchHandler` Rcs — the old builder wrapped internally too).
+    pub fn on_touch(
+        mut self,
+        handler: impl Fn(&runtime_core::TouchEvent) -> TouchResponse + 'static,
+    ) -> Self {
+        self.b = self.b.on_touch(Rc::new(handler));
         self
     }
 
-    pub fn on_wheel(mut self, handler: WheelHandler) -> Self {
-        self.b = self.b.on_wheel(handler);
+    /// Mirror of `Bound::on_wheel`.
+    pub fn on_wheel(
+        mut self,
+        handler: impl Fn(&runtime_core::WheelEvent) -> TouchResponse + 'static,
+    ) -> Self {
+        self.b = self.b.on_wheel(Rc::new(handler));
         self
     }
 
@@ -466,8 +1064,12 @@ impl GlueView {
         self
     }
 
-    pub fn on_file_drop(mut self, handler: FileDropHandler) -> Self {
-        self.b = self.b.on_file_drop(handler);
+    /// Mirror of `Bound::on_file_drop`.
+    pub fn on_file_drop(
+        mut self,
+        handler: impl Fn(&runtime_core::FileDropEvent) -> TouchResponse + 'static,
+    ) -> Self {
+        self.b = self.b.on_file_drop(Rc::new(handler));
         self
     }
 
@@ -626,6 +1228,30 @@ pub mod primitives {
 
         impl GlueImage {
             /// Concrete `String` — see `GlueTextInput::placeholder`.
+            /// Mirror of `Bound::<ImageHandle>::on_load`.
+            pub fn on_load(mut self, f: impl Fn(&ImageLoadEvent) + 'static) -> Self {
+                self.b = self.b.on_load(std::rc::Rc::new(f));
+                self
+            }
+
+            /// Mirror of `Bound::<ImageHandle>::on_error`.
+            pub fn on_error(mut self, f: impl Fn() + 'static) -> Self {
+                self.b = self.b.on_error(std::rc::Rc::new(f));
+                self
+            }
+
+            /// Mirror of `Bound::<ImageHandle>::alt_reactive`.
+            pub fn alt_reactive(mut self, f: impl Fn() -> Option<String> + 'static) -> Self {
+                self.b = self.b.alt_dyn(f);
+                self
+            }
+
+            /// Mirror of `Bound::<ImageHandle>::bind`.
+            pub fn bind(mut self, r: super::super::Ref<ImageHandle>) -> Self {
+                self.b = self.b.on_handle(move |h| r.fill(h));
+                self
+            }
+
             pub fn alt(mut self, alt: String) -> Self {
                 self.b = self.b.alt(alt);
                 self
@@ -689,6 +1315,8 @@ pub mod primitives {
     pub mod text_input {
         use super::super::*;
 
+        pub use runtime_core::primitives::text_input::TextInputHandle;
+
         /// `text_input(value, on_change)` (controlled single-line).
         pub fn text_input(
             value: impl IntoValue<String>,
@@ -709,6 +1337,35 @@ pub mod primitives {
             /// Concrete `String` (not `impl Into<String>`): `ui!` wraps
             /// literal prop values in `.into()`, and an `impl` param
             /// would leave that coercion's target ambiguous.
+            /// Focus-state notifications (`Fn(bool)`, true on focus).
+            pub fn on_focus(mut self, f: impl Fn(bool) + 'static) -> Self {
+                self.b = self.b.on_focus(f);
+                self
+            }
+
+            /// Key interception — return [`KeyOutcome`] to swallow keys
+            /// (old `Bound::<TextInputHandle>::on_key_down`).
+            pub fn on_key_down(mut self, f: impl Fn(&KeyEvent) -> KeyOutcome + 'static) -> Self {
+                self.b = self.b.on_key_down(f);
+                self
+            }
+
+            /// Mirror of `Bound::<TextInputHandle>::placeholder_reactive`.
+            pub fn placeholder_reactive(
+                mut self,
+                placeholder_src: impl Into<super::super::Reactive<Option<String>>>,
+            ) -> Self {
+                let r = placeholder_src.into();
+                self.b = self.b.placeholder_dyn(move || r.get());
+                self
+            }
+
+            /// Mirror of `Bound::<TextInputHandle>::bind`.
+            pub fn bind(mut self, r: super::super::Ref<TextInputHandle>) -> Self {
+                self.b = self.b.on_handle(move |h| r.fill(h));
+                self
+            }
+
             pub fn placeholder(mut self, text: String) -> Self {
                 self.b = self.b.placeholder(text);
                 self
@@ -754,6 +1411,12 @@ pub mod primitives {
                 self.b = self.b.on_scroll(handler);
                 self
             }
+
+            /// Mirror of `Bound::<ScrollViewHandle>::bind`.
+            pub fn bind(mut self, r: super::super::Ref<ScrollViewHandle>) -> Self {
+                self.b = self.b.on_handle(move |h| r.fill(h));
+                self
+            }
         }
 
         glue_wrapper_common!(GlueScrollView);
@@ -761,6 +1424,8 @@ pub mod primitives {
 
     pub mod activity_indicator {
         use super::super::*;
+
+        pub use runtime_core::primitives::activity_indicator::ActivityIndicatorSize;
 
         /// `activity_indicator()`.
         pub fn activity_indicator() -> GlueActivityIndicator {
@@ -776,6 +1441,12 @@ pub mod primitives {
         }
 
         impl GlueActivityIndicator {
+            /// Mirror of `Bound::<ActivityIndicatorHandle>::size_reactive`.
+            pub fn size_reactive(mut self, f: impl Fn() -> ActivityIndicatorSize + 'static) -> Self {
+                self.b = self.b.size_dyn(f);
+                self
+            }
+
             pub fn size(mut self, size: ActivityIndicatorSize) -> Self {
                 self.b = self.b.size(size);
                 self
@@ -794,12 +1465,33 @@ pub mod primitives {
         use super::super::*;
 
         /// `external_link(url, children)` — an off-app link
-        /// (`Link(external = "…") { … }`). In-app `Link(route = …)` is a
-        /// navigator concern and fails at the macro level under
-        /// `new-core` (navigation migrates at P6).
+        /// (`Link(external = "…") { … }`).
         pub fn external_link(url: impl IntoValue<String>, children: Vec<Element>) -> GlueLink {
             GlueLink {
                 b: builders::link().url(url).external(true).children(children),
+                a11y: AccessibilityProps::default(),
+            }
+        }
+
+        /// `link(route, params, children)` — in-app navigation
+        /// (`link(route = …, params = …) { … }`), the old-core
+        /// constructor's exact three-positional shape (P6 un-deferral).
+        /// The destination resolves against the ENCLOSING navigator's
+        /// ambient `LinkActivator` at mount — the swap Selects, the
+        /// stack Pushes — and a link mounted outside any navigator
+        /// silently no-ops on activation (old contract). The
+        /// pre-computed URL feeds the web `<a href>` / right-click
+        /// affordances exactly as before.
+        pub fn link<P>(
+            route: &runtime_core::primitives::navigator::Route<P>,
+            params: P,
+            children: Vec<Element>,
+        ) -> GlueLink
+        where
+            P: runtime_core::primitives::navigator::RouteParams + Clone + 'static,
+        {
+            GlueLink {
+                b: builders::link().route(route, params).children(children),
                 a11y: AccessibilityProps::default(),
             }
         }
@@ -810,6 +1502,13 @@ pub mod primitives {
         }
 
         impl GlueLink {
+            /// Mirror of the old reactive `.url()` setter (href swaps
+            /// in place on signal change).
+            pub fn url(mut self, url: impl IntoValue<String>) -> Self {
+                self.b = self.b.url(url);
+                self
+            }
+
             pub fn on_activate(mut self, f: impl Fn() + 'static) -> Self {
                 self.b = self.b.on_activate(f);
                 self
@@ -1262,6 +1961,86 @@ pub mod primitives {
 
         glue_wrapper_common!(GlueFlatList, test_id_ignored);
     }
+
+    /// Mirror of `runtime_core::primitives::portal` (data types; the
+    /// overlay/anchored_overlay COMPOSITIONS live in
+    /// [`overlay`](super::primitives::overlay), same as the old split).
+    pub mod portal {
+        pub use runtime_core::primitives::portal::{
+            AnchorTarget, AnchorableHandle, ElementAlign, ElementSide, PortalHandle, PortalTarget,
+            ViewportPlacement, ViewportRect,
+        };
+    }
+
+    /// Mirror of `runtime_core::primitives::key` (keyboard event data).
+    pub mod key {
+        pub use runtime_core::primitives::key::{KeyEvent, KeyOutcome};
+    }
+
+    /// Mirror of `runtime_core::primitives::navigator`'s DATA types
+    /// (routes + header slot data an author chrome component renders).
+    /// The navigator RUNTIME on the new core is the vocabulary's
+    /// `handlers::navigator` (`SwapNav`/`StackNav` world contexts) —
+    /// old `SwapContext`/`ScreenNav` carry old-arena signals and are
+    /// deliberately NOT mirrored (the P6 nav SDKs define their own).
+    /// `Screen` is the NEW-core carrier (scene `Element` + opaque
+    /// options — see `prims::Screen`), spelled at the old type's path
+    /// so SDK preludes map it same-source.
+    pub mod navigator {
+        pub use crate::prims::{Screen, ScreenChrome};
+        pub use runtime_core::primitives::navigator::{
+            HeaderButton, Route, RouteParams, StackHeaderState,
+        };
+    }
+
+    /// Mirror of `runtime_core::primitives::text_area`.
+    pub mod text_area {
+        use super::super::*;
+
+        pub use runtime_core::primitives::text_area::TextAreaHandle;
+
+        /// `text_area(value, on_change)` — the old positional constructor
+        /// over the P2b `TextAreaBuilder`.
+        pub fn text_area(
+            value: impl runtime_world::IntoValue<String>,
+            on_change: impl Fn(String) + 'static,
+        ) -> GlueTextArea {
+            GlueTextArea {
+                b: builders::text_area().value(value).on_change(on_change),
+                a11y: AccessibilityProps::default(),
+            }
+        }
+
+        pub struct GlueTextArea {
+            pub(crate) b: builders::TextAreaBuilder,
+            pub(crate) a11y: AccessibilityProps,
+        }
+
+        impl GlueTextArea {
+            pub fn placeholder(mut self, text: String) -> Self {
+                self.b = self.b.placeholder(text);
+                self
+            }
+
+            pub fn min_rows(mut self, rows: u32) -> Self {
+                self.b = self.b.min_rows(rows);
+                self
+            }
+
+            pub fn max_rows(mut self, rows: u32) -> Self {
+                self.b = self.b.max_rows(rows);
+                self
+            }
+
+            /// Mirror of `Bound::<TextAreaHandle>::bind`.
+            pub fn bind(mut self, r: super::super::Ref<TextAreaHandle>) -> Self {
+                self.b = self.b.on_handle(move |h| r.fill(h));
+                self
+            }
+        }
+
+        glue_wrapper_common!(GlueTextArea);
+    }
 }
 
 // ============================================================================
@@ -1306,20 +2085,28 @@ pub fn switch<S: PartialEq + 'static>(
 
 /// The static arm: a plain `bool` runs the taken branch's thunk once,
 /// contributing its nodes as FLAT siblings (no wrapper, no reactivity).
+///
+/// `FnOnce` (not `Fn`), matching old-core `builder.rs::StaticCond`
+/// exactly: a static branch runs at most once, so its thunk may MOVE
+/// captures (`text { some_string }`). The original `Fn + 'static`
+/// bounds here were a retarget bug — same-source components that
+/// hoisted a condition to a `let bool` (the documented 0.4.0 form)
+/// compiled old-core but hit E0507 ("cannot move out of a captured
+/// variable in an `Fn` closure") under new-core, forcing `.clone()`
+/// workarounds (website architecture.rs, tutorial chart.rs class).
 pub trait StaticCond {
-    fn __idealyst_if(
-        self,
-        then: impl Fn() -> Vec<Element> + 'static,
-        otherwise: impl Fn() -> Vec<Element> + 'static,
-    ) -> Vec<Element>;
+    fn __idealyst_if<T, E>(self, then: T, otherwise: E) -> Vec<Element>
+    where
+        T: FnOnce() -> Vec<Element>,
+        E: FnOnce() -> Vec<Element>;
 }
 
 impl StaticCond for bool {
-    fn __idealyst_if(
-        self,
-        then: impl Fn() -> Vec<Element> + 'static,
-        otherwise: impl Fn() -> Vec<Element> + 'static,
-    ) -> Vec<Element> {
+    fn __idealyst_if<T, E>(self, then: T, otherwise: E) -> Vec<Element>
+    where
+        T: FnOnce() -> Vec<Element>,
+        E: FnOnce() -> Vec<Element>,
+    {
         if self {
             then()
         } else {
@@ -1460,7 +2247,10 @@ impl EachKey {
 }
 
 /// Deferred row constructor: builds the row's (possibly multi-) node list.
-pub type EachRowBuild = Box<dyn Fn() -> Vec<Element>>;
+/// `FnOnce`, mirroring the old core exactly — the keyed reconciler calls
+/// each build at most once (kept keys never re-run their build), and row
+/// closures legitimately move captures into their nodes.
+pub type EachRowBuild = Box<dyn FnOnce() -> Vec<Element>>;
 
 /// A keyed reactive list from a tracked `(key, build)` producer — the
 /// lowering target for reactive ranges. Maps onto [`runtime_scene::keyed`]:
@@ -2067,5 +2857,120 @@ mod tests {
             Element::Item { .. } => {}
             _ => panic!("empty branch must be an absolutely-positioned view Item"),
         }
+    }
+}
+
+// ============================================================================
+// P6: `pressable(children, on_click)` + the `.bind(Ref<…>)` family.
+//
+// `pressable` never had a `ui!` tag lowering (authors call the fn), so
+// it joins the glue in the SDK-retarget wave. `.bind` mirrors the old
+// `Bound::bind` — fill a `Ref` slot with the mount-time handle. `Ref`
+// lives in runtime-core's thread-local ref arena (core-independent);
+// the vocabulary handlers deliver REAL handles through each prim's
+// `ref_fill` (`make_view_handle` & friends), so a bound Ref drives the
+// same imperative surfaces (AnimatedValue, anchor targets, focus) as on
+// the old core.
+// ============================================================================
+
+/// `pressable(children, on_click)` — the old positional constructor over
+/// the P2b `PressableBuilder`.
+pub fn pressable<F: Fn() + 'static>(children: Vec<Element>, on_click: F) -> GluePressable {
+    GluePressable {
+        b: builders::pressable(on_click).children(children),
+        a11y: AccessibilityProps::default(),
+    }
+}
+
+pub struct GluePressable {
+    b: builders::PressableBuilder,
+    a11y: AccessibilityProps,
+}
+
+impl GluePressable {
+    pub fn disabled(mut self, disabled: impl IntoValue<bool>) -> Self {
+        self.b = self.b.disabled(disabled);
+        self
+    }
+
+    pub fn preserves_focus(mut self, preserve: bool) -> Self {
+        self.b = self.b.preserves_focus(preserve);
+        self
+    }
+
+    /// Mirror of `Bound::<PressableHandle>::bind`.
+    pub fn bind(mut self, r: Ref<PressableHandle>) -> Self {
+        self.b = self.b.on_handle(move |h| r.fill(h));
+        self
+    }
+}
+
+glue_wrapper_common!(GluePressable);
+
+impl GlueView {
+    /// Mirror of `Bound::<ViewHandle>::bind`.
+    pub fn bind(mut self, r: Ref<ViewHandle>) -> Self {
+        self.b = self.b.on_handle(move |h| r.fill(h));
+        self
+    }
+}
+
+impl GlueText {
+    /// Mirror of `Bound::<TextHandle>::bind`.
+    pub fn bind(mut self, r: Ref<TextHandle>) -> Self {
+        self.b = self.b.on_handle(move |h| r.fill(h));
+        self
+    }
+}
+
+impl GlueButton {
+    /// Mirror of `Bound::<ButtonHandle>::bind`.
+    pub fn bind(mut self, r: Ref<runtime_core::ButtonHandle>) -> Self {
+        self.b = self.b.on_handle(move |h| r.fill(h));
+        self
+    }
+}
+
+impl GlueIcon {
+    /// Mirror of `Bound::<IconHandle>::size` — pin to a `size × size`
+    /// point square via a minted, deduped square-sizing sheet (an icon
+    /// has no intrinsic content size; without this it collapses to 0×0
+    /// under flex). Same rule set as the old `icon_size_sheet`
+    /// (width/height + `flex_shrink: 0`), cached per rounded px so every
+    /// icon at a size shares one sheet/class.
+    pub fn size(self, size: f32) -> Self {
+        use std::cell::RefCell;
+        use std::collections::HashMap;
+        thread_local! {
+            static ICON_SIZE_SHEETS: RefCell<HashMap<u32, Rc<StyleSheet>>> =
+                RefCell::new(HashMap::new());
+        }
+        let key = (size * 100.0).round() as u32;
+        let sheet = ICON_SIZE_SHEETS.with(|m| {
+            if let Some(s) = m.borrow().get(&key) {
+                return s.clone();
+            }
+            let sheet = Rc::new(StyleSheet::r#static(StyleRules {
+                width: Some(Tokenized::Literal(Length::Px(size))),
+                height: Some(Tokenized::Literal(Length::Px(size))),
+                flex_shrink: Some(Tokenized::Literal(0.0)),
+                ..Default::default()
+            }));
+            m.borrow_mut().insert(key, sheet.clone());
+            sheet
+        });
+        self.with_style(sheet)
+    }
+
+    /// Mirror of `Bound::<IconHandle>::data` — live vector data.
+    pub fn data(mut self, f: impl Fn() -> IconData + 'static) -> Self {
+        self.b = self.b.data_dyn(f);
+        self
+    }
+
+    /// Mirror of `Bound::<IconHandle>::bind`.
+    pub fn bind(mut self, r: Ref<runtime_core::IconHandle>) -> Self {
+        self.b = self.b.on_handle(move |h| r.fill(h));
+        self
     }
 }

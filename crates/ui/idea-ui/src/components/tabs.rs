@@ -102,6 +102,24 @@ impl Tab {
     }
 }
 
+/// Equality for the new core's `Signal<Vec<Tab>>` (guarded `set` needs
+/// `T: PartialEq`). Static labels compare by value so an in-place label
+/// edit still notifies; Dynamic labels compare by closure identity (the
+/// closure re-reads its signals on every render, so identity is the
+/// honest value here).
+impl PartialEq for Tab {
+    fn eq(&self, other: &Self) -> bool {
+        if self.id != other.id {
+            return false;
+        }
+        match (&self.label, &other.label) {
+            (Reactive::Static(a), Reactive::Static(b)) => a == b,
+            (Reactive::Dynamic(a), Reactive::Dynamic(b)) => Rc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
+
 // Reactive-by-default: `#[props]` wraps the scalar `indicator` →
 // `Reactive<TabIndicator>` (routes to the per-tab style sink). `tabs` is a
 // reactive `Signal` LIST, `active` is already `Reactive`, and `on_change` is a
@@ -134,7 +152,7 @@ impl Default for TabsProps {
     // `Default`. Mirrors the same pattern as `SwitchProps`.
     fn default() -> Self {
         Self {
-            tabs: Signal::new(Vec::new()),
+            tabs: runtime_core::signal(Vec::new()),
             active: Reactive::Static(String::new()),
             on_change: Rc::new(|_| {}),
             indicator: Reactive::Static(TabIndicator::default()),
@@ -275,27 +293,27 @@ fn tab_button(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P};
+    use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{resolve_style, StyleSource};
+    use runtime_core::resolve_style;
 
     fn theme() {
         install_idea_theme(light_theme());
     }
 
     /// Resolves the color on the label text node of one tab pressable.
-    /// The Tabs label style is reactive (re-runs on `active`), so we
-    /// invoke its closure to get the current `StyleApplication`.
-    fn tab_label_color(tab: &Element) -> Option<runtime_core::Color> {
-        let label = match tab {
-            Element::Pressable { children, .. } => &children[0],
+    /// The Tabs label style is reactive (re-runs on `active`);
+    /// `TStyle::resolve` evaluates the reactive-or-static style either way.
+    fn tab_label_color(tab: Element) -> Option<runtime_core::Color> {
+        let label = match classify(tab) {
+            P::Pressable { mut children, .. } => children.remove(0),
             _ => panic!("a tab is a Pressable"),
         };
-        match label {
-            Element::Text { style, .. } => match style.as_ref()? {
-                StyleSource::Reactive(f) => resolve_style(&f()).color.clone().map(|c| c.resolve()),
-                StyleSource::Static(a) => resolve_style(a).color.clone().map(|c| c.resolve()),
-                _ => None,
-            },
+        match classify(label) {
+            P::Text { style, .. } => {
+                style.and_then(|s| s.resolve().color.clone().map(|c| c.resolve()))
+            }
             _ => panic!("a tab label is a Text node"),
         }
     }
@@ -320,35 +338,37 @@ mod tests {
     // pressable's) is what makes this a valid regression test.
     #[test]
     fn regression_tab_labels_carry_their_own_active_color() {
-        theme();
-        // The reactive `tabs` list wraps the pressables in a keyed `each`, so
-        // exercise the per-tab builder directly. `active = "a"` ⇒ the "a" tab
-        // is selected, the "b" tab is not.
-        let on_change: Rc<dyn Fn(String)> = Rc::new(|_| {});
-        let active = Reactive::Static("a".to_string());
-        let indicator = Reactive::Static(TabIndicator::Underline);
-        let active_tab =
-            tab_button(Tab::new("a", "A"), active.clone(), on_change.clone(), indicator.clone());
-        let inactive_tab = tab_button(Tab::new("b", "B"), active, on_change, indicator);
+        with_test_world(|| {
+            theme();
+            // The reactive `tabs` list wraps the pressables in a keyed `each`, so
+            // exercise the per-tab builder directly. `active = "a"` ⇒ the "a" tab
+            // is selected, the "b" tab is not.
+            let on_change: Rc<dyn Fn(String)> = Rc::new(|_| {});
+            let active = Reactive::Static("a".to_string());
+            let indicator = Reactive::Static(TabIndicator::Underline);
+            let active_tab =
+                tab_button(Tab::new("a", "A"), active.clone(), on_change.clone(), indicator.clone());
+            let inactive_tab = tab_button(Tab::new("b", "B"), active, on_change, indicator);
 
-        let active_color =
-            tab_label_color(&active_tab).expect("active tab label carries a color");
-        assert_eq!(
-            active_color,
-            tabbutton_color("on"),
-            "selected (id-matched) tab label is the TabButton `on` color"
-        );
+            let active_color =
+                tab_label_color(active_tab).expect("active tab label carries a color");
+            assert_eq!(
+                active_color,
+                tabbutton_color("on"),
+                "selected (id-matched) tab label is the TabButton `on` color"
+            );
 
-        let inactive_color =
-            tab_label_color(&inactive_tab).expect("inactive tab label carries a color");
-        assert_eq!(
-            inactive_color,
-            tabbutton_color("off"),
-            "unselected tab label is the TabButton `off` (muted) color"
-        );
+            let inactive_color =
+                tab_label_color(inactive_tab).expect("inactive tab label carries a color");
+            assert_eq!(
+                inactive_color,
+                tabbutton_color("off"),
+                "unselected tab label is the TabButton `off` (muted) color"
+            );
 
-        // The two states must differ — proves the label color tracks selection
-        // (by id) rather than being a single inherited value.
-        assert_ne!(active_color, inactive_color);
+            // The two states must differ — proves the label color tracks selection
+            // (by id) rather than being a single inherited value.
+            assert_ne!(active_color, inactive_color);
+    });
     }
 }

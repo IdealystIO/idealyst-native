@@ -83,6 +83,12 @@ If you're new to the codebase, read the docs in this order:
 
 ## Migrating
 
+- [`migrating-to-runtime-v2.md`](./migrating-to-runtime-v2.md). The `new-core`
+  runtime: staged-commit reactivity (writes commit at the driver's flush,
+  `update` composes, `batch` removed), drop-as-teardown scopes and the
+  tightened `on_cleanup` placement, handlers running outside the world,
+  per-platform `newcore` boot entries, the not-yet-ported surface list,
+  and the golden-parity guarantees.
 - [`migration-0.2-to-0.3.md`](./migration-0.2-to-0.3.md). The reactive-surface
   unification: `signal!` / `memo!` macros removed (plain `signal(v)` /
   `memo(move || …)` fns), `memo` returns read-only `ReadSignal<T>`, the

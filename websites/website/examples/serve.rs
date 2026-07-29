@@ -64,15 +64,18 @@ fn main() {
         ServeConfig {
             bundle_module,
             static_dir: Some(static_dir),
+            // No favicon/head injection here — `build-ssr`'s generated
+            // wrapper bakes `icon_gen::web_icon_link_tags()` into this
+            // slot; the example serves without one.
+            extra_head: None,
         },
-        |b| {
-            // Same extensions the web build registers (see
-            // `website::register_extensions`) so SSR renders identically
-            // and the bundle hydrates by adoption: navigator chrome +
-            // the code-block external (server-rendered `<pre>`).
-            swap_navigator::register_generic(b);
-            codeblock::register(b);
-        },
+        // The same registration the CLI's SSR wrapper calls: navigator
+        // chrome, so SSR renders the sidebar and the bundle hydrates by
+        // adoption. The codeblock SDK registers no host-side SSR
+        // handler (its DOM handler is wasm32-only), so code panels
+        // render the standard External placeholder — identical to
+        // `idealyst dev --ssr`.
+        |b| website::register_ssr_extensions(b),
         website::app,
     )
     .expect("SSR server failed to start");

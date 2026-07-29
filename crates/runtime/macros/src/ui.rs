@@ -2529,31 +2529,13 @@ fn emit_link(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
         };
     }
 
-    // In-app links stay deferred. Checked 2026-07-28 against the landed
-    // vocabulary navigators (`builders::{swap_navigator,stack_navigator}`
-    // + typed `Route<P>`): the route TYPE maps cleanly, but the old
-    // `link(route, params, children)` resolves its dispatch through the
-    // AMBIENT `NavigatorControl` link-activator (old routing registry —
-    // push-vs-select decided by the enclosing navigator at activation
-    // time). The vocabulary has no ambient link-activator seam: its
-    // `LinkPrim` requires an explicit `.on_activate(...)` for
-    // non-external links, and `SwapNav`/`StackNav` world contexts don't
-    // carry a generic route dispatcher. That seam retargets with the
-    // navigation SDK at P6. External links work (glue `external_link`).
-    if cfg!(feature = "new-core") {
-        return quote! {
-            ::std::compile_error!(
-                "in-app `link(route = …)` is not yet available on the new core \
-                 (idea-lite migration: the vocabulary navigators exist, but the \
-                 ambient link-activator seam that resolves a route link to the \
-                 enclosing navigator's dispatch lives in the old routing registry \
-                 and retargets with the navigation SDK at P6). \
-                 `link(external = \"https://…\")` works; for in-app navigation use \
-                 the navigator's `on_handle`/injected `SwapNav`/`StackNav` dispatch, \
-                 or build without `runtime-macros/new-core`."
-            )
-        };
-    }
+    // In-app links: SAME emission on both cores (P6 un-deferral). The
+    // retarget pass maps `::runtime_core::primitives::link::link` onto
+    // `glue::primitives::link::link`, which lowers to the vocabulary
+    // link builder's `.route(...)` — the mount handler resolves the
+    // ambient `LinkActivator` the P6 navigators now provide
+    // (push-vs-select decided by the enclosing navigator, the old
+    // `NavigatorControl` link-activator contract).
     let route = props
         .iter()
         .find(|p| p.name == "route")
@@ -4245,19 +4227,44 @@ mod tests {
         /// Deferred surfaces fail loudly, naming their migration phase.
         /// (The P3-set tags — overlay/anchored_overlay/presence/graphics/
         /// flat_list — are no longer in this list; their un-deferred
-        /// lowerings are pinned below. `test_id = …` left this list with
-        /// the P5 identity seam — see `test_id_lowers_to_builder_setter`.)
+        /// lowerings are pinned below. `test_id = …` left with the P5
+        /// identity seam, `link(route = …)` with the P6 nav-SDK
+        /// retarget — see `link_route_lowers_to_link_constructor`.)
         #[test]
         fn deferred_primitives_error_with_migration_status() {
             for (body, needle) in [
                 (quote! { web_view(src = "https://x") }, "WebView SDK"),
-                (quote! { link(route = HOME) { text { "x" } } }, "P6"),
                 (quote! { for i in count(sig) { text { "r" } } }, "flat_list"),
             ] {
                 let out = parse_and_emit(body);
                 assert!(out.contains("compile_error"), "{out}");
                 assert!(out.contains(needle), "expected `{needle}` in: {out}");
             }
+        }
+
+        /// `link(route = …)` is UN-deferred (P6 nav wave): both cores
+        /// emit the same three-positional constructor call; the
+        /// retarget maps it onto `glue::primitives::link::link`, whose
+        /// mount resolves the ambient `LinkActivator` the vocabulary
+        /// navigators provide. Regression: this was a loud
+        /// compile_error while the vocabulary had no ambient
+        /// link-activator seam.
+        #[test]
+        fn link_route_lowers_to_link_constructor() {
+            let out = squash(parse_and_emit(quote! {
+                link(route = HOME) { text { "x" } }
+            }));
+            assert!(!out.contains("compile_error"), "{out}");
+            assert!(out.contains("primitives::link::link(HOME,()"), "{out}");
+
+            // Explicit params thread through as the second positional.
+            let out = squash(parse_and_emit(quote! {
+                link(route = DETAIL, params = DetailParams { id: 3 }) { text { "d" } }
+            }));
+            assert!(
+                out.contains("primitives::link::link(DETAIL,DetailParams{id:3}"),
+                "{out}"
+            );
         }
 
         /// `test_id = …` is UN-deferred (P5 identity seam): it lowers to

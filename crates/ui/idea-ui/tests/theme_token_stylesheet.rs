@@ -7,7 +7,13 @@
 //! idea-theme's canonical value as its fallback, no hex written here.
 
 use idea_ui::{install_idea_theme, light_theme, theme_length, theme_token};
-use runtime_core::{resolve_style, stylesheet, IntoStyleSource, StyleSource, Tokenized};
+
+// The new-core alias: same-source `runtime_core::…` paths in this test
+// resolve against the glue facade (see idea-ui's lib.rs note).
+#[cfg(feature = "new-core")]
+extern crate runtime_facade as runtime_core;
+
+use runtime_core::{resolve_style, stylesheet, StyleApplication, Tokenized};
 
 // A custom, app-authored sheet — the "custom sidebar" from the report.
 // Every theme-dependent value is a token reference by name; the file
@@ -27,23 +33,38 @@ stylesheet! {
     }
 }
 
-/// Resolve the constant (non-reactive) background token off a builder — the
-/// token reference is a constant `Tokenized`, so the sheet is `Static`.
-fn background(src: StyleSource) -> Tokenized<runtime_core::Color> {
-    match src {
-        StyleSource::Static(app) => resolve_style(&app)
-            .background
-            .clone()
-            .expect("sidebar base sets a background token"),
-        _ => panic!("a constant token reference must produce StyleSource::Static"),
+/// The STATIC sheet application off a builder (the token reference is a
+/// constant `Tokenized`, so the built style must be the static arm).
+/// The conversion trait's method name differs per core — the one fork.
+#[cfg(not(feature = "new-core"))]
+fn static_app(b: impl runtime_core::IntoStyleSource) -> StyleApplication {
+    match b.into_style_source() {
+        runtime_core::StyleSource::Static(app) => app,
+        _ => panic!("a constant token reference must produce a static application"),
     }
+}
+
+#[cfg(feature = "new-core")]
+fn static_app(b: impl runtime_core::IntoStyleSource) -> StyleApplication {
+    match b.into_style_prop() {
+        runtime_vocabulary::StyleProp::Sheet(app) => app,
+        _ => panic!("a constant token reference must produce a static application"),
+    }
+}
+
+fn background(app: StyleApplication) -> Tokenized<runtime_core::Color> {
+    resolve_style(&app)
+        .background
+        .clone()
+        .expect("sidebar base sets a background token")
 }
 
 #[test]
 fn theme_token_references_flow_through_a_stylesheet() {
+    idea_theme::testing::with_test_world(|| {
     // Base: references `color-surface` by name. Its fallback must be
     // idea-theme's canonical base value — restated nowhere in this file.
-    let base_bg = background(Sidebar().into_style_source());
+    let base_bg = background(static_app(Sidebar()));
     assert_eq!(base_bg.name(), Some("color-surface"));
     let canonical_surface = light_theme().colors.surface.value().0.clone();
     assert_eq!(
@@ -60,6 +81,7 @@ fn theme_token_references_flow_through_a_stylesheet() {
     );
 
     // The accent variant references a different canonical token.
-    let accent_bg = background(Sidebar().emphasis(SidebarEmphasis::Accent).into_style_source());
+    let accent_bg = background(static_app(Sidebar().emphasis(SidebarEmphasis::Accent)));
     assert_eq!(accent_bg.name(), Some("intent-primary-soft-bg"));
+    });
 }

@@ -217,25 +217,27 @@ pub fn Tag(props: &TagProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P, TStyle};
+    use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{resolve_style, StyleSource};
+    use runtime_core::resolve_style;
 
     fn theme() {
         install_idea_theme(light_theme());
     }
 
     fn view_children(el: Element) -> Vec<Element> {
-        match el {
-            Element::View { children, .. } => children,
+        match classify(el) {
+            P::View { children, .. } => children,
             _ => panic!("Tag renders a View"),
         }
     }
 
-    fn text_node_color(el: &Element) -> Option<runtime_core::Color> {
-        match el {
-            Element::Text { style, .. } => {
-                let app = match style.as_ref()? {
-                    StyleSource::Static(a) => a.clone(),
+    fn text_node_color(el: Element) -> Option<runtime_core::Color> {
+        match classify(el) {
+            P::Text { style, .. } => {
+                let app = match style? {
+                    TStyle::App(a) => a,
                     _ => panic!("Tag label uses a static style"),
                 };
                 resolve_style(&app).color.clone().map(|c| c.resolve())
@@ -264,38 +266,42 @@ mod tests {
     // the filled container's foreground (white intent-primary-solid-text).
     #[test]
     fn regression_filled_tag_label_carries_intent_text_color() {
-        theme();
-        let props = TagProps {
-            label: Reactive::Static("Rust".into()),
-            tone: tone::Primary.into(),
-            variant: variant::Filled.into(),
-            ..Default::default()
-        };
-        let children = view_children(Tag(&props));
-        let color = text_node_color(&children[0])
-            .expect("tag label must carry its own color, not inherit from the container");
-        assert_eq!(color, container_fg());
-        assert_eq!(color.0.to_ascii_lowercase(), "#ffffff");
+        with_test_world(|| {
+            theme();
+            let props = TagProps {
+                label: Reactive::Static("Rust".into()),
+                tone: tone::Primary.into(),
+                variant: variant::Filled.into(),
+                ..Default::default()
+            };
+            let mut children = view_children(Tag(&props));
+            let color = text_node_color(children.remove(0))
+                .expect("tag label must carry its own color, not inherit from the container");
+            assert_eq!(color, container_fg());
+            assert_eq!(color.0.to_ascii_lowercase(), "#ffffff");
+    });
     }
 
     // The close `×` is also a bare text node; it must carry the color too.
     #[test]
     fn regression_filled_tag_close_glyph_carries_intent_text_color() {
-        theme();
-        let props = TagProps {
-            label: Reactive::Static("Rust".into()),
-            tone: tone::Primary.into(),
-            variant: variant::Filled.into(),
-            on_remove: Some(std::rc::Rc::new(|| {})),
-        };
-        let children = view_children(Tag(&props));
-        // [label, close-pressable]; the close glyph is the pressable's child.
-        let close_glyph = match &children[1] {
-            Element::Pressable { children, .. } => &children[0],
-            _ => panic!("close is a Pressable"),
-        };
-        let color = text_node_color(close_glyph)
-            .expect("close glyph must carry its own color");
-        assert_eq!(color, container_fg());
+        with_test_world(|| {
+            theme();
+            let props = TagProps {
+                label: Reactive::Static("Rust".into()),
+                tone: tone::Primary.into(),
+                variant: variant::Filled.into(),
+                on_remove: Some(std::rc::Rc::new(|| {})),
+            };
+            let mut children = view_children(Tag(&props));
+            // [label, close-pressable]; the close glyph is the pressable's child.
+            let close_glyph = match classify(children.remove(1)) {
+                P::Pressable { mut children, .. } => children.remove(0),
+                _ => panic!("close is a Pressable"),
+            };
+            let color = text_node_color(close_glyph)
+                .expect("close glyph must carry its own color");
+            assert_eq!(color, container_fg());
+    });
     }
 }

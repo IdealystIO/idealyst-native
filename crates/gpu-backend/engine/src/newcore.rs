@@ -291,7 +291,13 @@ pub fn start(
     // Buffered-microtask drain (step 3) — a no-op on the winit
     // scheduler, load-bearing on the headless buffering scheduler.
     // Must run with NO backend borrow held (drained tasks re-borrow).
-    runtime_core::scheduling::drain_buffered_microtasks();
+    // ENTERED (the web hydrate boot's pattern): a task buffered during
+    // mount may do creation-side work — the deferred virtualizer fill
+    // realizes rows — and `FLUSH_WORLD` isn't stored yet at this point,
+    // so `enter_mounted_world`'s stored-world route can't cover it; the
+    // ambient enter does. On the winit scheduler the same fill runs
+    // post-`start` (0 ms timer), where the stored world covers it.
+    world.enter(runtime_core::scheduling::drain_buffered_microtasks);
 
     // Single-root contract, matching the old-core mount: `finish`
     // records the root for the renderer's frame walk and requests a
@@ -377,6 +383,28 @@ fn flush_now() {
         if !world.is_flushing() {
             world.flush();
         }
+    }
+}
+
+/// Run a platform-invoked vocabulary callback with the mounted world
+/// ambient (`World::enter`).
+///
+/// WHY (bug: flat_list rendered ZERO rows on new-core web — every
+/// backend shared the gap): virtualizer `mount_item` REALIZES a row
+/// from the backend's own scroll/window machinery, and realization is
+/// creation-side (`signal()`/`effect()`/`inject` for `ThemeCtx`), which
+/// panics outside `World::enter`. Ordinary author callbacks only stage
+/// writes through captured handles, so the dispatch-site glue never
+/// needed entry — mount/release are the one callback family that
+/// BUILDS, and the vocabulary contract (handlers/virtualizer.rs)
+/// assigns the entry to the backend. Pre-boot (`FLUSH_WORLD` empty —
+/// the initial mount's realize) the boot's own `enter` is still
+/// ambient, so a bare call is already entered; nesting `enter` is a
+/// legal stack, so the ambient fallback never double-books.
+fn enter_mounted_world<R>(f: impl FnOnce() -> R) -> R {
+    match FLUSH_WORLD.with(|w| w.borrow().clone()) {
+        Some(world) => world.enter(f),
+        None => f(),
     }
 }
 
@@ -1027,6 +1055,13 @@ impl caps::VirtualizerOps for WgpuBackend {
         // backend's own scroll handling; measured-size reports feed the
         // handler's layout cache. item_count/item_key/item_size are
         // pure reads and stay unwrapped.
+        //
+        // mount/release additionally run WORLD-ENTERED
+        // (`enter_mounted_world`): `mount_item` realizes the row —
+        // creation-side work (`theme_ctx` → `inject::<ThemeCtx>`) that
+        // aborts outside `World::enter` (the flat_list-renders-zero-rows
+        // bug); `release_item` drops the row scope, whose cleanups get
+        // the same ambient guarantee the old walker's teardown had.
         let VirtualizerCallbacks {
             item_count,
             item_key,
@@ -1044,7 +1079,7 @@ impl caps::VirtualizerOps for WgpuBackend {
             mount_item: {
                 let f = mount_item;
                 Rc::new(move |i| {
-                    let mounted = f(i);
+                    let mounted = enter_mounted_world(|| f(i));
                     schedule_flush();
                     mounted
                 })
@@ -1052,7 +1087,7 @@ impl caps::VirtualizerOps for WgpuBackend {
             release_item: {
                 let f = release_item;
                 Rc::new(move |scope_id| {
-                    f(scope_id);
+                    enter_mounted_world(|| f(scope_id));
                     schedule_flush();
                 })
             },

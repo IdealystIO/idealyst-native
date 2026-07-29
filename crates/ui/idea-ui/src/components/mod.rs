@@ -189,6 +189,7 @@ pub mod stack;
 pub mod surface;
 #[cfg(feature = "prim-icon")]
 pub mod switch;
+#[cfg(feature = "table")]
 pub mod table;
 pub mod tabs;
 pub mod tag;

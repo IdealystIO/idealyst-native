@@ -1102,115 +1102,48 @@ impl Backend for WgpuBackend {
         virt_layout: runtime_core::VirtualLayout,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        // GPU backend mounts every item eagerly (no windowing yet), so
+        // GPU backend mounts every item (no windowing yet), so
         // lane/grid layout isn't honored — only the scroll axis maps to
         // the existing flow. Grid support lands when this grows a real
         // windowed layout pass.
+        //
+        // The fill is DEFERRED (`schedule_virtualizer_fill`), never run
+        // here: the vocabulary contract forbids invoking `mount_item`
+        // synchronously inside `create_virtualizer` — on the new core
+        // this method runs under `backend.borrow_mut()` and `mount_item`
+        // realizes rows through the same `Rc<RefCell<WgpuBackend>>`
+        // (re-entrant borrow panic, caught by
+        // `regression_virtualizer_rows_realize_world_entered`). This
+        // also aligns the GPU backend with web/iOS/Android, which all
+        // defer the initial window fill (handlers/virtualizer.rs).
         let horizontal = virt_layout.axis.is_horizontal();
         let layout = self.layout.new_node();
-        // Stash the callbacks on the node so
-        // `virtualizer_data_changed` can re-mount items when
-        // the data signal fires — without these, the only
-        // mount path was create time and any later insert /
-        // remove would silently drop on the floor.
-        let mount = callbacks.mount_item.clone();
-        let release = callbacks.release_item.clone();
-        let count_fn = callbacks.item_count.clone();
+        // Stash the callbacks on the node so the deferred fill and
+        // `virtualizer_data_changed` re-fills can mount/release items
+        // when the data signal fires.
         let node = new_node(
             NodeKind::Virtualizer {
                 horizontal,
-                mount_item: mount.clone(),
-                release_item: release,
-                item_count: count_fn,
+                mount_item: callbacks.mount_item.clone(),
+                release_item: callbacks.release_item.clone(),
+                item_count: callbacks.item_count.clone(),
                 scope_ids: std::cell::RefCell::new(Vec::new()),
+                fill_queued: std::cell::Cell::new(false),
             },
             layout,
         );
         init_node_a11y(&node, a11y, PrimitiveKind::Virtualizer);
-        // Eagerly mount every item — no windowing yet. A real
-        // windowed implementation would mount on demand based
-        // on viewport intersection.
-        let count = (callbacks.item_count)();
-        for i in 0..count {
-            let (child, scope_id) = mount(i);
-            let child_layout = child.borrow().layout;
-            self.layout.add_child(layout, child_layout);
-            node.borrow_mut().children.push(child.clone());
-            self.roots.retain(|n| !Rc::ptr_eq(n, &child));
-            if let NodeKind::Virtualizer { scope_ids, .. } = &node.borrow().kind {
-                scope_ids.borrow_mut().push(scope_id);
-            }
-        }
         self.roots.push(node.clone());
+        schedule_virtualizer_fill(&node);
         node
     }
 
     fn virtualizer_data_changed(&mut self, node: &Self::Node) {
-        // Snapshot the callbacks + current scope ids before
-        // we start mutating. Cloning the `Rc`s is cheap and
-        // avoids re-borrowing the node mid-mutation.
-        let (mount, release, count_fn, prev_ids) = {
-            let data = node.borrow();
-            if let NodeKind::Virtualizer {
-                mount_item,
-                release_item,
-                item_count,
-                scope_ids,
-                ..
-            } = &data.kind
-            {
-                (
-                    mount_item.clone(),
-                    release_item.clone(),
-                    item_count.clone(),
-                    scope_ids.borrow().clone(),
-                )
-            } else {
-                return;
-            }
-        };
-        // Drop the existing children — release each scope via
-        // the framework callback and clean Taffy state via
-        // `drop_subtree`. Equivalent to `clear_children` but
-        // also calls `release_item` so the framework reclaims
-        // the per-item Scope arenas.
-        //
-        // Order matters: detach from Taffy, then `release` (frees
-        // the framework `Scope`, which unregisters this node's
-        // theme-cohort entries), then `drop_subtree` (removes the
-        // Taffy slot). Doing `drop_subtree` before `release` would
-        // leave cohort entries pointing at freed slots — the next
-        // `set_theme` would panic with "invalid SlotMap key used".
-        let parent_layout = node.borrow().layout;
-        let children: Vec<WgpuNode> = node.borrow_mut().children.drain(..).collect();
-        for (child, scope_id) in children.iter().zip(prev_ids.iter()) {
-            let child_layout = child.borrow().layout;
-            self.layout.remove_child(parent_layout, child_layout);
-            release(*scope_id);
-            drop_subtree(
-                &mut self.layout,
-                &self.text,
-                &mut self.animator,
-                &mut self.active_spinner_count,
-                &mut self.sticky_registry,
-                child,
-            );
-        }
-        // Re-mount based on the new count.
-        let new_count = count_fn();
-        let mut new_ids = Vec::with_capacity(new_count);
-        for i in 0..new_count {
-            let (child, scope_id) = mount(i);
-            let child_layout = child.borrow().layout;
-            self.layout.add_child(parent_layout, child_layout);
-            node.borrow_mut().children.push(child.clone());
-            self.roots.retain(|n| !Rc::ptr_eq(n, &child));
-            new_ids.push(scope_id);
-        }
-        if let NodeKind::Virtualizer { scope_ids, .. } = &node.borrow().kind {
-            *scope_ids.borrow_mut() = new_ids;
-        }
-        request_redraw();
+        // Deferred for the same reason as the initial fill (see
+        // `create_virtualizer`): the new-core data effect calls this
+        // under `backend.borrow_mut()`, and the refill must invoke the
+        // framework callbacks with the backend unborrowed.
+        schedule_virtualizer_fill(node);
     }
 
     // -----------------------------------------------------------
@@ -2212,6 +2145,118 @@ pub fn install_global_self(weak: std::rc::Weak<RefCell<WgpuBackend>>) {
 /// type-erased side.
 pub(crate) fn global_self() -> Option<std::rc::Weak<RefCell<WgpuBackend>>> {
     WGPU_BACKEND_SELF.with(|s| s.borrow().clone())
+}
+
+/// Queue one deferred virtualizer (re)fill for `node` (deduped via the
+/// node's `fill_queued` flag — create + the handler's first data-effect
+/// fire both request one; a single refill serves both).
+///
+/// WHY deferred: `create_virtualizer` / `virtualizer_data_changed` run
+/// under `backend.borrow_mut()` on the new core, and the framework's
+/// `mount_item` / `release_item` callbacks realize/release rows through
+/// the same `Rc<RefCell<WgpuBackend>>` — invoking them synchronously is
+/// a re-entrant borrow panic ("RefCell already borrowed" from the
+/// vocabulary text handler). Deferring to a scheduled microtask runs
+/// the fill with the backend unborrowed, matching the deferral
+/// web/iOS/Android already perform. On the winit/headless hosts the
+/// microtask drains on the next event-loop turn; under the no-scheduler
+/// synchronous fallback (bare unit tests, old-core walker context where
+/// `&mut Backend` is exclusive) it runs immediately — the old-core
+/// eager timing.
+fn schedule_virtualizer_fill(node: &WgpuNode) {
+    {
+        let data = node.borrow();
+        let NodeKind::Virtualizer { fill_queued, .. } = &data.kind else { return };
+        if fill_queued.replace(true) {
+            return;
+        }
+    }
+    let node = node.clone();
+    runtime_core::scheduling::schedule_microtask(move || {
+        {
+            let data = node.borrow();
+            if let NodeKind::Virtualizer { fill_queued, .. } = &data.kind {
+                fill_queued.set(false);
+            }
+        }
+        let Some(rc) = global_self().and_then(|w| w.upgrade()) else { return };
+        refill_virtualizer(&rc, &node);
+    });
+}
+
+/// Release every mounted row of `node`, then mount the current
+/// `item_count()` set — the fill body behind
+/// [`schedule_virtualizer_fill`]. The backend borrow is DROPPED around
+/// every framework callback (`release_item` frees the row scope, whose
+/// cleanups may call back into the backend, e.g. `on_node_unstyled`;
+/// `mount_item` realizes the row through the backend RefCell) and
+/// re-taken for each Taffy/tree mutation.
+///
+/// Release order per row matches the old eager body: detach from
+/// Taffy, then `release` (frees the framework scope, which unregisters
+/// theme-cohort entries), then `drop_subtree` (removes the Taffy
+/// slot) — `drop_subtree` first would leave cohort entries pointing at
+/// freed slots ("invalid SlotMap key used" on the next `set_theme`).
+fn refill_virtualizer(rc: &Rc<RefCell<WgpuBackend>>, node: &WgpuNode) {
+    let (mount, release, count_fn, prev_ids) = {
+        let data = node.borrow();
+        let NodeKind::Virtualizer {
+            mount_item,
+            release_item,
+            item_count,
+            scope_ids,
+            ..
+        } = &data.kind
+        else {
+            return;
+        };
+        let snap = (
+            mount_item.clone(),
+            release_item.clone(),
+            item_count.clone(),
+            scope_ids.borrow().clone(),
+        );
+        snap
+    };
+    let parent_layout = node.borrow().layout;
+    let children: Vec<WgpuNode> = node.borrow_mut().children.drain(..).collect();
+    for (child, scope_id) in children.iter().zip(prev_ids.iter()) {
+        {
+            let mut b = rc.borrow_mut();
+            let child_layout = child.borrow().layout;
+            b.layout.remove_child(parent_layout, child_layout);
+        }
+        // Framework callback — backend unborrowed.
+        release(*scope_id);
+        {
+            let b = &mut *rc.borrow_mut();
+            drop_subtree(
+                &mut b.layout,
+                &b.text,
+                &mut b.animator,
+                &mut b.active_spinner_count,
+                &mut b.sticky_registry,
+                child,
+            );
+        }
+    }
+    // Mount the current set.
+    let new_count = count_fn();
+    let mut new_ids = Vec::with_capacity(new_count);
+    for i in 0..new_count {
+        // Framework callback — backend unborrowed.
+        let (child, scope_id) = mount(i);
+        let mut b = rc.borrow_mut();
+        let child_layout = child.borrow().layout;
+        b.layout.add_child(parent_layout, child_layout);
+        node.borrow_mut().children.push(child.clone());
+        b.roots.retain(|n| !Rc::ptr_eq(n, &child));
+        new_ids.push(scope_id);
+    }
+    if let NodeKind::Virtualizer { scope_ids, .. } = &node.borrow().kind {
+        *scope_ids.borrow_mut() = new_ids;
+    }
+    request_redraw();
 }
 
 /// Push a scalar animation property update to `node` through the

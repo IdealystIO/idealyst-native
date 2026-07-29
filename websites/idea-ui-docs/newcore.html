@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>idea-ui docs — new core</title>
+    <style>
+      /* Same mount conventions as the CLI-generated web shells. */
+      html, body, #app { height: 100%; margin: 0; }
+      body { background: #f7f8fb; font-family: system-ui, sans-serif; }
+      #app { display: flex; flex-direction: column; }
+      #app > * { flex: 1 1 auto; min-height: 0; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      // Built by:
+      //   wasm-pack build --target web --dev websites/idea-ui-docs \
+      //       --out-dir pkg-newcore -- --no-default-features --features new-core
+      // (NOT `new-core,debug-stats` — that pair is a compile_error; see
+      // the guard in src/lib.rs. wasm-pack 0.12 fails re-reading its own
+      // generated package.json on REbuilds — `rm -rf pkg-newcore` first.)
+      // Serve this file from the app dir (e.g. `python3 -m http.server`)
+      // and open /newcore.html.
+      import init from "./pkg-newcore/idea_ui_docs.js";
+      init();
+    </script>
+  </body>
+</html>

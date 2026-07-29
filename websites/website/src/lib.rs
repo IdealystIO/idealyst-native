@@ -11,6 +11,28 @@
 //! Every backend renders the SAME author chrome — no per-platform
 //! navigator chrome (CLAUDE.md §7).
 
+// idea-lite core migration (P6 website retarget): under `new-core` this
+// alias shadows the extern-prelude `runtime-core` for the WHOLE crate,
+// so the same source compiles against `runtime_vocabulary::glue`'s
+// mirrors of the old author surface. The default build has no alias and
+// is byte-identical old-core (the nav-showcase / idea-ui-docs pattern).
+#[cfg(feature = "new-core")]
+extern crate runtime_facade as runtime_core;
+
+// The REAL runtime-core under an unshadowed name: `extern crate` items
+// resolve against the crates Cargo hands rustc (`--extern`), not the
+// crate-root alias above, so this binds the old core even while the
+// facade owns the `runtime_core` path. Used by src/newcore.rs for the
+// transitional prop types the vocabulary consumes (`TextRun`, …).
+#[cfg(feature = "new-core")]
+extern crate runtime_core as old_runtime_core;
+
+#[cfg(all(feature = "new-core", feature = "old-core"))]
+compile_error!(
+    "website: enable exactly one of `new-core` / `old-core` — one core per build \
+     (the macro lowering is a build-graph-wide switch; see runtime-macros/new-core)."
+);
+
 use idea_ui_nav::AppShell;
 use runtime_core::{
     component, effect, signal, ui, Breakpoint, Color, Element, Ref, Route, Signal, Tokenized,
@@ -42,6 +64,10 @@ fn titled(route: &'static Route<()>, el: Element) -> Screen {
 #[macro_use]
 mod components;
 mod branding;
+// `pub` so the SSG parity test (tests/ssg_parity.rs) can pass
+// `newcore::register_handlers` as the SSR register seam.
+#[cfg(feature = "new-core")]
+pub mod newcore;
 mod pages;
 mod responsive;
 mod routes;
@@ -209,11 +235,22 @@ fn sync_body_background_to_theme() {
     #[cfg(target_arch = "wasm32")]
     {
         effect!({
-            let bg: Color = Tokenized::<Color>::token(
-                "color-background",
-                Color("#ffffff".into()),
-            )
-            .resolve();
+            // Tracked active-theme read (both cores) instead of
+            // `Tokenized::resolve()`: the registry read is old-core-only
+            // reactivity — on the new core it neither updates on
+            // `set_idea_theme` nor re-fires this effect (Tokenized
+            // freshness is a documented migration deferral).
+            let bg: Color = if idea_ui::theme_installed() {
+                use idea_ui::IdeaTheme as _;
+                let theme = idea_ui::active_theme();
+                match theme.downcast_ref::<idea_ui::IdeaThemeRef>() {
+                    Some(t) => t.colors().background.value().clone(),
+                    None => Color("#ffffff".into()),
+                }
+            } else {
+                Tokenized::<Color>::token("color-background", Color("#ffffff".into()))
+                    .resolve()
+            };
             if let Some(window) = web_sys::window() {
                 if let Some(doc) = window.document() {
                     if let Some(body) = doc.body() {

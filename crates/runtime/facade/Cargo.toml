@@ -1,0 +1,47 @@
+# runtime-facade — the `extern crate runtime_facade as runtime_core;`
+# alias target for the P6 SDK retarget (idea-lite core migration).
+#
+# An SDK/component crate (idea-theme, idea-ui, idea-ui-nav, …) that was
+# authored against `runtime_core::…` paths compiles the SAME source on
+# the new core by adding, at its crate root, under its own `new-core`
+# feature:
+#
+#     #[cfg(feature = "new-core")]
+#     extern crate runtime_facade as runtime_core;
+#
+# A crate-root `extern crate … as …` alias shadows the extern-prelude
+# `runtime_core` for the whole crate (use paths, inline paths, and
+# `::runtime_core::…` absolute paths alike — verified against rustc,
+# edition 2021), so every existing `runtime_core::X` reference resolves
+# here instead. This crate's ROOT therefore mirrors the old runtime-core
+# author surface: `runtime_vocabulary::glue::*` (the macro-emission /
+# compatibility namespace — extend GLUE, not this crate, when something
+# is missing) plus the proc-macro set that old `runtime_core` re-exports.
+#
+# Enabling `runtime-macros/new-core` here is deliberate: this crate only
+# ever appears in a build graph through a consumer's non-default
+# `new-core` feature, and its presence must imply the retargeted macro
+# lowering (proc-macro features unify build-graph-wide — see
+# runtime-macros/Cargo.toml for the hazard note).
+[package]
+name = "runtime-facade"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Old-core author-surface facade over runtime_vocabulary::glue (idea-lite migration P6 alias target)."
+
+[features]
+# Mirror of the old `runtime-core/robot` opt-in: forwards to the
+# vocabulary robot registry so `test_id` forwarding and `#[method]`
+# registrations in an aliased crate go live.
+robot = ["runtime-vocabulary/robot"]
+
+[dependencies]
+runtime-vocabulary = { workspace = true }
+runtime-macros = { workspace = true, features = ["new-core"] }
+# For the old-core `#[macro_export]` decl macros this root re-exports
+# (`typeface!` / `face!` / `node_ref!`): their `$crate::…` expansions
+# resolve against runtime-core itself, and the types they construct
+# (`assets::Typeface`, `Ref<H>`) are the SAME old-core types glue
+# already re-exports — the sanctioned transitional dependency.
+runtime-core = { workspace = true }

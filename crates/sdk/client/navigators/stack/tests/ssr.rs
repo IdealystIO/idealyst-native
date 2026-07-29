@@ -8,6 +8,11 @@
 //! those inside `render_path`, so the emitted HTML carries both the
 //! chrome and the walker-resolved screen.
 
+// Old-core suite: the `new-core` feature swaps the crate to the
+// vocabulary-backed surface (mutually exclusive names) — these tests
+// exercise the old walker/registry path only.
+#![cfg(not(feature = "new-core"))]
+
 #![cfg(not(target_arch = "wasm32"))]
 
 use backend_ssr::{render_all, render_path_with};

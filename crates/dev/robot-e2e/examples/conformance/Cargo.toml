@@ -42,6 +42,11 @@ new-core = [
     "dep:runtime-vocabulary",
     "runtime-vocabulary/robot",
     "dep:runtime-world",
+    # idea-ui rides BOTH cores now (P6 SDK retarget): the same
+    # Switch/Checkbox/Button screens + suite run same-source on the new
+    # core through idea-ui's own `new-core` alias build.
+    "dep:idea-ui",
+    "idea-ui/new-core",
     "robot-e2e?/new-core",
     "backend-web/new-core",
     # The web host's robot surface: `newcore::start` installs the
@@ -63,7 +68,15 @@ runtime-core = { workspace = true }
 runtime-macros = { workspace = true, optional = true }
 runtime-vocabulary = { workspace = true, optional = true }
 runtime-world = { workspace = true, optional = true }
-idea-ui = { workspace = true, optional = true }
+# PATH dep with `default-features = false` (the documented cargo gotcha:
+# the flag is ignored on `workspace = true` lines): idea-ui's `table`
+# default is old-core-authored and cannot join a new-core graph, so the
+# prim families are re-enabled explicitly. Conformance never renders
+# Table, so the old-core build is behavior-identical without it.
+idea-ui = { path = "../../../../ui/idea-ui", default-features = false, optional = true, features = [
+    "prim-icon", "prim-image", "prim-text-input", "prim-activity",
+    "prim-portal", "prim-presence",
+] }
 icons-lucide = { workspace = true }
 stack-navigator = { workspace = true, optional = true }
 robot-e2e = { workspace = true, optional = true }

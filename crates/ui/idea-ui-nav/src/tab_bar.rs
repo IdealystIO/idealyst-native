@@ -56,7 +56,7 @@ impl Default for TabBarProps {
     fn default() -> Self {
         Self {
             items: Vec::new(),
-            active_route: Signal::new(""),
+            active_route: runtime_core::signal(""),
             on_select: Rc::new(|_| {}),
             indicator: runtime_core::Reactive::Static(TabIndicator::default()),
         }
@@ -76,7 +76,7 @@ pub fn TabBar(props: TabBarProps) -> Element {
 
     // The strip's id-keyed tab list. `Tab::id` is the route name; a fixed bar
     // wraps a literal list in a static `Signal`.
-    let tabs = Signal::new(
+    let tabs = runtime_core::signal(
         items.iter().map(|i| Tab::new(i.route, i.label.clone())).collect::<Vec<_>>(),
     );
 

@@ -271,6 +271,8 @@ pub fn IconButton(props: &IconButtonProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P, TStyle};
+    use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
     use runtime_core::FillRule;
 
@@ -286,8 +288,8 @@ mod tests {
     };
 
     fn only_child(el: Element) -> Element {
-        match el {
-            Element::Pressable { mut children, .. } => {
+        match classify(el) {
+            P::Pressable { mut children, .. } => {
                 assert_eq!(children.len(), 1, "IconButton has a single child");
                 children.remove(0)
             }
@@ -299,30 +301,34 @@ mod tests {
     // text glyph — so Lucide SVGs work where only a String glyph did.
     #[test]
     fn icon_data_renders_an_icon_child() {
-        theme();
-        let props = IconButtonProps {
-            icon: Reactive::Static(Some(TRASH)),
-            glyph: Reactive::Static("×".into()), // present but overridden by `icon`
-            ..Default::default()
-        };
-        assert!(
-            matches!(only_child(IconButton(&props)), Element::Icon { .. }),
-            "an `icon` prop must render an Icon child (it wins over glyph)"
-        );
+        with_test_world(|| {
+            theme();
+            let props = IconButtonProps {
+                icon: Reactive::Static(Some(TRASH)),
+                glyph: Reactive::Static("×".into()), // present but overridden by `icon`
+                ..Default::default()
+            };
+            assert!(
+                matches!(classify(only_child(IconButton(&props))), P::Icon { .. }),
+                "an `icon` prop must render an Icon child (it wins over glyph)"
+            );
+    });
     }
 
     // The glyph path still works when no `icon` is given.
     #[test]
     fn glyph_falls_back_to_text() {
-        theme();
-        let props = IconButtonProps {
-            glyph: Reactive::Static("×".into()),
-            ..Default::default()
-        };
-        assert!(
-            matches!(only_child(IconButton(&props)), Element::Text { .. }),
-            "with no `icon`, the glyph renders as text"
-        );
+        with_test_world(|| {
+            theme();
+            let props = IconButtonProps {
+                glyph: Reactive::Static("×".into()),
+                ..Default::default()
+            };
+            assert!(
+                matches!(classify(only_child(IconButton(&props))), P::Text { .. }),
+                "with no `icon`, the glyph renders as text"
+            );
+    });
     }
 
     // `bind_to` wires a `ref_fill` closure onto the root Pressable so the
@@ -331,32 +337,36 @@ mod tests {
     // no fill is installed.
     #[test]
     fn bind_to_installs_ref_fill_on_pressable() {
-        theme();
-        let anchor: Ref<PressableHandle> = Ref::new();
-        let bound = IconButtonProps {
-            bind_to: Some(anchor),
-            ..Default::default()
-        };
-        match IconButton(&bound) {
-            Element::Pressable { ref_fill, .. } => {
-                assert!(ref_fill.is_some(), "bind_to must install a ref_fill on the Pressable");
+        with_test_world(|| {
+            theme();
+            let anchor: Ref<PressableHandle> = Ref::new();
+            let bound = IconButtonProps {
+                bind_to: Some(anchor),
+                ..Default::default()
+            };
+            match classify(IconButton(&bound)) {
+                P::Pressable { ref_fill, .. } => {
+                    assert!(ref_fill, "bind_to must install a ref_fill on the Pressable");
+                }
+                _ => panic!("IconButton renders a Pressable"),
             }
-            _ => panic!("IconButton renders a Pressable"),
-        }
 
-        match IconButton(&IconButtonProps::default()) {
-            Element::Pressable { ref_fill, .. } => {
-                assert!(ref_fill.is_none(), "without bind_to there is no ref_fill");
+            match classify(IconButton(&IconButtonProps::default())) {
+                P::Pressable { ref_fill, .. } => {
+                    assert!(!ref_fill, "without bind_to there is no ref_fill");
+                }
+                _ => panic!("IconButton renders a Pressable"),
             }
-            _ => panic!("IconButton renders a Pressable"),
-        }
+    });
     }
 
     #[test]
     fn icon_size_scales_with_button_size() {
-        assert_eq!(icon_px_for(IconButtonSize::Sm), 16.0);
-        assert_eq!(icon_px_for(IconButtonSize::Md), 18.0);
-        assert_eq!(icon_px_for(IconButtonSize::Lg), 24.0);
+        with_test_world(|| {
+            assert_eq!(icon_px_for(IconButtonSize::Sm), 16.0);
+            assert_eq!(icon_px_for(IconButtonSize::Md), 18.0);
+            assert_eq!(icon_px_for(IconButtonSize::Lg), 24.0);
+    });
     }
 
     // Regression: an IconButton must center on its parent's cross axis
@@ -365,15 +375,20 @@ mod tests {
     // stretch` (the IconButton "Sizes" row report).
     #[test]
     fn icon_button_centers_on_cross_axis() {
-        theme();
-        let app = match IconButton(&IconButtonProps::default()) {
-            Element::Pressable { style: Some(runtime_core::StyleSource::Static(a)), .. } => a,
-            _ => panic!("IconButton renders a statically-styled Pressable"),
-        };
-        assert_eq!(
-            runtime_core::resolve_style(&app).align_self,
-            Some(AlignSelf::Center),
-            "an IconButton centers on the cross axis instead of stretching/top-aligning"
-        );
+        with_test_world(|| {
+            theme();
+            let app = match classify(IconButton(&IconButtonProps::default())) {
+                P::Pressable { style, .. } => match style.expect("IconButton attaches a style") {
+                    TStyle::App(a) => a,
+                    _ => panic!("IconButton uses a static style source"),
+                },
+                _ => panic!("IconButton renders a Pressable"),
+            };
+            assert_eq!(
+                runtime_core::resolve_style(&app).align_self,
+                Some(AlignSelf::Center),
+                "an IconButton centers on the cross axis instead of stretching/top-aligning"
+            );
+    });
     }
 }

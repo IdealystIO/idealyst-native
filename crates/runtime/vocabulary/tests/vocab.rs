@@ -284,7 +284,43 @@ impl Backend for Mini {
             .borrow_mut()
             .push(format!("attach_html_class n{node} {class}"));
     }
+
+    fn make_view_handle(&self, node: &u32) -> runtime_core::ViewHandle {
+        // Real (recording) animated-prop ops, not the trait's no-op
+        // default — the animated-bind regression test asserts writes
+        // actually reach `ViewOps::set_animated_f32`.
+        runtime_core::ViewHandle::new(Rc::new(*node), &RECORDING_VIEW_OPS)
+    }
 }
+
+/// `ViewOps` whose animated-prop writers record into a thread-local log
+/// (`ViewHandle` ops must be `&'static`, so the log can't live in the
+/// harness).
+struct RecordingViewOps;
+
+thread_local! {
+    static ANIMATED_LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+fn take_animated_log() -> Vec<String> {
+    ANIMATED_LOG.with(|l| std::mem::take(&mut *l.borrow_mut()))
+}
+
+impl runtime_core::ViewOps for RecordingViewOps {
+    fn set_animated_f32(
+        &self,
+        node: &dyn std::any::Any,
+        prop: runtime_core::animation::AnimProp,
+        value: f32,
+    ) {
+        let n = node.downcast_ref::<u32>().copied().unwrap_or(u32::MAX);
+        ANIMATED_LOG.with(|l| {
+            l.borrow_mut().push(format!("set_animated_f32 n{n} {prop:?} {value}"))
+        });
+    }
+}
+
+static RECORDING_VIEW_OPS: RecordingViewOps = RecordingViewOps;
 
 struct Harness {
     world: World,
@@ -1533,5 +1569,304 @@ mod repeat_handler {
             )
         });
         assert_eq!(h.take_log(), vec!["create n0 view".to_string()]);
+    }
+}
+
+// ===========================================================================
+// P6 SDK-retarget glue extensions (glue.rs's "P6 root-surface" wave):
+// the mirrors that carry LOGIC — watch/Subscription, the theme-install
+// shared-registry seed, `.bind(Ref)` handle filling, the icon square
+// sheet, `on_defer`, `unscope`.
+// ===========================================================================
+mod p6_glue {
+    use super::*;
+    use runtime_core::{Color, Ref, TokenEntry, TokenValue};
+    use runtime_vocabulary::glue;
+
+    fn surface(value: &str) -> TokenEntry {
+        TokenEntry {
+            name: "color-surface",
+            value: TokenValue::Color(Color(value.into())),
+        }
+    }
+
+    /// `glue::watch` — caller-owned subscription: runs now, re-runs per
+    /// flush after a dependency write, stops on drop, survives `leak`.
+    #[test]
+    fn watch_subscription_runs_drops_and_leaks() {
+        let world = World::new();
+        let runs = Rc::new(Cell::new(0));
+        world.enter(|| {
+            let s = signal(0);
+            let sub = {
+                let runs = runs.clone();
+                glue::watch(move || {
+                    let _ = s.get();
+                    runs.set(runs.get() + 1);
+                })
+            };
+            assert_eq!(runs.get(), 1, "watch runs immediately");
+
+            s.set(1);
+            world.flush();
+            assert_eq!(runs.get(), 2, "dependency write re-runs on flush");
+
+            drop(sub);
+            s.set(2);
+            world.flush();
+            assert_eq!(runs.get(), 2, "dropped subscription no longer fires");
+
+            let sub2 = {
+                let runs = runs.clone();
+                glue::watch(move || {
+                    let _ = s.get();
+                    runs.set(runs.get() + 10);
+                })
+            };
+            sub2.leak();
+            s.set(3);
+            world.flush();
+            assert_eq!(runs.get(), 22, "leaked subscription keeps firing");
+        });
+    }
+
+    /// The theme-install family routes through the per-world ThemeCtx
+    /// AND seeds runtime-core's shared token registry, so
+    /// `Tokenized::resolve` (component-code color reads, native
+    /// apply-time reads) sees the installed values instead of the
+    /// compile-time fallbacks — with the old walker-flush queues
+    /// drained (nothing consumes them on this core).
+    #[test]
+    fn theme_install_seeds_shared_token_registry() {
+        let world = World::new();
+        world.enter(|| {
+            glue::install_tokens(&[surface("#123456")]);
+            assert_eq!(
+                runtime_vocabulary::theme::token_value("color-surface"),
+                Some(TokenValue::Color(Color("#123456".into()))),
+                "per-world ThemeCtx records the install"
+            );
+            let reference = Tokenized::Token {
+                name: "color-surface",
+                fallback: Color("#ffffff".into()),
+            };
+            assert_eq!(
+                reference.resolve().0,
+                "#123456",
+                "Tokenized::resolve reads the seeded shared registry, not the fallback"
+            );
+
+            glue::update_tokens(&[surface("#654321")]);
+            assert_eq!(reference.resolve().0, "#654321", "update re-seeds");
+            assert!(
+                runtime_core::take_pending_token_updates().is_empty(),
+                "the old walker-flush queues are drained by the seeding path"
+            );
+        });
+    }
+
+    /// `pressable(children, cb).bind(ref)` fills a REAL mount-time
+    /// handle (the vocabulary handler's `make_pressable_handle`), so
+    /// imperative surfaces (anchors, focus, AnimatedValue) work as on
+    /// the old core.
+    #[test]
+    fn pressable_bind_fills_real_handle_at_mount() {
+        use runtime_vocabulary::glue::IntoElement;
+        let h = harness();
+        let r: Ref<runtime_core::PressableHandle> = Ref::new();
+        let r_for = r.clone();
+        let el = h.world.enter(|| {
+            glue::pressable(Vec::new(), || {}).bind(r_for).into_element()
+        });
+        let _realized = h
+            .world
+            .enter(|| realize(&h.backend, &h.registry, el));
+        assert!(r.get().is_some(), "Ref filled with the mount-time handle");
+    }
+
+    /// `scroll_view(children).bind(ref)` fills a REAL mount-time
+    /// [`ScrollViewHandle`] — the `GlueScrollView` mirror of
+    /// `Bound::<ScrollViewHandle>::bind`. Regression for the glue gap
+    /// that forced the website's shell.rs to cfg-fork onto the raw
+    /// vocabulary builder's `on_handle` under new-core.
+    #[test]
+    fn scroll_view_bind_fills_real_handle_at_mount() {
+        use runtime_vocabulary::glue::IntoElement;
+        let h = harness();
+        let r: Ref<runtime_core::ScrollViewHandle> = Ref::new();
+        let r_for = r.clone();
+        let el = h
+            .world
+            .enter(|| glue::scroll_view(Vec::new()).bind(r_for).into_element());
+        let _realized = h.world.enter(|| realize(&h.backend, &h.registry, el));
+        assert!(r.get().is_some(), "Ref filled with the mount-time handle");
+    }
+
+    /// Regression (new-core `if` E0507 class): the static `if` arm's
+    /// thunks are `FnOnce` (old-core `builder.rs::StaticCond` parity),
+    /// so a taken branch may MOVE a captured `String` — the shape every
+    /// hoisted-condition (`let has_x = !x.is_empty()`) component emits.
+    /// Under the original `Fn + 'static` bounds this test does not
+    /// compile ("cannot move out of a captured variable in an `Fn`
+    /// closure").
+    #[test]
+    fn static_cond_branch_may_move_string_captures() {
+        use runtime_vocabulary::glue::StaticCond as _;
+        let s = String::from("owned");
+        let taken = true.__idealyst_if(
+            move || {
+                let moved: String = s; // by-move use of the capture
+                assert_eq!(moved, "owned");
+                Vec::new()
+            },
+            || unreachable!("else arm not taken"),
+        );
+        assert!(taken.is_empty());
+    }
+
+    /// `GlueIcon::size` mirrors the old square-sizing sheet: width =
+    /// height = px, `flex_shrink: 0`, and the sheet is CACHED per
+    /// rounded px so every icon at a size shares one Rc.
+    #[test]
+    fn icon_size_mints_shared_square_sheet() {
+        use runtime_core::{FillRule, IconData};
+        const DOT: IconData = IconData {
+            view_box: (24, 24),
+            paths: &["M12 12h0"],
+            fill_rule: FillRule::NonZero,
+            filled: false,
+        };
+
+        fn icon_app(px: f32) -> runtime_core::StyleApplication {
+            use runtime_vocabulary::glue::IntoElement;
+            let el = glue::icon(DOT).size(px).into_element();
+            match el {
+                runtime_scene::Element::Item { data, .. } => {
+                    let cell = data
+                        .downcast_ref::<runtime_vocabulary::prims::PrimCell<
+                            runtime_vocabulary::prims::IconPrim,
+                        >>()
+                        .expect("icon prim");
+                    match cell.take().style.expect("size sets a style") {
+                        StyleProp::Sheet(app) => app,
+                        _ => panic!("size mints a static sheet application"),
+                    }
+                }
+                _ => panic!("icon builds an Item"),
+            }
+        }
+
+        let world = World::new();
+        world.enter(|| {
+            let a = icon_app(20.0);
+            let b = icon_app(20.0);
+            let c = icon_app(24.0);
+            assert!(
+                Rc::ptr_eq(&a.sheet, &b.sheet),
+                "same px shares one minted sheet"
+            );
+            assert!(!Rc::ptr_eq(&a.sheet, &c.sheet), "distinct px, distinct sheet");
+
+            let rules = runtime_core::resolve_style(&a);
+            assert_eq!(
+                rules.width,
+                Some(Tokenized::Literal(runtime_core::Length::Px(20.0))),
+                "square width"
+            );
+            assert_eq!(
+                rules.height,
+                Some(Tokenized::Literal(runtime_core::Length::Px(20.0))),
+                "square height"
+            );
+            assert_eq!(
+                rules.flex_shrink,
+                Some(Tokenized::Literal(0.0)),
+                "icons must not shrink under flex"
+            );
+        });
+    }
+
+    /// `on_defer` mirrors the old skip-first contract: the first run
+    /// only records the baseline; every subsequent dependency change
+    /// fires with (new, Some(prev)).
+    #[test]
+    fn on_defer_skips_first_run_then_fires_with_prev() {
+        let world = World::new();
+        let calls: Rc<RefCell<Vec<(i32, Option<i32>)>>> = Rc::new(RefCell::new(Vec::new()));
+        world.enter(|| {
+            let s = signal(1);
+            let calls_for = calls.clone();
+            let _e = glue::on_defer(s, move |new, prev| {
+                calls_for.borrow_mut().push((*new, prev.copied()));
+            });
+            assert!(calls.borrow().is_empty(), "first run is baseline-only");
+
+            s.set(2);
+            world.flush();
+            assert_eq!(&*calls.borrow(), &[(2, Some(1))], "fires with prev after a change");
+
+            s.set(3);
+            world.flush();
+            assert_eq!(calls.borrow().last(), Some(&(3, Some(2))));
+        });
+    }
+
+    /// `glue::unscope` — slots created inside are world-root-owned:
+    /// dropping the enclosing collector must NOT retire them (the old
+    /// `unscope` thread-lifetime contract, world-scoped here).
+    #[test]
+    fn unscope_escapes_the_enclosing_collector() {
+        let world = World::new();
+        world.enter(|| {
+            let (s, owned) = runtime_world::collect_owned(|| glue::unscope(|| signal(5)));
+            drop(owned);
+            assert_eq!(s.get(), 5, "unscoped signal survives the collector drop");
+        });
+    }
+
+    /// The "Switch thumb never travels" bug: old `AnimatedValue::bind`
+    /// anchors its per-frame subscription via old-core `on_cleanup`,
+    /// which OUTSIDE any old-core Scope — i.e. on every new-core build —
+    /// silently drops the callback at bind time, so the tween ticked but
+    /// no `set_animated_f32` ever reached the backend. The glue's
+    /// `animation::AnimatedValue` must (a) deliver value changes through
+    /// the mounted `ViewHandle` for the component's lifetime and (b)
+    /// still drop the listener at unrealize — the recycled-`Ref`
+    /// protection the old anchoring existed for.
+    #[test]
+    fn regression_switch_thumb_animated_bind_delivers_and_dies_with_scope() {
+        use glue::animation::{AnimProp, AnimatedValue};
+
+        let h = harness();
+        let av: AnimatedValue<f32> = AnimatedValue::new(2.0);
+        let av_bind = av.clone();
+        let realized = h.world.enter(|| {
+            // Component-shaped build: bind runs inside the component
+            // scope (like Switch's body), so the keepalive is owned by
+            // the realized subtree.
+            let element = runtime_scene::component_scope(|| {
+                let r: Ref<runtime_core::ViewHandle> = Ref::new();
+                av_bind.bind(r, AnimProp::TranslateX);
+                view().on_handle(move |handle| r.fill(handle)).build()
+            });
+            realize(&h.backend, &h.registry, element)
+        });
+        h.world.flush();
+        take_animated_log(); // discard the pre-mount snapshot writes
+
+        // The Switch's value-flip effect drives the animated value.
+        av.set(16.0);
+        assert_eq!(
+            take_animated_log(),
+            vec!["set_animated_f32 n0 TranslateX 16".to_string()],
+            "the bound listener must survive the new-core component build"
+        );
+
+        drop(realized);
+        av.set(30.0);
+        assert!(
+            take_animated_log().is_empty(),
+            "unrealize must drop the subscription (old scope-anchoring contract)"
+        );
     }
 }

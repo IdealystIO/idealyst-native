@@ -191,13 +191,17 @@ recipe!(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P};
+    use idea_theme::testing::with_test_world;
 
     #[test]
     fn defaults_are_unselected_and_inert() {
-        let p = ChipProps::default();
-        assert!(!p.selected.get());
-        assert!(p.on_select.is_none());
-        assert_eq!(p.size.get(), ControlSize::Md);
+        with_test_world(|| {
+            let p = ChipProps::default();
+            assert!(!p.selected.get());
+            assert!(p.on_select.is_none());
+            assert_eq!(p.size.get(), ControlSize::Md);
+    });
     }
 
     /// A chip with no `on_select` still renders (it just doesn't react to
@@ -206,13 +210,15 @@ mod tests {
     /// other style-resolving component tests do.)
     #[test]
     fn inert_chip_renders_without_callback() {
-        use idea_theme::theme::{install_idea_theme, light_theme};
-        install_idea_theme(light_theme());
+        with_test_world(|| {
+            use idea_theme::theme::{install_idea_theme, light_theme};
+            install_idea_theme(light_theme());
 
-        let el = Chip(&ChipProps {
-            label: Reactive::Static("Tag".to_string()),
-            ..Default::default()
-        });
-        assert!(matches!(el, Element::Pressable { .. }));
+            let el = Chip(&ChipProps {
+                label: Reactive::Static("Tag".to_string()),
+                ..Default::default()
+            });
+            assert!(matches!(classify(el), P::Pressable { .. }));
+    });
     }
 }

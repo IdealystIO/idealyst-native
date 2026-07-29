@@ -211,21 +211,22 @@ recipe!(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P};
+    use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{resolve_style, StyleSource};
+    use runtime_core::resolve_style;
 
     /// Resolved color on a segment's label text node (NOT the pressable's).
-    fn seg_label_color(seg: &Element) -> Option<runtime_core::Color> {
-        let label = match seg {
-            Element::Pressable { children, .. } => &children[0],
+    /// `TStyle::resolve` evaluates the reactive-or-static style either way.
+    fn seg_label_color(seg: Element) -> Option<runtime_core::Color> {
+        let label = match classify(seg) {
+            P::Pressable { mut children, .. } => children.remove(0),
             _ => panic!("a segment is a Pressable"),
         };
-        match label {
-            Element::Text { style, .. } => match style.as_ref()? {
-                StyleSource::Reactive(f) => resolve_style(&f()).color.clone().map(|c| c.resolve()),
-                StyleSource::Static(a) => resolve_style(a).color.clone().map(|c| c.resolve()),
-                _ => None,
-            },
+        match classify(label) {
+            P::Text { style, .. } => {
+                style.and_then(|s| s.resolve().color.clone().map(|c| c.resolve()))
+            }
             _ => panic!("a segment label is a Text node"),
         }
     }
@@ -247,49 +248,57 @@ mod tests {
     // matching its selected state, like `Tabs`.
     #[test]
     fn regression_segment_labels_carry_their_own_active_color() {
-        install_idea_theme(light_theme());
-        let el = SegmentedControl(SegmentedControlProps {
-            options: vec![SegmentOption::new("a", "A"), SegmentOption::new("b", "B")],
-            value: Signal::new("a".to_string()).into(),
-            ..Default::default()
-        });
-        let children = match &el {
-            Element::View { children, .. } => children,
-            _ => panic!("SegmentedControl renders a row View"),
-        };
-        let on = seg_label_color(&children[0]).expect("selected label carries a color");
-        let off = seg_label_color(&children[1]).expect("unselected label carries a color");
-        assert_eq!(on, tabbutton_color("on"), "selected segment label = TabButton `on`");
-        assert_eq!(off, tabbutton_color("off"), "unselected segment label = TabButton `off`");
-        assert_ne!(on, off, "selection must change the label color");
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let el = SegmentedControl(SegmentedControlProps {
+                options: vec![SegmentOption::new("a", "A"), SegmentOption::new("b", "B")],
+                value: runtime_core::signal("a".to_string()).into(),
+                ..Default::default()
+            });
+            let mut children = match classify(el) {
+                P::View { children, .. } => children,
+                _ => panic!("SegmentedControl renders a row View"),
+            };
+            let second = children.remove(1);
+            let first = children.remove(0);
+            let on = seg_label_color(first).expect("selected label carries a color");
+            let off = seg_label_color(second).expect("unselected label carries a color");
+            assert_eq!(on, tabbutton_color("on"), "selected segment label = TabButton `on`");
+            assert_eq!(off, tabbutton_color("off"), "unselected segment label = TabButton `off`");
+            assert_ne!(on, off, "selection must change the label color");
+    });
     }
 
     #[test]
     fn defaults_are_empty_and_inert() {
-        let p = SegmentedControlProps::default();
-        assert!(p.options.is_empty());
-        assert_eq!(p.value.get(), String::new());
+        with_test_world(|| {
+            let p = SegmentedControlProps::default();
+            assert!(p.options.is_empty());
+            assert_eq!(p.value.get(), String::new());
+    });
     }
 
     /// One pressable segment per option, wrapped in a single row view.
     #[test]
     fn builds_one_segment_per_option() {
-        let el = SegmentedControl(SegmentedControlProps {
-            options: vec![
-                SegmentOption::new("a", "A"),
-                SegmentOption::new("b", "B"),
-                SegmentOption::new("c", "C"),
-            ],
-            ..Default::default()
-        });
-        let children = match &el {
-            Element::View { children, .. } => children,
-            _ => panic!("SegmentedControl should render a row View"),
-        };
-        assert_eq!(children.len(), 3, "one segment per option");
-        assert!(
-            children.iter().all(|c| matches!(c, Element::Pressable { .. })),
-            "each segment must be a pressable"
-        );
+        with_test_world(|| {
+            let el = SegmentedControl(SegmentedControlProps {
+                options: vec![
+                    SegmentOption::new("a", "A"),
+                    SegmentOption::new("b", "B"),
+                    SegmentOption::new("c", "C"),
+                ],
+                ..Default::default()
+            });
+            let children = match classify(el) {
+                P::View { children, .. } => children,
+                _ => panic!("SegmentedControl should render a row View"),
+            };
+            assert_eq!(children.len(), 3, "one segment per option");
+            assert!(
+                children.into_iter().all(|c| matches!(classify(c), P::Pressable { .. })),
+                "each segment must be a pressable"
+            );
+    });
     }
 }

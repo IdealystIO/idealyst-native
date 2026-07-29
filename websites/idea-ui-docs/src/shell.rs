@@ -16,9 +16,20 @@ use runtime_core::{
 };
 use idea_ui::{
     dark_theme, light_theme, set_idea_theme, typography_kind, Icon, Modal, Spacer, Stack, StackGap,
-    Switch, Table, TableCell, TableRow, Typography,
+    Switch, Typography,
 };
+// The themed Table rides the old-core-only `table` External SDK — the
+// new-core PropsTable fork renders stacked rows instead (see below).
+#[cfg(feature = "old-core")]
+use idea_ui::{Table, TableCell, TableRow};
 use icons_lucide::SEARCH;
+
+#[cfg(feature = "old-core")]
+use runtime_core::Route;
+// SEAM(new-core): `Route` isn't mirrored by the glue facade — same type,
+// pulled from the real runtime-core rebinding in lib.rs.
+#[cfg(feature = "new-core")]
+use crate::runtime_core_real::Route;
 
 use crate::routes::{Entry, Status, CATALOG};
 use crate::styles::{
@@ -315,6 +326,58 @@ fn build_nav(query: &str, active_route: Signal<&'static str>) -> Element {
     ui! { Stack(gap = StackGap::None) { items } }
 }
 
+// =============================================================================
+// route_link — the in-app route-jump wrapper shared by the sidebar nav
+// items and the Overview landing CTAs. Per-core fork:
+//
+//   old-core: the framework `link(route = …, params = ())` primitive —
+//     exactly what every call site spelled before the fork.
+//   new-core SEAM (nav-SDK link-activator, P6): `link(route = …)` is a
+//     documented macro deferral on the new core (the ambient
+//     link-activator lives in the old routing registry), so the wrapper
+//     is a `pressable` firing the swap navigator's `on_select` instead.
+//     `on_select` is captured at layout build via `set_nav_select`
+//     because screens (including the INITIAL screen, which mounts before
+//     the navigator provides `SwapNav`) can build outside the world
+//     provide window — the click always happens after layout, so the
+//     stash is populated by then.
+// =============================================================================
+
+#[cfg(feature = "old-core")]
+pub fn route_link(route: &'static Route<()>, child: Element) -> Element {
+    ui! {
+        link(route = route, params = ()) {
+            child
+        }
+    }
+}
+
+#[cfg(feature = "new-core")]
+thread_local! {
+    static NAV_SELECT: std::cell::RefCell<Option<Rc<dyn Fn(&'static str)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Stash the swap navigator's `on_select` for `route_link` — called once
+/// from `app_newcore`'s `.layout(...)` closure.
+#[cfg(feature = "new-core")]
+pub fn set_nav_select(f: Rc<dyn Fn(&'static str)>) {
+    NAV_SELECT.with(|s| *s.borrow_mut() = Some(f));
+}
+
+#[cfg(feature = "new-core")]
+pub fn route_link(route: &'static Route<()>, child: Element) -> Element {
+    let name = route.name();
+    pressable(vec![child], move || {
+        NAV_SELECT.with(|s| {
+            if let Some(f) = &*s.borrow() {
+                f(name)
+            }
+        })
+    })
+    .into_element()
+}
+
 fn nav_item(entry: &'static Entry, active_route: Signal<&'static str>) -> Element {
     let route = entry.route;
     let route_name = route.name();
@@ -326,14 +389,13 @@ fn nav_item(entry: &'static Entry, active_route: Signal<&'static str>) -> Elemen
     }));
     let dot = NavDot().ready(if ready { NavDotReady::On } else { NavDotReady::Off });
 
-    ui! {
-        link(route = route, params = ()) {
-            view(style = container) {
-                text(style = crate::styles::NavLinkText()) { name }
-                view(style = dot) {}
-            }
+    let row: Element = ui! {
+        view(style = container) {
+            text(style = crate::styles::NavLinkText()) { name }
+            view(style = dot) {}
         }
-    }
+    };
+    route_link(route, row)
 }
 
 // =============================================================================
@@ -416,6 +478,7 @@ pub struct CodePanelProps {
     pub src: String,
 }
 
+#[cfg(feature = "old-core")]
 #[derive(Copy, Clone)]
 struct Palette {
     ink: &'static str,
@@ -424,6 +487,7 @@ struct Palette {
     accent: &'static str,
 }
 
+#[cfg(feature = "old-core")]
 const LIGHT_PALETTE: Palette = Palette {
     ink: "#1f2328",
     comment: "#8a8270",
@@ -431,6 +495,7 @@ const LIGHT_PALETTE: Palette = Palette {
     accent: "#5a4fcf",
 };
 
+#[cfg(feature = "old-core")]
 const DARK_PALETTE: Palette = Palette {
     ink: "#e8eaf0",
     comment: "#9099a8",
@@ -456,6 +521,7 @@ fn is_dark_color(s: &str) -> bool {
     luma < 128.0
 }
 
+#[cfg(feature = "old-core")]
 fn highlight(src: &str, palette: Palette) -> Vec<(String, Color)> {
     let keywords = [
         "fn", "let", "pub", "use", "mod", "struct", "enum", "impl", "trait", "for", "in", "if",
@@ -534,6 +600,7 @@ fn highlight(src: &str, palette: Palette) -> Vec<(String, Color)> {
     out
 }
 
+#[cfg(feature = "old-core")]
 #[component]
 pub fn CodePanel(props: &CodePanelProps) -> Element {
     let panel_style = CodePanelBox();
@@ -545,6 +612,23 @@ pub fn CodePanel(props: &CodePanelProps) -> Element {
         codeblock::code_block(spans)
             .with_style(code_style)
             .into_element()
+    });
+    ui! { view(style = panel_style) { dynamic } }
+}
+
+// SEAM(new-core): `codeblock` is an old-core External SDK (the External
+// port is a later wave) — render the snippet as a mono-styled `text`
+// inside the same panel styling. The theme switch is kept so the panel
+// still re-renders on Light/Dark (the ink color rides `CodeText`'s
+// tokens either way; the per-span highlight returns with the SDK).
+#[cfg(feature = "new-core")]
+#[component]
+pub fn CodePanel(props: &CodePanelProps) -> Element {
+    let panel_style = CodePanelBox();
+    let src = props.src.clone();
+    let dynamic = switch(theme_is_dark, move |&_is_dark| {
+        let code = src.clone();
+        ui! { text(style = StyleApplication::new(CodeText::sheet())) { code } }
     });
     ui! { view(style = panel_style) { dynamic } }
 }
@@ -638,6 +722,7 @@ pub struct PropsTableProps {
     pub rows: Vec<Prop>,
 }
 
+#[cfg(feature = "old-core")]
 #[component]
 pub fn PropsTable(props: PropsTableProps) -> Element {
     let mut rows: Vec<Element> = Vec::with_capacity(props.rows.len() + 1);
@@ -661,6 +746,25 @@ pub fn PropsTable(props: PropsTableProps) -> Element {
         });
     }
     ui! { Table { rows } }
+}
+
+// SEAM(new-core): idea-ui's `Table` rides the old-core-only `table`
+// External SDK — render the same prop data as stacked definition rows
+// (name + type on one line, description under it) until the SDK's own
+// retarget wave.
+#[cfg(feature = "new-core")]
+#[component]
+pub fn PropsTable(props: PropsTableProps) -> Element {
+    ui! {
+        Stack(gap = StackGap::Md) {
+            for p in props.rows {
+                view {
+                    Typography(content = format!("{} — {}", p.name, p.ty), kind = typography_kind::H3)
+                    Typography(content = p.desc.to_string(), muted = true)
+                }
+            }
+        }
+    }
 }
 
 // =============================================================================

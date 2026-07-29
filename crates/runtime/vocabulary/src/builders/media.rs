@@ -220,15 +220,18 @@ impl IconBuilder {
 }
 
 /// Start a `link`. External links (`.external(true)`) default their
-/// activation to the platform URL opener; non-external links require
-/// `.on_activate(...)` until the navigator layer lands (the handler
-/// panics otherwise — a link that silently does nothing is a footgun).
+/// activation to the platform URL opener; in-app links declare a
+/// destination via `.route(...)` (resolved against the enclosing
+/// navigator's ambient `LinkActivator` at mount — P6) or a raw
+/// `.on_activate(...)`; a link with none of the three panics at mount —
+/// a link that silently does nothing is a footgun.
 pub fn link() -> LinkBuilder {
     LinkBuilder {
         prim: LinkPrim {
             url: Value::Const(String::new()),
             external: false,
             on_activate: None,
+            route_link: None,
             style: None,
             a11y: AccessibilityProps::default(),
             ref_fill: None,
@@ -266,9 +269,35 @@ impl LinkBuilder {
         self
     }
 
-    /// Activation callback (navigation dispatch for in-app links).
+    /// Activation callback (raw navigation dispatch for in-app links —
+    /// prefer [`route`](Self::route) for typed route destinations).
     pub fn on_activate(mut self, f: impl Fn() + 'static) -> Self {
         self.prim.on_activate = Some(Rc::new(f));
+        self
+    }
+
+    /// Declare a typed in-app destination: sets the pre-computed URL
+    /// (`params.to_path(route.path())` — web `<a href>` + right-click
+    /// affordances) and the [`RouteLink`](crate::prims::RouteLink)
+    /// payload the mount handler resolves against the enclosing
+    /// navigator's ambient `LinkActivator`. `P: Clone` reproduces a
+    /// fresh boxed params payload per activation (the old `link()`
+    /// contract).
+    pub fn route<P>(
+        mut self,
+        route: &runtime_core::primitives::navigator::Route<P>,
+        params: P,
+    ) -> Self
+    where
+        P: runtime_core::primitives::navigator::RouteParams + Clone + 'static,
+    {
+        let url = params.to_path(route.path());
+        let params_rc = Rc::new(params);
+        self.prim.url = Value::Const(url);
+        self.prim.route_link = Some(crate::prims::RouteLink {
+            name: route.name(),
+            make_params: Rc::new(move || Box::new((*params_rc).clone())),
+        });
         self
     }
 

@@ -82,8 +82,8 @@ fn reactive_state() -> Element {
     let count = signal(0);
     // `Signal<T>` is `Copy`, so each closure owns its own handle to the
     // same reactive cell \u{2014} no shadowing dance, no `.clone()`.
-    let increment: Rc<dyn Fn()> = Rc::new(move || count.update(|n| *n += 1));
-    let decrement: Rc<dyn Fn()> = Rc::new(move || count.update(|n| *n -= 1));
+    let increment: Rc<dyn Fn()> = Rc::new(move || count.set(count.get() + 1));
+    let decrement: Rc<dyn Fn()> = Rc::new(move || count.set(count.get() - 1));
     let reset: Rc<dyn Fn()> = Rc::new(move || count.set(0));
 
     let buttons: Vec<Element> = vec![

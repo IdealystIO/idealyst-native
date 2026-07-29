@@ -144,7 +144,7 @@ impl Default for RadioProps {
     fn default() -> Self {
         Self {
             label: Reactive::Static(None),
-            selected: Signal::new(false),
+            selected: runtime_core::signal(false),
             on_select: Rc::new(|| {}),
             tone: Reactive::Static(ToneRef::default()),
             variant: Reactive::Static(VariantRef::default()),
@@ -253,7 +253,7 @@ pub struct RadioGroupProps {
 impl Default for RadioGroupProps {
     fn default() -> Self {
         Self {
-            value: Signal::new(String::new()),
+            value: runtime_core::signal(String::new()),
             on_change: Rc::new(|_| {}),
             options: Vec::new(),
             axis: Reactive::Static(RadioAxis::default()),

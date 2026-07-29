@@ -26,6 +26,9 @@ type Log = Rc<RefCell<Vec<String>>>;
 struct Mini {
     log: Log,
     next: u32,
+    /// Link activations received via `create_link` (the P6 route-link
+    /// tests fire them like platform clicks).
+    link_activations: Rc<RefCell<Vec<Rc<dyn Fn()>>>>,
 }
 
 impl Mini {
@@ -115,6 +118,22 @@ impl Backend for Mini {
         self.log.borrow_mut().push(format!("clear_children n{node}"));
     }
 
+    fn create_link(
+        &mut self,
+        config: runtime_core::primitives::link::LinkConfig,
+        _a11y: &AccessibilityProps,
+    ) -> u32 {
+        self.link_activations.borrow_mut().push(config.on_activate);
+        let n = self.next;
+        self.next += 1;
+        self.log
+            .borrow_mut()
+            .push(format!("create n{n} link route={:?}", config.route));
+        n
+    }
+
+    fn update_link_url(&mut self, _node: &u32, _url: &str) {}
+
     fn finish(&mut self, _root: u32) {}
 }
 
@@ -123,11 +142,17 @@ struct Harness {
     backend: Rc<RefCell<LegacyBridge<Mini>>>,
     registry: Rc<Registry<LegacyBridge<Mini>>>,
     log: Log,
+    link_activations: Rc<RefCell<Vec<Rc<dyn Fn()>>>>,
 }
 
 fn harness() -> Harness {
     let log: Log = Rc::new(RefCell::new(Vec::new()));
-    let backend = Rc::new(RefCell::new(LegacyBridge(Mini { log: log.clone(), next: 0 })));
+    let link_activations: Rc<RefCell<Vec<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(Vec::new()));
+    let backend = Rc::new(RefCell::new(LegacyBridge(Mini {
+        log: log.clone(),
+        next: 0,
+        link_activations: link_activations.clone(),
+    })));
     let mut registry = Registry::new();
     register_builtins(&mut registry);
     Harness {
@@ -135,6 +160,7 @@ fn harness() -> Harness {
         backend,
         registry: Rc::new(registry),
         log,
+        link_activations,
     }
 }
 
@@ -632,6 +658,238 @@ fn robot_nav_registry_swap_snapshot_is_depthless() {
             "swap reports its single active entry"
         );
         assert!(snap.is_current, "dispatch marked the swap current");
+    });
+    robot.reset();
+}
+
+// ===========================================================================
+// P6: header-options carrier (Screen + ScreenChrome) + link activator
+// ===========================================================================
+
+/// The stack republishes `screen_chrome` on EVERY navigation, even when
+/// the two screens carry IDENTICAL (absent) options — the screen
+/// underneath swapped, and the old handler used `set_always` for
+/// exactly this. The rev stamp is what makes the guarded new-core `set`
+/// notify; a plain options payload would compare equal and freeze the
+/// author header.
+#[test]
+fn stack_chrome_republishes_on_every_navigation() {
+    use runtime_vocabulary::prims::ScreenChrome;
+
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        let fx = mount_stack(&h, StackRetention::Retain);
+        world.flush();
+        let fires = Rc::new(Cell::new(0u32));
+        {
+            let fires = fires.clone();
+            let chrome: runtime_world::Signal<ScreenChrome> =
+                inject::<StackNav>().expect("StackNav ambient").screen_chrome;
+            runtime_world::effect(move || {
+                let _ = chrome.get();
+                fires.set(fires.get() + 1);
+            });
+        }
+        world.flush();
+        assert_eq!(fires.get(), 1, "effect's first run");
+
+        // Both screens are optionless — identical payloads. Push and
+        // pop must each notify anyway.
+        fx.handle.push(&DETAIL, ());
+        world.flush();
+        assert_eq!(fires.get(), 2, "push republished chrome");
+        (fx.ctx.pop)();
+        world.flush();
+        assert_eq!(fires.get(), 3, "pop republished chrome");
+    });
+}
+
+/// `Screen::with`-carried options ride the back-stack: the ACTIVE
+/// screen's payload is what `screen_chrome` holds, and a pop reveals
+/// the covered screen's payload again (options survive retention).
+#[test]
+fn stack_screen_options_follow_the_active_screen() {
+    use runtime_vocabulary::builders::stack_navigator;
+    use runtime_vocabulary::prims::Screen;
+
+    #[derive(Clone, PartialEq, Debug)]
+    struct Title(&'static str);
+
+    let h = harness();
+    let world = h.world.clone();
+    let handle_slot: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+    let ctx_slot: Rc<RefCell<Option<StackNav>>> = Rc::new(RefCell::new(None));
+    world.enter(|| {
+        let element = {
+            let handle_slot = handle_slot.clone();
+            let ctx_slot = ctx_slot.clone();
+            stack_navigator(&HOME)
+                .screen(HOME, |_| {
+                    Screen::new(view().build()).with(Title("Home"))
+                })
+                .screen(DETAIL, |_| view().build()) // optionless
+                .retention(StackRetention::Retain)
+                .layout(move || {
+                    *ctx_slot.borrow_mut() = inject::<StackNav>();
+                    view().child(navigator_outlet()).build()
+                })
+                .on_handle(move |h| *handle_slot.borrow_mut() = Some(h))
+                .build()
+        };
+        let _realized = realize(&h.backend, &h.registry, element);
+        world.flush();
+
+        let ctx = ctx_slot.borrow_mut().take().expect("StackNav provided");
+        let title_of = |ctx: &StackNav| {
+            ctx.screen_chrome
+                .get()
+                .options
+                .as_ref()
+                .and_then(|o| o.downcast_ref::<Title>().cloned())
+        };
+        assert_eq!(title_of(&ctx), Some(Title("Home")), "seat published options");
+
+        let handle = handle_slot.borrow_mut().take().expect("on_handle");
+        handle.push(&DETAIL, ());
+        world.flush();
+        assert_eq!(title_of(&ctx), None, "optionless top publishes None");
+
+        handle.pop();
+        world.flush();
+        assert_eq!(
+            title_of(&ctx),
+            Some(Title("Home")),
+            "pop republishes the revealed screen's retained options"
+        );
+    });
+}
+
+/// A route link mounted in a NESTED navigator's screen targets the
+/// INNER navigator (the innermost `LinkActivator` shadows the outer,
+/// save/restore) — the old ambient-navigator stack invariant. The
+/// outer link (in the outer screen but outside the inner navigator)
+/// keeps targeting the outer.
+#[test]
+fn link_activator_targets_the_innermost_navigator() {
+    use runtime_vocabulary::builders::{link, swap_navigator};
+
+    let h = harness();
+    let world = h.world.clone();
+    let inner_about_builds = Rc::new(Cell::new(0u32));
+    let outer_about_builds = Rc::new(Cell::new(0u32));
+
+    world.enter(|| {
+        let element = {
+            let inner_about_builds = inner_about_builds.clone();
+            let outer_about_builds = outer_about_builds.clone();
+            swap_navigator(&HOME)
+                .screen(HOME, move |_| {
+                    // The outer HOME screen hosts: a link of its own
+                    // (targets OUTER) + a whole nested swap whose
+                    // screen hosts a link (targets INNER).
+                    let inner_about_builds = inner_about_builds.clone();
+                    view()
+                        .child(
+                            link()
+                                .route(&ABOUT, ())
+                                .child(text().content("outer-link"))
+                                .build(),
+                        )
+                        .child(
+                            swap_navigator(&HOME)
+                                .screen(HOME, |_| {
+                                    view()
+                                        .child(
+                                            link()
+                                                .route(&ABOUT, ())
+                                                .child(text().content("inner-link"))
+                                                .build(),
+                                        )
+                                        .build()
+                                })
+                                .screen(ABOUT, move |_| {
+                                    inner_about_builds.set(inner_about_builds.get() + 1);
+                                    text().content("inner-about").build()
+                                })
+                                .build(),
+                        )
+                        .build()
+                })
+                .screen(ABOUT, move |_| {
+                    outer_about_builds.set(outer_about_builds.get() + 1);
+                    text().content("outer-about").build()
+                })
+                .build()
+        };
+        let _realized = realize(&h.backend, &h.registry, element);
+        world.flush();
+
+        // Mount order: outer-link mounts first, then the nested
+        // navigator's inner-link.
+        assert_eq!(h.link_activations.borrow().len(), 2);
+        let outer_activate = h.link_activations.borrow()[0].clone();
+        let inner_activate = h.link_activations.borrow()[1].clone();
+
+        // Inner link → INNER navigator selects; the outer stays on HOME
+        // (its ABOUT never builds).
+        inner_activate();
+        world.flush();
+        assert_eq!(inner_about_builds.get(), 1, "inner navigator selected");
+        assert_eq!(outer_about_builds.get(), 0, "outer untouched");
+
+        // Outer link → OUTER navigator selects.
+        outer_activate();
+        world.flush();
+        assert_eq!(outer_about_builds.get(), 1, "outer navigator selected");
+    });
+}
+
+/// A route link mounted OUTSIDE any navigator silently no-ops on
+/// activation — the old `link()` posture (never a panic; chrome taps
+/// must not crash).
+#[test]
+fn link_route_outside_a_navigator_noops() {
+    use runtime_vocabulary::builders::link;
+
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        let element = link()
+            .route(&ABOUT, ())
+            .child(text().content("orphan"))
+            .build();
+        let _realized = realize(&h.backend, &h.registry, element);
+        let activate = h.link_activations.borrow()[0].clone();
+        activate(); // must not panic
+        world.flush();
+    });
+}
+
+/// The SDK's presentation label rides `.nav_label(...)` into the robot
+/// nav registry's `type_name` (wire parity with the old bridge, which
+/// served `std::any::type_name::<SwapPresentation>()`); bare vocabulary
+/// mounts keep the builder-name fallback (pinned by the two
+/// registry tests above).
+#[cfg(feature = "robot")]
+#[test]
+fn robot_nav_snapshot_carries_the_sdk_presentation_label() {
+    use runtime_vocabulary::builders::swap_navigator;
+    use runtime_vocabulary::robot::all_navigators;
+
+    let robot = runtime_vocabulary::robot::Robot::new();
+    robot.reset();
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        let element = swap_navigator(&HOME)
+            .screen(HOME, |_| view().build())
+            .nav_label("swap_navigator::SwapPresentation")
+            .build();
+        let _realized = realize(&h.backend, &h.registry, element);
+        let navs = all_navigators();
+        assert_eq!(navs.len(), 1);
+        assert_eq!(navs[0].type_name, "swap_navigator::SwapPresentation");
     });
     robot.reset();
 }

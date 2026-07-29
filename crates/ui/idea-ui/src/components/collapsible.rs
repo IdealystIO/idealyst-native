@@ -50,6 +50,7 @@ use runtime_core::{
     IdealystSchema, IntoElement, LayoutSubscription, Reactive, Ref, Signal, StyleApplication,
     VariantEnum, ViewHandle,
 };
+use idea_theme::compat::SignalModify as _;
 use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
 use std::time::Duration;
 
@@ -165,7 +166,7 @@ impl Default for CollapsibleProps {
     fn default() -> Self {
         Self {
             title: Reactive::Static(String::new()),
-            value: Signal::new(false),
+            value: runtime_core::signal(false),
             on_change: Rc::new(|_| {}),
             transition: Reactive::Static(CollapsibleTransition::default()),
             duration_ms: Reactive::Static(COLLAPSIBLE_DURATION_DEFAULT_MS),
@@ -489,7 +490,7 @@ impl Default for AccordionProps {
     fn default() -> Self {
         Self {
             items: Vec::new(),
-            open: Signal::new(Vec::new()),
+            open: runtime_core::signal(Vec::new()),
             expand: Reactive::Static(AccordionExpand::default()),
             transition: Reactive::Static(CollapsibleTransition::default()),
             duration_ms: Reactive::Static(COLLAPSIBLE_DURATION_DEFAULT_MS),
@@ -521,7 +522,7 @@ pub fn Accordion(props: AccordionProps) -> Element {
     // default-empty case gracefully without panicking on out-of-bounds.
     let current_len = open_state.get().len();
     if current_len < n {
-        open_state.update(|v| v.resize(n, false));
+        open_state.modify(|v| v.resize(n, false));
     }
 
     let mut item_views: Vec<Element> = Vec::with_capacity(props.items.len());
@@ -547,7 +548,7 @@ pub fn Accordion(props: AccordionProps) -> Element {
         // `expand` mode, then fire the observation callback.
         let on_change_for_item = on_change.clone();
         let item_on_change: Rc<dyn Fn(bool)> = Rc::new(move |next_open: bool| {
-            open_state.update(|v| match expand {
+            open_state.modify(|v| match expand {
                 AccordionExpand::Single => {
                     // Clear everything else; set only this item.
                     for entry in v.iter_mut() {

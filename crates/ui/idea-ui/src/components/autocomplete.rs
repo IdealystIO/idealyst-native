@@ -57,6 +57,7 @@
 
 use std::rc::Rc;
 
+use idea_theme::compat::SignalModify as _;
 use runtime_core::primitives::key::{KeyEvent, KeyOutcome};
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
@@ -110,7 +111,7 @@ pub struct AutocompleteProps {
 impl Default for AutocompleteProps {
     fn default() -> Self {
         Self {
-            value: Signal::new(String::new()),
+            value: runtime_core::signal(String::new()),
             on_change: Rc::new(|_| {}),
             options: Vec::new(),
             size: Reactive::Static(SelectSize::default()),
@@ -215,7 +216,9 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
 
     // Filtered option indices, recomputed when the query, the committed
     // value, or any option label changes.
-    let filtered: ReadSignal<Vec<usize>> = {
+    // (No type annotation: `memo` yields `ReadSignal` on the old core
+    // and `Memo` on the new one — both `Copy` handles with `.get()`.)
+    let filtered = {
         let options = options.clone();
         memo(move || {
             let q = query.get();
@@ -341,13 +344,13 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
                 } else {
                     let len = filtered.get().len();
                     if len > 0 {
-                        highlight.update(|h| *h = (*h + 1).min(len - 1));
+                        highlight.modify(|h| *h = (*h + 1).min(len - 1));
                     }
                 }
                 KeyOutcome::PreventDefault
             }
             "ArrowUp" => {
-                highlight.update(|h| *h = h.saturating_sub(1));
+                highlight.modify(|h| *h = h.saturating_sub(1));
                 KeyOutcome::PreventDefault
             }
             "Enter" => {
@@ -432,7 +435,9 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
                         let key = EachKey::new(o.id.clone());
                         let commit_row = snapshot_commit.clone();
                         let build: EachRowBuild =
-                            Box::new(move || vec![row(o, oi, commit_row, filtered, highlight, value)]);
+                            Box::new(move || {
+                                vec![row(o, oi, commit_row, move || filtered.get(), highlight, value)]
+                            });
                         (key, build)
                     })
                     .collect()
@@ -483,7 +488,10 @@ fn row(
     o: SelectOption,
     oi: usize,
     commit: Rc<dyn Fn(usize)>,
-    filtered: ReadSignal<Vec<usize>>,
+    // A tracked getter rather than a `ReadSignal` handle: `memo` yields
+    // `ReadSignal` on the old core and `Memo` on the new one, and the
+    // row only ever `.get()`s — the closure form is the shared shape.
+    filtered: impl Fn() -> Vec<usize> + 'static,
     highlight: Signal<usize>,
     value: Signal<String>,
 ) -> Element {
@@ -494,7 +502,7 @@ fn row(
             let _ = idea_theme::active_theme_untracked()
                 .downcast_ref::<IdeaThemeRef>()
                 .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
-            let highlighted = filtered.get().get(highlight.get()).copied() == Some(oi);
+            let highlighted = filtered().get(highlight.get()).copied() == Some(oi);
             let selected = value.get() == id_for_style;
             let variant = if selected {
                 "on"
@@ -511,6 +519,8 @@ fn row(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P, TStyle};
+    use idea_theme::testing::with_test_world;
 
     fn labels(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
@@ -518,25 +528,31 @@ mod tests {
 
     #[test]
     fn empty_query_matches_everything() {
-        let ls = labels(&["Apple", "Pear", "Plum"]);
-        assert_eq!(filter_indices(&ls, "", None), vec![0, 1, 2]);
-        // Whitespace-only is also "empty" after trim.
-        assert_eq!(filter_indices(&ls, "   ", None), vec![0, 1, 2]);
+        with_test_world(|| {
+            let ls = labels(&["Apple", "Pear", "Plum"]);
+            assert_eq!(filter_indices(&ls, "", None), vec![0, 1, 2]);
+            // Whitespace-only is also "empty" after trim.
+            assert_eq!(filter_indices(&ls, "   ", None), vec![0, 1, 2]);
+    });
     }
 
     #[test]
     fn substring_match_is_case_insensitive() {
-        let ls = labels(&["Apple", "Pear", "Pineapple"]);
-        // "ap" hits Apple + Pineapple, not Pear.
-        assert_eq!(filter_indices(&ls, "ap", None), vec![0, 2]);
-        // Case folds both ways.
-        assert_eq!(filter_indices(&ls, "PEAR", None), vec![1]);
+        with_test_world(|| {
+            let ls = labels(&["Apple", "Pear", "Pineapple"]);
+            // "ap" hits Apple + Pineapple, not Pear.
+            assert_eq!(filter_indices(&ls, "ap", None), vec![0, 2]);
+            // Case folds both ways.
+            assert_eq!(filter_indices(&ls, "PEAR", None), vec![1]);
+    });
     }
 
     #[test]
     fn no_match_returns_empty() {
-        let ls = labels(&["Apple", "Pear"]);
-        assert!(filter_indices(&ls, "zzz", None).is_empty());
+        with_test_world(|| {
+            let ls = labels(&["Apple", "Pear"]);
+            assert!(filter_indices(&ls, "zzz", None).is_empty());
+    });
     }
 
     // The committed-selection special case: when the query equals the
@@ -544,26 +560,36 @@ mod tests {
     // so the whole list comes back (not just the self-containing row).
     #[test]
     fn query_equal_to_selected_label_shows_all() {
-        let ls = labels(&["Apple", "Pear", "Plum"]);
-        assert_eq!(
-            filter_indices(&ls, "Apple", Some("Apple")),
-            vec![0, 1, 2],
-            "reopening a combobox on its committed value should list every option"
-        );
+        with_test_world(|| {
+            let ls = labels(&["Apple", "Pear", "Plum"]);
+            assert_eq!(
+                filter_indices(&ls, "Apple", Some("Apple")),
+                vec![0, 1, 2],
+                "reopening a combobox on its committed value should list every option"
+            );
+    });
     }
 
     // ...but once the user edits away from the committed label, normal
     // filtering resumes even though a selection exists.
     #[test]
     fn editing_away_from_selection_filters_normally() {
-        let ls = labels(&["Apple", "Pear", "Plum"]);
-        assert_eq!(filter_indices(&ls, "plu", Some("Apple")), vec![2]);
+        with_test_world(|| {
+            let ls = labels(&["Apple", "Pear", "Plum"]);
+            assert_eq!(filter_indices(&ls, "plu", Some("Apple")), vec![2]);
+    });
     }
 
     /// Destructure a built Autocomplete into the pieces the behavioral
     /// regressions poke at: the input's `value` signal + `on_change` +
     /// `on_focus` notifier, the chevron pressable, and the dropdown
     /// `when`'s live `open` condition.
+    ///
+    /// Old-core only: the mirror collapses `on_focus` to presence (`bool`)
+    /// and the dropdown `when`'s live condition is an opaque `Dyn` hole on
+    /// the new core, so the invoke-the-handlers behavioral tests below
+    /// can't be expressed through the build tree there.
+    #[cfg(not(feature = "new-core"))]
     #[allow(clippy::type_complexity)]
     fn dissect(
         tree: Element,
@@ -599,53 +625,63 @@ mod tests {
     // REGRESSION: focusing the input did nothing — the menu only opened on
     // typing / ArrowDown / the chevron. A combobox must invite browsing the
     // moment the field activates.
+    // Old-core only: drives the on_focus handler + reads the `when` cond —
+    // both opaque through the new-core build tree (see `dissect`).
+    #[cfg(not(feature = "new-core"))]
     #[test]
     fn regression_focusing_the_input_opens_the_menu() {
-        idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
-        let props = AutocompleteProps {
-            value: Signal::new("pear".to_string()),
-            options: vec![
-                SelectOption::new("apple", "Apple"),
-                SelectOption::new("pear", "Pear"),
-            ],
-            ..Default::default()
-        };
-        let (_query, _on_change, on_focus, _chevron, open) = dissect(Autocomplete(props));
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+            let props = AutocompleteProps {
+                value: runtime_core::signal("pear".to_string()),
+                options: vec![
+                    SelectOption::new("apple", "Apple"),
+                    SelectOption::new("pear", "Pear"),
+                ],
+                ..Default::default()
+            };
+            let (_query, _on_change, on_focus, _chevron, open) = dissect(Autocomplete(props));
 
-        assert!(!open(), "menu starts closed");
-        (on_focus)(true);
-        assert!(open(), "focusing the input must open the menu");
+            assert!(!open(), "menu starts closed");
+            (on_focus)(true);
+            assert!(open(), "focusing the input must open the menu");
+    });
     }
 
     // REGRESSION: blurring the input left the menu dangling open (only
     // Escape / a committed row closed it), and the typed filter text
     // lingered. Losing focus must dismiss AND revert unmatched typing to
     // the committed selection's label — same contract as Escape.
+    // Old-core only: drives the on_focus handler + reads the `when` cond —
+    // both opaque through the new-core build tree (see `dissect`).
+    #[cfg(not(feature = "new-core"))]
     #[test]
     fn regression_blurring_the_input_closes_the_menu_and_reverts() {
-        idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
-        let props = AutocompleteProps {
-            value: Signal::new("pear".to_string()),
-            options: vec![
-                SelectOption::new("apple", "Apple"),
-                SelectOption::new("pear", "Pear"),
-            ],
-            ..Default::default()
-        };
-        let (query, on_change, on_focus, _chevron, open) = dissect(Autocomplete(props));
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+            let props = AutocompleteProps {
+                value: runtime_core::signal("pear".to_string()),
+                options: vec![
+                    SelectOption::new("apple", "Apple"),
+                    SelectOption::new("pear", "Pear"),
+                ],
+                ..Default::default()
+            };
+            let (query, on_change, on_focus, _chevron, open) = dissect(Autocomplete(props));
 
-        (on_focus)(true);
-        (on_change)("zzz".to_string()); // user types an unmatched filter
-        assert!(open());
-        assert_eq!(query.get(), "zzz");
+            (on_focus)(true);
+            (on_change)("zzz".to_string()); // user types an unmatched filter
+            assert!(open());
+            assert_eq!(query.get(), "zzz");
 
-        (on_focus)(false);
-        assert!(!open(), "blurring the input must close the menu");
-        assert_eq!(
-            query.get(),
-            "Pear",
-            "blur must revert unmatched typing to the committed selection's label"
-        );
+            (on_focus)(false);
+            assert!(!open(), "blurring the input must close the menu");
+            assert_eq!(
+                query.get(),
+                "Pear",
+                "blur must revert unmatched typing to the committed selection's label"
+            );
+    });
     }
 
     // The close-on-blur above is only safe because the widget's press
@@ -656,16 +692,29 @@ mod tests {
     // of closing.
     #[test]
     fn chevron_is_a_focus_preserving_pressable() {
-        idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
-        let props = AutocompleteProps {
-            options: vec![SelectOption::new("apple", "Apple")],
-            ..Default::default()
-        };
-        let (_query, _on_change, _on_focus, chevron, _open) = dissect(Autocomplete(props));
-        let Element::Pressable { preserves_focus, .. } = chevron else {
-            panic!("chevron is a pressable");
-        };
-        assert!(preserves_focus, "the chevron must not blur the input when pressed");
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+            let props = AutocompleteProps {
+                options: vec![SelectOption::new("apple", "Apple")],
+                ..Default::default()
+            };
+            // wrapper view [input+chevron wrapper, dropdown panel] → the
+            // chevron is the wrapper's second child.
+            let mut children = match classify(Autocomplete(props)) {
+                P::View { children, .. } => children,
+                _ => panic!("Autocomplete renders a view wrapper"),
+            };
+            let mut wrapper_children = match classify(children.remove(0)) {
+                P::View { children, .. } => children,
+                _ => panic!("first child is the input+chevron wrapper view"),
+            };
+            assert!(wrapper_children.len() >= 2, "wrapper holds [input, chevron]");
+            let chevron = wrapper_children.remove(1);
+            let P::Pressable { preserves_focus, .. } = classify(chevron) else {
+                panic!("chevron is a pressable");
+            };
+            assert!(preserves_focus, "the chevron must not blur the input when pressed");
+    });
     }
 
     // REGRESSION: opening the menu always put the keyboard cursor on row 0,
@@ -675,21 +724,23 @@ mod tests {
     // falls back to the top.
     #[test]
     fn regression_open_seeds_cursor_on_committed_selection() {
-        let options = vec![
-            SelectOption::new("apple", "Apple"),
-            SelectOption::new("pear", "Pear"),
-            SelectOption::new("plum", "Plum"),
-        ];
-        // Full list open: selection sits at its own index.
-        assert_eq!(initial_highlight(&[0, 1, 2], &options, "pear"), 1);
-        // Filtered list: position is WITHIN the filtered indices, not the
-        // option's global index.
-        assert_eq!(initial_highlight(&[1, 2], &options, "plum"), 1);
-        // Selection filtered out / nothing committed → top row.
-        assert_eq!(initial_highlight(&[0], &options, "plum"), 0);
-        assert_eq!(initial_highlight(&[0, 1, 2], &options, ""), 0);
-        // Empty match list → 0 (Enter guards on non-empty separately).
-        assert_eq!(initial_highlight(&[], &options, "pear"), 0);
+        with_test_world(|| {
+            let options = vec![
+                SelectOption::new("apple", "Apple"),
+                SelectOption::new("pear", "Pear"),
+                SelectOption::new("plum", "Plum"),
+            ];
+            // Full list open: selection sits at its own index.
+            assert_eq!(initial_highlight(&[0, 1, 2], &options, "pear"), 1);
+            // Filtered list: position is WITHIN the filtered indices, not the
+            // option's global index.
+            assert_eq!(initial_highlight(&[1, 2], &options, "plum"), 1);
+            // Selection filtered out / nothing committed → top row.
+            assert_eq!(initial_highlight(&[0], &options, "plum"), 0);
+            assert_eq!(initial_highlight(&[0, 1, 2], &options, ""), 0);
+            // Empty match list → 0 (Enter guards on non-empty separately).
+            assert_eq!(initial_highlight(&[], &options, "pear"), 0);
+    });
     }
 
     // REGRESSION: the keyboard-cursor row and the committed-selection row
@@ -698,41 +749,45 @@ mod tests {
     // selection = solid, cursor = subtle hover surface, rest = transparent.
     #[test]
     fn regression_cursor_and_selected_rows_paint_differently() {
-        idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
 
-        let filtered: ReadSignal<Vec<usize>> = memo(|| vec![0, 1]);
-        let highlight: Signal<usize> = Signal::new(0);
-        let value: Signal<String> = Signal::new("b".to_string());
-        let el = row(
-            SelectOption::new("a", "A"),
-            0,
-            Rc::new(|_| {}),
-            filtered,
-            highlight,
-            value,
-        );
-        let Element::Pressable { style: Some(style), .. } = el else {
-            panic!("a menu row is a styled pressable");
-        };
-        let runtime_core::StyleSource::Reactive(style) = style else {
-            panic!("row style is reactive (cursor/selection resolve live)");
-        };
-        let bg = |app: StyleApplication| {
-            runtime_core::resolve_style(&app).background.clone().map(|b| b.resolve())
-        };
+            let filtered = memo(|| vec![0, 1]);
+            let highlight: Signal<usize> = runtime_core::signal(0);
+            let value: Signal<String> = runtime_core::signal("b".to_string());
+            let el = row(
+                SelectOption::new("a", "A"),
+                0,
+                Rc::new(|_| {}),
+                move || filtered.get(),
+                highlight,
+                value,
+            );
+            let P::Pressable { style: Some(style), .. } = classify(el) else {
+                panic!("a menu row is a styled pressable");
+            };
+            let TStyle::AppFn(style) = style else {
+                panic!("row style is reactive (cursor/selection resolve live)");
+            };
+            let bg = |app: StyleApplication| {
+                runtime_core::resolve_style(&app).background.clone().map(|b| b.resolve())
+            };
 
-        // highlight=0 → cursor rests on this row; committed value is "b".
-        let cursor_bg = bg(style());
-        // Move the cursor off the row → plain row.
-        highlight.set(1);
-        let off_bg = bg(style());
-        // Commit this row's id → selection paint.
-        value.set("a".to_string());
-        let selected_bg = bg(style());
+            // highlight=0 → cursor rests on this row; committed value is "b".
+            let cursor_bg = bg(style());
+            // Move the cursor off the row → plain row.
+            highlight.set(1);
+            idea_theme::testing::commit();
+            let off_bg = bg(style());
+            // Commit this row's id → selection paint.
+            value.set("a".to_string());
+            idea_theme::testing::commit();
+            let selected_bg = bg(style());
 
-        assert_ne!(cursor_bg, off_bg, "the cursor row must paint against a plain row");
-        assert_ne!(cursor_bg, selected_bg, "cursor and selection must be distinct looks");
-        assert_ne!(selected_bg, off_bg, "the selection must paint against a plain row");
+            assert_ne!(cursor_bg, off_bg, "the cursor row must paint against a plain row");
+            assert_ne!(cursor_bg, selected_bg, "cursor and selection must be distinct looks");
+            assert_ne!(selected_bg, off_bg, "the selection must paint against a plain row");
+    });
     }
 
     // The whole reactive tree (seeded query signal, filter memo, input +
@@ -743,23 +798,25 @@ mod tests {
     // panel placeholder.
     #[test]
     fn builds_collapsed_tree() {
-        idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
-        let value = Signal::new("pear".to_string());
-        let props = AutocompleteProps {
-            value,
-            options: vec![
-                SelectOption::new("apple", "Apple"),
-                SelectOption::new("pear", "Pear"),
-            ],
-            placeholder: Reactive::Static(Some("Search…".to_string())),
-            ..Default::default()
-        };
-        let tree = Autocomplete(props);
-        match tree {
-            Element::View { children, .. } => {
-                assert_eq!(children.len(), 2, "wrapper view + dropdown panel");
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+            let value = runtime_core::signal("pear".to_string());
+            let props = AutocompleteProps {
+                value,
+                options: vec![
+                    SelectOption::new("apple", "Apple"),
+                    SelectOption::new("pear", "Pear"),
+                ],
+                placeholder: Reactive::Static(Some("Search…".to_string())),
+                ..Default::default()
+            };
+            let tree = Autocomplete(props);
+            match classify(tree) {
+                P::View { children, .. } => {
+                    assert_eq!(children.len(), 2, "wrapper view + dropdown panel");
+                }
+                _ => panic!("Autocomplete renders a view wrapper"),
             }
-            _ => panic!("Autocomplete renders a view wrapper"),
-        }
+    });
     }
 }

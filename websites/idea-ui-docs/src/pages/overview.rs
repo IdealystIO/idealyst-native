@@ -13,6 +13,7 @@ use idea_ui::{tone, typography_kind, Grid, Icon, StackGap, ToneRef, Typography};
 use icons_lucide::{ARROW_RIGHT, CHECK, FOLDER, SETTINGS, STAR};
 
 use crate::routes::{CATALOG, BUTTON_ROUTE, INTENTS_ROUTE};
+use crate::shell::route_link;
 use crate::styles::{
     CatCard, CatChip, CatChips, CatCount, CatGroupLabel, CatHead, CtaOutline, CtaOutlineText,
     CtaPrimary, CtaPrimaryText, FeatureBody, FeatureCard, FeatureIconBox, FeatureIconBoxTone,
@@ -83,6 +84,21 @@ pub fn overview() -> Element {
 // ---- Hero --------------------------------------------------------------
 
 fn hero() -> Element {
+    // Route-jump CTAs via `shell::route_link` — the framework `link`
+    // primitive on old-core, a `pressable` + swap `on_select` on
+    // new-core (the link-activator seam; see shell.rs).
+    let browse_cta = route_link(&BUTTON_ROUTE, ui! {
+        view(style = CtaPrimary()) {
+            text(style = CtaPrimaryText()) { "Browse components".to_string() }
+            Icon(data = ARROW_RIGHT, size = 18.0, color = Some(Color("#ffffff".into())))
+        }
+    });
+    let tokens_cta = route_link(&INTENTS_ROUTE, ui! {
+        view(style = CtaOutline()) {
+            Icon(data = STAR, size = 18.0, tone = Some(tone::Neutral.into()))
+            text(style = CtaOutlineText()) { "View the tokens".to_string() }
+        }
+    });
     ui! {
         view(style = HeroCard()) {
             view(style = HeroBadge()) {
@@ -101,18 +117,8 @@ fn hero() -> Element {
                 muted = true,
             )
             view(style = HeroCtaRow()) {
-                link(route = &BUTTON_ROUTE, params = ()) {
-                    view(style = CtaPrimary()) {
-                        text(style = CtaPrimaryText()) { "Browse components".to_string() }
-                        Icon(data = ARROW_RIGHT, size = 18.0, color = Some(Color("#ffffff".into())))
-                    }
-                }
-                link(route = &INTENTS_ROUTE, params = ()) {
-                    view(style = CtaOutline()) {
-                        Icon(data = STAR, size = 18.0, tone = Some(tone::Neutral.into()))
-                        text(style = CtaOutlineText()) { "View the tokens".to_string() }
-                    }
-                }
+                browse_cta
+                tokens_cta
             }
         }
     }
@@ -158,6 +164,13 @@ fn feature(
 // ---- Token-resolution strip --------------------------------------------
 
 fn token_strip() -> Element {
+    // Route-jump via `shell::route_link` (per-core link seam — see shell.rs).
+    let intents_cta = route_link(&INTENTS_ROUTE, ui! {
+        view(style = CtaPrimary()) {
+            text(style = CtaPrimaryText()) { "Explore intents".to_string() }
+            Icon(data = ARROW_RIGHT, size = 18.0, color = Some(Color("#ffffff".into())))
+        }
+    });
     ui! {
         view(style = TokenStrip()) {
             view(style = TokenStripCol()) {
@@ -166,12 +179,7 @@ fn token_strip() -> Element {
                 text(style = TokenStripCode()) { "stylesheet → token(\"intent-primary-solid-bg\")".to_string() }
                 text(style = TokenStripCodeAccent()) { "set_idea_theme(dark) // rebinds, no reclass".to_string() }
             }
-            link(route = &INTENTS_ROUTE, params = ()) {
-                view(style = CtaPrimary()) {
-                    text(style = CtaPrimaryText()) { "Explore intents".to_string() }
-                    Icon(data = ARROW_RIGHT, size = 18.0, color = Some(Color("#ffffff".into())))
-                }
-            }
+            intents_cta
         }
     }
 }
@@ -203,15 +211,14 @@ fn catalog_card(group: &'static crate::routes::Group) -> Element {
             ui! { text(style = CatChip()) { name } }
         })
         .collect();
-    ui! {
-        link(route = first, params = ()) {
-            view(style = CatCard()) {
-                view(style = CatHead()) {
-                    text(style = CatGroupLabel()) { label }
-                    text(style = CatCount()) { count }
-                }
-                view(style = CatChips()) { chips }
+    // Route-jump via `shell::route_link` (per-core link seam — see shell.rs).
+    route_link(first, ui! {
+        view(style = CatCard()) {
+            view(style = CatHead()) {
+                text(style = CatGroupLabel()) { label }
+                text(style = CatCount()) { count }
             }
+            view(style = CatChips()) { chips }
         }
-    }
+    })
 }

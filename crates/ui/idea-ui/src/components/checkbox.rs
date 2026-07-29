@@ -68,7 +68,7 @@ impl Default for CheckboxProps {
     fn default() -> Self {
         Self {
             label: Reactive::Static(None),
-            value: Signal::new(false),
+            value: runtime_core::signal(false),
             on_change: Rc::new(|_| {}),
             tone: Reactive::Static(ToneRef::default()),
             variant: Reactive::Static(VariantRef::default()),

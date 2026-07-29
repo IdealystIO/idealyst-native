@@ -80,7 +80,6 @@ pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBacke
 
 pub(crate) const ROOT: Route<()> = Route::<()>::new("root", "/");
 pub(crate) const DETAIL: Route<()> = Route::<()>::new("detail", "/detail");
-#[cfg(feature = "old-core")]
 pub(crate) const COMPONENTS: Route<()> = Route::<()>::new("components", "/components");
 
 /// ~1s gives the first layout/paint time to settle before the suite runs.
@@ -159,8 +158,9 @@ pub use old_app::{app, State};
 // ===========================================================================
 // NEW-core app — the same screens/state authored against the vocabulary
 // (screens_newcore.rs), on the vocabulary stack navigator. The COMPONENTS
-// screen (idea-ui) is old-core-only and its suite gated out (blocked,
-// reported — see suites.rs); the `#[method]` counter runs on both cores.
+// screen drives the REAL idea-ui Switch/Checkbox/Button (same-source via
+// idea-ui's P6 `new-core` alias build), so ALL FIVE suites run on both
+// cores; the `#[method]` counter runs on both cores too.
 // ===========================================================================
 
 #[cfg(feature = "new-core")]

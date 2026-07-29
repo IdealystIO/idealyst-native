@@ -20,9 +20,15 @@
 //! size/line-height/color from that base.
 
 use runtime_core::{
-    component, styled_text, Color, Element, FontFamily, Reactive, StyleApplication, TextRun,
-    TextRunStyle, Tokenized,
+    component, Color, Element, FontFamily, Reactive, StyleApplication, Tokenized,
 };
+// `styled_text` + the run types: old-core root re-exports vs the
+// website's new-core shim over the vocabulary text builder (same
+// old-core `TextRun` type — see src/newcore.rs).
+#[cfg(not(feature = "new-core"))]
+use runtime_core::{styled_text, TextRun, TextRunStyle};
+#[cfg(feature = "new-core")]
+use crate::newcore::{styled_text, TextRun, TextRunStyle};
 
 use idea_ui::{
     installed_typography_sheet, Typography, TypographyKindRef, TypographyProps,
@@ -152,7 +158,9 @@ fn build(segs: Vec<Segment>, kind: TypographyKindRef, muted: bool) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "old-core")]
     use idea_ui::{install_idea_theme, light_theme};
+    #[cfg(feature = "old-core")]
     use runtime_core::{styled_text::plain_text_of, TextSource};
 
     fn text_seg(s: &str) -> Segment {
@@ -219,6 +227,11 @@ mod tests {
     /// Backticked prose lowers to ONE styled-text node (every backend
     /// wraps it as a single paragraph) with the paragraph style
     /// attached and the code runs styled.
+    ///
+    /// Old-core-only: matches the old `Element::Text` enum shape (the
+    /// new core's `Element::Item` payload is opaque; the styled-runs
+    /// lowering there is pinned by the vocabulary's own text tests).
+    #[cfg(feature = "old-core")]
     #[test]
     fn code_prose_lowers_to_styled_text_runs() {
         install_idea_theme(light_theme());
@@ -237,6 +250,9 @@ mod tests {
 
     /// Backtick-free content goes straight to Typography — identical
     /// output to a direct Typography call site.
+    ///
+    /// Old-core-only: matches the old `Element::Text` enum shape.
+    #[cfg(feature = "old-core")]
     #[test]
     fn plain_content_delegates_to_typography() {
         install_idea_theme(light_theme());

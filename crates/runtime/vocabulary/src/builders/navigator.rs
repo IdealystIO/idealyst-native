@@ -19,7 +19,7 @@ use runtime_core::primitives::navigator::{Route, RouteParams};
 use runtime_scene::{item, Element};
 
 use crate::prims::{
-    MountPolicy, NavConfig, NavHandle, NavScreenEntry, NavigatorOutletPrim, PrimCell,
+    MountPolicy, NavConfig, NavHandle, NavScreenEntry, NavigatorOutletPrim, PrimCell, Screen,
     StackNavigatorPrim, StackRetention, SwapNavigatorPrim,
 };
 use crate::style_attach::IntoStyleProp;
@@ -39,6 +39,7 @@ pub fn swap_navigator(initial: &Route<()>) -> SwapNavigatorBuilder {
             style: None,
             a11y: AccessibilityProps::default(),
             on_handle: None,
+            nav_label: None,
         },
     }
 }
@@ -49,11 +50,13 @@ pub struct SwapNavigatorBuilder {
 
 impl SwapNavigatorBuilder {
     /// Register a screen: its route and the closure building it from
-    /// typed params.
-    pub fn screen<P, F>(mut self, route: Route<P>, render: F) -> Self
+    /// typed params. The closure may return a bare `Element` or a
+    /// [`Screen`] carrying SDK-defined options (`Into<Screen>`).
+    pub fn screen<P, R, F>(mut self, route: Route<P>, render: F) -> Self
     where
         P: RouteParams + 'static,
-        F: Fn(P) -> Element + 'static,
+        R: Into<Screen> + 'static,
+        F: Fn(P) -> R + 'static,
     {
         let (entry, select) = screen_entry(&route, render);
         self.prim.config.screens.insert(route.name(), entry);
@@ -91,6 +94,14 @@ impl SwapNavigatorBuilder {
         self
     }
 
+    /// Presentation label for introspection (`NavSnapshot::type_name`);
+    /// defaults to the builder name `"swap_navigator"`. The SDK sets
+    /// its old presentation type name for wire parity.
+    pub fn nav_label(mut self, label: &'static str) -> Self {
+        self.prim.nav_label = Some(label);
+        self
+    }
+
     pub fn build(self) -> Element {
         item(PrimCell::new(self.prim), Vec::new())
     }
@@ -110,6 +121,7 @@ pub fn stack_navigator(initial: &Route<()>) -> StackNavigatorBuilder {
             style: None,
             a11y: AccessibilityProps::default(),
             on_handle: None,
+            nav_label: None,
         },
     }
 }
@@ -120,11 +132,14 @@ pub struct StackNavigatorBuilder {
 
 impl StackNavigatorBuilder {
     /// Register a screen: its route and the closure building it from
-    /// typed params.
-    pub fn screen<P, F>(mut self, route: Route<P>, render: F) -> Self
+    /// typed params. The closure may return a bare `Element` or a
+    /// [`Screen`] carrying per-screen header options (`Into<Screen>` —
+    /// the stack SDK's `StackScreenExt` setters produce the latter).
+    pub fn screen<P, R, F>(mut self, route: Route<P>, render: F) -> Self
     where
         P: RouteParams + 'static,
-        F: Fn(P) -> Element + 'static,
+        R: Into<Screen> + 'static,
+        F: Fn(P) -> R + 'static,
     {
         let (entry, _select) = screen_entry(&route, render);
         self.prim.config.screens.insert(route.name(), entry);
@@ -156,6 +171,13 @@ impl StackNavigatorBuilder {
     /// Receive the imperative [`NavHandle`] at mount.
     pub fn on_handle(mut self, fill: impl FnOnce(NavHandle) + 'static) -> Self {
         self.prim.on_handle = Some(Box::new(fill));
+        self
+    }
+
+    /// Presentation label for introspection — see
+    /// [`SwapNavigatorBuilder::nav_label`].
+    pub fn nav_label(mut self, label: &'static str) -> Self {
+        self.prim.nav_label = Some(label);
         self
     }
 
@@ -198,25 +220,26 @@ impl NavigatorOutletBuilder {
 }
 
 /// Shared screen-registration lowering: the type-erased builder (params
-/// downcast — mirrors the SDK builders' panic contract), the
-/// segment→params reconstructor, and the bare-name select recipe (url
-/// from the route pattern + params from an empty segment map — `Some`
-/// only when `P` is constructible without path segments; the old
-/// select-args fix).
-fn screen_entry<P, F>(
+/// downcast — mirrors the SDK builders' panic contract; `Into<Screen>`
+/// carries per-screen options), the segment→params reconstructor, and
+/// the bare-name select recipe (url from the route pattern + params
+/// from an empty segment map — `Some` only when `P` is constructible
+/// without path segments; the old select-args fix).
+fn screen_entry<P, R, F>(
     route: &Route<P>,
     render: F,
 ) -> (NavScreenEntry, crate::prims::SelectArgs)
 where
     P: RouteParams + 'static,
-    F: Fn(P) -> Element + 'static,
+    R: Into<Screen> + 'static,
+    F: Fn(P) -> R + 'static,
 {
     let route_path = route.path();
-    let build: Rc<dyn Fn(Box<dyn Any>) -> Element> = Rc::new(move |any_params: Box<dyn Any>| {
+    let build: Rc<dyn Fn(Box<dyn Any>) -> Screen> = Rc::new(move |any_params: Box<dyn Any>| {
         let typed: Box<P> = any_params
             .downcast::<P>()
             .expect("navigator: route params type mismatch");
-        render(*typed)
+        render(*typed).into()
     });
     let from_segments = Rc::new(
         |segs: &HashMap<String, String>| -> Option<Box<dyn Any>> {

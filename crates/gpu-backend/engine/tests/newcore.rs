@@ -786,3 +786,73 @@ fn stop_tears_down_without_panic_and_unhooks() {
         "backend handle cleared on stop"
     );
 }
+
+/// Regression (flat_list zero-rows class, GPU leg): virtualizer rows
+/// realize on the new core. Two distinct pre-fix failure modes are
+/// pinned at once:
+///
+/// 1. **Re-entrant borrow** — the GPU backend used to mount every row
+///    EAGERLY inside `create_virtualizer` / `virtualizer_data_changed`,
+///    both of which run under `backend.borrow_mut()` on the new core
+///    while `mount_item` realizes rows through the same
+///    `Rc<RefCell<WgpuBackend>>` → "RefCell already borrowed" abort
+///    (the vocabulary contract forbids the synchronous fill; the fill
+///    is now deferred via `schedule_virtualizer_fill`).
+/// 2. **World entry** — the deferred fill invokes `mount_item` from a
+///    scheduler microtask, OUTSIDE `World::enter`; row realization is
+///    creation-side (row signals, Dyn text effects) and panics there
+///    unless the caps wrapper enters the boot-stored world
+///    (`enter_mounted_world` — the same gap every backend shared).
+///
+/// Also covers the data-changed path: growing the count re-fills with
+/// the new rows, again via world-entered deferred callbacks.
+#[test]
+fn regression_virtualizer_rows_realize_world_entered() {
+    let count = Rc::new(Cell::new(3usize));
+    let count_slot: Rc<Cell<Option<runtime_world::Signal<u32>>>> = Rc::new(Cell::new(None));
+    let app = {
+        let count = count.clone();
+        let count_slot = count_slot.clone();
+        boot(move || {
+            // A data signal the vocab handler's data effect subscribes
+            // to, so bumping it re-runs `virtualizer_data_changed`.
+            let rev = signal(0u32);
+            count_slot.set(Some(rev));
+            let count_for_items = count.clone();
+            runtime_vocabulary::builders::virtualizer(
+                move || {
+                    let _ = rev.get();
+                    count_for_items.get()
+                },
+                |i| i as u64,
+                runtime_core::primitives::virtualizer::ItemSize::Known(Rc::new(|_| 20.0)),
+                |i| {
+                    // Creation-side row work — the aborting class: a
+                    // row-local signal plus a Dyn text effect.
+                    let n = signal(i as i32);
+                    text().content(move || format!("row-{}", n.get())).build()
+                },
+            )
+            .build()
+        })
+    };
+    // The deferred fill + the row texts' batched microtasks.
+    drain();
+    let root = root_of(&app);
+    let texts = texts_of(&root);
+    for row in ["row-0", "row-1", "row-2"] {
+        assert!(texts.iter().any(|t| t.contains(row)), "expected {row}, got {texts:?}");
+    }
+
+    // Data change: grow the list; the re-fill mounts the new row.
+    count.set(4);
+    count_slot.get().expect("build ran").update(|r| r + 1);
+    app.world().flush();
+    drain();
+    let texts = texts_of(&root_of(&app));
+    assert!(
+        texts.iter().any(|t| t.contains("row-3")),
+        "data-changed re-fill mounted the new row, got {texts:?}"
+    );
+    app.stop();
+}

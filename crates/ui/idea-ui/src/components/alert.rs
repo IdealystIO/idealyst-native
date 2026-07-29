@@ -288,25 +288,27 @@ pub fn Alert(props: AlertProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P, TStyle};
+    use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{resolve_style, StyleSource};
+    use runtime_core::resolve_style;
 
     fn theme() {
         install_idea_theme(light_theme());
     }
 
     fn view_children(el: Element) -> Vec<Element> {
-        match el {
-            Element::View { children, .. } => children,
+        match classify(el) {
+            P::View { children, .. } => children,
             _ => panic!("Alert renders a View"),
         }
     }
 
-    fn text_node_color(el: &Element) -> Option<runtime_core::Color> {
-        match el {
-            Element::Text { style, .. } => {
-                let app = match style.as_ref()? {
-                    StyleSource::Static(a) => a.clone(),
+    fn text_node_color(el: Element) -> Option<runtime_core::Color> {
+        match classify(el) {
+            P::Text { style, .. } => {
+                let app = match style? {
+                    TStyle::App(a) => a,
                     _ => panic!("Alert text uses a static style"),
                 };
                 resolve_style(&app).color.clone().map(|c| c.resolve())
@@ -333,97 +335,106 @@ mod tests {
     // an assertion the old uncolored nodes would have failed.
     #[test]
     fn regression_filled_alert_text_nodes_carry_intent_text_color() {
-        theme();
-        let props = AlertProps {
-            title: Reactive::Static("Saved".into()),
-            body: Reactive::Static(Some("All changes persisted.".into())),
-            tone: tone::Primary.into(),
-            variant: variant::Filled.into(),
-            close: AlertClose::Button(Rc::new(|| {})),
-            ..Default::default()
-        };
-        let expected = container_fg();
+        with_test_world(|| {
+            theme();
+            let props = AlertProps {
+                title: Reactive::Static("Saved".into()),
+                body: Reactive::Static(Some("All changes persisted.".into())),
+                tone: tone::Primary.into(),
+                variant: variant::Filled.into(),
+                close: AlertClose::Button(Rc::new(|| {})),
+                ..Default::default()
+            };
+            let expected = container_fg();
 
-        let outer = view_children(Alert(props));
-        // [content-view, close-pressable]
-        let text_column = match &outer[0] {
-            Element::View { children, .. } => children,
-            _ => panic!("first child is the content view"),
-        };
-        // title + body
-        let title_color = text_node_color(&text_column[0]).expect("title carries its own color");
-        assert_eq!(title_color, expected, "title is the intent text color");
-        let body_color = text_node_color(&text_column[1]).expect("body carries its own color");
-        assert_eq!(body_color, expected, "body is the intent text color");
+            let mut outer = view_children(Alert(props));
+            // [content-view, close-pressable]
+            let close = outer.remove(1);
+            let mut text_column = match classify(outer.remove(0)) {
+                P::View { children, .. } => children,
+                _ => panic!("first child is the content view"),
+            };
+            // title + body
+            let body = text_column.remove(1);
+            let title_color =
+                text_node_color(text_column.remove(0)).expect("title carries its own color");
+            assert_eq!(title_color, expected, "title is the intent text color");
+            let body_color = text_node_color(body).expect("body carries its own color");
+            assert_eq!(body_color, expected, "body is the intent text color");
 
-        // close `×`
-        let close_glyph = match &outer[1] {
-            Element::Pressable { children, .. } => &children[0],
-            _ => panic!("close is a Pressable"),
-        };
-        let close_color = text_node_color(close_glyph).expect("close glyph carries its own color");
-        assert_eq!(close_color, expected, "close glyph is the intent text color");
+            // close `×`
+            let close_glyph = match classify(close) {
+                P::Pressable { mut children, .. } => children.remove(0),
+                _ => panic!("close is a Pressable"),
+            };
+            let close_color = text_node_color(close_glyph).expect("close glyph carries its own color");
+            assert_eq!(close_color, expected, "close glyph is the intent text color");
 
-        assert_eq!(expected.0.to_ascii_lowercase(), "#ffffff");
+            assert_eq!(expected.0.to_ascii_lowercase(), "#ffffff");
+    });
     }
 
     /// The trailing slots render in order: content column, then the
     /// `action` element (verbatim), then the close affordance.
     #[test]
     fn renders_action_and_close_slots_in_order() {
-        theme();
-        let action = runtime_core::text("Retry".to_string()).into_element();
-        let props = AlertProps {
-            title: Reactive::Static("Couldn't save".into()),
-            tone: tone::Danger.into(),
-            variant: variant::Soft.into(),
-            action: Some(action),
-            close: AlertClose::Button(Rc::new(|| {})),
-            ..Default::default()
-        };
+        with_test_world(|| {
+            theme();
+            let action = runtime_core::text("Retry".to_string()).into_element();
+            let props = AlertProps {
+                title: Reactive::Static("Couldn't save".into()),
+                tone: tone::Danger.into(),
+                variant: variant::Soft.into(),
+                action: Some(action),
+                close: AlertClose::Button(Rc::new(|| {})),
+                ..Default::default()
+            };
 
-        let outer = view_children(Alert(props));
-        assert_eq!(outer.len(), 3, "content + action + close");
-        // The action slot is the bare text node we passed, used verbatim.
-        match &outer[1] {
-            Element::Text { .. } => {}
-            _ => panic!("action slot renders the provided element"),
-        }
-        match &outer[2] {
-            Element::Pressable { .. } => {}
-            _ => panic!("close is a Pressable"),
-        }
+            let outer = view_children(Alert(props));
+            assert_eq!(outer.len(), 3, "content + action + close");
+            let kinds: Vec<P> = outer.into_iter().map(classify).collect();
+            // The action slot is the bare text node we passed, used verbatim.
+            assert!(
+                matches!(kinds[1], P::Text { .. }),
+                "action slot renders the provided element"
+            );
+            assert!(matches!(kinds[2], P::Pressable { .. }), "close is a Pressable");
+    });
     }
 
     /// `AlertClose::Custom` uses the supplied element verbatim instead of
     /// building the standard `×` Pressable.
     #[test]
     fn close_custom_renders_provided_element() {
-        theme();
-        let custom = runtime_core::text("done".to_string()).into_element();
-        let props = AlertProps {
-            title: Reactive::Static("hi".into()),
-            close: AlertClose::Custom(custom),
-            ..Default::default()
-        };
-        let outer = view_children(Alert(props));
-        // [content-view, custom-close-text] — no Pressable wrapper.
-        assert_eq!(outer.len(), 2);
-        match &outer[1] {
-            Element::Text { .. } => {}
-            _ => panic!("custom close element is used verbatim"),
-        }
+        with_test_world(|| {
+            theme();
+            let custom = runtime_core::text("done".to_string()).into_element();
+            let props = AlertProps {
+                title: Reactive::Static("hi".into()),
+                close: AlertClose::Custom(custom),
+                ..Default::default()
+            };
+            let mut outer = view_children(Alert(props));
+            // [content-view, custom-close-text] — no Pressable wrapper.
+            assert_eq!(outer.len(), 2);
+            assert!(
+                matches!(classify(outer.remove(1)), P::Text { .. }),
+                "custom close element is used verbatim"
+            );
+    });
     }
 
     /// `AlertClose::None` (the default) emits no close affordance.
     #[test]
     fn close_none_omits_affordance() {
-        theme();
-        let props = AlertProps {
-            title: Reactive::Static("hi".into()),
-            ..Default::default()
-        };
-        let outer = view_children(Alert(props));
-        assert_eq!(outer.len(), 1, "no action, no close → just the content column");
+        with_test_world(|| {
+            theme();
+            let props = AlertProps {
+                title: Reactive::Static("hi".into()),
+                ..Default::default()
+            };
+            let outer = view_children(Alert(props));
+            assert_eq!(outer.len(), 1, "no action, no close → just the content column");
+    });
     }
 }

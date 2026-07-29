@@ -176,6 +176,8 @@ pub fn Tooltip(props: TooltipProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P};
+    use idea_theme::testing::with_test_world;
 
     /// The Tooltip wraps its trigger in an anchor view that carries BOTH the
     /// hover handler (desktop show/hide) and a touch handler (mobile
@@ -185,26 +187,30 @@ mod tests {
     /// (no desktop hover) or the `when` bubble, this fails.
     #[test]
     fn tooltip_wraps_trigger_with_hover_touch_and_reactive_bubble() {
-        let el = Tooltip(TooltipProps {
-            text: Reactive::Static("hi".into()),
-            children: vec![runtime_core::text("trigger").into_element()],
-            ..Default::default()
-        });
-        let kids = match el {
-            Element::Fragment { children } => children,
-            _ => panic!("Tooltip must build a Fragment [anchor, bubble]"),
-        };
-        assert_eq!(kids.len(), 2, "fragment = anchor view + reactive bubble");
-        match &kids[0] {
-            Element::View { on_hover, on_touch, .. } => {
-                assert!(on_hover.is_some(), "anchor must carry on_hover (desktop show/hide)");
-                assert!(on_touch.is_some(), "anchor must carry on_touch (mobile long-press)");
+        with_test_world(|| {
+            let el = Tooltip(TooltipProps {
+                text: Reactive::Static("hi".into()),
+                children: vec![runtime_core::text("trigger").into_element()],
+                ..Default::default()
+            });
+            let mut kids = match classify(el) {
+                P::Fragment { children } => children,
+                _ => panic!("Tooltip must build a Fragment [anchor, bubble]"),
+            };
+            assert_eq!(kids.len(), 2, "fragment = anchor view + reactive bubble");
+            match classify(kids.remove(0)) {
+                P::View { on_hover, on_touch, .. } => {
+                    assert!(on_hover, "anchor must carry on_hover (desktop show/hide)");
+                    assert!(on_touch, "anchor must carry on_touch (mobile long-press)");
+                }
+                _ => panic!("first fragment child must be the anchor View"),
             }
-            _ => panic!("first fragment child must be the anchor View"),
-        }
-        assert!(
-            matches!(kids[1], Element::When { .. }),
-            "second child must be the reactive bubble (a `when` gated on hover/press)",
-        );
+            // The bubble is a reactive hole (`when` on the old core, an opaque
+            // `Dyn` on the new) — the mirror reports both as `P::Other`.
+            assert!(
+                matches!(classify(kids.remove(0)), P::Other(_)),
+                "second child must be the reactive bubble (a `when` gated on hover/press)",
+            );
+        });
     }
 }

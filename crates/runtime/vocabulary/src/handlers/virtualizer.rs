@@ -61,10 +61,17 @@ struct RowScope<N> {
 /// - **Lazy row realization inverts control**: the platform asks for
 ///   rows via `mount_item`/`release_item`; the handler must therefore
 ///   capture the backend + registry `Rc`s — `MountCx` is dead by the
-///   time a scroll event mounts a row. The backend MUST invoke the
-///   callbacks with the owning world ambient (inside `World::enter` or
-///   one of its effect fires — every host driver's event boundary
-///   already is), and must NOT invoke `mount_item` synchronously inside
+///   time a scroll event mounts a row. The backend MUST invoke
+///   `mount_item`/`release_item` with the owning world ambient (inside
+///   `World::enter`): `mount_item` REALIZES — creation-side work
+///   (`theme_ctx` → `inject`) that panics outside `enter`. Note the
+///   settled dispatch-site flush drivers do NOT provide this for free —
+///   ordinary author callbacks run outside `enter` (they only stage
+///   writes through captured handles), so each backend's newcore
+///   `VirtualizerOps` wrapper enters the boot-stored world around
+///   mount/release explicitly (`enter_mounted_world`; the
+///   flat_list-renders-zero-rows bug was every backend missing this).
+///   The backend must also NOT invoke `mount_item` synchronously inside
 ///   `create_virtualizer` (the backend is mutably borrowed there; the
 ///   old core had the identical constraint — web/iOS/Android all defer
 ///   the initial window fill).

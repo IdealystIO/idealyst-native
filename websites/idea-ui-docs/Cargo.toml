@@ -44,7 +44,41 @@ debug-stats = [
     "runtime-core/debug-stats",
     "backend-android-mobile/debug-stats",
 ]
-default = ["debug-stats"]
+default = ["debug-stats", "old-core"]
+
+# The two cores — SAME-SOURCE dual-core app (the newcore-app pattern,
+# see the conformance example): exactly one per build; `old-core` is the
+# default (CLI builds unchanged), `new-core` is the idea-lite migration
+# build, booted on web via `backend_web::newcore::start`:
+#
+#   cargo check -p idea-ui-docs                                    # old core
+#   cargo check -p idea-ui-docs --no-default-features \
+#       --features new-core                                        # new core
+#   wasm-pack build --target web --dev websites/idea-ui-docs \
+#       --out-dir pkg-newcore -- --no-default-features \
+#       --features new-core                                        # new-core web
+#
+# `old-core` owns the old-core-only External SDKs (swap-navigator,
+# codeblock, table) plus idea-ui's `table` component feature — all of
+# them are old-core-authored and cannot join a new-core graph (proc-macro
+# feature unification would retarget THEIR `ui!` sites too).
+# `idea-ui/docs` is ALSO old-core-only for now: the DocControls derive
+# expands `::runtime_core::Signal::new(…)`, which the glue facade's
+# `Signal` doesn't provide (glue gap — the app never consumes
+# `doc_controls` itself, so new-core simply builds without the derive).
+old-core = ["dep:swap-navigator", "dep:codeblock", "dep:table", "idea-ui/table", "idea-ui/docs"]
+# `new-core` flips the whole idea-* subtree onto the glue facade
+# (`extern crate runtime_facade as runtime_core;` in lib.rs) and pulls
+# the vocabulary nav surface. `backend-web/new-core` is forwarded to the
+# wasm-target dep (feature forwarding to target-specific deps works).
+new-core = [
+    "idea-ui/new-core",
+    "idea-ui-nav/new-core",
+    "dep:runtime-facade",
+    "dep:runtime-vocabulary",
+    "dep:runtime-world",
+    "backend-web/new-core",
+]
 
 # Cross-platform render-parity test (`idealyst test --parity web,macos`).
 # `robot-test` drives the running app over the Robot bridge — see
@@ -55,10 +89,26 @@ serde_json = "1"
 
 [dependencies]
 runtime-core = { workspace = true }
-idea-ui = { workspace = true, features = ["docs"] }
+# PATH dep with `default-features = false` (the documented cargo gotcha:
+# the flag is ignored on `workspace = true` lines): idea-ui's `table` and
+# `docs` features are old-core-only (see the `old-core` feature above,
+# which re-enables both), so the base dep carries just the full prim
+# family set both cores render.
+idea-ui = { path = "../../crates/ui/idea-ui", default-features = false, features = [
+    "prim-icon", "prim-image", "prim-text-input", "prim-activity",
+    "prim-portal", "prim-presence",
+] }
+# The new-core alias target (`extern crate runtime_facade as
+# runtime_core;`) + the vocabulary nav surface + the world kernel —
+# `new-core` only.
+runtime-facade = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
+runtime-world = { workspace = true, optional = true }
 # Outlet-model navigation: one backend-neutral swap handler; the chrome
 # (header + sidebar) is author layout wrapped around `{nav.outlet}`.
-swap-navigator = { workspace = true }
+# Old-core only — the new core navigates via the vocabulary
+# `swap_navigator` builder instead.
+swap-navigator = { workspace = true, optional = true }
 # Themed AppShell — pinned-sidebar ⇄ off-canvas drawer packaged around
 # the one-shot outlet, with a single sidebar build.
 idea-ui-nav = { workspace = true }
@@ -67,11 +117,12 @@ idea-ui-nav = { workspace = true }
 # never compiled for device/web targets.
 dev-server = { workspace = true, optional = true }
 # Theme-aware syntax-highlighted code panels for the snippet blocks
-# in every component page.
-codeblock = { workspace = true }
+# in every component page. Old-core External SDK.
+codeblock = { workspace = true, optional = true }
 # Real HTML <table> on web via Element::External; flex fallback on
-# native. Powers PropsTable on every component page.
-table = { workspace = true }
+# native. Powers PropsTable on every component page. Old-core External
+# SDK.
+table = { workspace = true, optional = true }
 # Lucide icon pack — provides the `MENU` glyph for the mobile
 # hamburger that opens the collapsed drawer.
 icons-lucide = { workspace = true }

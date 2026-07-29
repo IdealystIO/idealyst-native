@@ -78,8 +78,10 @@ pub fn Badge(props: &BadgeProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P, TStyle};
+    use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{resolve_style, AlignSelf, StyleSource};
+    use runtime_core::{resolve_style, AlignSelf};
 
     // Regression: a Badge is an inline pill — it must HUG its content
     // (`align_self: Center`), not inherit a flex parent's default
@@ -87,16 +89,21 @@ mod tests {
     // label to the top of an over-tall pill (the Intents-row report).
     #[test]
     fn badge_hugs_content_not_stretch() {
-        install_idea_theme(light_theme());
-        let props = BadgeProps { label: Reactive::Static("New".into()), ..Default::default() };
-        let app = match Badge(&props) {
-            Element::Text { style: Some(StyleSource::Static(a)), .. } => a,
-            _ => panic!("Badge renders a styled Text node"),
-        };
-        assert_eq!(
-            resolve_style(&app).align_self,
-            Some(AlignSelf::Center),
-            "a Badge sizes to content (centered), never stretching to the parent cross axis"
-        );
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let props = BadgeProps { label: Reactive::Static("New".into()), ..Default::default() };
+            let app = match classify(Badge(&props)) {
+                P::Text { style, .. } => match style.expect("Badge renders a styled Text node") {
+                    TStyle::App(a) => a,
+                    _ => panic!("Badge uses a static style source"),
+                },
+                _ => panic!("Badge renders a styled Text node"),
+            };
+            assert_eq!(
+                resolve_style(&app).align_self,
+                Some(AlignSelf::Center),
+                "a Badge sizes to content (centered), never stretching to the parent cross axis"
+            );
+    });
     }
 }

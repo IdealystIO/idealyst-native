@@ -18,7 +18,7 @@ crate-type = ["rlib"]
 # error naming the missing feature instead of a runtime placeholder.
 default = [
     "prim-icon", "prim-image", "prim-text-input", "prim-activity",
-    "prim-portal", "prim-presence",
+    "prim-portal", "prim-presence", "table",
 ]
 # Each feature mirrors the same-named runtime-core family and gates the
 # components that (transitively) render it:
@@ -60,7 +60,31 @@ docs = [
 # their root interactive primitive via `Element::with_test_id`, so a robot/
 # E2E suite can locate them. Mirrors `runtime-core/robot`; production apps
 # leave it off (the forwarding compiles out).
-robot = ["runtime-core/robot"]
+robot = ["runtime-core/robot", "runtime-facade?/robot"]
+
+# idea-lite core migration (P6 SDK retarget): compile this crate's SAME
+# source against the new core via the `extern crate runtime_facade as
+# runtime_core;` alias in lib.rs (shadows the extern-prelude runtime-core
+# crate-wide). Default-off; one core per build graph (runtime-facade
+# enables `runtime-macros/new-core`, which unifies — see the hazard note
+# in runtime-macros/Cargo.toml). `dep:runtime-vocabulary` because the
+# retargeted `ui!` emission spells absolute
+# `::runtime_vocabulary::glue::…` paths.
+#
+# Combine with `--no-default-features` + the prim features you need:
+# the `table` component feature (a default) cannot join a new-core graph
+# — the table SDK is old-core-authored and macro unification would
+# retarget ITS ui! sites too (compile_error guard in lib.rs).
+new-core = [
+    "idea-theme/new-core",
+    "dep:runtime-facade",
+    "dep:runtime-vocabulary",
+]
+
+# The themed `Table` component + its `table` SDK dep (ON by default —
+# the pre-gating behavior). A feature so the new-core graph can exclude
+# the old-core-authored SDK; see `new-core`.
+table = ["dep:table"]
 
 [dependencies]
 # PATH dep with `default-features = false`, NOT `workspace = true`: cargo
@@ -77,5 +101,9 @@ idea-ui-docs-derive = { workspace = true, optional = true }
 # Themed `Table` component layers on the cross-platform `table` SDK
 # (real HTML `<table>` on web, flex passthrough on native). idea-ui
 # wraps it the same way it wraps `activity_indicator` (as `Spinner`)
-# and `toggle` (as `Switch`).
-table = { workspace = true }
+# and `toggle` (as `Switch`). Optional only for the `new-core` graph
+# (see the `table` feature) — the default build keeps it on.
+table = { workspace = true, optional = true }
+# The new-core alias target (see the `new-core` feature).
+runtime-facade = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }

@@ -11,18 +11,16 @@ use robot_e2e::{expect, flow, run_suites, suite, test, ElementKind, Page};
 
 /// Entry point scheduled from `app()` ~1s after mount.
 ///
-/// Dual-core: every suite except idea-ui runs on both cores (same
-/// tests, same `test_id`s — the methods suite swaps only its
-/// `list_components`/`invoke_method` import to the vocabulary mirror).
-/// The idea-ui suite (idea-ui is old-core-only until the SDK retarget,
-/// P6) exists only on the old core — BLOCKED on new-core, not
-/// weakened; the per-core totals differ accordingly.
+/// Dual-core: EVERY suite runs on both cores (same tests, same
+/// `test_id`s — the methods suite swaps only its
+/// `list_components`/`invoke_method` import to the vocabulary mirror,
+/// and the idea-ui suite drives the SAME idea-ui components through
+/// their P6 same-source new-core build).
 pub(crate) fn run_all() {
     run_suites(vec![
         primitives_suite(),
         modal_suite(),
         navigation_suite(),
-        #[cfg(feature = "old-core")]
         idea_ui_suite(),
         component_methods_suite(),
     ]);
@@ -123,7 +121,6 @@ fn modal_suite() -> robot_e2e::Suite {
     )
 }
 
-#[cfg(feature = "old-core")]
 fn idea_ui_suite() -> robot_e2e::Suite {
     // idea-ui "as a key implementor": its Switch/Checkbox/Button forward a
     // `test_id` to their root primitive (idea-ui `robot` feature), so the

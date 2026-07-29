@@ -45,6 +45,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use idea_theme::compat::SignalModify as _;
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::ViewportPlacement;
 use runtime_core::{
@@ -97,6 +98,19 @@ pub struct ToastEntry {
     pub leaving: bool,
 }
 
+/// Equality for the new core's `Signal<Vec<ToastEntry>>` (world signals
+/// carry an equality cut; `T: PartialEq` is required on both cores'
+/// guarded `set`). `render` is closure identity — pointer equality is
+/// the honest comparison; `id`/`leaving` carry the queue's observable
+/// state, so a `leaving` flip or membership change always notifies.
+impl PartialEq for ToastEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.leaving == other.leaving
+            && Rc::ptr_eq(&self.render, &other.render)
+    }
+}
+
 impl Default for ToastEntry {
     fn default() -> Self {
         Self {
@@ -108,20 +122,40 @@ impl Default for ToastEntry {
 }
 
 thread_local! {
+    #[cfg(not(feature = "new-core"))]
     static QUEUE: std::cell::RefCell<Option<Signal<Vec<ToastEntry>>>> =
         const { std::cell::RefCell::new(None) };
     static NEXT_ID: Cell<u64> = const { Cell::new(0) };
 }
 
-/// The process-global toast queue, lazily created off any render scope.
+/// The app-lifetime toast queue, lazily created off any render scope.
+///
+/// Storage forks per core (same reason as idea-theme's active-theme
+/// slot): old-core signals live in the thread arena forever, so a TLS
+/// handle is always valid; new-core signals are world-backed and worlds
+/// are transient (one per SSR request), so the handle lives in the
+/// WORLD's typed context and each world lazily creates its own queue.
+#[cfg(not(feature = "new-core"))]
 fn queue() -> Signal<Vec<ToastEntry>> {
     QUEUE.with(|q| {
         if q.borrow().is_none() {
-            let sig = unscope(|| Signal::new(Vec::new()));
+            let sig = unscope(|| runtime_core::signal(Vec::new()));
             *q.borrow_mut() = Some(sig);
         }
         *q.borrow().as_ref().unwrap()
     })
+}
+
+#[cfg(feature = "new-core")]
+fn queue() -> Signal<Vec<ToastEntry>> {
+    #[derive(Clone)]
+    struct ToastQueue(Signal<Vec<ToastEntry>>);
+    if let Some(q) = runtime_core::inject::<ToastQueue>() {
+        return q.0;
+    }
+    let sig = unscope(|| runtime_core::signal(Vec::new()));
+    runtime_core::provide(ToastQueue(sig));
+    sig
 }
 
 fn next_id() -> u64 {
@@ -297,7 +331,7 @@ pub fn push_toast_node(render: impl Fn(u64) -> Element + 'static) -> u64 {
 /// sweep away.
 fn enqueue(build: impl FnOnce(u64) -> ToastEntry) -> u64 {
     let id = next_id();
-    queue().update(|v| v.push(build(id)));
+    queue().modify(|v| v.push(build(id)));
     after_ms_detached(TOAST_SHOW_MS, move || begin_leaving(id));
     after_ms_detached(TOAST_SHOW_MS + TOAST_ANIM_MS as i32, move || remove_toast(id));
     id
@@ -315,7 +349,7 @@ pub fn dismiss_toast(id: u64) {
 /// Flip an entry's `leaving` flag through the queue signal so every
 /// `ToastCard` reading the queue re-evaluates its `present()`.
 fn begin_leaving(id: u64) {
-    queue().update(|v| {
+    queue().modify(|v| {
         if let Some(e) = v.iter_mut().find(|e| e.id == id) {
             e.leaving = true;
         }
@@ -323,7 +357,7 @@ fn begin_leaving(id: u64) {
 }
 
 fn remove_toast(id: u64) {
-    queue().update(|v| v.retain(|e| e.id != id));
+    queue().modify(|v| v.retain(|e| e.id != id));
 }
 
 // =============================================================================
@@ -599,9 +633,11 @@ pub fn ToastHost(props: &ToastHostProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P, TStyle};
     use idea_theme::extensible::{installed_alert_sheet, tone, variant};
+    use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{arena_stats, resolve_style, Color, StyleApplication, StyleSource};
+    use runtime_core::{resolve_style, Color, StyleApplication};
 
     /// Regression (empty ToastHost swallowed clicks): the host overlay is
     /// click-through (`pointer-events: none` on web) so its viewport strip
@@ -611,41 +647,44 @@ mod tests {
     /// outermost element must resolve `pointer-events: auto`.
     #[test]
     fn regression_toast_card_opts_into_pointer_events() {
-        let card = ToastCard(&ToastCardProps { entry: ToastEntry { id: 1, ..Default::default() } });
-        let pe = match &card {
-            Element::View { style: Some(StyleSource::Static(app)), .. } => {
-                resolve_style(app).pointer_events
-            }
-            _ => panic!("a toast card wraps its content in a styled view"),
-        };
-        assert_eq!(
-            pe,
-            Some(PointerEvents::Auto),
-            "toast card must opt back into pointer-events under the click-through host",
-        );
+        with_test_world(|| {
+            let card = ToastCard(&ToastCardProps { entry: ToastEntry { id: 1, ..Default::default() } });
+            let pe = match classify(card) {
+                P::View { style: Some(TStyle::App(app)), .. } => {
+                    resolve_style(&app).pointer_events
+                }
+                _ => panic!("a toast card wraps its content in a styled view"),
+            };
+            assert_eq!(
+                pe,
+                Some(PointerEvents::Auto),
+                "toast card must opt back into pointer-events under the click-through host",
+            );
+    });
     }
 
     /// Walk the rendered tree and return the first `Text` node's resolved
     /// color (DFS, into Views and Pressables — enough for an Alert's
     /// title/body/close shape).
-    fn first_text_color(el: &Element) -> Option<Color> {
-        match el {
-            Element::Text { style, .. } => {
-                let app = match style.as_ref()? {
-                    StyleSource::Static(a) => a.clone(),
+    fn first_text_color(el: Element) -> Option<Color> {
+        match classify(el) {
+            P::Text { style, .. } => {
+                let app = match style? {
+                    TStyle::App(a) => a,
                     _ => return None,
                 };
                 resolve_style(&app).color.clone().map(|c| c.resolve())
             }
-            Element::View { children, .. } => children.iter().find_map(first_text_color),
-            Element::Pressable { children, .. } => children.iter().find_map(first_text_color),
+            P::View { children, .. } | P::Pressable { children, .. } => {
+                children.into_iter().find_map(first_text_color)
+            }
             _ => None,
         }
     }
 
     fn alert_children(el: Element) -> Vec<Element> {
-        match el {
-            Element::View { children, .. } => children,
+        match classify(el) {
+            P::View { children, .. } => children,
             _ => panic!("a standard toast renders an Alert View"),
         }
     }
@@ -656,25 +695,33 @@ mod tests {
     /// exists), so every toast shown permanently consumed one slot. The
     /// `leaving` flag now rides as a plain `bool` inside the queue's
     /// `Signal<Vec<_>>`.
+    ///
+    /// Old-core only: `arena_stats` counts the old reactive arena's signal
+    /// slots — the old arena isn't the allocator on the new core; world-scope
+    /// ownership covers the leak class there.
+    #[cfg(not(feature = "new-core"))]
     #[test]
     fn pushing_toasts_does_not_leak_signal_slots() {
-        // Materialize the one global queue signal so it's part of the
-        // baseline (it persists for the process — that's expected).
-        let _ = queue();
-        let baseline = arena_stats().signals_in_use;
+        with_test_world(|| {
+            use runtime_core::arena_stats;
+            // Materialize the one global queue signal so it's part of the
+            // baseline (it persists for the process — that's expected).
+            let _ = queue();
+            let baseline = arena_stats().signals_in_use;
 
-        // With no scheduler installed (unit test), `after_ms` runs its
-        // synchronous fallback, so each push fully cycles inline
-        // (push → begin_leaving → remove). 64 toasts come and go.
-        for i in 0..64 {
-            push_toast_with(format!("toast {i}"), ToneRef::default(), VariantRef::default());
-        }
+            // With no scheduler installed (unit test), `after_ms` runs its
+            // synchronous fallback, so each push fully cycles inline
+            // (push → begin_leaving → remove). 64 toasts come and go.
+            for i in 0..64 {
+                push_toast_with(format!("toast {i}"), ToneRef::default(), VariantRef::default());
+            }
 
-        assert_eq!(
-            arena_stats().signals_in_use,
-            baseline,
-            "toasts must not leak signal slots"
-        );
+            assert_eq!(
+                arena_stats().signals_in_use,
+                baseline,
+                "toasts must not leak signal slots"
+            );
+    });
     }
 
     /// Regression: a standard (Filled) toast must render its text in the
@@ -687,52 +734,58 @@ mod tests {
     /// stamping, so the title text node carries the intent foreground.
     #[test]
     fn regression_filled_toast_text_carries_intent_color() {
-        install_idea_theme(light_theme());
+        with_test_world(|| {
+            install_idea_theme(light_theme());
 
-        let expected = resolve_style(
-            &StyleApplication::new(installed_alert_sheet())
-                .with("appearance", "primary_filled".to_string()),
-        )
-        .color
-        .clone()
-        .expect("the filled container resolves a foreground")
-        .resolve();
+            let expected = resolve_style(
+                &StyleApplication::new(installed_alert_sheet())
+                    .with("appearance", "primary_filled".to_string()),
+            )
+            .color
+            .clone()
+            .expect("the filled container resolves a foreground")
+            .resolve();
 
-        let surface =
-            Toast::new("Saved").tone(tone::Primary).variant(variant::Filled).into_render(1)();
+            let surface =
+                Toast::new("Saved").tone(tone::Primary).variant(variant::Filled).into_render(1)();
 
-        let title_color =
-            first_text_color(&surface).expect("the toast's title carries its own color");
-        assert_eq!(title_color, expected, "toast title is the intent text color");
-        assert_eq!(expected.0.to_ascii_lowercase(), "#ffffff");
+            let title_color =
+                first_text_color(surface).expect("the toast's title carries its own color");
+            assert_eq!(title_color, expected, "toast title is the intent text color");
+            assert_eq!(expected.0.to_ascii_lowercase(), "#ffffff");
+    });
     }
 
     /// The builder shows a close × by default; `closable(false)` removes it
     /// (the Alert then renders just its content column).
     #[test]
     fn builder_closable_toggles_the_close() {
-        install_idea_theme(light_theme());
+        with_test_world(|| {
+            install_idea_theme(light_theme());
 
-        let with_close = alert_children(Toast::new("hi").into_render(1)());
-        assert_eq!(with_close.len(), 2, "content + default close ×");
+            let with_close = alert_children(Toast::new("hi").into_render(1)());
+            assert_eq!(with_close.len(), 2, "content + default close ×");
 
-        let no_close = alert_children(Toast::new("hi").closable(false).into_render(2)());
-        assert_eq!(no_close.len(), 1, "closable(false) → content only");
+            let no_close = alert_children(Toast::new("hi").closable(false).into_render(2)());
+            assert_eq!(no_close.len(), 1, "closable(false) → content only");
+    });
     }
 
     /// An action slot renders between the content and the (default) close.
     #[test]
     fn builder_action_renders_between_content_and_close() {
-        install_idea_theme(light_theme());
+        with_test_world(|| {
+            install_idea_theme(light_theme());
 
-        let surface = Toast::new("hi")
-            .action(|| runtime_core::text("Undo".to_string()).into_element())
-            .into_render(7)();
-        let children = alert_children(surface);
-        assert_eq!(children.len(), 3, "content + action + close");
-        match &children[1] {
-            Element::Text { .. } => {}
-            _ => panic!("action slot renders the provided element"),
-        }
+            let surface = Toast::new("hi")
+                .action(|| runtime_core::text("Undo".to_string()).into_element())
+                .into_render(7)();
+            let mut children = alert_children(surface);
+            assert_eq!(children.len(), 3, "content + action + close");
+            match classify(children.remove(1)) {
+                P::Text { .. } => {}
+                _ => panic!("action slot renders the provided element"),
+            }
+    });
     }
 }

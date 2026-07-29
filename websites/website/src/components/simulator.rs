@@ -15,6 +15,7 @@
 
 use std::rc::Rc;
 
+#[cfg(feature = "old-core")]
 use runtime_core::primitives::graphics::{OnReadyEvent, OnResizeEvent};
 use runtime_core::{
     component, ui, view, Color, IntoElement, Length, Overflow, Element, Shadow, StyleRules,
@@ -38,7 +39,19 @@ use runtime_core::{
 // / `naga` graph the previous direct `host_web` import did. wasm-split
 // keeps that behind the same lazy chunk as before because the
 // `mount`/`DeviceProfile` reachability surface is unchanged.
+//
+// Old-core-only: the embedded preview mounts the old-core `welcome`
+// app through the old-walker wgpu hosts. Under `new-core` the whole
+// live-Simulator cluster is compiled out (the hero renders the
+// placeholder chassis — see `pages/home.rs::hero_simulator`) because
+// (a) `welcome`'s `ui!` emissions retarget under proc-macro feature
+// unification and (b) `host_wgpu::mount` consumes an old-core
+// `Element` tree. A new-core embedded preview waits on a new-core
+// wgpu-host mount seam (framework work, reported in the migration
+// log), not on website code.
+#[cfg(feature = "old-core")]
 use host_wgpu::{DeviceProfile, Painter};
+#[cfg(feature = "old-core")]
 use runtime_core::driver::spawn_async;
 
 /// Target-agnostic identifier for which device chrome the embedded
@@ -59,6 +72,7 @@ impl Default for SimulatorSkin {
     }
 }
 
+#[cfg(feature = "old-core")]
 fn painter_for(skin: SimulatorSkin) -> Rc<dyn Painter> {
     // `with_corner_radius(0.0)` suppresses each painter's rounded
     // device-frame SDF pass, so the engine doesn't draw an inner
@@ -71,6 +85,7 @@ fn painter_for(skin: SimulatorSkin) -> Rc<dyn Painter> {
     }
 }
 
+#[cfg(feature = "old-core")]
 mod shared {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -100,6 +115,7 @@ pub const DEFAULT_LOGICAL_H: u32 = 844;
 /// compact enough that the home-page hero text reads alongside.
 const PREVIEW_WIDTH_PX: f32 = 300.0;
 
+#[cfg(feature = "old-core")]
 pub struct SimulatorProps {
     /// The app to mount inside the simulator. Invoked once after the
     /// wgpu surface is up and the host is built.
@@ -119,6 +135,7 @@ pub struct SimulatorProps {
     pub chassis: bool,
 }
 
+#[cfg(feature = "old-core")]
 impl Default for SimulatorProps {
     fn default() -> Self {
         Self {
@@ -248,6 +265,7 @@ pub fn simulator_placeholder(logical_size: Option<(u32, u32)>) -> Element {
     }
 }
 
+#[cfg(feature = "old-core")]
 fn default_profile() -> DeviceProfile {
     DeviceProfile {
         logical_size: (DEFAULT_LOGICAL_W, DEFAULT_LOGICAL_H),
@@ -257,6 +275,7 @@ fn default_profile() -> DeviceProfile {
     }
 }
 
+#[cfg(feature = "old-core")]
 #[component(default(
     skin = SimulatorSkin::Ios,
     chassis = true,

@@ -493,6 +493,8 @@ pub fn SubMenu(props: SubMenuProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P};
+    use idea_theme::testing::with_test_world;
     use runtime_core::primitives::portal::{PortalTarget, ViewportPlacement};
     use runtime_core::Ref;
 
@@ -508,39 +510,42 @@ mod tests {
     /// shrinks it from FullScreen), click-away silently disappears again.
     #[test]
     fn menu_has_fullscreen_catcher_behind_panel() {
-        let trigger: Ref<ViewHandle> = Ref::new();
-        let el = Menu(MenuProps {
-            target: Some(AnchorTarget::from(trigger)),
-            children: vec![runtime_core::text("Item".to_string()).into_element()],
-            ..Default::default()
-        });
+        with_test_world(|| {
+            let trigger: Ref<ViewHandle> = Ref::new();
+            let el = Menu(MenuProps {
+                target: Some(AnchorTarget::from(trigger)),
+                children: vec![runtime_core::text("Item".to_string()).into_element()],
+                ..Default::default()
+            });
 
-        // Menu = a View wrapping [catcher, anchored panel].
-        let kids = match &el {
-            Element::View { children, .. } => children,
-            _ => panic!("a targeted Menu must wrap [catcher, anchored] in a View"),
-        };
-        assert_eq!(kids.len(), 2, "Menu = fullscreen catcher + anchored panel");
+            // Menu = a View wrapping [catcher, anchored panel].
+            let mut kids = match classify(el) {
+                P::View { children, .. } => children,
+                _ => panic!("a targeted Menu must wrap [catcher, anchored] in a View"),
+            };
+            assert_eq!(kids.len(), 2, "Menu = fullscreen catcher + anchored panel");
 
-        // child[0]: fullscreen catcher portal with a tap-catching backdrop.
-        match &kids[0] {
-            Element::Portal { children, target, .. } => {
-                assert!(
-                    matches!(target, PortalTarget::Viewport(ViewportPlacement::FullScreen)),
-                    "the catcher must be a FULLSCREEN viewport portal"
-                );
-                assert!(
-                    matches!(children.first(), Some(Element::Pressable { .. })),
-                    "the catcher's first child must be the backdrop Pressable"
-                );
+            // child[0]: fullscreen catcher portal with a tap-catching backdrop.
+            match classify(kids.remove(0)) {
+                P::Portal { mut children, target, .. } => {
+                    assert!(
+                        matches!(target, PortalTarget::Viewport(ViewportPlacement::FullScreen)),
+                        "the catcher must be a FULLSCREEN viewport portal"
+                    );
+                    assert!(
+                        !children.is_empty()
+                            && matches!(classify(children.remove(0)), P::Pressable { .. }),
+                        "the catcher's first child must be the backdrop Pressable"
+                    );
+                }
+                _ => panic!("Menu's first child must be the fullscreen catcher Portal"),
             }
-            _ => panic!("Menu's first child must be the fullscreen catcher Portal"),
-        }
 
-        // child[1]: the anchored panel portal.
-        assert!(
-            matches!(&kids[1], Element::Portal { .. }),
-            "Menu's second child must be the anchored panel Portal"
-        );
+            // child[1]: the anchored panel portal.
+            assert!(
+                matches!(classify(kids.remove(0)), P::Portal { .. }),
+                "Menu's second child must be the anchored panel Portal"
+            );
+    });
     }
 }

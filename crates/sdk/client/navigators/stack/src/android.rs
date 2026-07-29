@@ -75,7 +75,10 @@ impl Mirror {
                 .cloned()
                 .unwrap_or_default()
                 .to_state(false);
-            chrome.set(Some(Rc::new(state) as Rc<dyn Any>));
+            // `set_always` — no `PartialEq` on `Rc<dyn Any>` + republish-per-
+            // navigation contract (see ios.rs; same pre-existing
+            // guarded-set miss on this compile-only target).
+            chrome.set_always(Some(Rc::new(state) as Rc<dyn Any>));
         }
         if let Some(depth) = &self.depth_changed {
             depth(self.stack.len());

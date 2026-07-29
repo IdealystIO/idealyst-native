@@ -263,7 +263,7 @@ impl Default for FieldProps {
     fn default() -> Self {
         Self {
             label: Reactive::Static(None),
-            value: Signal::new(String::new()),
+            value: runtime_core::signal(String::new()),
             on_change: Rc::new(|_| {}),
             placeholder: Reactive::Static(None),
             help: Reactive::Static(None),
@@ -641,7 +641,7 @@ pub fn Field(props: &FieldProps) -> Element {
         // sets a `focused` signal, and the shell style is a reactive closure that
         // overlays the theme `focus_ring` border colors while focused — the same
         // ring the non-adorned branch gets natively, now on the shell.
-        let focused = Signal::new(false);
+        let focused = runtime_core::signal(false);
         let size_str = size_key(size).to_string();
         let bare_style = StyleApplication::new(field_input_sheet())
             .with("size", size_str)
@@ -769,7 +769,7 @@ pub fn Field(props: &FieldProps) -> Element {
         // the border red and the focus ring still lights — both re-resolve in
         // place through the apply-style Effect. (The former static fast path is
         // gone; a non-adorned Field now always carries one style Effect.)
-        let focused = Signal::new(false);
+        let focused = runtime_core::signal(false);
         let make_input_style = make_input_style.clone();
         let tone_key_for = tone_key_for.clone();
         // The focus ring is baked into `make_input_style`'s single computed
@@ -840,19 +840,21 @@ recipe!(
 #[cfg(all(test, feature = "prim-icon", feature = "prim-activity"))]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P, TStyle};
+    use idea_theme::testing::with_test_world;
     use idea_theme::theme::install_idea_theme;
     use idea_theme::theme::light_theme;
-    use runtime_core::{resolve_style, StyleSource};
+    use runtime_core::resolve_style;
 
-    /// Pull the `StyleSource` off the `text_input` node inside a built
+    /// Pull the normalized style off the `text_input` node inside a built
     /// `Field` element tree (a `view` wrapping label/input/help).
-    fn input_style_source(field: Element) -> StyleSource {
-        let children = match field {
-            Element::View { children, .. } => children,
+    fn input_style_source(field: Element) -> TStyle {
+        let children = match classify(field) {
+            P::View { children, .. } => children,
             _ => panic!("Field renders a view wrapper"),
         };
         for c in children {
-            if let Element::TextInput { style, .. } = c {
+            if let P::TextInput { style, .. } = classify(c) {
                 return style.expect("Field's text_input always has a style");
             }
         }
@@ -860,15 +862,11 @@ mod tests {
     }
 
     /// Resolve a Field input's style to `StyleRules`, whether the source is
-    /// `Static` or `Reactive`. Since the D9 focus-ring fix a non-adorned
+    /// static or reactive. Since the D9 focus-ring fix a non-adorned
     /// Field's input is ALWAYS a reactive closure (see the component body),
     /// so behavioral assertions resolve through whichever variant is present.
     fn resolve_input_style(field: Element) -> runtime_core::StyleRules {
-        match input_style_source(field) {
-            StyleSource::Static(app) => (*resolve_style(&app)).clone(),
-            StyleSource::Reactive(f) => (*resolve_style(&f())).clone(),
-            _ => panic!("unexpected input style source variant (not Static/Reactive)"),
-        }
+        (*input_style_source(field).resolve()).clone()
     }
 
     fn theme() {
@@ -882,36 +880,39 @@ mod tests {
     // border never turned red on live validation (only the error TEXT did).
     #[test]
     fn reactive_error_drives_border_color_live() {
-        theme();
-        let err: Signal<Option<String>> = Signal::new(None);
-        let props = FieldProps {
-            error: err.into(),
-            ..Default::default()
-        };
-        let src = input_style_source(Field(&props));
+        with_test_world(|| {
+            theme();
+            let err: Signal<Option<String>> = runtime_core::signal(None);
+            let props = FieldProps {
+                error: err.into(),
+                ..Default::default()
+            };
+            let src = input_style_source(Field(&props));
 
-        let closure = match src {
-            StyleSource::Reactive(f) => f,
-            _ => panic!(
-                "a Field with a reactive `error` must attach a reactive style \
-                 source so the border re-resolves on validation (D9 regression)"
-            ),
-        };
+            let closure = match src {
+                TStyle::AppFn(f) => f,
+                _ => panic!(
+                    "a Field with a reactive `error` must attach a reactive style \
+                     source so the border re-resolves on validation (D9 regression)"
+                ),
+            };
 
-        // No error → neutral border. The closure reads the signal each call.
-        let border_none = resolve_style(&closure()).border_top_color.clone();
-        err.set(Some("Required".into()));
-        let border_err = resolve_style(&closure()).border_top_color.clone();
+            // No error → neutral border. The closure reads the signal each call.
+            let border_none = resolve_style(&closure()).border_top_color.clone();
+            err.set(Some("Required".into()));
+            idea_theme::testing::commit();
+            let border_err = resolve_style(&closure()).border_top_color.clone();
 
-        assert!(
-            border_none.is_some() && border_err.is_some(),
-            "border color is set in both states"
-        );
-        assert_ne!(
-            border_none, border_err,
-            "flipping the error signal must change the input's border color \
-             (Danger tone vs neutral)"
-        );
+            assert!(
+                border_none.is_some() && border_err.is_some(),
+                "border color is set in both states"
+            );
+            assert_ne!(
+                border_none, border_err,
+                "flipping the error signal must change the input's border color \
+                 (Danger tone vs neutral)"
+            );
+    });
     }
 
     // D9 (updated for the always-reactive focus-ring path): an EXPLICIT tone
@@ -922,55 +923,65 @@ mod tests {
     // by resolving the reactive closure.
     #[test]
     fn explicit_tone_overrides_error_derived_tone() {
-        theme();
-        // Explicit Warning tone + a reactive error: the explicit tone wins,
-        // so the resolved border color must NOT change when the error flips.
-        let err: Signal<Option<String>> = Signal::new(None);
-        let props = FieldProps {
-            error: err.into(),
-            tone: Reactive::Static(Some(tones::Warning.into())),
-            ..Default::default()
-        };
-        let border_no_err = resolve_input_style(Field(&props)).border_top_color.clone();
-        err.set(Some("bad".into()));
-        let border_err = resolve_input_style(Field(&props)).border_top_color.clone();
-        assert!(border_no_err.is_some(), "explicit tone sets a border color");
-        assert_eq!(
-            border_no_err, border_err,
-            "an explicit tone must override the error-derived tone — the border \
-             color stays the Warning tone regardless of the error signal"
-        );
+        with_test_world(|| {
+            theme();
+            // Explicit Warning tone + a reactive error: the explicit tone wins,
+            // so the resolved border color must NOT change when the error flips.
+            let err: Signal<Option<String>> = runtime_core::signal(None);
+            let props = FieldProps {
+                error: err.into(),
+                tone: Reactive::Static(Some(tones::Warning.into())),
+                ..Default::default()
+            };
+            let border_no_err = resolve_input_style(Field(&props)).border_top_color.clone();
+            err.set(Some("bad".into()));
+            idea_theme::testing::commit();
+            let border_err = resolve_input_style(Field(&props)).border_top_color.clone();
+            assert!(border_no_err.is_some(), "explicit tone sets a border color");
+            assert_eq!(
+                border_no_err, border_err,
+                "an explicit tone must override the error-derived tone — the border \
+                 color stays the Warning tone regardless of the error signal"
+            );
+    });
     }
 
     // D6: a `min_height` prop pins the exact min-height in px.
     #[test]
     fn min_height_prop_sets_min_height_style() {
-        theme();
-        let props = FieldProps {
-            min_height: Reactive::Static(Some(48.0)),
-            ..Default::default()
-        };
-        let rules = resolve_input_style(Field(&props));
-        assert_eq!(
-            rules.min_height,
-            Some(Tokenized::Literal(Length::Px(48.0))),
-            "min_height prop must pin an exact px min-height"
-        );
+        with_test_world(|| {
+            theme();
+            let props = FieldProps {
+                min_height: Reactive::Static(Some(48.0)),
+                ..Default::default()
+            };
+            let rules = resolve_input_style(Field(&props));
+            assert_eq!(
+                rules.min_height,
+                Some(Tokenized::Literal(Length::Px(48.0))),
+                "min_height prop must pin an exact px min-height"
+            );
+    });
     }
 
     // D6: width prop pins an exact px width.
     #[test]
     fn width_prop_sets_width_style() {
-        theme();
-        let props = FieldProps {
-            width: Reactive::Static(Some(240.0)),
-            ..Default::default()
-        };
-        let rules = resolve_input_style(Field(&props));
-        assert_eq!(rules.width, Some(Tokenized::Literal(Length::Px(240.0))));
+        with_test_world(|| {
+            theme();
+            let props = FieldProps {
+                width: Reactive::Static(Some(240.0)),
+                ..Default::default()
+            };
+            let rules = resolve_input_style(Field(&props));
+            assert_eq!(rules.width, Some(Tokenized::Literal(Length::Px(240.0))));
+    });
     }
 
     /// Is the built Field's `text_input` secure flag a `Static` snapshot?
+    /// Old-core only: the mirror evaluates `secure` to its current value,
+    /// so the static-vs-reactive wrapper kind isn't observable through it.
+    #[cfg(not(feature = "new-core"))]
     fn input_secure_is_static(field: Element) -> bool {
         let children = match field {
             Element::View { children, .. } => children,
@@ -984,22 +995,44 @@ mod tests {
         panic!("Field tree has no text_input node");
     }
 
-    // A live `secure` source must thread to the `text_input` as
-    // `Reactive::Dynamic` — NOT snapshotted at build — so the mask can toggle
-    // at runtime without rebuilding the Field (the password show/hide path
-    // that previously needed a `switch`).
+    /// The built Field's `text_input` secure flag, evaluated NOW (both cores).
+    fn input_secure(field: Element) -> bool {
+        let children = match classify(field) {
+            P::View { children, .. } => children,
+            _ => panic!("Field renders a view wrapper"),
+        };
+        for c in children {
+            if let P::TextInput { secure, .. } = classify(c) {
+                return secure;
+            }
+        }
+        panic!("Field tree has no text_input node");
+    }
+
+    // A live `secure` source must thread to the `text_input` reactively —
+    // NOT snapshotted at build — so the mask can toggle at runtime without
+    // rebuilding the Field (the password show/hide path that previously
+    // needed a `switch`). Observable form: flip the signal AFTER the Field
+    // is built, then evaluate — a build-time snapshot would still report
+    // the old value.
     #[test]
     fn reactive_secure_threads_through_not_flattened() {
-        theme();
-        let visible: Signal<bool> = Signal::new(false);
-        let props = FieldProps {
-            secure: runtime_core::rx!(!visible.get()),
-            ..Default::default()
-        };
-        assert!(
-            !input_secure_is_static(Field(&props)),
-            "a reactive `secure` must reach the text_input as Reactive::Dynamic"
-        );
+        with_test_world(|| {
+            theme();
+            let visible: Signal<bool> = runtime_core::signal(false);
+            let props = FieldProps {
+                secure: runtime_core::rx!(!visible.get()),
+                ..Default::default()
+            };
+            let field = Field(&props);
+            // Built with secure = !false = true; reveal AFTER build.
+            visible.set(true);
+            idea_theme::testing::commit();
+            assert!(
+                !input_secure(field),
+                "a reactive `secure` must reach the text_input live, not as a build-time snapshot"
+            );
+    });
     }
 
     // A live `size` (or any style-driving prop) must attach the input style
@@ -1007,17 +1040,19 @@ mod tests {
     // are routed into the style sink, not snapshotted at build.
     #[test]
     fn reactive_size_drives_reactive_input_style() {
-        theme();
-        let big: Signal<bool> = Signal::new(false);
-        let props = FieldProps {
-            size: runtime_core::rx!(if big.get() { FieldSize::Lg } else { FieldSize::Sm }),
-            ..Default::default()
-        };
-        assert!(
-            matches!(input_style_source(Field(&props)), StyleSource::Reactive(_)),
-            "a reactive `size` must attach a reactive input style (routed to the \
-             style sink, not snapshotted)"
-        );
+        with_test_world(|| {
+            theme();
+            let big: Signal<bool> = runtime_core::signal(false);
+            let props = FieldProps {
+                size: runtime_core::rx!(if big.get() { FieldSize::Lg } else { FieldSize::Sm }),
+                ..Default::default()
+            };
+            assert!(
+                input_style_source(Field(&props)).is_reactive(),
+                "a reactive `size` must attach a reactive input style (routed to the \
+                 style sink, not snapshotted)"
+            );
+    });
     }
 
     // Since the D9 focus-ring fix, a non-adorned Field's input style is
@@ -1028,29 +1063,36 @@ mod tests {
     // isn't silently regressed back.
     #[test]
     fn non_adorned_input_is_reactive_for_focus_ring() {
-        theme();
-        let props = FieldProps {
-            size: Reactive::Static(FieldSize::Lg),
-            ..Default::default()
-        };
-        assert!(
-            matches!(input_style_source(Field(&props)), StyleSource::Reactive(_)),
-            "a non-adorned Field input carries a reactive style for the focus ring"
-        );
+        with_test_world(|| {
+            theme();
+            let props = FieldProps {
+                size: Reactive::Static(FieldSize::Lg),
+                ..Default::default()
+            };
+            assert!(
+                input_style_source(Field(&props)).is_reactive(),
+                "a non-adorned Field input carries a reactive style for the focus ring"
+            );
+    });
     }
 
     // A bare `bool` stays a `Static` mask — the zero-overhead common case (no
     // per-input effect).
+    // Old-core only: the mirror evaluates `secure` to a value, so the
+    // static-fast-path wrapper kind can't be asserted through it.
+    #[cfg(not(feature = "new-core"))]
     #[test]
     fn static_secure_stays_static() {
-        theme();
-        let props = FieldProps {
-            secure: true.into(),
-            ..Default::default()
-        };
-        assert!(
-            input_secure_is_static(Field(&props)),
-            "a static `secure` stays Reactive::Static"
-        );
+        with_test_world(|| {
+            theme();
+            let props = FieldProps {
+                secure: true.into(),
+                ..Default::default()
+            };
+            assert!(
+                input_secure_is_static(Field(&props)),
+                "a static `secure` stays Reactive::Static"
+            );
+    });
     }
 }

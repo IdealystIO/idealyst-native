@@ -12,14 +12,56 @@ crate-type = ["rlib"]
 # Mirror idea-ui: reflective doc-control panels for idea-ui-docs.
 docs = ["idea-ui/docs"]
 # Forward a `test_id` to the root interactive primitive for robot/E2E.
-robot = ["runtime-core/robot", "idea-ui/robot"]
+robot = ["runtime-core/robot", "idea-ui/robot", "runtime-facade?/robot"]
+# idea-lite migration (P6 SDK retarget): same-source build against the
+# new core via the `extern crate runtime_facade as runtime_core;` alias
+# in lib.rs. Default-off; one core per build graph (see the hazard note
+# in runtime-macros/Cargo.toml). Forwards to idea-ui/idea-theme so the
+# whole idea-* subtree flips together.
+new-core = [
+    "idea-theme/new-core",
+    "idea-ui/new-core",
+    "dep:runtime-facade",
+    "dep:runtime-vocabulary",
+]
+# New-core TEST harness (tests/*.rs mount on the scene-parity mock
+# host). Normal optional deps, not dev-deps — dev-deps can't be
+# optional and would drag old-core-only harness crates into every
+# graph (the newcore-app pattern). SEPARATE from `new-core` on purpose:
+# scene-parity's old-side scenarios pin the navigator SDKs' OLD-core
+# surface, so it must never join a graph that flips the SDKs to
+# new-core (a consumer app enabling `idea-ui-nav/new-core` +
+# `swap-navigator/new-core` — e.g. nav-showcase — would otherwise
+# break scene-parity via feature unification). Run the new-core test
+# suite with `--no-default-features --features new-core-harness`.
+new-core-harness = [
+    "new-core",
+    "dep:runtime-scene",
+    "dep:runtime-world",
+    "dep:scene-parity",
+]
 
 [dependencies]
 runtime-core = { workspace = true, features = ["prim-navigator"] }
+# The new-core alias target + the retargeted ui! emission's absolute
+# `::runtime_vocabulary::glue::…` paths (see the `new-core` feature).
+runtime-facade = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
+runtime-scene = { workspace = true, optional = true }
+runtime-world = { workspace = true, optional = true }
+scene-parity = { path = "../../dev/scene-parity", optional = true }
 # Same theme as idea-ui, and piggybacks on its components (Tabs strip, Icon,
 # Button) rather than reimplementing chrome from primitives.
 idea-theme = { workspace = true }
-idea-ui = { workspace = true }
+# `default-features = false` + the explicit prim list (the same
+# unification contract idea-ui documents on its own runtime-core dep):
+# idea-ui's `table` default is old-core-authored and must stay out of
+# new-core graphs; this crate re-enables exactly the families its chrome
+# renders. Apps that want Table enable it on THEIR idea-ui dep.
+idea-ui = { path = "../idea-ui", default-features = false, features = [
+    "prim-icon", "prim-image", "prim-text-input", "prim-activity",
+    "prim-portal", "prim-presence",
+] }
 
 [dev-dependencies]
 # Theme install + resolve for component tests, and a live swap navigator to

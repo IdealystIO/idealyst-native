@@ -24,6 +24,9 @@
 mod defaults_on {
     #[test]
     fn default_features_compile_every_gated_component() {
+        // Several props `Default`s create signals (world-ambient on the
+        // new core) — identity wrapper on the old core.
+        idea_theme::testing::with_test_world(|| {
         // Single-family components.
         let _ = idea_ui::IconProps::default(); // prim-icon
         let _ = idea_ui::ImageProps::default(); // prim-image
@@ -38,6 +41,7 @@ mod defaults_on {
         let _ = idea_ui::FieldProps::default(); // icon + activity + text-input
         let _ = idea_ui::AutocompleteProps::default(); // text-input + portal
         let _ = idea_ui::ToastHostProps::default(); // icon+activity+portal+presence
+        });
     }
 }
 

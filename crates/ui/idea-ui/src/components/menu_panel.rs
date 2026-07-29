@@ -165,32 +165,40 @@ fn capped_scroller(rows: Vec<Element>) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P, TStyle};
+    use idea_theme::testing::with_test_world;
 
     #[test]
     fn max_height_caps_to_fixed_default_on_a_roomy_viewport() {
-        // A tall desktop viewport: the menu is bounded by the fixed default,
-        // not the (much larger) viewport, so it never dominates the screen.
-        assert_eq!(menu_max_height(1080.0), MENU_MAX_HEIGHT);
+        with_test_world(|| {
+            // A tall desktop viewport: the menu is bounded by the fixed default,
+            // not the (much larger) viewport, so it never dominates the screen.
+            assert_eq!(menu_max_height(1080.0), MENU_MAX_HEIGHT);
+    });
     }
 
     #[test]
     fn regression_max_height_caps_to_viewport_on_a_short_screen() {
-        // The bug: the menu had NO height cap, so a 40-option list grew past the
-        // viewport bottom and the overflow was unreachable. On a short viewport
-        // the cap must come from the viewport (minus a margin) — smaller than
-        // the fixed default — so the menu can never exceed the visible area.
-        let short = 260.0;
-        let h = menu_max_height(short);
-        assert_eq!(h, short - MENU_VIEWPORT_MARGIN * 2.0);
-        assert!(h < MENU_MAX_HEIGHT, "a short viewport caps below the fixed default");
-        assert!(h < short, "the menu fits within the visible viewport");
+        with_test_world(|| {
+            // The bug: the menu had NO height cap, so a 40-option list grew past the
+            // viewport bottom and the overflow was unreachable. On a short viewport
+            // the cap must come from the viewport (minus a margin) — smaller than
+            // the fixed default — so the menu can never exceed the visible area.
+            let short = 260.0;
+            let h = menu_max_height(short);
+            assert_eq!(h, short - MENU_VIEWPORT_MARGIN * 2.0);
+            assert!(h < MENU_MAX_HEIGHT, "a short viewport caps below the fixed default");
+            assert!(h < short, "the menu fits within the visible viewport");
+    });
     }
 
     #[test]
     fn max_height_never_shrinks_below_min_on_a_tiny_viewport() {
-        // A pathologically short viewport still leaves a usable, scrollable menu
-        // rather than collapsing to an unusable sliver.
-        assert_eq!(menu_max_height(80.0), MENU_MIN_HEIGHT);
+        with_test_world(|| {
+            // A pathologically short viewport still leaves a usable, scrollable menu
+            // rather than collapsing to an unusable sliver.
+            assert_eq!(menu_max_height(80.0), MENU_MIN_HEIGHT);
+    });
     }
 
     /// A test anchor whose rect is fixed — stands in for the mounted input
@@ -212,41 +220,44 @@ mod tests {
     /// `preserves_focus` mark.
     #[test]
     fn regression_combobox_panel_floors_width_at_anchor_and_preserves_focus() {
-        idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
 
-        let anchor_ref: runtime_core::Ref<FixedAnchor> = runtime_core::Ref::new();
-        anchor_ref.fill(FixedAnchor);
-        let panel = combobox_menu_panel(
-            vec![runtime_core::text("A".to_string()).into_element()],
-            AnchorTarget::from(anchor_ref),
-        );
+            let anchor_ref: runtime_core::Ref<FixedAnchor> = runtime_core::Ref::new();
+            anchor_ref.fill(FixedAnchor);
+            let panel = combobox_menu_panel(
+                vec![runtime_core::text("A".to_string()).into_element()],
+                AnchorTarget::from(anchor_ref),
+            );
 
-        let Element::View { preserves_focus, style, children, .. } = panel else {
-            panic!("the combobox panel is a View (the SelectMenu surface)");
-        };
-        assert!(
-            preserves_focus,
-            "row presses must not blur the anchoring input (close-on-blur safety)"
-        );
-        assert!(
-            matches!(children.first(), Some(Element::ScrollView { .. })),
-            "the combobox panel wraps the same capped scroller as the plain panel"
-        );
+            let P::View { preserves_focus, style, mut children, .. } = classify(panel) else {
+                panic!("the combobox panel is a View (the SelectMenu surface)");
+            };
+            assert!(
+                preserves_focus,
+                "row presses must not blur the anchoring input (close-on-blur safety)"
+            );
+            assert!(
+                !children.is_empty()
+                    && matches!(classify(children.remove(0)), P::ScrollView { .. }),
+                "the combobox panel wraps the same capped scroller as the plain panel"
+            );
 
-        // The panel style must resolve the anchor's width as `min_width` —
-        // a floor (rows longer than the field still widen it), not a fixed
-        // width.
-        let app = match style.expect("the panel carries the SelectMenu style") {
-            runtime_core::StyleSource::Reactive(f) => f(),
-            _ => panic!("the combobox panel style is reactive (anchor width + viewport cap)"),
-        };
-        let resolved = runtime_core::resolve_style(&app);
-        let min_width = resolved
-            .min_width
-            .clone()
-            .expect("a measurable anchor must produce a min_width floor")
-            .resolve();
-        assert_eq!(min_width, Length::Px(240.0));
+            // The panel style must resolve the anchor's width as `min_width` —
+            // a floor (rows longer than the field still widen it), not a fixed
+            // width.
+            let app = match style.expect("the panel carries the SelectMenu style") {
+                TStyle::AppFn(f) => f(),
+                _ => panic!("the combobox panel style is reactive (anchor width + viewport cap)"),
+            };
+            let resolved = runtime_core::resolve_style(&app);
+            let min_width = resolved
+                .min_width
+                .clone()
+                .expect("a measurable anchor must produce a min_width floor")
+                .resolve();
+            assert_eq!(min_width, Length::Px(240.0));
+    });
     }
 
     /// Regression: the anchored menu panel must wrap its rows in a `scroll_view`
@@ -256,27 +267,27 @@ mod tests {
     /// off-screen-overflow bug returns and this fails.
     #[test]
     fn menu_panel_wraps_rows_in_a_scroll_view() {
-        use runtime_core::Element;
+        with_test_world(|| {
+            let panel = scrolling_menu_panel(vec![
+                runtime_core::text("A".to_string()).into_element(),
+                runtime_core::text("B".to_string()).into_element(),
+            ]);
 
-        let panel = scrolling_menu_panel(vec![
-            runtime_core::text("A".to_string()).into_element(),
-            runtime_core::text("B".to_string()).into_element(),
-        ]);
-
-        let panel_children = match &panel {
-            Element::View { children, .. } => children,
-            _ => panic!("the menu panel must be a View (the SelectMenu surface)"),
-        };
-        assert_eq!(panel_children.len(), 1, "the panel holds a single scroller child");
-        let body = match &panel_children[0] {
-            Element::ScrollView { children, .. } => children,
-            _ => panic!("the panel's child must be a ScrollView wrapping the rows"),
-        };
-        assert_eq!(body.len(), 1, "the scroller holds a single body view");
-        let rows = match &body[0] {
-            Element::View { children, .. } => children,
-            _ => panic!("the scroller's child must be the body View holding the rows"),
-        };
-        assert_eq!(rows.len(), 2, "both rows live inside the scrolling body");
+            let mut panel_children = match classify(panel) {
+                P::View { children, .. } => children,
+                _ => panic!("the menu panel must be a View (the SelectMenu surface)"),
+            };
+            assert_eq!(panel_children.len(), 1, "the panel holds a single scroller child");
+            let mut body = match classify(panel_children.remove(0)) {
+                P::ScrollView { children, .. } => children,
+                _ => panic!("the panel's child must be a ScrollView wrapping the rows"),
+            };
+            assert_eq!(body.len(), 1, "the scroller holds a single body view");
+            let rows = match classify(body.remove(0)) {
+                P::View { children, .. } => children,
+                _ => panic!("the scroller's child must be the body View holding the rows"),
+            };
+            assert_eq!(rows.len(), 2, "both rows live inside the scrolling body");
+    });
     }
 }

@@ -6,14 +6,17 @@
 //! Deliberate deltas from the old-core file, each a named blocked seam
 //! (documented in suites.rs; never a silent weakening):
 //!
-//! - **idea-ui is old-core-only** (its own `ui!` sites lower to the old
-//!   core; SDK retarget P6): the `Stack` wrapper becomes a plain
-//!   `view`, and the `Modal` becomes the primitive composition it wraps
-//!   — an `overlay` (Center placement, dismissable backdrop) whose card
-//!   is a `pressable` WRAPPING the confirm button, which is the exact
-//!   nested-pressability regression the modal suite exists to catch.
-//!   The COMPONENTS screen (idea-ui Switch/Checkbox/Button) has no
-//!   new-core counterpart yet.
+//! - The `Stack` wrapper is a plain `view`, and the `Modal` is the
+//!   primitive composition it wraps — an `overlay` (Center placement,
+//!   dismissable backdrop) whose card is a `pressable` WRAPPING the
+//!   confirm button, the exact nested-pressability regression the modal
+//!   suite exists to catch. (Kept as primitives on purpose: the modal
+//!   suite pins the PRIMITIVE composition, idea-ui coverage lives in
+//!   the COMPONENTS screen.)
+//! - The COMPONENTS screen drives the REAL idea-ui Switch/Checkbox/
+//!   Button — same-source components on their P6 `new-core` alias
+//!   build (idea-ui suite un-gated; the back affordance pops via the
+//!   vocabulary `NavHandle` instead of the old `Ref<StackHandle>`).
 //! - **`#[method]` LOWERS on the new core** (P5 robot remainder): the
 //!   MethodCounter component is back, same-source in shape but in the
 //!   inline-props form (the new core's `#[method]` contract — the old
@@ -64,6 +67,11 @@ pub struct State {
 /// Must run with the owning world ambient (`newcore::start` wraps the
 /// build in `World::enter`).
 pub fn app_newcore() -> Element {
+    // The idea-ui screens style through the installed theme sheets —
+    // same install as the old-core app (runs inside `newcore::start`'s
+    // `World::enter`, landing in this world's ThemeCtx).
+    idea_ui::install_idea_theme(idea_ui::light_theme());
+
     let state = State {
         count: signal(0),
         show_extra: signal(false),
@@ -81,9 +89,11 @@ pub fn app_newcore() -> Element {
     let nav_root = nav.clone();
     let nav_detail = nav.clone();
     let nav_fill = nav.clone();
+    let nav_components = nav.clone();
     runtime_vocabulary::builders::stack_navigator(&crate::ROOT)
         .screen(crate::ROOT, move |_| root_page(state, nav_root.clone()))
         .screen(crate::DETAIL, move |_| detail_page(nav_detail.clone()))
+        .screen(crate::COMPONENTS, move |_| components_page(nav_components.clone()))
         .on_handle(move |h| *nav_fill.borrow_mut() = Some(h))
         .build()
 }
@@ -172,6 +182,12 @@ pub(crate) fn root_page(state: State, nav: NavCell) -> Element {
     );
 
     // — Stack push. —
+    let nav_components = nav.clone();
+    let goto_components = move || {
+        if let Some(h) = nav_components.borrow().as_ref() {
+            h.push(&crate::COMPONENTS, ());
+        }
+    };
     let push = move || {
         if let Some(h) = nav.borrow().as_ref() {
             h.push(&crate::DETAIL, ());
@@ -206,6 +222,9 @@ pub(crate) fn root_page(state: State, nav: NavCell) -> Element {
         // method invocation (same placement as the old file).
         ui! { MethodCounter(initial = 10i32) },
         button("Push detail", push).test_id("push-detail").into_element(),
+        button("Components", goto_components)
+            .test_id("goto-components")
+            .into_element(),
     ];
 
     // Wrap in a scroll view (weird condition: scrollable content). The
@@ -332,6 +351,64 @@ pub(crate) fn detail_page(nav: NavCell) -> Element {
     let children: Vec<Element> = vec![
         text("Detail screen").test_id("detail-marker").into_element(),
         button("Back", back).test_id("back").into_element(),
+    ];
+    view(children).into_element()
+}
+
+/// idea-ui component coverage — the SAME `Switch`/`Checkbox`/`Button`
+/// screen as `screens.rs::components_page` (same `test_id`s, same
+/// status texts), with idea-ui compiled through its P6 `new-core`
+/// alias build. Only the back affordance differs: the vocabulary
+/// `NavHandle` pops instead of the old `Ref<StackHandle>`.
+pub(crate) fn components_page(nav: NavCell) -> Element {
+    use idea_ui::{Button, Checkbox, Switch};
+
+    let sw = signal(false);
+    let cb = signal(false);
+    let clicks = signal(0_i32);
+
+    let on_sw: Rc<dyn Fn(bool)> = Rc::new(move |v| sw.set(v));
+    let on_cb: Rc<dyn Fn(bool)> = Rc::new(move |v| cb.set(v));
+    let on_btn: Rc<dyn Fn()> = Rc::new(move || clicks.update(|n| n + 1));
+    let on_back: Rc<dyn Fn()> = Rc::new(move || {
+        if let Some(h) = nav.borrow().as_ref() {
+            h.pop();
+        }
+    });
+
+    let sw_status = text(move || format!("switch={}", sw.get()))
+        .test_id("ui-switch-status")
+        .into_element();
+    let cb_status = text(move || format!("check={}", cb.get()))
+        .test_id("ui-check-status")
+        .into_element();
+    let btn_status = text(move || format!("clicks={}", clicks.get()))
+        .test_id("ui-button-status")
+        .into_element();
+
+    let children: Vec<Element> = vec![
+        text("Components").test_id("components-marker").into_element(),
+        ui! {
+            Switch(
+                value = sw,
+                on_change = on_sw,
+                label = Some("Notifications".to_string()),
+                test_id = Some("ui-switch"),
+            )
+        },
+        sw_status,
+        ui! {
+            Checkbox(
+                value = cb,
+                on_change = on_cb,
+                label = Some("Accept terms".to_string()),
+                test_id = Some("ui-check"),
+            )
+        },
+        cb_status,
+        ui! { Button(label = "Tap me".to_string(), on_click = on_btn, test_id = Some("ui-button")) },
+        btn_status,
+        ui! { Button(label = "Back".to_string(), on_click = on_back, test_id = Some("comp-back")) },
     ];
     view(children).into_element()
 }

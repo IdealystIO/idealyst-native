@@ -162,6 +162,15 @@ thread_local! {
     /// (Realized first — unmount — then the World). Page-lifetime, same
     /// retention convention as the CLI wrapper's `OWNER` slot.
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
+    /// The installed window-`resize` listener (viewport source), kept so
+    /// [`stop`] can remove it — unlike the old-core observer's
+    /// `forget()` leak, repeated boot/stop cycles (tests) must not pile
+    /// listeners. The closure captures the mounted world's viewport
+    /// signal HANDLE only; after `stop` a straggler event would stage
+    /// into a dead world (silent kernel no-op), so removal is hygiene,
+    /// not correctness.
+    static VIEWPORT_SOURCE: RefCell<Option<wasm_bindgen::closure::Closure<dyn FnMut(web_sys::Event)>>> =
+        const { RefCell::new(None) };
     /// The world the flush driver commits. Separate from `APP` so
     /// [`schedule_flush`] never touches the app slot (a flush can run
     /// while `APP` is being written during `start_in`).
@@ -219,10 +228,31 @@ pub fn start_in(
     register(&mut registry);
     let registry = Rc::new(registry);
 
+    // Seed the SHARED old-core viewport value from the real window
+    // BEFORE the build — the world's per-world `ViewportCtx` (created
+    // below) seeds from it, so the first build classifies the correct
+    // breakpoint instead of 0-width `Xs`. (Hydrate boots deliberately
+    // seed the SSR viewport instead — see `newcore_hydrate`.)
+    if let Some(size) = current_window_viewport() {
+        runtime_core::set_viewport_size(size);
+    }
+
     let world = World::new();
-    let realized = world.enter(|| {
+    let (vp_sig, realized) = world.enter(|| {
         let element = build();
-        realize(&backend, &registry, element)
+        let realized = realize(&backend, &registry, element);
+        // Capture the per-world viewport ctx AFTER the build, never
+        // before: a build that reads a breakpoint creates the ctx
+        // itself mid-build, AFTER the app's `install_breakpoints` runs
+        // (the docs app installs its custom Lg=900 table inside its
+        // root component) — the ctx's derived-bucket memo captures the
+        // threshold table at creation, so an eager pre-build creation
+        // would pin the DEFAULT table and misclassify every width the
+        // two tables disagree on. Post-build this either fetches the
+        // build's ctx or creates one for apps that never read
+        // breakpoints (matching the old core's capture-on-first-read).
+        let vp_sig = runtime_vocabulary::viewport::viewport_ctx().size_signal();
+        (vp_sig, realized)
     });
 
     // Single-root contract, matching the old-core mount: `finish` clears
@@ -258,6 +288,10 @@ pub fn start_in(
     // actions settle via flush_sync (see robot_transport).
     #[cfg(feature = "robot")]
     crate::robot_transport::install_newcore_driver_env();
+
+    // Live viewport source: window resizes re-fire breakpoint-dependent
+    // author reactivity (the idea-ui-docs hamburger bug).
+    install_viewport_source(vp_sig);
 }
 
 /// True while a new-core app is mounted (`start` ran, `stop` hasn't).
@@ -301,6 +335,7 @@ pub fn stop() {
     crate::robot_transport::clear_newcore_driver_env();
     #[cfg(feature = "prim-navigator")]
     crate::newcore_url_sync::reset();
+    remove_viewport_source();
     crate::dispatch_hook::clear_dispatch_hook();
     FLUSH_WORLD.with(|w| *w.borrow_mut() = None);
     APP.with(|slot| {
@@ -310,6 +345,123 @@ pub fn stop() {
             let App { realized, _backend, _registry, world } = app;
             drop(realized);
             drop(world);
+        }
+    });
+}
+
+// ===========================================================================
+// JS sid namespace fold
+// ===========================================================================
+
+/// Fold a world signal's `raw_id` into the JS-side sid namespace,
+/// DISJOINT from old-core arena ids: keep the slot (low 31 bits — the
+/// per-live-world uniqueness the JS tables need) and set the high bit.
+///
+/// WHY (bug: cross-core sid aliasing poisons an old-core binding's
+/// first paint): the JS binding tables (`__idealystSignalValues` /
+/// `__idealystSignalSubscribers`, keyed u32) are PAGE-global and shared
+/// by both cores. World `raw_id`s were previously truncated to their
+/// low-32 slot, and old-core arena signal ids are the same small
+/// integers — so a still-mounted new-core app's live subscriber could
+/// hold a cached value at the exact sid a later old-core signal
+/// allocates (the browser battery's
+/// `regression_fstring_two_bindings_one_signal` painted a sibling
+/// test's cached value on first paint once an unrelated boot-order
+/// change shifted old-arena ids by one). The high bit keeps the two
+/// cores' key spaces disjoint: old arena ids are sequential slab
+/// indices that never reach 2^31. EVERY new-core path that hands a sid
+/// to the JS layer must fold through here — registration
+/// (`register_reactive_text_binding` / `register_reactive_class_binding`)
+/// and delivery (`notify_signal_text_js` / `notify_signal_value_js`)
+/// alike, or commits ship to a key nothing subscribed.
+///
+/// Two live worlds sharing a slot still alias each other (same caveat
+/// the plain low-32 truncation documented: one interactive world per
+/// page); dropping the generation bits is likewise unchanged.
+fn js_sid(raw_id: u64) -> u64 {
+    (raw_id & 0x7FFF_FFFF) | 0x8000_0000
+}
+
+// ===========================================================================
+// Viewport source (the new-core web resize seam)
+// ===========================================================================
+//
+// The vocabulary's per-world viewport/breakpoint signal
+// (`runtime_vocabulary::viewport`) is SEED-ONLY unless the platform
+// pushes live sizes. This is web's push: a window-`resize` listener that
+// writes BOTH sinks —
+//
+// - the world's `ViewportCtx` signal (handler-safe staged write through
+//   the boot-captured Copy handle; the listener is a raw DOM callback,
+//   OUTSIDE `World::enter` — capture, don't inject) so breakpoint-
+//   dependent author reactivity (`when(!sidebar_pinned(Lg))`) re-fires
+//   on the flush it schedules;
+// - the shared old-core TLS value (`runtime_core::set_viewport_size`) so
+//   every value-read seam (the vocabulary's native breakpoint-overlay
+//   merge, `Tokenized` apply paths, a later hydrate's seed) stays
+//   coherent with what author reactivity sees.
+//
+// Mirrors `viewport_observer.rs` (the old-core source) but is
+// removable: `stop()` uninstalls it, so boot/stop cycles in the browser
+// test battery don't accumulate listeners.
+
+/// `window.inner{Width,Height}` as a logical-pixel [`ViewportSize`].
+/// `None` outside a browser context (workers) — degrade like the
+/// old-core observer.
+fn current_window_viewport() -> Option<runtime_core::ViewportSize> {
+    let win = web_sys::window()?;
+    let w = win.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+    let h = win.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+    Some(runtime_core::ViewportSize::new(w, h))
+}
+
+/// One resize push: both sinks + a scheduled flush (the staged write
+/// commits like any handler-staged write).
+fn push_viewport(sig: runtime_world::Signal<runtime_core::ViewportSize>) {
+    if let Some(size) = current_window_viewport() {
+        runtime_core::set_viewport_size(size);
+        // Equality-guarded staged write on the world handle; dead-world
+        // writes (a straggler event after `stop`) are silent no-ops.
+        sig.set(size);
+        schedule_flush();
+    }
+}
+
+/// Install the `resize` listener for the mounted world. Called at the
+/// end of every boot path (`start_in` AND `newcore_hydrate`); replaces
+/// any previous listener (idempotent across re-boots).
+pub(crate) fn install_viewport_source(
+    sig: runtime_world::Signal<runtime_core::ViewportSize>,
+) {
+    remove_viewport_source();
+    let Some(win) = web_sys::window() else { return };
+    let closure: wasm_bindgen::closure::Closure<dyn FnMut(web_sys::Event)> =
+        wasm_bindgen::closure::Closure::new(move |_: web_sys::Event| push_viewport(sig));
+    use wasm_bindgen::JsCast;
+    let _ = win.add_event_listener_with_callback("resize", closure.as_ref().unchecked_ref());
+    VIEWPORT_SOURCE.with(|s| *s.borrow_mut() = Some(closure));
+}
+
+/// Push the REAL window size through the source once — the hydrate
+/// boot's post-adoption reconcile (its build seeded the SSR viewport;
+/// the real one lands after the server DOM is adopted, mirroring the
+/// old-core "observer installed post-mount" ordering).
+pub(crate) fn push_current_viewport_now(
+    sig: runtime_world::Signal<runtime_core::ViewportSize>,
+) {
+    push_viewport(sig);
+}
+
+fn remove_viewport_source() {
+    VIEWPORT_SOURCE.with(|s| {
+        if let Some(closure) = s.borrow_mut().take() {
+            if let Some(win) = web_sys::window() {
+                use wasm_bindgen::JsCast;
+                let _ = win.remove_event_listener_with_callback(
+                    "resize",
+                    closure.as_ref().unchecked_ref(),
+                );
+            }
         }
     });
 }
@@ -341,6 +493,29 @@ fn flush_now() {
             let _t = crate::phase_timer::PhaseTimer::start("nc_flush_total");
             world.flush();
         }
+    }
+}
+
+/// Run a platform-invoked vocabulary callback with the mounted world
+/// ambient (`World::enter`).
+///
+/// WHY (bug: flat_list rendered ZERO rows on new-core web): the
+/// virtualizer inverts control — the backend's own scroll/window
+/// machinery calls the handler's `mount_item` to REALIZE a row, and
+/// realization is creation-side (`signal()`/`effect()`/`inject` for
+/// `ThemeCtx`), which panics outside `World::enter`. Ordinary author
+/// callbacks (`on_press`, …) only stage writes through captured
+/// handles, so the dispatch-site glue never needed entry — `mount_item`
+/// / `release_item` are the one callback family that BUILDS, and the
+/// vocabulary contract (handlers/virtualizer.rs) assigns the entry to
+/// the backend. Pre-boot (`FLUSH_WORLD` empty — the initial mount's
+/// realize) the boot's own `enter` is still ambient, so a bare call is
+/// already entered; nesting `enter` is a legal stack, so the ambient
+/// fallback never double-books.
+fn enter_mounted_world<R>(f: impl FnOnce() -> R) -> R {
+    match FLUSH_WORLD.with(|w| w.borrow().clone()) {
+        Some(world) => world.enter(f),
+        None => f(),
     }
 }
 
@@ -636,10 +811,14 @@ impl caps::TextOps for WebBackend {
         initial_values: &[&str],
         stringifiers: &[Rc<dyn Fn() -> String>],
     ) {
+        // Fold into the new-core half of the JS sid namespace — see
+        // [`js_sid`]; must match the `notify_signal_text_js` delivery
+        // fold or commits go to a key no binding subscribed.
+        let folded: Vec<u64> = signal_ids.iter().map(|id| js_sid(*id)).collect();
         <WebBackend as Backend>::register_reactive_text_binding(
             self,
             text_id,
-            signal_ids,
+            &folded,
             template_parts,
             initial_values,
             stringifiers,
@@ -664,7 +843,7 @@ impl caps::TextOps for WebBackend {
         // `__idealystOnSignalChanged` panics (same rationale as
         // `notify_signal_value_js`'s ensure_class_bindings_shim).
         self.ensure_text_bindings_shim();
-        self.ship_signal_change_to_js(signal_id, value);
+        self.ship_signal_change_to_js(js_sid(signal_id), value);
     }
 
     fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
@@ -1029,6 +1208,13 @@ impl caps::VirtualizerOps for WebBackend {
         // backend's own scroll handling; measured-size reports feed the
         // handler's layout cache. item_count/item_key/item_size are
         // pure reads and stay unwrapped.
+        //
+        // mount/release additionally run WORLD-ENTERED
+        // (`enter_mounted_world`): `mount_item` realizes the row —
+        // creation-side work (`theme_ctx` → `inject::<ThemeCtx>`) that
+        // aborts outside `World::enter` (the flat_list-renders-zero-rows
+        // bug); `release_item` drops the row scope, whose cleanups get
+        // the same ambient guarantee the old walker's teardown had.
         let VirtualizerCallbacks {
             item_count,
             item_key,
@@ -1046,7 +1232,7 @@ impl caps::VirtualizerOps for WebBackend {
             mount_item: {
                 let f = mount_item;
                 Rc::new(move |i| {
-                    let mounted = f(i);
+                    let mounted = enter_mounted_world(|| f(i));
                     schedule_flush();
                     mounted
                 })
@@ -1054,7 +1240,7 @@ impl caps::VirtualizerOps for WebBackend {
             release_item: {
                 let f = release_item;
                 Rc::new(move |scope_id| {
-                    f(scope_id);
+                    enter_mounted_world(|| f(scope_id));
                     schedule_flush();
                 })
             },
@@ -1387,10 +1573,12 @@ impl caps::StyleOps for WebBackend {
         classes: &[&str],
         value_reader: Rc<dyn Fn() -> u32>,
     ) -> u32 {
+        // Folded into the new-core sid half — see [`js_sid`]; must
+        // match the `notify_signal_value_js` delivery fold.
         <WebBackend as Backend>::register_reactive_class_binding(
             self,
             node,
-            signal_id,
+            js_sid(signal_id),
             values,
             classes,
             value_reader,
@@ -1410,7 +1598,7 @@ impl caps::StyleOps for WebBackend {
         // `register_reactive_class_binding` (which is what normally
         // injects it), and shipping into a missing dispatcher panics.
         self.ensure_class_bindings_shim();
-        self.ship_signal_change_to_js(signal_id, &value.to_string());
+        self.ship_signal_change_to_js(js_sid(signal_id), &value.to_string());
     }
 }
 
@@ -1853,6 +2041,54 @@ mod tests {
         drop(world);
     }
 
+    /// Regression (flat_list rendered ZERO rows on new-core web): the
+    /// JS windowing machinery invokes the vocabulary handler's
+    /// `mount_item` from its own deferred fill — OUTSIDE `World::enter`
+    /// — and row realization is creation-side (row signals, Dyn text
+    /// effects, `theme_ctx` injects), which aborts there. The caps
+    /// wrapper must enter the boot-stored world around mount/release
+    /// (`enter_mounted_world`); without it every row realize dies with
+    /// "signal()/effect() called outside World::enter" and the list
+    /// stays empty (the website /primitives Lists cell repro).
+    #[wasm_bindgen_test]
+    async fn regression_flat_list_mounts_rows_on_new_core() {
+        let mount = setup_mount();
+        start(move || {
+            // A fixed-height list surface: the JS window fill mounts
+            // nothing into a zero-extent viewport.
+            let sheet = Rc::new(runtime_core::StyleSheet::r#static(runtime_core::StyleRules {
+                height: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(120.0))),
+                ..Default::default()
+            }));
+            runtime_vocabulary::builders::virtualizer(
+                || 3usize,
+                |i| i as u64,
+                runtime_core::primitives::virtualizer::ItemSize::Known(Rc::new(|_| 20.0)),
+                |i| {
+                    // Creation-side row work — the aborting class: a
+                    // row-local signal plus a Dyn text effect.
+                    let n = signal(i as i32);
+                    text().content(move || format!("row-{}", n.get())).build()
+                },
+            )
+            .style(sheet)
+            .build()
+        });
+        // The initial window fill rides the virtualizer's deferred
+        // callbacks (microtask + ResizeObserver), and row text rides the
+        // batched-text microtask — settle across a real macrotask
+        // boundary before asserting.
+        sleep_ms(50).await;
+        let body_text = mount.text_content().unwrap();
+        for row in ["row-0", "row-1", "row-2"] {
+            assert!(
+                body_text.contains(row),
+                "expected {row} mounted by the world-entered mount_item, got: {body_text}"
+            );
+        }
+        stop();
+    }
+
     /// The full boot path: `start` mounts into `#app`, and the flush
     /// driver's microtask hook commits an event-staged write without an
     /// explicit `flush()` call.
@@ -2063,6 +2299,67 @@ mod tests {
         setup_mount();
     }
 
+    /// Regression (cross-core JS sid aliasing): world signal ids used
+    /// to enter the PAGE-global JS binding tables as their bare low-32
+    /// slot — the same small integers old-core arena signals use — so a
+    /// live new-core binding could poison a later old-core binding's
+    /// first paint at the aliased sid (surfaced as
+    /// `tests::regression_fstring_two_bindings_one_signal` painting a
+    /// sibling test's cached value once a boot-order change shifted
+    /// old-arena ids). New-core sids must land in the folded high-bit
+    /// range (`js_sid`), on BOTH the registration and delivery paths.
+    #[wasm_bindgen_test]
+    async fn regression_newcore_sids_stay_out_of_oldcore_arena_range() {
+        setup_mount();
+        let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
+        crate::install_global_self(&backend);
+        let mut registry: Registry<WebBackend> = Registry::new();
+        runtime_vocabulary::register_builtins(&mut registry);
+        let registry = Rc::new(registry);
+        let world = World::new();
+
+        use runtime_vocabulary::glue::{
+            ReactiveTextSlot as _, TextSlotPart, __idealyst_text_from_parts,
+        };
+        let (n, realized) = world.enter(|| {
+            let n = signal(3u32);
+            let assembled = __idealyst_text_from_parts(vec![
+                TextSlotPart::Lit("k="),
+                TextSlotPart::Slot(n.__idealyst_text_slot(|d| format!("{d}"))),
+            ]);
+            let tree = view().child(text().content(assembled)).build();
+            (n, realize(&backend, &registry, tree))
+        });
+        let root = realized.collect_nodes().pop().expect("one root");
+        setup_mount().append_child(&root).unwrap();
+
+        // Delivery keeps working through the folded key.
+        n.set(8);
+        world.flush();
+        assert!(root.text_content().unwrap().contains("k=8"));
+
+        let folded = super::js_sid(n.raw_id()) as u32;
+        assert!(folded >= 0x8000_0000, "fold must set the high bit");
+        let values: js_sys::Map = js_sys::Reflect::get(
+            &web_sys::window().unwrap(),
+            &JsValue::from_str("__idealystSignalValues"),
+        )
+        .unwrap()
+        .unchecked_into();
+        assert!(
+            values.has(&JsValue::from(folded)),
+            "the binding's cached value must live at the FOLDED sid"
+        );
+        assert!(
+            !values.has(&JsValue::from(n.raw_id() as u32)),
+            "the bare low-32 slot (old-core arena range) must stay untouched"
+        );
+
+        drop(realized);
+        drop(world);
+        setup_mount();
+    }
+
     /// Regression (found by the bench gate): a TEXT-binding notifier
     /// firing BEFORE the first class binding registers caches the
     /// pre-wrap `__idealystOnSignalChanged` handle — class bindings
@@ -2150,6 +2447,83 @@ mod tests {
 
         drop(realized);
         drop(world);
+        setup_mount();
+    }
+
+    /// Force `window.innerWidth` to report `w` (headless Chrome won't
+    /// actually resize) so a synthetic `resize` event exercises the
+    /// viewport source end-to-end.
+    fn force_inner_width(w: f64) {
+        let win = web_sys::window().unwrap();
+        let desc = js_sys::Object::new();
+        js_sys::Reflect::set(&desc, &"configurable".into(), &true.into()).unwrap();
+        js_sys::Reflect::set(
+            &desc,
+            &"get".into(),
+            &js_sys::Function::new_no_args(&format!("return {w};")),
+        )
+        .unwrap();
+        js_sys::Object::define_property(
+            win.unchecked_ref::<js_sys::Object>(),
+            &"innerWidth".into(),
+            &desc,
+        );
+    }
+
+    /// Regression (the idea-ui-docs "hamburger visible at desktop
+    /// width" bug): the per-world breakpoint signal was SEED-ONLY on
+    /// the new core — no web resize source — so author reactivity
+    /// reading `current_breakpoint()` (the shell's
+    /// `when(!sidebar_pinned(Lg))`) never re-fired. The boot must seed
+    /// the real window size, and a window `resize` must re-fire
+    /// breakpoint-dependent bindings through the staged-write → flush
+    /// pipeline.
+    #[wasm_bindgen_test]
+    async fn regression_hamburger_breakpoint_refires_on_window_resize() {
+        use runtime_vocabulary::glue;
+
+        let mount = setup_mount();
+        // Pin a known starting bucket BEFORE boot: the boot seed reads
+        // the (forced) window size.
+        force_inner_width(500.0); // Xs
+        start(move || {
+            view()
+                .child(text().content(move || {
+                    format!("bp={:?}", glue::current_breakpoint().get())
+                }))
+                .build()
+        });
+        microtask().await; // batched-text microtask paints the initial content
+        let body_text = || mount.text_content().unwrap();
+        assert!(
+            body_text().contains("bp=Xs"),
+            "boot seeded the real window size (got {})",
+            body_text()
+        );
+
+        // Cross the Lg threshold and fire the resize source.
+        force_inner_width(1280.0); // Xl
+        let win = web_sys::window().unwrap();
+        win.dispatch_event(&web_sys::Event::new("resize").unwrap())
+            .unwrap();
+        assert!(
+            body_text().contains("bp=Xs"),
+            "resize stages; nothing commits before the scheduled flush"
+        );
+        microtask().await; // flush microtask commits the staged viewport
+        microtask().await; // batched-text microtask repaints the binding
+        assert!(
+            body_text().contains("bp=Xl"),
+            "breakpoint-dependent binding re-fired after resize (got {})",
+            body_text()
+        );
+
+        // `stop` removes the listener: further resizes are inert.
+        stop();
+        force_inner_width(500.0);
+        win.dispatch_event(&web_sys::Event::new("resize").unwrap())
+            .unwrap();
+        microtask().await;
         setup_mount();
     }
 }

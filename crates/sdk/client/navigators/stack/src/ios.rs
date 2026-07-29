@@ -165,7 +165,12 @@ impl NavigatorHandler<IosBackend> for IosStackV2Handler {
                     .cloned()
                     .unwrap_or_default()
                     .to_state(false);
-                screen_chrome.set(Some(Rc::new(state) as Rc<dyn Any>));
+                // `set_always`: `Rc<dyn Any>` has no `PartialEq` (guarded `set`
+                // requires it), and chrome must republish on every stack
+                // change anyway — same contract as the shared handler's
+                // `sync_chrome`. (Pre-existing guarded-set miss on this
+                // compile-only target, caught by the P6 cross-check.)
+                screen_chrome.set_always(Some(Rc::new(state) as Rc<dyn Any>));
             })
         };
 

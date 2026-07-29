@@ -54,11 +54,126 @@ pub type ParamsFromSegments = Rc<dyn Fn(&HashMap<String, String>) -> Option<Box<
 
 /// One registered route: its (navigator-relative) URL pattern, the
 /// type-erased screen builder, and the segment→params reconstructor.
-/// The old `RouteEntry`, with the builder returning a scene `Element`.
+/// The old `RouteEntry`, with the builder returning a [`Screen`] (a
+/// scene `Element` plus opaque per-screen options — `Into<Screen>`
+/// keeps plain-`Element` builders source-compatible).
 pub struct NavScreenEntry {
     pub path: &'static str,
-    pub build: Rc<dyn Fn(Box<dyn Any>) -> Element>,
+    pub build: Rc<dyn Fn(Box<dyn Any>) -> Screen>,
     pub from_segments: ParamsFromSegments,
+}
+
+// ===========================================================================
+// Screen — what a route's render closure returns (P6 header-options
+// carrier: the new-core port of `runtime_core::primitives::navigator::
+// Screen`, with the body as a scene `Element`)
+// ===========================================================================
+
+/// A renderable screen: the body `Element` plus SDK-defined options.
+///
+/// Options are opaque to the vocabulary (`Rc<dyn Any>`): each SDK
+/// defines its own typed options struct (the stack SDK's
+/// `StackScreenOptions` with title + bar-button slots) and exposes
+/// builder methods (via an extension trait on `Screen`) that wrap
+/// [`with`](Self::with). The stack handler carries the ACTIVE screen's
+/// options through [`ScreenChrome`] / [`StackNav::screen_chrome`]; the
+/// SDK downcasts at read time. `impl From<Element> for Screen` keeps
+/// the no-options form ergonomic — every pre-existing
+/// `.screen(R, |_| element)` call site compiles unchanged.
+///
+/// `Rc` (not the old `Box`): the stack keeps the options on the
+/// back-stack entry AND republishes them into the chrome signal on
+/// every reveal — two owners.
+pub struct Screen {
+    /// The screen body.
+    pub element: Element,
+    /// Opaque, SDK-defined per-screen options (`None` = no options).
+    pub options: Option<Rc<dyn Any>>,
+}
+
+impl Screen {
+    /// A screen with no options.
+    pub fn new(element: impl Into<Element>) -> Self {
+        Self { element: element.into(), options: None }
+    }
+
+    /// Set this screen's SDK-defined options (replaces any existing).
+    pub fn with<T: Any + 'static>(mut self, options: T) -> Self {
+        self.options = Some(Rc::new(options));
+        self
+    }
+
+    /// Downcast the options to a borrow of `T`. `None` when the screen
+    /// has no options or the stored type doesn't match.
+    pub fn options_as<T: Any + 'static>(&self) -> Option<&T> {
+        self.options.as_ref().and_then(|o| o.downcast_ref::<T>())
+    }
+}
+
+impl From<Element> for Screen {
+    fn from(element: Element) -> Self {
+        Screen::new(element)
+    }
+}
+
+/// The ACTIVE stack screen's chrome payload, published into
+/// [`StackNav::screen_chrome`] on every navigation. `rev`-stamped so a
+/// push/pop between screens with IDENTICAL options still notifies (the
+/// screen underneath swapped — the old handler used `set_always` for
+/// exactly this; the new kernel's guarded `set` needs an inequality,
+/// which the stamp provides).
+#[derive(Clone)]
+pub struct ScreenChrome {
+    /// Publish counter (monotonic per navigator; equality key).
+    pub rev: u64,
+    /// The active screen's opaque options (`None` = screen set none).
+    pub options: Option<Rc<dyn Any>>,
+}
+
+impl PartialEq for ScreenChrome {
+    fn eq(&self, other: &Self) -> bool {
+        self.rev == other.rev
+    }
+}
+
+// ===========================================================================
+// LinkActivator — the ambient route-link seam (P6 link(route=…) port)
+// ===========================================================================
+
+/// The ambient link activator: how a declarative `link(route = …)`
+/// resolves to the ENCLOSING navigator's dispatch. Each navigator
+/// `provide`s one while building its screens and its author layout
+/// (save/restore around the build window, like [`SwapNav`]): the swap
+/// stages `Select`, the stack stages `Push` — the same
+/// push-vs-select-by-navigator-kind contract the old
+/// `NavigatorControl::install_link_activator` carried.
+///
+/// The vocabulary link handler captures it AT MOUNT (the new-core
+/// counterpart of the old construction-time ambient capture — builders
+/// are pure data here, and construction + mount are the same
+/// synchronous pass). A link mounted outside any navigator captures
+/// `None` and silently no-ops on activation (old contract). Same
+/// documented limitation as [`ScreenNav`](crate::prims::ScreenNav):
+/// a `Dyn` region rebuilt later re-captures whatever context was
+/// provided last (world context has no scoping); the recapture rides
+/// the P3 driver work.
+#[derive(Clone)]
+pub struct LinkActivator {
+    activate: Rc<dyn Fn(&'static str, String, Box<dyn Any>)>,
+}
+
+impl LinkActivator {
+    /// Wrap the navigator's staged dispatch. `f` receives
+    /// `(route name, navigator-relative url, boxed params)` and must be
+    /// handler-safe (stage, never mount).
+    pub fn new(f: impl Fn(&'static str, String, Box<dyn Any>) + 'static) -> Self {
+        Self { activate: Rc::new(f) }
+    }
+
+    /// Fire an activation for `(name, url, params)`.
+    pub fn activate(&self, name: &'static str, url: String, params: Box<dyn Any>) {
+        (self.activate)(name, url, params)
+    }
 }
 
 /// The kind-agnostic routing config (old `NavigatorConfig`, minus
@@ -149,6 +264,12 @@ pub struct StackNav {
     pub can_go_back: Signal<bool>,
     /// Pop the top screen (no-op at the root). Handler-safe.
     pub pop: Rc<dyn Fn()>,
+    /// The active screen's chrome payload (its [`Screen`] options),
+    /// republished on EVERY navigation — the old
+    /// `NavigatorHost::screen_chrome` slot. The stack SDK's
+    /// `header_state` downcasts it to `StackScreenOptions` and derives
+    /// the `StackHeaderState` an author `StackHeader` renders.
+    pub screen_chrome: Signal<ScreenChrome>,
 }
 
 // ===========================================================================
@@ -244,6 +365,10 @@ pub struct SwapNavigatorPrim {
     pub style: Option<StyleProp>,
     pub a11y: AccessibilityProps,
     pub on_handle: Option<Box<dyn FnOnce(NavHandle)>>,
+    /// Presentation label for introspection (`NavSnapshot::type_name`).
+    /// `None` ⇒ the builder name (`"swap_navigator"`). The SDK sets its
+    /// old presentation type name for wire parity with the old bridge.
+    pub nav_label: Option<&'static str>,
 }
 
 /// The `stack_navigator` primitive — push/pop over a back-stack, chrome
@@ -256,6 +381,9 @@ pub struct StackNavigatorPrim {
     pub style: Option<StyleProp>,
     pub a11y: AccessibilityProps,
     pub on_handle: Option<Box<dyn FnOnce(NavHandle)>>,
+    /// Presentation label for introspection — see
+    /// [`SwapNavigatorPrim::nav_label`].
+    pub nav_label: Option<&'static str>,
 }
 
 /// The `navigator_outlet` primitive — the single hole an author layout

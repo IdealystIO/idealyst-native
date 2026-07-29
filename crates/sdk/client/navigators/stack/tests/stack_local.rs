@@ -2,6 +2,11 @@
 //! top in the outlet, pop reveals the screen below. The author layout wraps the
 //! outlet, exactly like swap — the difference is push/pop depth vs Select.
 
+// Old-core suite: the `new-core` feature swaps the crate to the
+// vocabulary-backed surface (mutually exclusive names) — these tests
+// exercise the old walker/registry path only.
+#![cfg(not(feature = "new-core"))]
+
 // mock-backend is a native-only dev-dep (its dev-server/wire transitive
 // deps don't build on bare wasm32); the wasm test target runs
 // `hydration_web.rs` instead.

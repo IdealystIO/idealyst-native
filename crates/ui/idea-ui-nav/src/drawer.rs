@@ -71,7 +71,7 @@ impl Default for DrawerProps {
     fn default() -> Self {
         Self {
             sidebar: Vec::new(),
-            is_open: Signal::new(false),
+            is_open: runtime_core::signal(false),
             side: Reactive::Static(DrawerSide::Start),
             width: Reactive::Static(280.0),
             children: Vec::new(),
@@ -200,26 +200,32 @@ pub fn Drawer(props: DrawerProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_core::{resolve_style, text, StyleSource};
+    use idea_theme::testing::{commit, with_test_world};
+    use idea_ui::test_support::{classify, P, TStyle};
+    use runtime_core::{resolve_style, text, StyleApplication};
 
-    /// The `translateX` (px) the panel's reactive style currently resolves to.
-    /// The drawer is `view { content…, scrim, panel }`; the panel is the last
-    /// child and carries the sliding transform on its own reactive style.
-    fn panel_translate_x(drawer: &Element) -> f32 {
-        let children = match drawer {
-            Element::View { children, .. } => children,
+    /// The panel's REACTIVE style closure (the drawer is
+    /// `view { content…, scrim, panel }`; the panel is the last child and
+    /// carries the sliding transform on its own reactive style). Returned
+    /// as the closure so a test can re-resolve across `is_open` writes.
+    fn panel_style_fn(drawer: Element) -> Box<dyn Fn() -> StyleApplication> {
+        let mut children = match classify(drawer) {
+            P::View { children, .. } => children,
             _ => panic!("Drawer root is a view"),
         };
-        let panel = children.last().expect("panel is the last child");
-        let style = match panel {
-            Element::View { style, .. } => style.as_ref().expect("panel has a style"),
+        let panel = children.pop().expect("panel is the last child");
+        match classify(panel) {
+            P::View { style, .. } => match style.expect("panel has a style") {
+                TStyle::AppFn(f) => f,
+                _ => panic!("panel style is reactive (slides with is_open)"),
+            },
             _ => panic!("panel is a view"),
-        };
-        let app = match style {
-            StyleSource::Reactive(f) => f(),
-            _ => panic!("panel style is reactive (slides with is_open)"),
-        };
-        let rules = resolve_style(&app);
+        }
+    }
+
+    /// The `translateX` (px) an application currently resolves to.
+    fn translate_x(app: &StyleApplication) -> f32 {
+        let rules = resolve_style(app);
         let transforms = rules.transform.clone().expect("panel sets a transform");
         transforms
             .iter()
@@ -235,21 +241,25 @@ mod tests {
     // `is_open` state is what proves the reactive slide (not a structural swap).
     #[test]
     fn drawer_panel_slides_between_closed_and_open() {
-        let is_open = Signal::new(false);
-        let drawer = Drawer(DrawerProps {
-            sidebar: vec![text("SIDEBAR").into()],
-            is_open,
-            side: Reactive::Static(DrawerSide::Start),
-            width: Reactive::Static(280.0),
-            children: vec![text("CONTENT").into()],
+        with_test_world(|| {
+            let is_open = runtime_core::signal(false);
+            let drawer = Drawer(DrawerProps {
+                sidebar: vec![text("SIDEBAR").into()],
+                is_open,
+                side: Reactive::Static(DrawerSide::Start),
+                width: Reactive::Static(280.0),
+                children: vec![text("CONTENT").into()],
+            });
+            let style_fn = panel_style_fn(drawer);
+
+            // Closed: a leading panel sits one width off the left edge.
+            assert_eq!(translate_x(&style_fn()), -280.0, "closed panel is off-screen");
+
+            // Open: it slides flush to the edge.
+            is_open.set(true);
+            commit();
+            assert_eq!(translate_x(&style_fn()), 0.0, "open panel is flush");
         });
-
-        // Closed: a leading panel sits one width off the left edge.
-        assert_eq!(panel_translate_x(&drawer), -280.0, "closed panel is off-screen");
-
-        // Open: it slides flush to the edge.
-        is_open.set(true);
-        assert_eq!(panel_translate_x(&drawer), 0.0, "open panel is flush");
     }
 
     // The panel must resolve as a flex COLUMN. The web backend only promotes a
@@ -259,45 +269,40 @@ mod tests {
     // the scrim (the "sidebar content missing" bug).
     #[test]
     fn drawer_panel_is_a_flex_column() {
-        let drawer = Drawer(DrawerProps {
-            sidebar: vec![text("SIDEBAR").into()],
-            is_open: Signal::new(true),
-            side: Reactive::Static(DrawerSide::Start),
-            width: Reactive::Static(280.0),
-            children: vec![text("CONTENT").into()],
+        with_test_world(|| {
+            let drawer = Drawer(DrawerProps {
+                sidebar: vec![text("SIDEBAR").into()],
+                is_open: runtime_core::signal(true),
+                side: Reactive::Static(DrawerSide::Start),
+                width: Reactive::Static(280.0),
+                children: vec![text("CONTENT").into()],
+            });
+            let rules = resolve_style(&panel_style_fn(drawer)());
+            assert_eq!(
+                rules.flex_direction,
+                Some(FlexDirection::Column),
+                "panel must be a flex column so Surface(grow = 1) can fill it"
+            );
         });
-        let children = match &drawer {
-            Element::View { children, .. } => children,
-            _ => panic!("Drawer root is a view"),
-        };
-        let panel = children.last().expect("panel is the last child");
-        let style = match panel {
-            Element::View { style, .. } => style.as_ref().expect("panel has a style"),
-            _ => panic!("panel is a view"),
-        };
-        let app = match style {
-            StyleSource::Reactive(f) => f(),
-            _ => panic!("panel style is reactive"),
-        };
-        let rules = resolve_style(&app);
-        assert_eq!(
-            rules.flex_direction,
-            Some(FlexDirection::Column),
-            "panel must be a flex column so Surface(grow = 1) can fill it"
-        );
     }
 
     // A trailing (`End`) drawer sits off the RIGHT edge when closed (+width).
     #[test]
     fn drawer_end_side_offsets_positive_when_closed() {
-        let is_open = Signal::new(false);
-        let drawer = Drawer(DrawerProps {
-            sidebar: vec![text("SIDEBAR").into()],
-            is_open,
-            side: Reactive::Static(DrawerSide::End),
-            width: Reactive::Static(200.0),
-            children: vec![text("CONTENT").into()],
+        with_test_world(|| {
+            let is_open = runtime_core::signal(false);
+            let drawer = Drawer(DrawerProps {
+                sidebar: vec![text("SIDEBAR").into()],
+                is_open,
+                side: Reactive::Static(DrawerSide::End),
+                width: Reactive::Static(200.0),
+                children: vec![text("CONTENT").into()],
+            });
+            assert_eq!(
+                translate_x(&panel_style_fn(drawer)()),
+                200.0,
+                "closed trailing panel is off the right"
+            );
         });
-        assert_eq!(panel_translate_x(&drawer), 200.0, "closed trailing panel is off the right");
     }
 }

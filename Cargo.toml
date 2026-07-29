@@ -16,6 +16,12 @@ members = [
     # migration, P2a): per-primitive Ops traits over the scene Host seam,
     # plus the LegacyBridge adapter that proves the signature freeze.
     "crates/runtime/vocabulary",
+    # `extern crate runtime_facade as runtime_core;` alias target for the
+    # P6 SDK retarget: a paper-thin crate whose ROOT mirrors the old
+    # runtime-core author surface (runtime_vocabulary::glue re-export +
+    # the macro set), so an SDK crate compiles the SAME source against
+    # the new core with zero per-file edits.
+    "crates/runtime/facade",
     "crates/runtime/reactive/arena",
     "crates/runtime/reactive/refs",
     "crates/runtime/layout",
@@ -361,6 +367,7 @@ runtime-core = { path = "crates/runtime/core" }
 runtime-world = { path = "crates/runtime/world" }
 runtime-scene = { path = "crates/runtime/scene" }
 runtime-vocabulary = { path = "crates/runtime/vocabulary" }
+runtime-facade = { path = "crates/runtime/facade" }
 # Fast non-cryptographic integer hasher (rustc's own FxHash). Used in the
 # reactive core's hot-path collections keyed by internal Signal/Effect ids,
 # which are never attacker-controlled — SipHash's DoS-resistance is pure

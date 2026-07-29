@@ -97,13 +97,15 @@
 //!   the mismatch-remount path rather than adopting. Same for portal
 //!   content (never server-rendered in place). Covered when the
 //!   vocabulary navigator handler grows adoption support.
-//! - **Viewport reconciliation**: the old boot installs
-//!   `install_viewport_observer` post-mount so the REAL viewport drives a
-//!   reactive reconcile. The new core has no viewport signal source yet
-//!   (neither does [`super::start`]); the observer only feeds old-core
-//!   reactivity, so installing it here would reconcile nothing. Seeding
-//!   (step 2) is still done — it protects any old-core read reachable
-//!   from the delegated `Backend` methods during the build.
+//! - ~~Viewport reconciliation~~ CLOSED: the boot now creates the
+//!   per-world viewport ctx (`runtime_vocabulary::viewport`) seeded from
+//!   the SSR viewport, then — post-`finish` — installs the new-core
+//!   resize source and pushes the REAL window size through it, so a
+//!   client window that differs from the server's assumption reconciles
+//!   reactively (mirroring the old boot's post-mount
+//!   `install_viewport_observer` ordering). Old-core seeding (step 2)
+//!   remains — it both protects old-core value reads during the build
+//!   AND is what the world ctx seeds from.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -164,14 +166,23 @@ pub fn hydrate_in(
     let registry = Rc::new(registry);
 
     let world = World::new();
-    let realized = world.enter(|| {
+    let (vp_sig, realized) = world.enter(|| {
         let element = build();
         let realized = realize(&backend, &registry, element);
         // Drain deferred builds INSIDE the adoption window (module docs
         // step 3): buffered microtasks may build subtrees, so they run
         // under the world ambient, before `finish` retires the cursor.
         runtime_core::scheduling::drain_buffered_microtasks();
-        realized
+        // Capture the per-world viewport ctx AFTER the build (same
+        // rationale as `start_in`: the derived-bucket memo captures the
+        // breakpoint table at creation, and apps install custom tables
+        // inside their build). A ctx created mid-build seeded from the
+        // SSR viewport written above, so the adopted first render
+        // agreed with the server about the breakpoint; the REAL window
+        // size is pushed post-finish (below), mirroring the old-core
+        // "observer installed post-mount" reconcile ordering.
+        let vp_sig = runtime_vocabulary::viewport::viewport_ctx().size_signal();
+        (vp_sig, realized)
     });
 
     // Single-root contract, same as `start_in`.
@@ -207,6 +218,14 @@ pub fn hydrate_in(
             world,
         })
     });
+
+    // Live viewport source + one immediate push of the REAL window size:
+    // the build ran at the SSR-assumed viewport; if the client window
+    // differs, the staged write commits on the scheduled flush and
+    // breakpoint-dependent reactivity reconciles (off the hydration
+    // path — fresh creates, same posture as any post-boot resize).
+    super::install_viewport_source(vp_sig);
+    super::push_current_viewport_now(vp_sig);
 }
 
 // ===========================================================================

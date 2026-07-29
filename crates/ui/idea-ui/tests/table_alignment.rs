@@ -13,21 +13,41 @@
 //! over left-aligned body cells.
 
 use idea_ui::stylesheets::{TableBodyCell, TableHeadCell};
-use runtime_core::{resolve_style, IntoStyleSource, StyleSource, TextAlign};
 
-/// Resolve a stylesheet builder to its `text_align`, expecting the
-/// constant (non-reactive) `Static` source these cell sheets produce.
-fn resolved_text_align(src: StyleSource) -> Option<TextAlign> {
-    match src {
-        StyleSource::Static(app) => resolve_style(&app).text_align,
-        _ => panic!("table cell stylesheets are all-constant → StyleSource::Static"),
+// The new-core alias: same-source `runtime_core::…` paths in this test
+// resolve against the glue facade (see idea-ui's lib.rs note).
+#[cfg(feature = "new-core")]
+extern crate runtime_facade as runtime_core;
+
+use runtime_core::{resolve_style, StyleApplication, TextAlign};
+
+/// The STATIC sheet application off a builder (these cell sheets are
+/// all-constant). The conversion trait's method name differs per core —
+/// the one fork (same shape as tests/theme_token_stylesheet.rs).
+#[cfg(not(feature = "new-core"))]
+fn static_app(b: impl runtime_core::IntoStyleSource) -> StyleApplication {
+    match b.into_style_source() {
+        runtime_core::StyleSource::Static(app) => app,
+        _ => panic!("table cell stylesheets are all-constant → static"),
     }
+}
+
+#[cfg(feature = "new-core")]
+fn static_app(b: impl runtime_core::IntoStyleSource) -> StyleApplication {
+    match b.into_style_prop() {
+        runtime_vocabulary::StyleProp::Sheet(app) => app,
+        _ => panic!("table cell stylesheets are all-constant → static"),
+    }
+}
+
+fn resolved_text_align(app: StyleApplication) -> Option<TextAlign> {
+    resolve_style(&app).text_align
 }
 
 #[test]
 fn head_and_body_cells_share_left_text_align() {
-    let head = resolved_text_align(TableHeadCell().into_style_source());
-    let body = resolved_text_align(TableBodyCell().into_style_source());
+    let head = resolved_text_align(static_app(TableHeadCell()));
+    let body = resolved_text_align(static_app(TableBodyCell()));
 
     assert_eq!(
         head,

@@ -87,10 +87,11 @@
 //! - the virtualizer `for i in count_method(sig)` sugar stays deferred
 //!   (it lowers to the structured generator-backend `Derived<usize>`
 //!   count binding — wire metadata, post-P7 with the rest);
-//! - in-app `link(route = …)` (the ambient link-activator seam that
-//!   resolves a route link to the enclosing navigator's dispatch lives
-//!   in the old routing registry — navigation SDK retarget, P6);
-//!   `external = …` works;
+//! - ~~in-app `link(route = …)`~~ — SUPPORTED (P6 nav wave): the
+//!   navigators `provide` a [`prims::LinkActivator`] around every
+//!   screen/layout build (swap Selects, stack Pushes) and the link
+//!   mount resolves it — the old ambient-navigator contract;
+//!   `external = …` unchanged;
 //! - ~~`test_id = …`~~ — SUPPORTED (P5 identity seam, brought forward):
 //!   every prim the old core's `with_test_id` covers carries a
 //!   `test_id` slot + builder setter, mount handlers register into the
@@ -195,6 +196,7 @@ pub mod robot_methods;
 pub mod robot_watch;
 pub mod style_attach;
 pub mod theme;
+pub mod viewport;
 
 pub use bridge::LegacyBridge;
 pub use builders::{
@@ -207,3 +209,29 @@ pub use handlers::register_builtins;
 pub use style_attach::{
     attach_style, on_teardown, signal_class, IntoStyleProp, StyleProp, StyleServices,
 };
+
+/// New-core mirror of `runtime_core::rx!` — wraps an expression as a
+/// reactive prop value ([`glue::Reactive::derive`]). Defined here (not in
+/// `runtime-facade`) so the `$crate::…` expansion resolves against the
+/// vocabulary, keeping the facade paper-thin; the facade re-exports it
+/// under the old `runtime_core::rx` name for aliased SDK crates.
+#[macro_export]
+macro_rules! rx {
+    ($e:expr) => {
+        $crate::glue::Reactive::derive(move || $e)
+    };
+}
+
+/// New-core mirror of `runtime_core::effect!` — a scope-owned reactive
+/// effect over a bare BLOCK. The old expansion is
+/// `Effect::scoped(move || { $body })` (adopted by the active scope);
+/// here the world effect is collected by the ambient collector (the
+/// `component_scope` `Owned`), which is the same ownership contract.
+#[macro_export]
+macro_rules! effect {
+    ($body:expr) => {
+        let _ = $crate::glue::effect(move || {
+            $body;
+        });
+    };
+}

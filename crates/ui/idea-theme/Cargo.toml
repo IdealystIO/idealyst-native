@@ -16,8 +16,20 @@ crate-type = ["rlib"]
 # style/token types, which are ungated.
 runtime-core = { path = "../../runtime/core", default-features = false }
 
+# idea-lite migration (P6 SDK retarget) alias target: under `new-core`,
+# lib.rs declares `extern crate runtime_facade as runtime_core;`, which
+# shadows the extern-prelude `runtime-core` crate-wide — every
+# `runtime_core::X` path in this crate resolves against
+# `runtime_vocabulary::glue`'s mirrors instead. Same source, either core.
+runtime-facade = { workspace = true, optional = true }
+
 # Compile-checked usage recipes for the docs/MCP catalog (see
 # src/recipes.rs). Off in every production build — the `recipe!` macro
 # expands to nothing without it, so recipes cost zero in shipped apps.
 [features]
 catalog = ["runtime-core/catalog"]
+# Default-off (one core per build graph — runtime-facade enables
+# `runtime-macros/new-core`, which unifies across the graph; see that
+# feature's hazard note in runtime-macros/Cargo.toml). The default build
+# stays byte-identical old-core.
+new-core = ["dep:runtime-facade"]

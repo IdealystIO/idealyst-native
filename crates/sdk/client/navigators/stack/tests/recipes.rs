@@ -8,6 +8,11 @@
 //! Runs only with `--features catalog` (the recipe doesn't exist otherwise)
 //! and only on native hosts (mcp-catalog is a native-only dev-dep here).
 
+// Old-core suite: the `new-core` feature swaps the crate to the
+// vocabulary-backed surface (mutually exclusive names) — these tests
+// exercise the old walker/registry path only.
+#![cfg(not(feature = "new-core"))]
+
 #![cfg(all(feature = "catalog", not(target_arch = "wasm32")))]
 
 #[test]

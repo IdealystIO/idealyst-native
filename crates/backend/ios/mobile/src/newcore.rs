@@ -259,6 +259,30 @@ pub fn flush_sync() {
     flush_now();
 }
 
+/// Run a platform-invoked vocabulary callback with the mounted world
+/// ambient (`World::enter`).
+///
+/// WHY (bug: flat_list rendered ZERO rows on new-core web — every
+/// backend shared the gap): virtualizer `mount_item` REALIZES a row
+/// from the backend's own scroll/window machinery, and realization is
+/// creation-side (`signal()`/`effect()`/`inject` for `ThemeCtx`), which
+/// panics outside `World::enter`. Ordinary author callbacks only stage
+/// writes through captured handles, so the dispatch-site glue never
+/// needed entry — mount/release are the one callback family that
+/// BUILDS, and the vocabulary contract (handlers/virtualizer.rs)
+/// assigns the entry to the backend. Pre-boot (`FLUSH_WORLD` empty —
+/// the initial mount's realize) the boot's own `enter` is still
+/// ambient, so a bare call is already entered; nesting `enter` is a
+/// legal stack, so the ambient fallback never double-books.
+/// Host-compilable (like the flushing* wrappers) so the glue tests can
+/// pin it without UIKit.
+fn enter_mounted_world<R>(f: impl FnOnce() -> R) -> R {
+    match FLUSH_WORLD.with(|w| w.borrow().clone()) {
+        Some(world) => world.enter(f),
+        None => f(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Dispatch-site glue: author-callback wrappers
 // ---------------------------------------------------------------------------
@@ -1134,6 +1158,14 @@ mod ios_impl {
             // the backend's own scroll handling; measured-size reports
             // feed the handler's layout cache. item_count/item_key/
             // item_size are pure reads and stay unwrapped.
+            //
+            // mount/release additionally run WORLD-ENTERED
+            // (`enter_mounted_world`): `mount_item` realizes the row —
+            // creation-side work (`theme_ctx` → `inject::<ThemeCtx>`)
+            // that aborts outside `World::enter` (the
+            // flat_list-renders-zero-rows bug); `release_item` drops the
+            // row scope, whose cleanups get the same ambient guarantee
+            // the old walker's teardown had.
             let VirtualizerCallbacks {
                 item_count,
                 item_key,
@@ -1151,7 +1183,7 @@ mod ios_impl {
                 mount_item: {
                     let f = mount_item;
                     Rc::new(move |i| {
-                        let mounted = f(i);
+                        let mounted = super::enter_mounted_world(|| f(i));
                         schedule_flush();
                         mounted
                     })
@@ -1159,7 +1191,7 @@ mod ios_impl {
                 release_item: {
                     let f = release_item;
                     Rc::new(move |scope_id| {
-                        f(scope_id);
+                        super::enter_mounted_world(|| f(scope_id));
                         schedule_flush();
                     })
                 },
@@ -1942,5 +1974,31 @@ mod tests {
 
         set_flush_world(None);
         backend_apple_core::scheduler::end_mount_buffering();
+    }
+
+    /// Regression (flat_list rendered ZERO rows on new-core — every
+    /// backend shared the gap): `enter_mounted_world`, the virtualizer
+    /// mount/release dispatch-site wrapper, runs its callback with the
+    /// boot-stored world ambient so creation-side row work
+    /// (`signal()`/`effect()`/`inject`) is legal; without a stored
+    /// world it falls back to a bare call, which an ambient boot-time
+    /// `enter` still covers. (The UIKit caps impl consuming this is
+    /// `cfg(target_os = "ios")`; this host-side test is the reachable
+    /// unit gate — module docs, gating.)
+    #[test]
+    fn enter_mounted_world_enters_stored_world_and_falls_back_bare() {
+        let world = World::new();
+        set_flush_world(Some(world.clone()));
+        // Creation-side work inside the wrapper — the class that
+        // aborted when mount_item ran outside `World::enter`.
+        let sig = enter_mounted_world(|| runtime_world::signal(41i32));
+        assert_eq!(world.enter(|| sig.get()), 41, "created in the stored world");
+        set_flush_world(None);
+        // No stored world: bare invocation…
+        assert_eq!(enter_mounted_world(|| 7), 7);
+        // …which an ambient enter (the pre-`FLUSH_WORLD` mount window)
+        // still covers for creation-side work.
+        let sig2 = world.enter(|| enter_mounted_world(|| runtime_world::signal(8i32)));
+        assert_eq!(world.enter(|| sig2.get()), 8);
     }
 }

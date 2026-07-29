@@ -91,7 +91,7 @@ impl Default for AppShellProps {
     fn default() -> Self {
         Self {
             sidebar: Vec::new(),
-            is_open: Signal::new(false),
+            is_open: runtime_core::signal(false),
             pin_at: Reactive::Static(Breakpoint::Lg),
             width: Reactive::Static(280.0),
             children: Vec::new(),
@@ -296,35 +296,41 @@ pub fn AppShell(props: AppShellProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_core::{resolve_style, text, StyleSource};
+    use idea_theme::testing::{commit, with_test_world};
+    use idea_ui::test_support::{classify, P, TStyle};
+    use runtime_core::{resolve_style, text};
 
-    /// Resolve an element's style at the MOBILE base (no breakpoint
-    /// overlay active) or with the `pin_at` overlay forced on —
-    /// simulating "at/above the pin breakpoint" without a viewport,
-    /// since pinning is static `__bp_*` overlay styling now.
-    fn resolve(el: &Element, pinned: bool) -> Rc<StyleRules> {
-        let style = match el {
-            Element::View { style, .. } => style.as_ref().expect("styled view"),
-            Element::Pressable { style, .. } => style.as_ref().expect("styled pressable"),
-            _ => panic!("unexpected element shape"),
-        };
+    /// Resolve a part's style at the MOBILE base (no breakpoint overlay
+    /// active) or with the `pin_at` overlay forced on — simulating
+    /// "at/above the pin breakpoint" without a viewport, since pinning
+    /// is static `__bp_*` overlay styling now.
+    fn resolve(style: &TStyle, pinned: bool) -> Rc<StyleRules> {
         let app = match style {
-            StyleSource::Reactive(f) => f(),
-            StyleSource::Static(app) => app.clone(),
+            TStyle::AppFn(f) => f(),
+            TStyle::App(app) => app.clone(),
             _ => panic!("unexpected style source"),
         };
         let app = if pinned { app.with("__bp_lg", "on") } else { app };
         resolve_style(&app)
     }
 
-    /// `(content, scrim, panel)` of a built shell.
-    fn parts(shell: &Element) -> (&Element, &Element, &Element) {
-        let children = match shell {
-            Element::View { children, .. } => children,
+    /// `(content, scrim, panel)` STYLES of a built shell (the styles are
+    /// extracted so tests can re-resolve after `is_open` writes).
+    fn parts(shell: Element) -> (TStyle, TStyle, TStyle) {
+        let children = match classify(shell) {
+            P::View { children, .. } => children,
             _ => panic!("AppShell root is a view"),
         };
         assert_eq!(children.len(), 3, "content, scrim, panel");
-        (&children[0], &children[1], &children[2])
+        let mut styles = children.into_iter().map(|c| match classify(c) {
+            P::View { style, .. } => style.expect("styled view"),
+            P::Pressable { style, .. } => style.expect("styled pressable"),
+            _ => panic!("unexpected element shape"),
+        });
+        let content = styles.next().unwrap();
+        let scrim = styles.next().unwrap();
+        let panel = styles.next().unwrap();
+        (content, scrim, panel)
     }
 
     fn shell(is_open: Signal<bool>) -> Element {
@@ -357,20 +363,21 @@ mod tests {
     // paint carries BOTH layouts and `@media` picks one.
     #[test]
     fn pinned_overlay_shows_panel_and_inerts_scrim() {
-        let shell = shell(Signal::new(false));
-        let (content, scrim, panel) = parts(&shell);
+        with_test_world(|| {
+            let (content, scrim, panel) = parts(shell(runtime_core::signal(false)));
 
-        assert_eq!(translate_x(&resolve(panel, true)), 0.0, "pinned panel is in view");
-        assert_eq!(
-            resolve(scrim, true).pointer_events,
-            Some(PointerEvents::None),
-            "pinned: scrim never intercepts"
-        );
-        assert_eq!(
-            resolve(content, true).margin_left,
-            Some(Length::Px(280.0).into()),
-            "pinned: content offset by the sidebar width"
-        );
+            assert_eq!(translate_x(&resolve(&panel, true)), 0.0, "pinned panel is in view");
+            assert_eq!(
+                resolve(&scrim, true).pointer_events,
+                Some(PointerEvents::None),
+                "pinned: scrim never intercepts"
+            );
+            assert_eq!(
+                resolve(&content, true).margin_left,
+                Some(Length::Px(280.0).into()),
+                "pinned: content offset by the sidebar width"
+            );
+        });
     }
 
     // The panel must be an explicit flex column. The web backend emits
@@ -383,16 +390,17 @@ mod tests {
     // clipped, in both pinned and drawer modes).
     #[test]
     fn regression_panel_is_flex_column_so_sidebar_scrollers_clamp() {
-        let shell = shell(Signal::new(false));
-        let (_, _, panel) = parts(&shell);
+        with_test_world(|| {
+            let (_, _, panel) = parts(shell(runtime_core::signal(false)));
 
-        for pinned in [false, true] {
-            assert_eq!(
-                resolve(panel, pinned).flex_direction,
-                Some(FlexDirection::Column),
-                "panel declares itself a flex column (pinned = {pinned})"
-            );
-        }
+            for pinned in [false, true] {
+                assert_eq!(
+                    resolve(&panel, pinned).flex_direction,
+                    Some(FlexDirection::Column),
+                    "panel declares itself a flex column (pinned = {pinned})"
+                );
+            }
+        });
     }
 
     // The mobile-first BASE (no overlay) behaves as a drawer: panel
@@ -400,24 +408,26 @@ mod tests {
     // content is full-bleed.
     #[test]
     fn mobile_base_behaves_as_drawer() {
-        let is_open = Signal::new(false);
-        let shell = shell(is_open);
-        let (content, scrim, panel) = parts(&shell);
+        with_test_world(|| {
+            let is_open = runtime_core::signal(false);
+            let (content, scrim, panel) = parts(shell(is_open));
 
-        assert_eq!(translate_x(&resolve(panel, false)), -280.0, "closed drawer is off-screen");
-        assert_eq!(resolve(scrim, false).pointer_events, Some(PointerEvents::None));
-        assert_eq!(
-            resolve(content, false).margin_left,
-            Some(Length::Px(0.0).into()),
-            "mobile base: content is full-bleed"
-        );
+            assert_eq!(translate_x(&resolve(&panel, false)), -280.0, "closed drawer is off-screen");
+            assert_eq!(resolve(&scrim, false).pointer_events, Some(PointerEvents::None));
+            assert_eq!(
+                resolve(&content, false).margin_left,
+                Some(Length::Px(0.0).into()),
+                "mobile base: content is full-bleed"
+            );
 
-        is_open.set(true);
-        assert_eq!(translate_x(&resolve(panel, false)), 0.0, "open drawer slides in");
-        assert_eq!(
-            resolve(scrim, false).pointer_events,
-            Some(PointerEvents::Auto),
-            "open drawer scrim intercepts (tap to close)"
-        );
+            is_open.set(true);
+            commit();
+            assert_eq!(translate_x(&resolve(&panel, false)), 0.0, "open drawer slides in");
+            assert_eq!(
+                resolve(&scrim, false).pointer_events,
+                Some(PointerEvents::Auto),
+                "open drawer scrim intercepts (tap to close)"
+            );
+        });
     }
 }

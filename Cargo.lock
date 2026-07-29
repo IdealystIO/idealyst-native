@@ -5699,6 +5699,7 @@ name = "idea-theme"
 version = "0.4.0"
 dependencies = [
  "runtime-core",
+ "runtime-facade",
 ]
 
 [[package]]
@@ -5708,6 +5709,8 @@ dependencies = [
  "idea-theme",
  "idea-ui-docs-derive",
  "runtime-core",
+ "runtime-facade",
+ "runtime-vocabulary",
  "table",
 ]
 
@@ -5729,6 +5732,9 @@ dependencies = [
  "lol_alloc",
  "robot-test",
  "runtime-core",
+ "runtime-facade",
+ "runtime-vocabulary",
+ "runtime-world",
  "serde_json",
  "swap-navigator",
  "table",
@@ -5772,6 +5778,11 @@ dependencies = [
  "idea-ui",
  "mock-backend",
  "runtime-core",
+ "runtime-facade",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
+ "scene-parity",
  "swap-navigator",
 ]
 
@@ -7153,6 +7164,8 @@ dependencies = [
  "idea-ui",
  "idea-ui-nav",
  "runtime-core",
+ "runtime-facade",
+ "runtime-vocabulary",
  "stack-navigator",
  "swap-navigator",
 ]
@@ -9431,6 +9444,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "runtime-facade"
+version = "0.4.0"
+dependencies = [
+ "runtime-core",
+ "runtime-macros",
+ "runtime-vocabulary",
+]
+
+[[package]]
 name = "runtime-layout"
 version = "0.4.0"
 dependencies = [
@@ -10666,6 +10688,9 @@ dependencies = [
  "mcp-catalog",
  "mock-backend",
  "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
  "wasm-bindgen",
  "wasm-bindgen-test",
  "web-sys",
@@ -10887,6 +10912,9 @@ dependencies = [
  "dev-server",
  "inventory",
  "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
  "wire",
 ]
 
@@ -12912,6 +12940,9 @@ dependencies = [
  "js-sys",
  "render-api",
  "runtime-core",
+ "runtime-facade",
+ "runtime-scene",
+ "runtime-vocabulary",
  "swap-navigator",
  "wasm-bindgen",
  "web-sys",

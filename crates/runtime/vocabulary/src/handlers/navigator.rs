@@ -66,12 +66,24 @@
 //!   snapshot-closure over the mirror signals / back-stack, dispatch
 //!   marks "current", teardown deregisters); `list_navigators` /
 //!   `get_navigator_state` serve wire-identical JSON. `type_name` is
-//!   the vocabulary builder name (`"swap_navigator"`/`"stack_navigator"`)
-//!   until the P6 SDK retarget supplies presentation labels.
-//! - Stack per-screen header options (`StackScreenOptions`,
-//!   `screen_chrome`, `StackHeaderState`) — the old `Screen` options
-//!   carrier rode the old `Element`; the new screen contract is a bare
-//!   scene `Element`. Header chrome returns with the SDK retarget (P6).
+//!   the builder's `.nav_label(...)` (the SDK sets its old
+//!   presentation type name — wire parity), falling back to the
+//!   vocabulary builder name (`"swap_navigator"`/`"stack_navigator"`)
+//!   for bare vocabulary mounts.
+//! - ~~Stack per-screen header options~~ — LANDED (P6 SDK retarget):
+//!   the screen contract is [`crate::prims::Screen`] (`Element` +
+//!   opaque options, `Into<Screen>` keeps bare-`Element` builders
+//!   source-compatible); the stack publishes the ACTIVE screen's
+//!   options into [`StackNav::screen_chrome`] as a rev-stamped
+//!   [`ScreenChrome`] on every navigation (the old `set_always`
+//!   republish contract), and the stack SDK's `header_state` downcasts
+//!   to `StackScreenOptions` → `StackHeaderState`.
+//! - ~~`link(route = …)`~~ — LANDED (P6): both navigators `provide` a
+//!   [`LinkActivator`] (swap = `Select`, stack = `Push`) around every
+//!   screen build AND the author-layout build; the vocabulary link
+//!   handler captures it at mount (`prims::RouteLink`). Same
+//!   `Dyn`-rebuild recapture limitation as `ScreenNav` (world context
+//!   has no scoping).
 //! - `ScreenNav` portal-hiding context — re-lands with the portal
 //!   handler port (the portal agent owns that seam).
 
@@ -91,8 +103,9 @@ use runtime_world::{effect, inject, provide, signal, Signal};
 
 use crate::caps::{IntrospectionOps, LifecycleOps, ViewOps};
 use crate::prims::{
-    MountPolicy, NavConfig, NavHandle, NavScreenEntry, NavigatorOutletPrim, PrimCell,
-    StackNav, StackNavigatorPrim, StackRetention, SwapNav, SwapNavigatorPrim,
+    LinkActivator, MountPolicy, NavConfig, NavHandle, NavScreenEntry, NavigatorOutletPrim,
+    PrimCell, ScreenChrome, StackNav, StackNavigatorPrim, StackRetention, SwapNav,
+    SwapNavigatorPrim,
 };
 use crate::style_attach::{attach_style, StyleProp, StyleServices};
 
@@ -258,13 +271,16 @@ fn fold_style_overrides(element: &mut Element, rules: &Rc<StyleRules>) {
 // ===========================================================================
 
 /// A mounted screen: its root node + the `Realized` that owns its
-/// entire reactive scope. Dropping this IS the screen teardown — the
-/// `realized` field is never *read*; holding it is the whole point
-/// (Realized retention, module docs).
+/// entire reactive scope + the screen's opaque options (its
+/// [`Screen`](crate::prims::Screen) payload — the stack publishes the
+/// top's options into `screen_chrome`). Dropping this IS the screen
+/// teardown — the `realized` field is never *read*; holding it is the
+/// whole point (Realized retention, module docs).
 struct LiveScreen<N> {
     node: N,
     #[allow(dead_code)]
     realized: Realized<N>,
+    options: Option<Rc<dyn Any>>,
 }
 
 /// Realize one screen: run the route builder inside the screen's own
@@ -291,6 +307,7 @@ fn realize_screen<H: NavCaps + 'static>(
     screens: &Rc<HashMap<&'static str, NavScreenEntry>>,
     base: &str,
     active_route: Signal<&'static str>,
+    link_activator: &LinkActivator,
     name: &'static str,
     params: Box<dyn Any>,
     state: Option<Rc<dyn Any>>,
@@ -309,8 +326,26 @@ fn realize_screen<H: NavCaps + 'static>(
         active_route: active_route.read_only(),
         route: name,
     });
+    // The ambient route-link seam (P6): a `link(route = …)` mounted in
+    // THIS screen's subtree resolves to THIS navigator's dispatch —
+    // push-vs-select decided by the navigator kind, the old
+    // `install_link_activator` contract. Save/restore so a nested
+    // navigator's screens re-shadow correctly.
+    let prev_activator = inject::<LinkActivator>();
+    provide(link_activator.clone());
     let build = entry.build.clone();
-    let mut element = component_scope(|| build(params));
+    // `component_scope` wraps one Element; the Screen's options ride
+    // out through a side slot (they're plain data, not scope-owned).
+    let options_slot: Rc<RefCell<Option<Rc<dyn Any>>>> = Rc::new(RefCell::new(None));
+    let mut element = component_scope({
+        let options_slot = options_slot.clone();
+        move || {
+            let crate::prims::Screen { element, options } = build(params);
+            *options_slot.borrow_mut() = options;
+            element
+        }
+    });
+    let options = options_slot.borrow_mut().take();
     // Handler-requested screen placement (the stack's flow-fill) rides
     // the root element's style OVERRIDE layer, composing with the
     // screen's own styles — old `set_screen_style_overlay` semantics.
@@ -321,9 +356,16 @@ fn realize_screen<H: NavCaps + 'static>(
     if let Some(prev) = prev_screen_nav {
         provide(prev);
     }
+    if let Some(prev) = prev_activator {
+        provide(prev);
+    }
     let mut nodes = realized.collect_nodes();
     match nodes.len() {
-        1 => LiveScreen { node: nodes.pop().expect("len checked"), realized },
+        1 => LiveScreen {
+            node: nodes.pop().expect("len checked"),
+            realized,
+            options,
+        },
         n => panic!(
             "navigator: screen '{name}' must have a single root node (got {n}) — \
              wrap fragment roots in a view"
@@ -664,9 +706,23 @@ struct SwapShared<H: NavCaps + 'static> {
     /// The route mirror, captured for `ScreenNav` provision at screen
     /// mount (the dispatch closure owns the write side).
     active_route: Signal<&'static str>,
+    /// The ambient route-link seam provided around every screen build
+    /// (this navigator's `Select` dispatch). A cell because the
+    /// activator closes over `dispatch`, which is built AFTER `shared`
+    /// (the robot registration in between needs `shared`); filled
+    /// before anything can select.
+    link_activator: RefCell<Option<LinkActivator>>,
 }
 
 impl<H: NavCaps + 'static> SwapShared<H> {
+    /// This navigator's link activator (filled at mount, module docs).
+    fn activator(&self) -> LinkActivator {
+        self.link_activator
+            .borrow()
+            .clone()
+            .expect("navigator: link activator installed before any screen mounts")
+    }
+
     /// Insert `node` as the outlet's sole child (clearing the prior
     /// screen's node — its `Realized` survives in `mounted` for
     /// persistent policies).
@@ -728,6 +784,7 @@ impl<H: NavCaps + 'static> SwapShared<H> {
                 &self.screens,
                 &self.base,
                 self.active_route,
+                &self.activator(),
                 name,
                 params,
                 state,
@@ -804,6 +861,7 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         active: RefCell::new(None),
         mount_policy: prim.mount_policy,
         active_route,
+        link_activator: RefCell::new(None),
     });
 
     // Robot nav registry (P5): snapshot closure over the mirror signals
@@ -816,7 +874,10 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         let weak = Rc::downgrade(&shared);
         let base = base.clone();
         let nav_id = crate::robot::register_navigator(
-            "swap_navigator",
+            // Presentation label: the SDK supplies its old presentation
+            // type name (wire parity with the old bridge); bare
+            // vocabulary mounts fall back to the builder name.
+            prim.nav_label.unwrap_or("swap_navigator"),
             Some(robot_reg.id().0),
             Rc::new(move || {
                 let _live = weak.upgrade()?;
@@ -861,6 +922,18 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         })
     };
 
+    // Route links inside this navigator's screens/chrome Select — the
+    // swap half of the old `install_select_link_activator` contract
+    // ("links switch, never push"). Handler-safe: rides the staged
+    // dispatch.
+    let link_activator = {
+        let dispatch = dispatch.clone();
+        LinkActivator::new(move |name, url, params| {
+            dispatch(NavCommand::Select { name, url, params, state: None });
+        })
+    };
+    *shared.link_activator.borrow_mut() = Some(link_activator.clone());
+
     // Driver effect: drains the queue inside the flush (module docs).
     // Owned by the navigator's Realized via the ambient collector.
     {
@@ -901,6 +974,7 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         &shared.screens,
         &base,
         active_route,
+        &link_activator,
         initial_route,
         initial_params,
         None,
@@ -944,6 +1018,10 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
     };
     let prev_ctx = inject::<SwapNav>();
     provide(SwapNav { active_route, active_path, on_select });
+    // Chrome links target this navigator too (a nav bar of
+    // `link(route = …)`s) — same save/restore discipline.
+    let prev_activator = inject::<LinkActivator>();
+    provide(link_activator.clone());
     let guard = OutletCaptureGuard::<H::Node>::push();
     let layout_element = match &prim.layout {
         Some(f) => f(),
@@ -952,6 +1030,9 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
     let (layout_root, chrome) = cx.realize_detached(layout_element);
     let outlet = guard.take();
     if let Some(prev) = prev_ctx {
+        provide(prev);
+    }
+    if let Some(prev) = prev_activator {
         provide(prev);
     }
     debug_assert!(
@@ -1043,9 +1124,26 @@ struct StackShared<H: NavCaps + 'static> {
     active_path: Signal<String>,
     depth: Signal<usize>,
     can_go_back: Signal<bool>,
+    /// The active screen's chrome slot (see [`StackNav::screen_chrome`])
+    /// + its rev stamp (`sync_chrome` republishes on EVERY stack change,
+    /// the old `set_always` contract — screens with identical options
+    /// still swapped underneath).
+    screen_chrome: Signal<ScreenChrome>,
+    chrome_rev: std::cell::Cell<u64>,
+    /// This navigator's route-link seam (`Push`) — a cell for the same
+    /// construction-order reason as [`SwapShared::link_activator`].
+    link_activator: RefCell<Option<LinkActivator>>,
 }
 
 impl<H: NavCaps + 'static> StackShared<H> {
+    /// This navigator's link activator (filled at mount).
+    fn activator(&self) -> LinkActivator {
+        self.link_activator
+            .borrow()
+            .clone()
+            .expect("navigator: link activator installed before any screen mounts")
+    }
+
     fn mount(&self, name: &'static str, params: Box<dyn Any>, state: Option<Rc<dyn Any>>) -> LiveScreen<H::Node> {
         realize_screen(
             &self.backend,
@@ -1053,11 +1151,28 @@ impl<H: NavCaps + 'static> StackShared<H> {
             &self.screens,
             &self.base,
             self.active_route,
+            &self.activator(),
             name,
             params,
             state,
             Some(&self.screen_overlay),
         )
+    }
+
+    /// Publish the top screen's options into the scoped `screen_chrome`
+    /// signal so an author `StackHeader` re-renders for the current
+    /// screen — the old handler's `sync_chrome`, rev-stamped (module
+    /// docs on [`ScreenChrome`]). Called after every stack mutation.
+    fn sync_chrome(&self) {
+        let options = self
+            .stack
+            .borrow()
+            .last()
+            .and_then(|e| e.live.as_ref())
+            .and_then(|l| l.options.clone());
+        let rev = self.chrome_rev.get() + 1;
+        self.chrome_rev.set(rev);
+        self.screen_chrome.set(ScreenChrome { rev, options });
     }
 
     /// Show the top entry's node in the outlet. Invariant: the top entry
@@ -1142,6 +1257,7 @@ impl<H: NavCaps + 'static> StackShared<H> {
         });
         self.show_top();
         self.publish_depth();
+        self.sync_chrome();
     }
 
     fn push(&self, name: &'static str, params: Box<dyn Any>, state: Option<Rc<dyn Any>>, url: String) {
@@ -1150,6 +1266,7 @@ impl<H: NavCaps + 'static> StackShared<H> {
         self.stack.borrow_mut().push(StackEntry { route: name, path: url, state, live: Some(live) });
         self.show_top();
         self.publish_depth();
+        self.sync_chrome();
     }
 
     fn pop(&self) {
@@ -1173,6 +1290,7 @@ impl<H: NavCaps + 'static> StackShared<H> {
             self.active_route.set(route);
             self.active_path.set(path);
         }
+        self.sync_chrome();
     }
 
     fn replace(&self, name: &'static str, params: Box<dyn Any>, state: Option<Rc<dyn Any>>, url: String) {
@@ -1182,6 +1300,7 @@ impl<H: NavCaps + 'static> StackShared<H> {
         self.stack.borrow_mut().push(StackEntry { route: name, path: url, state, live: Some(live) });
         self.show_top();
         self.publish_depth();
+        self.sync_chrome();
     }
 
     fn reset(&self, name: &'static str, params: Box<dyn Any>, state: Option<Rc<dyn Any>>, url: String) {
@@ -1192,6 +1311,7 @@ impl<H: NavCaps + 'static> StackShared<H> {
         self.stack.borrow_mut().push(StackEntry { route: name, path: url, state, live: Some(live) });
         self.show_top();
         self.publish_depth();
+        self.sync_chrome();
     }
 }
 
@@ -1239,6 +1359,7 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
     let active_path = signal(initial_path.clone());
     let depth = signal(1usize);
     let can_go_back = signal(false);
+    let screen_chrome = signal(ScreenChrome { rev: 0, options: None });
 
     let shared = Rc::new(StackShared {
         backend: backend.clone(),
@@ -1255,6 +1376,9 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         active_path,
         depth,
         can_go_back,
+        screen_chrome,
+        chrome_rev: std::cell::Cell::new(0),
+        link_activator: RefCell::new(None),
     });
 
     // Robot nav registry (P5): the stack's snapshot reads the live
@@ -1265,7 +1389,8 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         let weak = Rc::downgrade(&shared);
         let base = base.clone();
         let nav_id = crate::robot::register_navigator(
-            "stack_navigator",
+            // Presentation label — see the swap mount's note.
+            prim.nav_label.unwrap_or("stack_navigator"),
             Some(robot_reg.id().0),
             Rc::new(move || {
                 let live = weak.upgrade()?;
@@ -1310,6 +1435,18 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
             channel.dispatch(cmd, suppress);
         })
     };
+
+    // Route links inside this navigator's screens/chrome PUSH — the
+    // stack half of the old link-activator contract (the old stack
+    // installed no activator and links fell back to `Push`; here the
+    // fallback is explicit). Handler-safe: rides the staged dispatch.
+    let link_activator = {
+        let dispatch = dispatch.clone();
+        LinkActivator::new(move |name, url, params| {
+            dispatch(NavCommand::Push { name, url, params, state: None });
+        })
+    };
+    *shared.link_activator.borrow_mut() = Some(link_activator.clone());
 
     {
         let shared = shared.clone();
@@ -1364,7 +1501,17 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         Rc::new(move || dispatch(NavCommand::Pop))
     };
     let prev_ctx = inject::<StackNav>();
-    provide(StackNav { active_route, active_path, depth, can_go_back, pop });
+    provide(StackNav {
+        active_route,
+        active_path,
+        depth,
+        can_go_back,
+        pop,
+        screen_chrome: shared.screen_chrome,
+    });
+    // Chrome links target this navigator too — same save/restore.
+    let prev_activator = inject::<LinkActivator>();
+    provide(link_activator.clone());
     let guard = OutletCaptureGuard::<H::Node>::push();
     let layout_element = match &prim.layout {
         Some(f) => f(),
@@ -1373,6 +1520,9 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
     let (layout_root, chrome) = cx.realize_detached(layout_element);
     let outlet = guard.take();
     if let Some(prev) = prev_ctx {
+        provide(prev);
+    }
+    if let Some(prev) = prev_activator {
         provide(prev);
     }
     debug_assert!(
