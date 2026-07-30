@@ -3,7 +3,29 @@
 Notable changes per release. Upgrade instructions live in `docs/` —
 each entry links to its migration guide.
 
-## 1.0.0 — unreleased
+## 1.0.1
+
+### Added
+
+- **`canvas_vello::register_from_chunk`** — registers the web canvas
+  renderer from a lazily-loaded chunk, so the vello painter can stay out
+  of the main bundle. Without it the canvas renderer is anchored at
+  boot and the lazy split is not expressible.
+
+### Fixed
+
+- **`runtime_core::log_debug!` / `log_info!` / `log_warn!` / `log_error!`
+  were unresolvable.** The macros live in `runtime-shared` and were not
+  re-exported through the facade, so the spelling apps have used since
+  0.5.x stopped resolving.
+- **`MediaStream` had no `PartialEq`**, which the world kernel requires
+  of any signal payload — so a camera or screen-share stream could not
+  be held in state at all. Now compares by pointer identity
+  (`Rc::ptr_eq`), the same shape used for other handle-like payloads.
+- **`GlueTextArea` did not expose `wrap` / `code_mode`**, which the
+  underlying builder supports.
+
+## 1.0.0
 
 **The rendering core was replaced.** The reactive arena, the render
 walker, the `Element` enum and the 159-method `Backend` trait are gone,
