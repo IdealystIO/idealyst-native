@@ -13,24 +13,22 @@ when writing a new one.
 
 ## Versioning policy
 
-Idealyst is pre-1.0. The guiding principle is **one clean experience per
-version — no legacy-support hacks**:
+Idealyst reached **1.0** — the current release is `1.0.1`. The guiding
+principle is **one clean experience per version — no legacy-support hacks**:
 
 - **Breaking changes land in place.** When a design is wrong, we fix it at the
   root and update every call site in the same release. We do **not** keep a
   deprecated path alive alongside the new one, ship compatibility shims, or
-  gate old behavior behind a feature flag. Pre-1.0 is exactly the window to get
-  the foundation right without carrying weight.
+  gate old behavior behind a feature flag.
+- **Breaking changes are gated to major bumps.** Now that 1.0 has shipped, the
+  pre-1.0 window — where any bump could break — is closed: the versioning
+  policy is standard semver, and a break waits for the next major.
 - **Every bump is documented.** A breaking release is accompanied by a
   migration guide between the two consecutive versions (`X` → `Y`). No silent
   breaks.
 - **Guides chain.** To jump several versions, read the guides in sequence
   (`0.0.1 → 0.1.0`, then `0.1.0 → 0.2.0`, …). Each guide only describes the
   delta it owns.
-
-Once the framework reaches 1.0, this policy tightens to standard semver
-(breaking changes gated to major bumps with a deprecation window). Until then,
-the migration guide *is* the compatibility layer.
 
 ## Guides
 
@@ -39,6 +37,7 @@ the migration guide *is* the compatibility layer.
 | 0.0.1 → 0.1.0 | [[migration-0-0-1-to-0-1-0]] |
 | 0.3 → 0.4 | [[migration-0-3-0-to-0-4-0]] |
 | 0.4 → 0.5 | [[migration-0-4-0-to-0-5-0]] |
+| 0.5 → 1.0 | [[migration-0-5-0-to-1-0-0]] |
 
 ## Updating the dependency
 
