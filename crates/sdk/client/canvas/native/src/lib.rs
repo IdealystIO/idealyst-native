@@ -160,3 +160,26 @@ where
     }
     registry.register::<CanvasPrim, _>(mount_placeholder::<H>);
 }
+
+/// Queue this renderer's [`CanvasPrim`] handler for registration from a
+/// lazily-loaded chunk, instead of installing it at boot.
+///
+/// The late-binding sibling of [`register`], for an app that code-splits the
+/// screen its canvas lives on. Registering eagerly anchors the Canvas2D
+/// rasterizer (plus its glyph-outline stack) in the initial bundle, because
+/// wasm-split cannot move a boot-reachable handler into a chunk; called from
+/// inside the chunk, the handler is constructed there instead.
+///
+/// Requires the app to have declared `Registry::defer::<CanvasPrim>()` in its
+/// boot seam. A canvas the scene meets before this runs parks behind a
+/// layout-transparent placeholder and realizes on the drain.
+///
+/// Web-only: this is the sole target that code-splits, and the only one whose
+/// `register` resolves to a backend-concrete handler that a chunk could carry.
+/// Register eagerly everywhere else.
+#[cfg(target_arch = "wasm32")]
+pub fn register_from_chunk() {
+    runtime_scene::defer_registration::<backend_web::WebBackend, _>(|registry| {
+        registry.register_deferred::<CanvasPrim, _>(web_scene::mount_canvas);
+    });
+}

@@ -41,7 +41,7 @@ use crate::plan::{plan_scene, CachedRef, ScenePlan};
 use crate::shape_pass::ShapePass;
 use crate::web_layer::WebLayerCompositor;
 use canvas_core::{paint_scene, CanvasPrim, CanvasProps, DrawOp, Scene as CanvasScene, TextureLayer};
-use runtime_scene::{Element, MountCx, Registry};
+use runtime_scene::{Element, Host, MountCx, Registry};
 use runtime_shared::accessibility::AccessibilityProps;
 use runtime_shared::primitives::graphics::{GraphicsSurface, OnReadyEvent, OnResizeEvent};
 use runtime_vocabulary::caps::GraphicsOps;
@@ -85,6 +85,39 @@ where
         return;
     }
     registry.register::<CanvasPrim, _>(mount_canvas::<H>);
+}
+
+/// Queue this renderer's [`CanvasPrim`] handler for registration from a
+/// lazily-loaded chunk, instead of installing it at boot.
+///
+/// The late-binding sibling of [`register`], for an app that code-splits the
+/// screen its canvas lives on. Registering eagerly anchors this crate (wgpu +
+/// vello + naga) in the initial bundle, because wasm-split cannot move a
+/// boot-reachable handler into a chunk; called from inside the chunk, the
+/// handler — and the renderer it reaches — is constructed there instead.
+///
+/// Requires the app to have declared `Registry::defer::<CanvasPrim>()` in its
+/// boot seam. A canvas the scene meets before this runs parks behind a
+/// layout-transparent placeholder and realizes on the drain.
+///
+/// Carries the same `navigator.gpu` gate as [`register`]: with WebGPU absent
+/// this queues nothing, leaving whatever renderer the app installed (typically
+/// `canvas-native`'s Canvas2D rasterizer) in place.
+///
+/// Generic over the host for the same reason [`register`] is — this crate takes
+/// no backend dependency (its renderer is pure wgpu, so there is no
+/// per-platform module to name). The caller pins `H` to its concrete backend,
+/// e.g. `register_from_chunk::<backend_web::WebBackend>()`.
+pub fn register_from_chunk<H>()
+where
+    H: Host + GraphicsOps + StyleServices + 'static,
+{
+    if !webgpu_present() {
+        return;
+    }
+    runtime_scene::defer_registration::<H, _>(|registry| {
+        registry.register_deferred::<CanvasPrim, _>(mount_canvas::<H>);
+    });
 }
 
 fn mount_canvas<H>(
