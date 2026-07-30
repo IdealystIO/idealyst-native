@@ -23,6 +23,14 @@ principle is **one clean experience per version — no legacy-support hacks**:
 - **Breaking changes are gated to major bumps.** Now that 1.0 has shipped, the
   pre-1.0 window — where any bump could break — is closed: the versioning
   policy is standard semver, and a break waits for the next major.
+  - **The narrow exception: repairing a surface that is already broken.** A
+    minor may break when the "working" call it replaces did not actually work,
+    and holding the fix for a major would leave a documented-but-wrong call site
+    standing for a whole cycle. 1.1.0 is the precedent — `table::register` was a
+    no-op that silently swallowed the registration the [[sdks]] guide told
+    people to make. The bar is deliberately high: the change must be mechanical,
+    scoped to a handful of names, and fully covered by its migration guide. It
+    is not a licence to land ordinary breaks in minors.
 - **Every bump is documented.** A breaking release is accompanied by a
   migration guide between the two consecutive versions (`X` → `Y`). No silent
   breaks.
@@ -38,6 +46,7 @@ principle is **one clean experience per version — no legacy-support hacks**:
 | 0.3 → 0.4 | [[migration-0-3-0-to-0-4-0]] |
 | 0.4 → 0.5 | [[migration-0-4-0-to-0-5-0]] |
 | 0.5 → 1.0 | [[migration-0-5-0-to-1-0-0]] |
+| 1.0 → 1.1 | [[migration-1-0-0-to-1-1-0]] |
 
 ## Updating the dependency
 

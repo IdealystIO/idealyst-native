@@ -137,6 +137,27 @@ pub struct ToolbarHandle {
     ops: &'static dyn ToolbarOps,
 }
 
+/// Pointer identity on the NODE — a `ToolbarHandle` names one mounted `Toolbar`, so
+/// clones of it are equal and handles onto two different `Toolbar`s never are.
+/// Exactly the shape (and reasoning) of `form::FormHandle`'s impl.
+///
+/// `node` is a type-erased native element behind `Rc<dyn Any>`: the address
+/// is all there is to compare, and it is the right thing to compare. `ops`
+/// is excluded deliberately — it is the backend's single `&'static` vtable,
+/// identical for every handle on a target, so it says nothing about WHICH
+/// `Toolbar` this is.
+///
+/// Needed because `Signal<T>` is bounded on `T: PartialEq` at creation and
+/// `get`, not just on the guarded `set`; an author stashing the bound handle
+/// in state cannot add the impl themselves (orphan rule).
+impl PartialEq for ToolbarHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.node, &other.node)
+    }
+}
+
+impl Eq for ToolbarHandle {}
+
 impl ToolbarHandle {
     /// Wrap a type-erased native toolbar node + its backend ops vtable.
     /// Called by the handler's ref fill after the toolbar mounts; you

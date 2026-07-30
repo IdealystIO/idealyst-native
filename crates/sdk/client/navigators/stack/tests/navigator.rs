@@ -220,3 +220,40 @@ fn app_pop(h: &Harness, nav: &Ref<StackHandle>) {
     nav.get().expect("bound").pop();
     h.world.flush();
 }
+
+/// `StackHandle: PartialEq` is DERIVED from `NavHandle`'s identity impl.
+/// Same contract as the swap suite's twin test: the wrapper inherits
+/// "same navigator ⇒ equal", which is what lets a bound handle sit in a
+/// `Signal<StackHandle>` (`Signal<T>` bounds `T: PartialEq` at creation
+/// and `get`, not just on the guarded `set`).
+#[test]
+fn stack_handles_compare_by_navigator_identity() {
+    let h = harness();
+    let (_ra, a) = mount_app(&h, StackRetention::Retain);
+    let (_rb, b) = mount_app(&h, StackRetention::Retain);
+
+    let ha = a.nav.get().expect("nav a bound");
+    let hb = b.nav.get().expect("nav b bound");
+
+    assert!(ha == ha.clone(), "clones of one bound handle must compare equal");
+    assert!(
+        ha != hb,
+        "handles onto two separately mounted stack navigators must compare unequal"
+    );
+}
+
+/// Pushing does not change WHICH navigator the handle names — the
+/// comparison must read the dispatcher, not the stack's current state,
+/// or every subscriber holding the handle would re-fire on navigation.
+#[test]
+fn stack_handle_identity_survives_a_push() {
+    let h = harness();
+    let (_r, app) = mount_app(&h, StackRetention::Retain);
+    let before = app.nav.get().expect("bound");
+
+    before.push(&DETAIL, ());
+    h.world.flush();
+
+    let after = app.nav.get().expect("still bound");
+    assert!(after == before, "navigation must not change the handle's identity");
+}

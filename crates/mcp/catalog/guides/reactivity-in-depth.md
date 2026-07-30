@@ -54,8 +54,11 @@ for children that report values upward without subscribing themselves. The
 unified `Signal<T>` stays the right type for genuinely two-way props
 (`TextInput.value` and friends).
 
-- For a type without `PartialEq`, or a "close enough" comparison (float
-  tolerance, trait-object contents), call `memo_with(eq, f)` directly.
+- For a "close enough" comparison (float tolerance, trait-object contents),
+  call `memo_with(eq, f)` directly. It does not lift the `PartialEq` bound —
+  world signal storage is `PartialEq`-bounded end to end — so a type with no
+  equality at all needs the impl on the type, or `runtime_core::ByIdentity<T>`
+  when it is not yours to change.
 - A memo's body must be a **pure derivation** — calling `.set()`/`.update()`
   inside it panics loudly (a `MemoComputeGuard` catches the side effect).
 - For a cheap one-off derivation, a plain closure or `rx!` is lighter than a
@@ -226,8 +229,11 @@ intended.
   `.set(v)` (`T: PartialEq`) skips the fan-out when the value is unchanged.
   Code that used a same-value write as a *retrigger* (re-firing a `switch`
   discriminant, forcing a re-render) must say so explicitly: `touch()`
-  notifies without writing, `set_always(v)` writes and always notifies (and is
-  the only setter for non-`PartialEq` types). `set_untracked(v)` is the
+  notifies without writing, `set_always(v)` writes and always notifies.
+  `set_always` does NOT admit non-`PartialEq` payloads — the bound is on the
+  whole handle, so such a type cannot be stored at all; give it a
+  pointer-identity `PartialEq`, or wrap it in `runtime_core::ByIdentity<T>` if
+  you do not own it. `set_untracked(v)` is the
   inverse — write silently, notify never. `update(|&cur| next)` is guarded the
   same way, and composes on the *staged* value, which is why two increments in
   one turn net `+2`. This deliberately diverges from Leptos, whose `set` never

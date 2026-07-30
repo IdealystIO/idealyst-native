@@ -49,7 +49,7 @@ pub fn register_extensions(_backend: &mut backend_web::WebBackend) {
 /// with the fresh registry after `runtime_vocabulary::register_builtins`.
 ///
 /// `codeblock::register` so `shell::CodePanel` renders the SDK's
-/// `<pre>`/span handler, and `table::register_handlers` so PropsTable /
+/// `<pre>`/span handler, and `table::register` so PropsTable /
 /// the Table pages render the SDK's real `<table>`/`<tr>`/`<td>`.
 /// Without a registration those items have no registry entry and
 /// realization panics (the scene contract fails loud — the old core
@@ -66,7 +66,7 @@ where
         + 'static,
 {
     codeblock::register(registry);
-    table::register_handlers(registry);
+    table::register(registry);
 }
 
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]

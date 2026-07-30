@@ -16,7 +16,7 @@
 //!   shared [`CanvasProps`] plus a single-take author-style slot
 //!   ([`CanvasPrim::take_style`]) so the renderer's mount handler can
 //!   attach it through `runtime_vocabulary::style_attach::attach_style`.
-//! - [`register_ssr_scene`] — the renderer-agnostic SSR/hydration host:
+//! - [`register_ssr`] — the renderer-agnostic SSR/hydration host:
 //!   emits a bare `<canvas>` + author style so pre-rendered pages ship
 //!   the real element.
 
@@ -115,6 +115,23 @@ impl From<CanvasBound> for Element {
     }
 }
 
+// NOTE: canvas deliberately ships NO `defer` seam, unlike the
+// single-crate SDKs (`table`, `markdown`, `svg`, …).
+//
+// Those crates own both their payload and their handler, so their
+// `defer` can register eagerly off-web — the arm that keeps a native
+// caller from stranding the payload behind a placeholder forever. Canvas
+// can't: the payload lives here and the handlers live in `canvas-native`
+// / `canvas-vello`, so this crate has nothing to fall back to, and BOTH
+// renderer chunk seams are web-only (`canvas_native::register_from_chunk`
+// is `cfg(target_arch = "wasm32")`; `canvas_vello`'s lives in
+// `render_web`). A `defer` here would therefore be safe on web and a
+// silent blank canvas on native.
+//
+// [`CanvasPrim`] is public, so an app that wants the deferred path spells
+// it directly — `registry.defer::<canvas_core::CanvasPrim>()` — which is
+// what the `lazy-loading` guide documents.
+
 /// Register the renderer-agnostic **SSR / hydration host** handler for
 /// [`CanvasPrim`]: emits a bare `<canvas>` (the real element a hydrating
 /// client adopts) plus the author style; the platform renderer attaches
@@ -126,7 +143,7 @@ impl From<CanvasBound> for Element {
 /// SSR register seam
 /// (`backend_ssr::newcore::render_path_with` / the
 /// `register_ssr_scene_handlers` convention).
-pub fn register_ssr_scene<H>(registry: &mut Registry<H>)
+pub fn register_ssr<H>(registry: &mut Registry<H>)
 where
     H: ExternalOps + StyleServices + 'static,
 {

@@ -83,7 +83,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use runtime_shared::Ref;
-use runtime_scene::{item, Element, MountCx, Registry};
+use runtime_scene::{item, Element, Host, MountCx, Registry};
 use runtime_vocabulary::caps::ExternalOps;
 use runtime_vocabulary::glue::IntoElement;
 use runtime_vocabulary::style_attach::{
@@ -292,6 +292,27 @@ pub struct VideoHandle {
     node: Rc<dyn Any>,
     ops: &'static dyn VideoOps,
 }
+
+/// Pointer identity on the NODE — a `VideoHandle` names one mounted `Video`, so
+/// clones of it are equal and handles onto two different `Video`s never are.
+/// Exactly the shape (and reasoning) of `form::FormHandle`'s impl.
+///
+/// `node` is a type-erased native element behind `Rc<dyn Any>`: the address
+/// is all there is to compare, and it is the right thing to compare. `ops`
+/// is excluded deliberately — it is the backend's single `&'static` vtable,
+/// identical for every handle on a target, so it says nothing about WHICH
+/// `Video` this is.
+///
+/// Needed because `Signal<T>` is bounded on `T: PartialEq` at creation and
+/// `get`, not just on the guarded `set`; an author stashing the bound handle
+/// in state cannot add the impl themselves (orphan rule).
+impl PartialEq for VideoHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.node, &other.node)
+    }
+}
+
+impl Eq for VideoHandle {}
 
 impl VideoHandle {
     /// Wrap a type-erased native node + backend ops into a handle.
@@ -604,6 +625,48 @@ where
 pub fn register(registry: &mut Registry<backend_web::WebBackend>) {
     registry.register::<VideoPrim, _>(web_glue::mount_video_web);
 }
+
+/// Declare this SDK's payload kind **late-bound** instead of installing
+/// its handler — the boot half of lazy registration. Pair with
+/// [`register_from_chunk`] from inside a `#[component(lazy)]` body.
+///
+/// Only web code-splits, so on every other target this installs the
+/// handler eagerly exactly as [`register`] does. That is deliberate:
+/// deferring a kind nothing later registers leaves the payload parked
+/// behind a placeholder forever, with no panic and no log, and native
+/// has no chunk to arrive. Calling `defer` is therefore always safe —
+/// it splits where splitting exists and is a plain `register` elsewhere.
+pub fn defer<H>(registry: &mut Registry<H>)
+where
+    H: Host + ExternalOps + StyleServices + 'static,
+{
+    #[cfg(target_arch = "wasm32")]
+    {
+        registry.defer::<VideoPrim>();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        register(registry);
+    }
+}
+
+/// Install the web payload handler from inside a lazy chunk — the chunk
+/// half of lazy registration. Requires [`defer`] at boot.
+///
+/// Web-only by construction: the web handler is `WebBackend`-concrete,
+/// and web is the only target that code-splits. The non-web build is an
+/// empty stub so a `#[component(lazy)]` body calling this compiles on
+/// every target — there, [`defer`] already registered eagerly.
+#[cfg(target_arch = "wasm32")]
+pub fn register_from_chunk() {
+    runtime_scene::defer_registration::<backend_web::WebBackend, _>(|registry| {
+        registry.register_deferred::<VideoPrim, _>(web_glue::mount_video_web);
+    });
+}
+
+/// Non-web stub — see the wasm32 [`register_from_chunk`].
+#[cfg(not(target_arch = "wasm32"))]
+pub fn register_from_chunk() {}
 
 // ============================================================================
 // Web glue (wasm32).

@@ -128,6 +128,65 @@ Leptos note: Leptos's `set` never compares — ported code relying on
 same-value sets as retriggers must switch those sites to `set_always` or
 `touch`.
 
+#### The staged-read diagnostic (dev builds)
+
+Staging means `set(v)` followed by `get()` in the same turn returns the
+value from *before* the set. That is the one 0.5 → 1.0 break with no
+compile error and no panic, so debug builds warn about it:
+
+```
+[WARN] idealyst[staged-read]: the read at src/counter.rs:42:21 returns the
+COMMITTED value — a write staged earlier in this turn (signal created at
+src/counter.rs:31:17; world 1, slot 0) has not been flushed yet. …
+```
+
+**What arms it.** Only a pending staged *value*: `set`, `set_always`,
+`update`. `touch()` stages no value, and `set_untracked` writes the
+committed cell in place, so neither can make a later read stale and
+neither arms the diagnostic. The armed state clears at the flush that
+commits the write — there is no per-turn bookkeeping, the condition
+*is* "the slot still holds a staged value".
+
+**What it reports.** `get`, `peek`, `with` and `with_untracked` all
+return the committed value, so all four warn. `peek` is not exempt: it
+declares "do not subscribe me", never "I know this is pre-commit", and
+the staleness surprise is identical to `get`'s.
+
+**What it stays quiet about.** A read that *subscribed* the running
+effect. When the staged write commits, that effect re-runs with the
+fresh value, so the stale read is transient and self-correcting — this
+is how the kernel itself settles memo chains, and how a binding effect
+created just after its signal was seeded behaves. What is left after
+that exclusion is exactly the shape that cannot self-correct: event
+handlers (which run outside any effect), component bodies (which run
+untracked), `peek` / `with_untracked` anywhere, and cross-world reads
+(which never subscribe by design).
+
+`update` never warns, in any context. It composes on the staged value
+and does not go through the read path at all — it is the fix, not a
+symptom.
+
+**Noise control.** One message per source location, for the process
+lifetime. A raf loop that reads-after-staging every frame reports once,
+not sixty times a second.
+
+**Delivery.** Debug builds only, gated on `debug_assertions` with no
+cargo feature and no opt-in — release builds compile the whole thing
+away, including the per-signal creation-site field. Messages go through
+the host's log channel (`console.warn` on web, the platform logger on
+native, stderr under `cargo test`).
+
+**Blind spot.** The location comes from `#[track_caller]`, which only
+propagates through frames that also declare it. A thin wrapper of your
+own around `get()`/`peek()` will be named as the read site unless you
+add `#[cfg_attr(debug_assertions, track_caller)]` to it — worth doing
+for any accessor authors call directly, since otherwise every call site
+in the app collapses into one dedupe key. A wrapper that reads through
+a boxed `dyn Fn` (`Reactive<T>::get`) cannot forward at all.
+
+Pinned by `crates/runtime/world/src/tests.rs::staged_read_diagnostic`
+(fourteen cases) and `staged_read_diagnostic_is_debug_build_only`.
+
 `Copy` is the ergonomic centerpiece: `count` moves into every closure
 that needs it without `.clone()` ceremony
 (`tests.rs::handles_are_copy`).
@@ -434,7 +493,9 @@ inflate per-op cost.
 
 - **Reading back a signal you just wrote.** `set(v)` then `get()` in the
   same handler returns the *previous* value. Use `update(|cur| …)` for
-  read-modify-write, or keep the intended value in a local.
+  read-modify-write, or keep the intended value in a local. Debug builds
+  warn about this one — see
+  [The staged-read diagnostic](#the-staged-read-diagnostic-dev-builds).
 - **Creating state in a handler panics.** Create at build time, capture
   the handle. `signal()`/`effect()`/`memo()`/`provide()`/`inject()` all
   need `World::enter`.

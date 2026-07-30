@@ -29,6 +29,13 @@
 //!
 //! Flush model — derivation-class, glitch-free (the P0 centerpiece): see
 //! [`World::flush`] for the algorithm and its glitch-freedom argument.
+//!
+//! Dev diagnostics — staged-read warning: staging makes `set(v); get()` in
+//! one turn return the PRE-set value, the one 0.5 → 1.0 break that is
+//! neither a compile error nor a panic. Debug builds warn once per call
+//! site when a read lands on a signal with a pending staged write; see
+//! [`install_diagnostic_sink`] and the "staged-read diagnostic" section
+//! below. Compiled out entirely in release.
 
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
@@ -55,6 +62,171 @@ macro_rules! diag_panic {
             panic!(concat!("idealyst[", $code, "] (debug build has details)"))
         }
     }};
+}
+
+// ============================================================================
+// Staged-read diagnostic — dev-only source-site plumbing.
+//
+// Why `debug_assertions` and not a cargo feature: this is a correctness
+// diagnostic for authors, not a profiling tool. It must be ON for every dev
+// build of every app with zero opt-in (an upgrader who has to enable a
+// feature to find a silent behaviour change will not enable it), and OFF in
+// every release build. That is exactly what `debug_assertions` means, and it
+// is the gate the sibling dev warning in runtime-shared's legacy arena
+// (`maybe_warn_untracked_build_read`) already uses. A feature would also
+// leak into the dependency graph of every consumer that has to forward it —
+// see the `debug-stats` forwarding chain for how much ceremony that costs.
+//
+// `SiteLoc` is the caller-location currency. In debug it is a thin
+// `&'static Location`; in release it is `()`, so every parameter, struct
+// field and argument below is a ZST the optimizer erases — the diagnostic's
+// only *persistent* footprint (`SignalSlot::created_at`) costs zero bytes in
+// release. Pinned by `staged_read_diagnostic_is_debug_build_only`.
+// ============================================================================
+
+#[cfg(debug_assertions)]
+type SiteLoc = &'static std::panic::Location<'static>;
+#[cfg(not(debug_assertions))]
+type SiteLoc = ();
+
+/// The caller's source location in debug builds; nothing in release.
+///
+/// `#[track_caller]` is itself `cfg_attr`-gated at every call site so
+/// release builds do not even pay the implicit location argument.
+#[cfg(debug_assertions)]
+#[track_caller]
+#[inline]
+fn caller_site() -> SiteLoc {
+    std::panic::Location::caller()
+}
+
+#[cfg(not(debug_assertions))]
+#[inline(always)]
+fn caller_site() -> SiteLoc {}
+
+/// One recorded staged-read warning. Debug-only, `#[doc(hidden)]`: the
+/// test/tooling view of what [`__take_staged_read_warnings`] drained.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub struct StagedReadWarning {
+    /// Where the author read the signal (the `get`/`peek`/`with` call site).
+    pub read_site: SiteLoc,
+    /// Where the signal was created.
+    pub created_at: SiteLoc,
+    pub world: u32,
+    pub slot: u32,
+}
+
+/// Host-installed diagnostic emit hook. See [`install_diagnostic_sink`].
+#[cfg(debug_assertions)]
+type DiagSink = Rc<dyn Fn(&str)>;
+
+#[cfg(debug_assertions)]
+struct Diag {
+    /// Call sites already warned about, keyed by `(file, line, column)`.
+    /// Process-lifetime (per thread), NOT per-turn: a raf loop or animation
+    /// driver that reads-after-staging every frame must warn once, not 60
+    /// times a second. A firehose is worse than silence.
+    seen: rustc_hash::FxHashSet<(&'static str, u32, u32)>,
+    /// Everything warned since the last drain — the test-visible sink.
+    log: Vec<StagedReadWarning>,
+    /// Host-installed emit hook (web `console.warn`, NSLog, …). `None`
+    /// falls back to `eprintln!`, which is a real stderr write on native
+    /// and a silent no-op sink on `wasm32-unknown-unknown` — the same
+    /// platform-agnostic default runtime-shared's `StderrLogger` relies on.
+    ///
+    /// `Rc`, not `Box`, so the emit path can clone the handle OUT of the
+    /// `RefCell` before calling it: a sink that itself touched a signal
+    /// would otherwise re-enter this borrow and abort.
+    sink: Option<DiagSink>,
+}
+
+#[cfg(debug_assertions)]
+thread_local! {
+    static DIAG: RefCell<Diag> = RefCell::new(Diag {
+        seen: rustc_hash::FxHashSet::default(),
+        log: Vec::new(),
+        sink: None,
+    });
+}
+
+/// Route this kernel's dev diagnostics through a host log channel.
+///
+/// runtime-world sits below runtime-shared's `Logger` (it is the bottom of
+/// the new core's dependency chain and stays dependency-minimal), so it
+/// cannot call `log_warn!` directly. Hosts bridge instead: runtime-vocabulary
+/// installs a forwarder to `runtime_shared::logging` from
+/// `register_builtins`, the one seam every backend's boot passes through.
+/// Without a sink the messages go to `eprintln!` — visible under `cargo
+/// test` and in terminal hosts, silently dropped on wasm (hence the bridge).
+///
+/// Thread-local and last-install-wins. Debug builds only: in release the
+/// diagnostic does not exist, so neither does this function.
+///
+/// The sink runs while the *warned* signal's storage is moved out of the
+/// arena, so it must not read that signal (it would hit the kernel's
+/// reentrancy diagnostic). Log sinks do not read signals; this is a note,
+/// not a trap anyone has sprung.
+#[cfg(debug_assertions)]
+pub fn install_diagnostic_sink(sink: Box<dyn Fn(&str)>) {
+    let sink: DiagSink = Rc::from(sink);
+    DIAG.with(|d| d.borrow_mut().sink = Some(sink));
+}
+
+/// Drain (and reset the dedupe table of) the staged-read warnings recorded
+/// on this thread. Test/tooling hook — debug builds only.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub fn __take_staged_read_warnings() -> Vec<StagedReadWarning> {
+    DIAG.with(|d| {
+        let d = &mut *d.borrow_mut();
+        d.seen.clear();
+        std::mem::take(&mut d.log)
+    })
+}
+
+/// Emit the staged-read warning for one read, at most once per call site.
+///
+/// Called from [`read_signal`] when the signal's storage still carries a
+/// staged `next`. The arena's `signals` RefCell is NOT borrowed at this
+/// point (`with_signal_data` moves the storage box out and drops the borrow
+/// before running its closure), so reading `created_at` here is safe.
+#[cfg(debug_assertions)]
+fn warn_staged_read(arena: &WorldArena, world: WorldId, slot: u32, read_site: SiteLoc) {
+    let created_at = arena
+        .signals
+        .borrow()
+        .get(slot as usize)
+        .map(|s| s.created_at);
+    let Some(created_at) = created_at else { return };
+    let fresh = DIAG.with(|d| {
+        let d = &mut *d.borrow_mut();
+        if d.seen.insert((read_site.file(), read_site.line(), read_site.column())) {
+            d.log.push(StagedReadWarning { read_site, created_at, world, slot });
+            true
+        } else {
+            false
+        }
+    });
+    if !fresh {
+        return;
+    }
+    let msg = format!(
+        "idealyst[staged-read]: the read at {read_site} returns the COMMITTED value — a \
+         write staged earlier in this turn (signal created at {created_at}; world {world}, \
+         slot {slot}) has not been flushed yet. `set` only stages; the driver's flush is \
+         what makes it visible, so `count.set(count.get() + 1)` twice nets +1, not +2. Use \
+         `update(|v| ...)`, which composes on the STAGED value, or keep the intended value \
+         in a local. Reading the committed value here may well be deliberate — this is a \
+         warning, it fires once per call site, and only in debug builds."
+    );
+    // Clone the handle out before calling it — see `Diag::sink`.
+    let sink = DIAG.with(|d| d.borrow().sink.clone());
+    match sink {
+        Some(sink) => sink(&msg),
+        None => eprintln!("[WARN] {msg}"),
+    }
 }
 
 // ============================================================================
@@ -258,8 +430,9 @@ impl World {
 
     /// Create a signal belonging to this world (regardless of the ambient
     /// world). See the free [`signal()`] for the ambient form.
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn signal<T: PartialEq + 'static>(&self, value: T) -> Signal<T> {
-        create_signal(&self.core.arena, value)
+        create_signal(&self.core.arena, value, caller_site())
     }
 
     /// Create an effect in this world and run it once immediately to collect
@@ -269,12 +442,17 @@ impl World {
     }
 
     /// Create a memo in this world. See the free [`memo()`].
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn memo<T, F>(&self, f: F) -> Memo<T>
     where
         T: PartialEq + Clone + 'static,
         F: Fn() -> T + 'static,
     {
-        self.enter(|| memo(f))
+        // Site captured outside the closure — `#[track_caller]` does not
+        // propagate through one, and a memo's cache signal should report
+        // the AUTHOR's `memo(...)` site, not this file.
+        let site = caller_site();
+        self.enter(|| memo_at(f, site))
     }
 
     /// Store a value in this world's context, keyed by its type. Use newtype
@@ -421,6 +599,10 @@ struct SignalSlot {
     subscribers: Vec<EffectKey>,
     /// The typed value storage, `None` when the slot is free or mid-op.
     data: Option<Box<dyn AnySignal>>,
+    /// Where this signal was created — the staged-read warning names it so
+    /// the author can find the state, not just the read. A `SiteLoc`, so
+    /// this field is a ZST (zero bytes, no initializer) in release.
+    created_at: SiteLoc,
 }
 
 /// Type-erased signal storage, so one arena Vec holds signals of any `T`.
@@ -519,7 +701,11 @@ fn run_cleanups(data: &EffectData) {
 // Slot allocation and freeing.
 // ============================================================================
 
-fn create_signal<T: PartialEq + 'static>(arena: &Rc<WorldArena>, value: T) -> Signal<T> {
+fn create_signal<T: PartialEq + 'static>(
+    arena: &Rc<WorldArena>,
+    value: T,
+    site: SiteLoc,
+) -> Signal<T> {
     let data: Box<dyn AnySignal> = Box::new(SignalData { value, next: None });
     let (slot, gen) = {
         let mut signals = arena.signals.borrow_mut();
@@ -527,6 +713,7 @@ fn create_signal<T: PartialEq + 'static>(arena: &Rc<WorldArena>, value: T) -> Si
             let s = &mut signals[slot as usize];
             debug_assert!(s.data.is_none(), "free-listed slot still occupied");
             s.data = Some(data);
+            s.created_at = site;
             (slot, s.gen)
         } else {
             let slot = signals.len() as u32;
@@ -536,6 +723,7 @@ fn create_signal<T: PartialEq + 'static>(arena: &Rc<WorldArena>, value: T) -> Si
                 forced: false,
                 subscribers: Vec::new(),
                 data: Some(data),
+                created_at: site,
             });
             (slot, 0)
         }
@@ -778,8 +966,11 @@ fn read_signal<T: PartialEq + 'static, R>(
     slot: u32,
     gen: u32,
     track: bool,
+    site: SiteLoc,
     f: impl FnOnce(&T) -> R,
 ) -> R {
+    #[cfg(not(debug_assertions))]
+    let _ = site;
     let Some(arena) = arena_of(world) else {
         diag_panic!(
             "dead-world-read",
@@ -792,10 +983,39 @@ fn read_signal<T: PartialEq + 'static, R>(
             slot
         )
     };
-    if track {
-        maybe_subscribe(&arena, world, slot, gen);
-    }
-    with_signal_data::<T, R>(&arena, world, slot, gen, |d| f(&d.value))
+    let subscribed = track && maybe_subscribe(&arena, world, slot, gen);
+    #[cfg(not(debug_assertions))]
+    let _ = subscribed;
+    with_signal_data::<T, R>(&arena, world, slot, gen, |d| {
+        // The staged-read diagnostic. `next.is_some()` IS the condition —
+        // "a write was staged this turn and the flush that would commit it
+        // has not run" — with no extra bookkeeping and an automatic
+        // per-turn reset: `AnySignal::commit` does `self.next.take()`, so
+        // the moment the flush commits, reads here are correct and silent.
+        //
+        // `!subscribed` is what makes it a *bug* detector rather than a
+        // staging detector. A read that subscribed the running effect is
+        // re-delivered when the staged value commits — the effect re-runs
+        // with the fresh value, so the staleness is transient and
+        // self-correcting. This is not a corner case: it is how the kernel
+        // itself settles (a memo body reading a sibling memo's cache mid
+        // derivation batch) and how ordinary drivers behave (the theme
+        // driver's first run reads a version someone just bumped). An
+        // UNSUBSCRIBED read — an event handler, a component build body
+        // (`component_scope` runs untracked), `peek`/`with_untracked`, a
+        // cross-world read — has no such second chance: the stale value is
+        // the final answer, and that is exactly the 0.5 → 1.0 hazard.
+        //
+        // Deliberately placed on the READ path only: `stage_update` reaches
+        // the same storage through `with_signal_data` directly and never
+        // passes here, so `update` — the API the migration guide tells
+        // people to switch to — is silent by construction.
+        #[cfg(debug_assertions)]
+        if d.next.is_some() && !subscribed {
+            warn_staged_read(&arena, world, slot, site);
+        }
+        f(&d.value)
+    })
 }
 
 /// Subscribe the innermost RUNNING effect to this signal — but only if that
@@ -809,7 +1029,12 @@ fn read_signal<T: PartialEq + 'static, R>(
 /// reproduction) — A flushing later must not run B's effect, whose re-run is
 /// B's flush's business. Cross-world dataflow is expressed by a B-effect
 /// *writing* A-signals (stages into A), never by cross-world subscriptions.
-fn maybe_subscribe(arena: &WorldArena, world: WorldId, slot: u32, gen: u32) {
+/// Returns whether the read DID subscribe — i.e. whether a later commit of
+/// this signal is guaranteed to re-deliver the value to this reader.
+/// `read_signal` forks the staged-read diagnostic on it (a subscribed read
+/// of a staged value self-corrects at the flush; an unsubscribed one is
+/// final).
+fn maybe_subscribe(arena: &WorldArena, world: WorldId, slot: u32, gen: u32) -> bool {
     let _ = arena;
     // Record the read into the running effect's PENDING frame only — no
     // subscriber list is touched here. `reconcile_deps` (at the run's
@@ -821,13 +1046,13 @@ fn maybe_subscribe(arena: &WorldArena, world: WorldId, slot: u32, gen: u32) {
     TLS.with(|t| {
         let mut t = t.borrow_mut();
         if t.untrack_depth > 0 {
-            return;
+            return false;
         }
         let Some(&(eworld, _eslot, _egen)) = t.effect_stack.last() else {
-            return;
+            return false;
         };
         if eworld != world {
-            return; // cross-world read: never subscribes
+            return false; // cross-world read: never subscribes
         }
         let frame = t
             .pending_deps
@@ -838,7 +1063,8 @@ fn maybe_subscribe(arena: &WorldArena, world: WorldId, slot: u32, gen: u32) {
         if !frame.contains(&(slot, gen)) {
             frame.push((slot, gen));
         }
-    });
+        true
+    })
 }
 
 /// Stage a value (last-write-wins) and enqueue the signal for commit at the
@@ -920,36 +1146,48 @@ macro_rules! impl_read_ops {
     () => {
         /// Read the committed value. If called during an effect run — an
         /// effect of this signal's OWN world — subscribes that effect.
+        ///
+        /// In debug builds, reading a signal whose staged write has not
+        /// been flushed yet warns once per call site — see the
+        /// staged-read diagnostic in the module docs.
+        #[cfg_attr(debug_assertions, track_caller)]
         pub fn get(&self) -> T
         where
             T: Clone,
         {
-            read_signal(self.world, self.slot, self.gen, true, T::clone)
+            read_signal(self.world, self.slot, self.gen, true, caller_site(), T::clone)
         }
 
         /// Read the committed value WITHOUT tracking — never subscribes,
         /// even inside an effect. For effects that update state derived from
         /// themselves: `set(peek() + 1)` inside an effect body would
         /// infinitely re-trigger if written with `get()`.
+        ///
+        /// `peek` drops the *subscription*, not the staging rule: it still
+        /// returns the committed value, so it warns after a staged write
+        /// exactly like [`get`](Self::get) does.
+        #[cfg_attr(debug_assertions, track_caller)]
         pub fn peek(&self) -> T
         where
             T: Clone,
         {
-            read_signal(self.world, self.slot, self.gen, false, T::clone)
+            read_signal(self.world, self.slot, self.gen, false, caller_site(), T::clone)
         }
 
         /// Tracked borrow-read of the committed value: `f` gets `&T`, no
         /// clone. The idiom for `Vec` rows / large values. Note: reading the
         /// SAME signal again from inside `f` is a reentrancy error (the
         /// storage is moved out for `f`'s duration); other signals are fine.
+        #[cfg_attr(debug_assertions, track_caller)]
         pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
-            read_signal(self.world, self.slot, self.gen, true, f)
+            read_signal(self.world, self.slot, self.gen, true, caller_site(), f)
         }
 
         /// Untracked borrow-read — [`with`](Self::with) without the
         /// subscription.
+        #[cfg_attr(debug_assertions, track_caller)]
         pub fn with_untracked<R>(&self, f: impl FnOnce(&T) -> R) -> R {
-            read_signal(self.world, self.slot, self.gen, false, f)
+            read_signal(self.world, self.slot, self.gen, false, caller_site(), f)
         }
     };
 }
@@ -1050,8 +1288,13 @@ impl<T: PartialEq + 'static> WriteSignal<T> {
 }
 
 /// Create a signal in the ambient world. What components call.
+#[cfg_attr(debug_assertions, track_caller)]
 pub fn signal<T: PartialEq + 'static>(value: T) -> Signal<T> {
-    with_ambient(|arena| create_signal(arena, value))
+    // Captured HERE, outside the closure: `#[track_caller]` does not reach
+    // through a closure body, so `caller_site()` must be called in the
+    // tracked frame and the value carried in.
+    let site = caller_site();
+    with_ambient(|arena| create_signal(arena, value, site))
 }
 
 // ============================================================================
@@ -1640,7 +1883,19 @@ impl<T> std::fmt::Debug for Memo<T> {
 /// one. `memo()` earns its signal when the derivation is shared (one
 /// computation instead of N), expensive, or should cut propagation: source
 /// changed but the derived value didn't → consumers don't re-run.
+#[cfg_attr(debug_assertions, track_caller)]
 pub fn memo<T, F>(f: F) -> Memo<T>
+where
+    T: PartialEq + Clone + 'static,
+    F: Fn() -> T + 'static,
+{
+    memo_at(f, caller_site())
+}
+
+/// [`memo`] with the author's creation site passed in explicitly, so
+/// `World::memo` (which must go through a closure to enter its world) can
+/// forward the same site. See `SignalSlot::created_at`.
+fn memo_at<T, F>(f: F, site: SiteLoc) -> Memo<T>
 where
     T: PartialEq + Clone + 'static,
     F: Fn() -> T + 'static,
@@ -1648,7 +1903,7 @@ where
     // Initial value computed untracked — the memo's own effect is the one
     // and only subscriber to f's dependencies, wherever memo() was called.
     let initial = untrack(&f);
-    let cache = signal(initial);
+    let cache = with_ambient(|arena| create_signal(arena, initial, site));
     let write = cache.write_only();
     let _effect = with_ambient(|arena| {
         create_effect(
@@ -1662,6 +1917,7 @@ where
 
 impl<T: PartialEq + 'static> Memo<T> {
     /// Tracked read of the cached value — same semantics as [`Signal::get`].
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn get(&self) -> T
     where
         T: Clone,
@@ -1670,6 +1926,7 @@ impl<T: PartialEq + 'static> Memo<T> {
     }
 
     /// Untracked read — same semantics as [`Signal::peek`].
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn peek(&self) -> T
     where
         T: Clone,
@@ -1678,6 +1935,7 @@ impl<T: PartialEq + 'static> Memo<T> {
     }
 
     /// Tracked borrow-read — same semantics as [`Signal::with`].
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
         self.value.with(f)
     }

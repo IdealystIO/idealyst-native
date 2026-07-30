@@ -162,3 +162,80 @@ fn markdown_tag_switch_rebuilds_on_source_change() {
         "equal source must not rebuild the doc: {log}"
     );
 }
+
+/// `MarkdownHandle: PartialEq` compares the mounted node, so a handle equals its own
+/// clones and never equals a handle onto a different mounted `Markdown`.
+/// Required for the handle to sit in a `Signal` at all (`Signal<T>` bounds
+/// `T: PartialEq` at creation and `get`), and only this crate can supply
+/// the impl — the orphan rule blocks an app crate.
+///
+/// The unequal half is the load-bearing one: every handle on a target
+/// shares the same `&'static` ops vtable, so an impl that compared `ops`
+/// would collapse two distinct nodes into one and swallow a re-target.
+#[test]
+fn markdown_handles_compare_by_mounted_node_identity() {
+    let h = harness();
+
+    let ra: Ref<MarkdownHandle> = Ref::new();
+    let rb: Ref<MarkdownHandle> = Ref::new();
+    let _a: Realized<u32> = h.mount(markdown("# Hi", MdTheme::light()).bind(ra.clone()).into_element());
+    let _b: Realized<u32> = h.mount(markdown("# Hi", MdTheme::light()).bind(rb.clone()).into_element());
+
+    let ha = ra.with(|handle| handle.clone()).expect("a mounted");
+    let hb = rb.with(|handle| handle.clone()).expect("b mounted");
+
+    assert!(ha == ha.clone(), "clones of one handle must compare equal");
+    assert!(ha != hb, "handles onto two different mounted nodes must compare unequal");
+}
+
+// ===========================================================================
+// 1.1.0 registration seams
+// ===========================================================================
+
+/// `defer` must be safe to call on a NON-WEB target.
+///
+/// Web is the only target that code-splits, so off-web `defer` installs
+/// the handler eagerly instead of declaring the kind late-bound. Without
+/// that arm a host or native app calling `defer` would park every
+/// markdown node behind a layout-transparent placeholder forever — no
+/// panic, no log, just missing content, because no chunk is coming to
+/// drain it.
+///
+/// Regression test for that arm: rendering through `defer` must produce
+/// the same mounted node `register` produces. A `defer` that only
+/// declared (the wasm behavior) would park the item and realize nothing.
+#[test]
+fn defer_registers_eagerly_off_web() {
+    let h = Harness::with_registry(|r| markdown::defer(r));
+    let _realized: Realized<_> = h.mount(markdown("# Heading\n\nBody **bold**", MdTheme::light()).into_element());
+    let log = h.ops().join("\n");
+    assert!(
+        log.contains("element \"div\""),
+        "`defer` installed the handler off-web, so the item mounted: {log}"
+    );
+    assert!(
+        log.contains("element \"p\""),
+        "the handler built real block DOM, so the item was not parked: {log}"
+    );
+}
+
+/// The `register_from_chunk` stub must be inert off-web.
+///
+/// A `#[component(lazy)]` body calls it unconditionally, so it has to
+/// compile everywhere. Off-web it must queue nothing: `defer` already
+/// registered, and a late registration for a kind never declared
+/// deferred panics inside `Registry::register_deferred` on the next
+/// realize.
+#[test]
+fn register_from_chunk_is_inert_off_web() {
+    markdown::register_from_chunk::<host_mock::HostMock>();
+
+    let h = Harness::with_registry(|r| markdown::register(r));
+    let _realized: Realized<_> =
+        h.mount(markdown("plain", MdTheme::light()).into_element());
+    assert!(
+        h.ops().join("\n").contains("element \"div\""),
+        "realize after the inert stub is unaffected: {}",
+        h.ops().join("\n")
+    );
+}

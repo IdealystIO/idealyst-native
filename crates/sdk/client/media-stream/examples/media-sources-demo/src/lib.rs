@@ -60,59 +60,31 @@ pub fn scene_app() -> Element {
     app()
 }
 
-/// A `MediaStream` in a shape a signal can hold.
-///
-/// Every signal payload must be `PartialEq` — the world kernel's `set` is
-/// equality-guarded, so it needs to decide at commit whether the value
-/// actually changed. A live capture handle has no meaningful value
-/// equality (and `MediaStream`'s `Rc` is private, so pointer identity
-/// isn't reachable from here), so the slot carries a monotonic id and
-/// compares on that: two slots are equal exactly when they hold the same
-/// assignment — which is precisely the "did the source change?" question
-/// the guard should answer.
-#[derive(Clone)]
-struct StreamSlot {
-    id: u64,
-    stream: MediaStream,
-}
-
-impl PartialEq for StreamSlot {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-
-impl StreamSlot {
-    fn new(stream: MediaStream) -> Self {
-        use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        Self {
-            id: NEXT.fetch_add(1, AtomicOrdering::Relaxed),
-            stream,
-        }
-    }
-}
-
 pub fn app() -> Element {
     install_idea_theme(light_theme());
 
     // One stream signal per source. Each `Video` reads its own via a reactive
     // `stream(..)` source, so flipping the signal populates that video in
     // place — no remount.
-    let cam_sig: Signal<Option<StreamSlot>> = signal(None);
-    let screen_sig: Signal<Option<StreamSlot>> = signal(None);
+    //
+    // `MediaStream` compares by pointer identity (see its `PartialEq`), so
+    // `Option<MediaStream>` is directly a legal signal payload: every fresh
+    // capture is a distinct instance and notifies, while re-storing the same
+    // stream is correctly swallowed by the guard.
+    let cam_sig: Signal<Option<MediaStream>> = signal(None);
+    let screen_sig: Signal<Option<MediaStream>> = signal(None);
     let cam_status: Signal<String> = signal("idle".to_string());
     let screen_status: Signal<String> = signal("idle".to_string());
 
     let cam_video = video::Video(video::VideoProps {
-        source: video::stream(move || cam_sig.get().map(|s| s.stream)),
+        source: video::stream(move || cam_sig.get()),
         autoplay: true,
         ..Default::default()
     })
     .into_element();
 
     let screen_video = video::Video(video::VideoProps {
-        source: video::stream(move || screen_sig.get().map(|s| s.stream)),
+        source: video::stream(move || screen_sig.get()),
         autoplay: true,
         ..Default::default()
     })
@@ -129,9 +101,7 @@ pub fn app() -> Element {
             match Camera::new().open(CameraConfig::default()).await {
                 Ok(stream) => {
                     cam_status.set("live".to_string());
-                    // Plain guarded `set`: the slot's id makes every fresh
-                    // stream a distinct value, so the guard never swallows it.
-                    cam_sig.set(Some(StreamSlot::new(stream)));
+                    cam_sig.set(Some(stream));
                 }
                 Err(e) => cam_status.set(camera_error(e)),
             }
@@ -144,7 +114,7 @@ pub fn app() -> Element {
             match open_screen_share().await {
                 Ok(stream) => {
                     screen_status.set("live".to_string());
-                    screen_sig.set(Some(StreamSlot::new(stream)));
+                    screen_sig.set(Some(stream));
                 }
                 Err(e) => screen_status.set(e),
             }

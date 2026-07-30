@@ -119,7 +119,7 @@ pub(crate) struct BoardState {
     pub width: Signal<f32>,
     pub color_css: Signal<&'static str>,
     pub cam_on: Signal<bool>,
-    pub cam_stream: Signal<Option<crate::CamStream>>,
+    pub cam_stream: Signal<Option<media_stream::MediaStream>>,
     /// Camera widget top-left, in STAGE-local points (the canvas's own coordinate
     /// space), so the composited layer rect and the widget box agree and the
     /// camera lives inside the aspect-locked board.

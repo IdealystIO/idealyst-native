@@ -101,10 +101,44 @@ the resulting model as it stands today.
 | `signal`/`effect`/`memo` inside an event handler | handlers run outside the world | **runtime panic** on the event |
 
 The `PartialEq` bound is the one that surprises people: it applies to
-creation and to `get`, not just to `set`. For a payload with no
-meaningful value equality (a connection handle, an `Rc<dyn Any>` slot),
-give it a pointer-identity impl comparing `Rc::ptr_eq` — in-tree
-examples are `idea-theme`'s `ThemeSlot` and `server::SocketSender`.
+creation and to `get`, not just to `set`. Three answers, in order of
+preference:
+
+1. **Derive it** — the normal case for enums, DTOs, view models.
+2. **Write a pointer-identity impl** when the payload has no meaningful
+   value equality (a connection handle, an `Rc<dyn Any>` slot): compare
+   `Rc::ptr_eq` on an `Rc` the type already holds. "Is this the same
+   instance?" is exactly the question the guarded `set` asks. In-tree
+   examples are `idea-theme`'s `ThemeSlot` and `server::SocketSender`.
+3. **Wrap it in `runtime_core::ByIdentity<T>`** when the type is not
+   yours — the orphan rule blocks the impl from your crate just as it
+   would from ours. It is an `Rc<T>` comparing by `Rc::ptr_eq`,
+   `Clone`ing by sharing, and `Deref`ing to `T`, so it disappears at use
+   sites:
+
+   ```rust
+   let session = signal(ByIdentity::new(third_party::Session::open()?));
+   session.with(|s| s.ping()); // Deref — no unwrapping
+   ```
+
+   `ByIdentityArc<T>` is the `Arc` sibling for a pointer you were handed
+   rather than allocated (`storage::platform_storage()`); wrapping an
+   existing `Arc` in `ByIdentity` would compare the new `Rc` instead and
+   lose the identity you wanted. Both are `?Sized`-tolerant, so
+   `ByIdentityArc<dyn Storage>` works.
+
+Note `set_always` is **not** an escape hatch here: a type with no
+`PartialEq` cannot be put in a signal at all, so there is nothing to call
+`set_always` on. Fix the payload type, don't change the setter.
+
+Framework types already carry the impl — `MediaStream`, `AudioStream`,
+`net::Client` / `CancelHandle` / `CancelToken`, `NavHandle` (and
+`SwapHandle` / `StackHandle`), `sync::SyncEngine` / `SyncHandle`,
+`graphql::GraphqlClient`, `offload::Handle`, and the SDK node handles
+(`FormHandle`, `SvgHandle`, `VideoHandle`, `WebViewHandle`,
+`ToolbarHandle`, `MarkdownHandle`). You should
+never need `ByIdentity` for something the framework ships; if you do,
+that is a framework bug, since only the framework can supply the impl.
 
 ### 2. Removed from the `runtime_core` author surface
 
@@ -222,7 +256,8 @@ must too.
       removed, `update_if_changed` removed.
 - [ ] `update` closures take `&T` and return the new value.
 - [ ] Every signal payload type implements `PartialEq` (pointer identity
-      where value equality is meaningless).
+      where value equality is meaningless; `ByIdentity<T>` /
+      `ByIdentityArc<T>` for a type you do not own).
 - [ ] No `on_cleanup(` in a component body.
 - [ ] No `signal` / `effect!` / `memo` / free theme calls inside an event
       handler.

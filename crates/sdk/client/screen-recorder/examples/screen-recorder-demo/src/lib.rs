@@ -41,7 +41,7 @@ static LAST_HEIGHT: AtomicU32 = AtomicU32::new(0);
 /// to register — this demo uses the capture *capability*, which is a plain
 /// object API, not a rendered primitive. (When you render a
 /// `screen_recorder::PrivateLayer`, that's where you'd call
-/// `screen_recorder::register_scene(registry)` — see
+/// `screen_recorder::register(registry)` — see
 /// `screenshare-preview-demo`.)
 pub fn register_scene_extensions<H: runtime_scene::Host>(
     _registry: &mut runtime_scene::Registry<H>,

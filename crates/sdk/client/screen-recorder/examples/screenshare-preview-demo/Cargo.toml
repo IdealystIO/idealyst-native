@@ -22,7 +22,7 @@ idea-ui = { workspace = true }
 screen-recorder = { workspace = true }
 video = { workspace = true }
 
-# Web's `video::register` / `screen_recorder::register_scene` seam is
+# Web's `video::register` / `screen_recorder::register` seam is
 # registry-CONCRETE (`Registry<WebBackend>`), so the wasm32 leg of
 # `register_scene_extensions` needs the backend's `Host` impl. The native
 # legs are registry-generic and type-dispatch inside the SDKs, so no

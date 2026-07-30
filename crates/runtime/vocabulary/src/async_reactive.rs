@@ -294,24 +294,38 @@ impl<T, E> Clone for Resource<T, E> {
     }
 }
 
+// `#[cfg_attr(debug_assertions, track_caller)]` on the accessors below is
+// not decoration: they are one-line forwards to a `Signal` read, and the
+// kernel's staged-read warning (runtime-world) reports `Location::caller()`.
+// `#[track_caller]` only propagates through frames that ALSO declare it, so
+// without these attributes every author call of `resource.data()` would be
+// reported at this file's line — misnaming the site AND collapsing every
+// call site in the app into one dedupe key, so only the first would ever be
+// reported. The rule generalizes: a thin wrapper over `get`/`peek`/`with`
+// should forward `#[track_caller]`. (A wrapper that reads through a boxed
+// `dyn Fn` — `Reactive<T>::get` — cannot, and is a known blind spot.)
 impl<T: Clone + 'static, E: Clone + 'static> Resource<T, E> {
     /// The last successful payload (retained during refetch — check
     /// [`loading`](Self::loading) for in-flight status).
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn data(&self) -> Option<T> {
         self.state.get().data
     }
 
     /// The most recent fetch's error (cleared when a new fetch starts).
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn error(&self) -> Option<E> {
         self.state.get().error
     }
 
     /// Whether a fetch is currently in flight.
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn loading(&self) -> bool {
         self.state.get().loading
     }
 
     /// Single-read snapshot of the full state.
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn state(&self) -> ResourceState<T, E> {
         self.state.get()
     }
@@ -319,6 +333,7 @@ impl<T: Clone + 'static, E: Clone + 'static> Resource<T, E> {
     /// Collapsed [`NetworkState`] view (`Loading > Error > Success`;
     /// the never-settled fallback is `Loading`, matching the old
     /// projection — a resource is never `Idle`).
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn network_state(&self) -> NetworkState<T, E> {
         let s = self.state.get();
         project(&s.data, &s.error, s.loading, NetworkState::Loading)
@@ -462,21 +477,25 @@ impl<I, T, E> Clone for Mutation<I, T, E> {
 impl<I: 'static, T: Clone + 'static, E: Clone + 'static> Mutation<I, T, E> {
     /// Single-read snapshot of the full state (subscribes reactive
     /// callers).
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn state(&self) -> MutationState<T, E> {
         self.state.get()
     }
 
     /// The last successful payload.
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn data(&self) -> Option<T> {
         self.state.get().data
     }
 
     /// The most recent error.
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn error(&self) -> Option<E> {
         self.state.get().error
     }
 
     /// Whether a triggered run is in flight.
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn loading(&self) -> bool {
         self.state.get().loading
     }
@@ -489,6 +508,7 @@ impl<I: 'static, T: Clone + 'static, E: Clone + 'static> Mutation<I, T, E> {
 
     /// Collapsed [`NetworkState`] view; a never-triggered mutation
     /// projects to `Idle` (old-core precedence rules).
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn network_state(&self) -> NetworkState<T, E> {
         let s = self.state.get();
         project(&s.data, &s.error, s.loading, NetworkState::Idle)
@@ -682,14 +702,17 @@ impl<I: 'static, E: Clone + PartialEq + 'static> AsyncReducer<I, E> {
     }
 
     /// Snapshot the current status — for non-reactive reads.
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn status_now(&self) -> AsyncStatus<E> {
         self.status.get()
     }
 
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn is_loading(&self) -> bool {
         matches!(self.status.get(), AsyncStatus::Loading)
     }
 
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn error(&self) -> Option<E> {
         match self.status.get() {
             AsyncStatus::Error(e) => Some(e),

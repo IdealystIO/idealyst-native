@@ -204,7 +204,7 @@ sdk!(
     "table",
     SdkCategory::Ui,
     SdkKind::External,
-    "Cross-platform table — a real `<table>` on web. WEB REGISTRATION REQUIRED: call `table::register(&mut backend)` from your wasm32 `register_extensions` or it renders an unsupported-`External` placeholder (runtime, not compile-time); native self-registers. Before hand-rolling a grid from `view`/`text`, reach for this SDK. See the `sdks` guide's \"Registering External UI SDKs\" section."
+    "Cross-platform table — a real `<table>` on web, shared-track CSS-grid on native. REGISTRATION REQUIRED on every target: call `table::register(&mut registry)` from your `register_scene_extensions`, or the payload panics at realize (the scene registry has no fallback handler — a missed registration fails loud, it does not render a placeholder). To ship the web handlers in a lazy chunk instead, call `table::defer(&mut registry)` at boot and `table::register_from_chunk::<MyBackend>()` from inside a `#[component(lazy)]` body. Before hand-rolling a grid from `view`/`text`, reach for this SDK. See the `sdks` and `sdk-components` guides."
 );
 sdk!(
     "form",

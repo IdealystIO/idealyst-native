@@ -126,7 +126,12 @@ pub struct SwapContext {
 /// Typed runtime handle to a live swap navigator, filled into the
 /// [`Ref`] passed to [`SwapBuilder::bind`]. Wraps the vocabulary's
 /// unified [`NavHandle`]. Cheap to clone.
-#[derive(Clone)]
+/// Equal exactly when the two handles drive the same navigator —
+/// DERIVED, because the wrapper adds no state and `NavHandle` already
+/// answers the identity question (pointer equality on its dispatch
+/// closure). A hand-written impl here would be a second copy of the same
+/// rule, free to drift from the vocabulary's.
+#[derive(Clone, PartialEq, Eq)]
 pub struct SwapHandle {
     inner: NavHandle,
 }
@@ -246,15 +251,15 @@ impl ChildList for SwapNavigator {
     }
 }
 
-/// No-op: the vocabulary's `register_builtins` installs the swap handler
-/// on every host, so there is nothing for an app to register. Kept so
-/// historical bootstrap code (`swap_navigator::register(&mut backend)`)
-/// compiles unchanged.
-pub fn register<B>(_backend: &mut B) {}
-
-/// No-op — see [`register`]. Generic-registry (SSR / test) hosts render
-/// navigators through `register_builtins` too.
-pub fn register_generic<B>(_backend: &mut B) {}
+// NOTE: this SDK intentionally exposes NO registration seam. The swap
+// handler is a vocabulary built-in installed by `register_builtins` on
+// every host — including generic-registry (SSR / test) hosts — so there
+// is nothing for an app to register. The 1.0-era no-op `register` /
+// `register_generic` shims were removed in 1.1.0: an unconstrained
+// `fn register<B>(_: &mut B) {}` accepts a `&mut Registry<H>` happily,
+// so a caller who assumed the usual seam convention got a call that
+// compiled, did nothing, and sent them debugging a registration they
+// had already "fixed".
 
 /// Convenience re-exports — glob-import to bring the builder, handle,
 /// screen options, and value types into scope, including the shared data
@@ -262,7 +267,7 @@ pub fn register_generic<B>(_backend: &mut B) {}
 /// everything from here.
 pub mod prelude {
     pub use super::{
-        register, MountPolicy, Route, Screen, SwapBuilder, SwapContext, SwapHandle,
+        MountPolicy, Route, Screen, SwapBuilder, SwapContext, SwapHandle,
         SwapNavigator, SwapPresentation, SwapScreenOptions,
     };
 }

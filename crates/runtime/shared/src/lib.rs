@@ -76,6 +76,7 @@ pub mod accessibility;
 pub mod animation;
 pub mod assets;
 pub mod breakpoint;
+pub mod by_identity;
 pub mod container_query;
 pub mod collections;
 pub mod color;
@@ -263,6 +264,7 @@ pub use accessibility::{
     AccessibilityAction, AccessibilityProps, AccessibilityTraits, LiveRegionPriority, Role,
 };
 pub use batch::{BackendBatch, BatchOp};
+pub use by_identity::{ByIdentity, ByIdentityArc};
 pub use handles::{
     ButtonHandle, ButtonOps, LayoutSubscription, PressableHandle, PressableOps, RefFill, RefOps,
     StateBits, TextHandle, TextOps, ViewHandle, ViewOps,

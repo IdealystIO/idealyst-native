@@ -131,6 +131,14 @@ pub use runtime_world::{
     effect, memo, on_cleanup, signal, untrack, Effect, Memo, ReadSignal, Signal, WriteSignal,
 };
 
+// The escape hatch for the `T: PartialEq` bound those signal handles
+// carry: a payload with no value equality (a third-party session object,
+// an `Arc<dyn Storage>`) wrapped so the guarded `set` can ask the only
+// question that makes sense for it — "is this the same instance?".
+// Lives in runtime-shared next to the rest of the permanent substrate;
+// exported here so authors spell it `runtime_core::ByIdentity`.
+pub use runtime_shared::{ByIdentity, ByIdentityArc};
+
 // The `stylesheet!` emission surface (P3c). Under `new-core` the macro's
 // output is retargeted `::runtime_shared::…` → `::runtime_vocabulary::glue::…`
 // wholesale, so every name the generated sheet fn / builder / variant

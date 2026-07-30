@@ -32,6 +32,10 @@ storage = { git = "...", rev = "..." }
 Inside the workspace, examples use `net = { workspace = true }`. After adding the
 dep, the SDK's functions are importable (`use net::Client;`).
 
+Writing your own SDK rather than consuming one? See [[sdk-components]] for the
+payload/handler shape, the registration seam names, and how to support lazy
+loading.
+
 ## Networking & data
 
 | Crate | What it gives you |
@@ -102,6 +106,16 @@ pub fn register_scene_extensions<H: runtime_scene::Host>(
     // …one line per extension SDK you render.
 }
 ```
+
+Every SDK spells that seam `register` — as of 1.1.0 there are no
+`register_handlers` / `register_scene` / `register_generic` variants left, and
+no no-op `register(&mut backend)` shims (see [[migration-1-0-0-to-1-1-0]]).
+
+To ship an SDK's handler in a lazy chunk rather than the main bundle, swap the
+verb: `table::defer(registry)` at boot, plus
+`table::register_from_chunk::<MyBackend>()` from inside a `#[component(lazy)]`
+body. Both halves are required — see [[lazy-loading]]. Off-web `defer` simply
+registers eagerly, since only web code-splits, so it is always safe to call.
 
 Most SDK `register` fns are **caps-generic** (`register<H>(&mut Registry<H>)`)
 and serve every backend from one handler. An SDK with a real platform leg

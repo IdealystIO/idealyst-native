@@ -258,3 +258,25 @@ fn link_route_selects_in_a_swap_screen() {
     let log = h.take_log().join("\n");
     assert!(log.contains("text \"about-body\""), "{log}");
 }
+
+/// `SwapHandle: PartialEq` is DERIVED from `NavHandle`'s identity impl,
+/// so the wrapper inherits "same navigator ⇒ equal". Pinned here because
+/// the derive is what lets an author park the bound handle in a
+/// `Signal<SwapHandle>` at all (`Signal<T>` bounds `T: PartialEq` at
+/// creation and `get`), and because a future field added to the wrapper
+/// would silently change the rule.
+#[test]
+fn swap_handles_compare_by_navigator_identity() {
+    let h = harness();
+    let (_ra, a) = mount_app(&h, (Rc::new(Cell::new(0)), Rc::new(Cell::new(0))));
+    let (_rb, b) = mount_app(&h, (Rc::new(Cell::new(0)), Rc::new(Cell::new(0))));
+
+    let ha = a.get().expect("nav a bound");
+    let hb = b.get().expect("nav b bound");
+
+    assert!(ha == ha.clone(), "clones of one bound handle must compare equal");
+    assert!(
+        ha != hb,
+        "handles onto two separately mounted swap navigators must compare unequal"
+    );
+}

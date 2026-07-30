@@ -23,7 +23,7 @@
 //! - **Web (wasm32)**: each primitive lowers to a scene
 //!   [`Element::Item`] carrying a typed payload; the scene
 //!   [`Registry`] dispatches to the handlers installed by
-//!   [`register_handlers`], which emit the real `<table>` / `<tr>` /
+//!   [`register`], which emit the real `<table>` / `<tr>` /
 //!   `<td>` / `<th>` DOM through the vocabulary's capability traits
 //!   ([`create_element`](runtime_vocabulary::caps::DocumentOps::create_element))
 //!   — the runtime's unified primitive==external contract. The
@@ -79,7 +79,7 @@
 use std::rc::Rc;
 
 use runtime_shared::{HoverHandler, TouchHandler};
-use runtime_scene::{fragment, item, Element, MountCx, Registry};
+use runtime_scene::{fragment, item, Element, Host, MountCx, Registry};
 use runtime_vocabulary::caps::InputOps;
 use runtime_vocabulary::glue::{
     self, BuildElement, ChildList, DisplayKind, IntoElement, StyleApplication, StyleRules,
@@ -242,7 +242,7 @@ impl IntoElement for TableCellBound {
 // ============================================================================
 
 /// Build a `Table` container. Web lowers to a scene item handled by
-/// [`register_handlers`] (a real `<table>`); native lowers to a
+/// [`register`] (a real `<table>`); native lowers to a
 /// CSS-grid whose column tracks span every row (see the module docs).
 pub fn table(mut props: TableProps) -> TableBound {
     TableBound {
@@ -656,7 +656,7 @@ where
 /// pass it to `backend_ssr::newcore::render_path_with`. Only the WEB
 /// lowering needs it: native trees lower to plain grid views handled by
 /// the vocabulary built-ins.
-pub fn register_handlers<H>(registry: &mut Registry<H>)
+pub fn register<H>(registry: &mut Registry<H>)
 where
     H: StyleServices + InputOps + 'static,
 {
@@ -665,11 +665,66 @@ where
     registry.register::<PrimCell<TableCellPrim>, _>(mount_cell::<H>);
 }
 
-/// Bootstrap no-op kept for source compatibility: a `register(&mut
-/// backend)` call at app bootstrap has nothing to do — the scene
-/// handlers install through [`register_handlers`] at the boot seam
-/// instead (the navigator SDKs keep the same convention).
-pub fn register<B>(_backend: &mut B) {}
+/// Declare this SDK's payload kinds **late-bound** instead of installing
+/// their handlers — the boot half of lazy registration. Pair with
+/// [`register_from_chunk`] called from inside a `#[component(lazy)]`
+/// body; realize parks a table item behind a placeholder until that
+/// chunk lands, rather than panicking on it.
+///
+/// This exists so an app never has to spell the registry keys: there are
+/// three of them and each is wrapped in [`PrimCell`], a framework
+/// internal an app would otherwise have to import to write
+/// `registry.defer::<PrimCell<TablePrim>>()`.
+///
+/// Only web code-splits, so on every other target this installs the
+/// handlers eagerly exactly as [`register`] does. That is deliberate:
+/// deferring a kind nothing later registers leaves the payload parked
+/// behind a placeholder forever — no panic, no log — and native has no
+/// chunk to arrive. Calling `defer` is therefore always safe: it splits
+/// where splitting exists and is a plain `register` elsewhere.
+pub fn defer<H>(registry: &mut Registry<H>)
+where
+    H: Host + StyleServices + InputOps + 'static,
+{
+    #[cfg(target_arch = "wasm32")]
+    {
+        registry.defer::<PrimCell<TablePrim>>();
+        registry.defer::<PrimCell<TableRowPrim>>();
+        registry.defer::<PrimCell<TableCellPrim>>();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        register(registry);
+    }
+}
+
+/// Install this SDK's payload handlers from inside a lazy chunk — the
+/// chunk half of lazy registration. Requires [`defer`] at boot.
+///
+/// Generic over the host because this crate takes no backend dependency;
+/// the caller pins `H` to its concrete backend, e.g.
+/// `register_from_chunk::<backend_web::WebBackend>()`. Only the WEB
+/// lowering has handlers to split — native tables lower to plain grid
+/// views handled by the vocabulary built-ins — and web is the only
+/// target that code-splits at all.
+///
+/// Inert off-web, where [`defer`] already registered eagerly: queueing a
+/// late registration for a kind that was never declared deferred panics
+/// in `Registry::register_deferred`. The stub keeps a
+/// `#[component(lazy)]` body that calls this compiling on every target.
+pub fn register_from_chunk<H>()
+where
+    H: Host + StyleServices + InputOps + 'static,
+{
+    #[cfg(target_arch = "wasm32")]
+    {
+        runtime_scene::defer_registration::<H, _>(|registry| {
+            registry.register_deferred::<PrimCell<TablePrim>, _>(mount_table::<H>);
+            registry.register_deferred::<PrimCell<TableRowPrim>, _>(mount_row::<H>);
+            registry.register_deferred::<PrimCell<TableCellPrim>, _>(mount_cell::<H>);
+        });
+    }
+}
 
 // ============================================================================
 // `ui!` dispatch — type aliases + BuildElement impls (glue dispatch).

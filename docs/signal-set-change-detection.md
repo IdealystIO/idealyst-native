@@ -21,8 +21,11 @@ equality-guarded write** (`where T: PartialEq`), and the write surface
 decomposed into orthogonal spellings:
 
 - `set(v)` — write, notify **only on change** (`T: PartialEq`). THE default.
-- `set_always(v)` — write, notify unconditionally (any `T`; the old
-  `set`, and the only setter for non-`PartialEq` types).
+- `set_always(v)` — write, notify unconditionally (the old `set`). Since
+  1.0 this is NOT an escape from the `PartialEq` bound: the bound is on the
+  whole `Signal<T>` handle, so a type without it cannot be stored at all.
+  Give the type a pointer-identity impl, or wrap it in
+  `runtime_core::ByIdentity<T>` when it is not yours to change.
 - `touch()` — notify without writing (retrigger; e.g. a `switch`
   discriminant whose arm body must re-run).
 - `set_untracked(v)` — write without notifying (deliberate silent

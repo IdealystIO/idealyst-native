@@ -68,6 +68,10 @@ pub use widgets::{
 /// transitively reaches — is statically reachable from the boot entry in
 /// every app on every target. Growing the set grows every app's binary.
 /// `tests/builtin_surface.rs` pins it.
+///
+/// Debug builds also install the kernel's diagnostic log bridge here — see
+/// [`install_kernel_diagnostic_bridge`] for why this seam rather than each
+/// backend's `start_in`.
 pub fn register_builtins<H: AllCaps + 'static>(registry: &mut Registry<H>) {
     registry.register::<PrimCell<ViewPrim>, _>(|cx, p, children| {
         mount_view(cx, p.take(), children)
@@ -109,7 +113,34 @@ pub fn register_builtins<H: AllCaps + 'static>(registry: &mut Registry<H>) {
     register_navigator(registry);
     register_repeat(registry);
     register_lazy(registry);
+    install_kernel_diagnostic_bridge();
 }
+
+/// Route runtime-world's dev diagnostics (today: the staged-read warning)
+/// into runtime-shared's `Logger`, so they surface on `console.warn` /
+/// `NSLog` / `__android_log_print` instead of `eprintln!` — which is a
+/// silent no-op sink on `wasm32-unknown-unknown`, i.e. invisible on the
+/// most common dev target.
+///
+/// The bridge lives here because runtime-world is the BOTTOM of the new
+/// core's dependency chain (world ← scene ← vocabulary ← backends) and
+/// deliberately depends on nothing but `rustc-hash`; it cannot call
+/// `log_warn!` itself. `register_builtins` is the one seam every backend's
+/// boot passes through, which is why the install rides along here rather
+/// than being repeated in each backend's `start_in`.
+///
+/// Debug builds only — in release the kernel diagnostic does not exist, so
+/// neither does `install_diagnostic_sink`.
+#[cfg(debug_assertions)]
+fn install_kernel_diagnostic_bridge() {
+    runtime_world::install_diagnostic_sink(Box::new(|msg: &str| {
+        runtime_shared::logging::log(runtime_shared::logging::LogLevel::Warn, msg);
+    }));
+}
+
+#[cfg(not(debug_assertions))]
+#[inline(always)]
+fn install_kernel_diagnostic_bridge() {}
 
 /// Bind a `Value` prop that the `create_*` call did NOT consume: the
 /// apply runs once for `Const` and per fire (including an immediate

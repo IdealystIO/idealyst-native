@@ -86,3 +86,28 @@ fn teardown_releases_the_external_node() {
         "unmount must release the external node: {log:?}"
     );
 }
+
+/// `SvgHandle: PartialEq` compares the mounted node, so a handle equals its own
+/// clones and never equals a handle onto a different mounted `Svg`.
+/// Required for the handle to sit in a `Signal` at all (`Signal<T>` bounds
+/// `T: PartialEq` at creation and `get`), and only this crate can supply
+/// the impl — the orphan rule blocks an app crate.
+///
+/// The unequal half is the load-bearing one: every handle on a target
+/// shares the same `&'static` ops vtable, so an impl that compared `ops`
+/// would collapse two distinct nodes into one and swallow a re-target.
+#[test]
+fn svg_handles_compare_by_mounted_node_identity() {
+    let h = harness();
+
+    let ra: Ref<SvgHandle> = Ref::new();
+    let rb: Ref<SvgHandle> = Ref::new();
+    let _a: Realized<u32> = h.mount(Svg(SvgProps::default()).bind(ra.clone()).into_element());
+    let _b: Realized<u32> = h.mount(Svg(SvgProps::default()).bind(rb.clone()).into_element());
+
+    let ha = ra.with(|handle| handle.clone()).expect("a mounted");
+    let hb = rb.with(|handle| handle.clone()).expect("b mounted");
+
+    assert!(ha == ha.clone(), "clones of one handle must compare equal");
+    assert!(ha != hb, "handles onto two different mounted nodes must compare unequal");
+}

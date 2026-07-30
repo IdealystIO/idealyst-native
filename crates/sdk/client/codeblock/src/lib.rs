@@ -81,7 +81,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use runtime_scene::{item, Element, MountCx, Registry};
+use runtime_scene::{item, Element, Host, MountCx, Registry};
 use runtime_shared::accessibility::AccessibilityProps;
 use runtime_shared::{Color, StyleRules, Tokenized};
 use runtime_vocabulary::caps::TextOps;
@@ -266,4 +266,47 @@ where
         }
     }
     registry.register::<CodeBlockPrim, _>(mount_code_block::<H>);
+}
+
+/// Declare this SDK's payload kind **late-bound** instead of installing
+/// its handler — the boot half of lazy registration. Pair with
+/// [`register_from_chunk`] from inside a `#[component(lazy)]` body.
+///
+/// Only web code-splits, so on every other target this installs the
+/// handler eagerly exactly as [`register`] does. That is deliberate:
+/// deferring a kind nothing later registers leaves the payload parked
+/// behind a placeholder forever, with no panic and no log, and native
+/// has no chunk to arrive. Calling `defer` is therefore always safe —
+/// it splits where splitting exists and is a plain `register` elsewhere.
+pub fn defer<H>(registry: &mut Registry<H>)
+where
+    H: Host + StyleServices + TextOps + 'static,
+{
+    #[cfg(target_arch = "wasm32")]
+    {
+        registry.defer::<CodeBlockPrim>();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        register(registry);
+    }
+}
+
+/// Install this SDK's payload handler from inside a lazy chunk — the
+/// chunk half of lazy registration. Requires [`defer`] at boot.
+///
+/// Generic over the host because this crate takes no backend dependency;
+/// the caller pins `H` to its concrete backend, e.g.
+/// `register_from_chunk::<backend_web::WebBackend>()`. A no-op on
+/// non-web targets, where [`defer`] already registered eagerly.
+pub fn register_from_chunk<H>()
+where
+    H: Host + StyleServices + TextOps + 'static,
+{
+    #[cfg(target_arch = "wasm32")]
+    {
+        runtime_scene::defer_registration::<H, _>(|registry| {
+            registry.register_deferred::<CodeBlockPrim, _>(mount_code_block::<H>);
+        });
+    }
 }

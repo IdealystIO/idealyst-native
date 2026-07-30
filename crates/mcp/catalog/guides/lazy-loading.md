@@ -221,5 +221,8 @@ walk-time; build them where they read best.
   other frameworks) versus splitting them *within* an app.
 - [[sdks]] — the SDK crates (canvas, pdf, maps, video) that render through a
   scene-registry payload handler and are the usual lazy-loading candidates.
+- [[sdk-components]] — the authoring side: how to build an SDK component so
+  consumers can defer it, including the `register` / `defer` /
+  `register_from_chunk` seam convention.
 - [[backends]] — why the split is a web concern (native compiles the body
   inline).

@@ -26,7 +26,10 @@ If you're new to the codebase, read the docs in this order:
 
 3. [`reactivity.md`](./reactivity.md). `World`, `Signal<T>`, `Effect`,
    `Memo<T>`, staged writes, ownership scopes, fine-grained updates. The
-   reactive substrate everything else assumes.
+   reactive substrate everything else assumes — including the debug-build
+   [staged-read diagnostic](./reactivity.md#the-staged-read-diagnostic-dev-builds),
+   which warns when a read returns the value from before a `set` in the
+   same turn.
    [`automatic-batching.md`](./automatic-batching.md) is its companion:
    the flush model and the per-backend flush drivers.
 

@@ -11,7 +11,7 @@ same column alignment.
 use table::prelude::*;
 
 // Register the web handlers once at app boot (native needs none):
-// backend_web::newcore::start_in("#app", table::register_handlers, app);
+// backend_web::newcore::start_in("#app", table::register, app);
 
 ui! {
     Table {
@@ -88,11 +88,14 @@ into one continuous boundary.
 
 ## Registration
 
-`table::register_handlers(&mut registry)` is the one-line bootstrap call
-(`table::register(&mut backend)` remains as a no-op for older call sites).
-On web it
+`table::register(&mut registry)` is the one-line bootstrap call. On web it
 installs the three mount handlers; on every native target it's a no-op
 (the grid lowering needs no handler).
+
+To ship those handlers in a lazy chunk instead, call `table::defer(&mut
+registry)` at boot and `table::register_from_chunk::<MyBackend>()` from
+inside a `#[component(lazy)]` body. Both are required — deferring without
+a chunk that registers leaves every table permanently invisible.
 
 [`Table`]: src/lib.rs
 [`TableRow`]: src/lib.rs

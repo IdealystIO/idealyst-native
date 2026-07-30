@@ -42,6 +42,9 @@ which no longer exists. Runtime v2 stages the *value* too, so
 read-back-in-the-same-handler is the one authored pattern that changes
 behavior — see
 [`migrating-to-runtime-v2.md`](migrating-to-runtime-v2.md#reactive-semantics-writes-are-staged).
+Debug builds warn on it (`idealyst[staged-read]`, once per call site);
+the diagnostic's full contract is in
+[`reactivity.md`](reactivity.md#the-staged-read-diagnostic-dev-builds).
 
 ## Read-modify-write composes on the staged value
 

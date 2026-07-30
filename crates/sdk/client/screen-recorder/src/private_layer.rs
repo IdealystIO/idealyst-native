@@ -180,7 +180,7 @@ fn mount_android_window(
 /// (`backend_web::newcore::start_in`, `host_appkit::newcore::run_with`,
 /// the mobile `run_in_view`, …).
 ///
-/// # One `register_scene`, resolved at registration time
+/// # One `register`, resolved at registration time
 ///
 /// The capture-excluded window is backend-CONCRETE (it is a real
 /// platform window, not anything the caps traits can express), but a
@@ -191,7 +191,7 @@ fn mount_android_window(
 /// installs the real overlay-window handler on hit; every other `H` —
 /// and every host without an exclusion mechanism — gets the passthrough
 /// container. Mount-path cost: zero.
-pub fn register_scene<H>(registry: &mut Registry<H>)
+pub fn register<H>(registry: &mut Registry<H>)
 where
     H: ExternalOps + StyleServices + 'static,
 {

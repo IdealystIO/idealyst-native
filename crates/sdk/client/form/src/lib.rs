@@ -104,7 +104,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use runtime_shared::Ref;
-use runtime_scene::{item, Element, MountCx, Registry};
+use runtime_scene::{item, Element, Host, MountCx, Registry};
 use runtime_vocabulary::caps::ExternalOps;
 use runtime_vocabulary::glue::{BuildElement, IntoElement};
 use runtime_vocabulary::style_attach::{
@@ -150,6 +150,29 @@ pub struct FormHandle {
     node: Rc<dyn Any>,
     ops: &'static dyn FormOps,
 }
+
+/// Pointer identity on the NODE — a `FormHandle` names one mounted
+/// `<form>`, so clones of it are equal and handles onto two different
+/// forms never are.
+///
+/// `node` is a type-erased native element behind `Rc<dyn Any>`: there is
+/// nothing to compare but the address, and the address is the right thing
+/// to compare — "same form?" is precisely the question. `ops` is
+/// deliberately NOT part of the comparison; it is the backend's single
+/// `&'static` vtable, identical for every handle on a given target, so it
+/// carries no information about which form this is.
+///
+/// Needed because `Signal<T>` is bounded on `T: PartialEq` at creation and
+/// `get`, not just on the guarded `set` — an author who stashes the bound
+/// handle in state to submit the form from elsewhere cannot add the impl
+/// themselves (orphan rule). Mirrors `MediaStream`.
+impl PartialEq for FormHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.node, &other.node)
+    }
+}
+
+impl Eq for FormHandle {}
 
 impl FormHandle {
     /// Wrap a type-erased native form node + its backend ops vtable.
@@ -371,6 +394,48 @@ where
 pub fn register(registry: &mut Registry<backend_web::WebBackend>) {
     registry.register::<FormPrim, _>(web_glue::mount_form_web);
 }
+
+/// Declare this SDK's payload kind **late-bound** instead of installing
+/// its handler — the boot half of lazy registration. Pair with
+/// [`register_from_chunk`] from inside a `#[component(lazy)]` body.
+///
+/// Only web code-splits, so on every other target this installs the
+/// handler eagerly exactly as [`register`] does. That is deliberate:
+/// deferring a kind nothing later registers leaves the payload parked
+/// behind a placeholder forever, with no panic and no log, and native
+/// has no chunk to arrive. Calling `defer` is therefore always safe —
+/// it splits where splitting exists and is a plain `register` elsewhere.
+pub fn defer<H>(registry: &mut Registry<H>)
+where
+    H: Host + ExternalOps + StyleServices + 'static,
+{
+    #[cfg(target_arch = "wasm32")]
+    {
+        registry.defer::<FormPrim>();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        register(registry);
+    }
+}
+
+/// Install the web payload handler from inside a lazy chunk — the chunk
+/// half of lazy registration. Requires [`defer`] at boot.
+///
+/// Web-only by construction: the web handler is `WebBackend`-concrete,
+/// and web is the only target that code-splits. The non-web build is an
+/// empty stub so a `#[component(lazy)]` body calling this compiles on
+/// every target — there, [`defer`] already registered eagerly.
+#[cfg(target_arch = "wasm32")]
+pub fn register_from_chunk() {
+    runtime_scene::defer_registration::<backend_web::WebBackend, _>(|registry| {
+        registry.register_deferred::<FormPrim, _>(web_glue::mount_form_web);
+    });
+}
+
+/// Non-web stub — see the wasm32 [`register_from_chunk`].
+#[cfg(not(target_arch = "wasm32"))]
+pub fn register_from_chunk() {}
 
 // ============================================================================
 // Web glue (wasm32): the real `<form>` renderer over the scene

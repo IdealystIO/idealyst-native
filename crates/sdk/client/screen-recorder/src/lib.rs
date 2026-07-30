@@ -8,7 +8,7 @@
 //!    Same shape as the `microphone` SDK. **It never writes a file** —
 //!    encoding/persistence is a separate higher-level crate.
 //!
-//! 2. **The private layer** — [`PrivateLayer`] + [`register_scene`]. An
+//! 2. **The private layer** — [`PrivateLayer`] + [`register`]. An
 //!    overlay subtree that recordings don't capture, via the scene
 //!    registry's third-party-extension mechanism. Zero runtime changes.
 //!    See [`private_layer`] for the design.
@@ -16,7 +16,7 @@
 //! ```ignore
 //! // bootstrap (only needed for the private layer) — the boot entry's
 //! // `register` argument IS the seam:
-//! backend_web::newcore::start_in("#app", screen_recorder::register_scene, app);
+//! backend_web::newcore::start_in("#app", screen_recorder::register, app);
 //!
 //! // capture — yields a `MediaStream`, the same currency `camera` produces
 //! // and the `video` SDK displays:
@@ -34,13 +34,13 @@ mod error;
 
 // The overlay subtree that recordings don't capture. Its handler is
 // backend-CONCRETE on the native hosts (it builds a real platform
-// window), so `register_scene` type-dispatches at registration time —
+// window), so `register` type-dispatches at registration time —
 // see the module docs.
 pub mod private_layer;
 
 pub use config::{AudioSource, RecordingConfig, Source, WindowSelector, DEFAULT_FPS};
 pub use error::RecorderError;
-pub use private_layer::{register_scene, PrivateLayer, PrivateLayerProps};
+pub use private_layer::{register, PrivateLayer, PrivateLayerProps};
 
 // The live-source surface is the shared `media-stream` vocabulary — the same
 // currency the `camera` SDK produces and the `video` SDK consumes. Re-export

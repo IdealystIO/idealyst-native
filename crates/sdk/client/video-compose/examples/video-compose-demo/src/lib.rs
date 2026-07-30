@@ -80,24 +80,12 @@ fn make_watermark() -> ImageSource {
     ImageSource::from_rgba8(1, w, h, rgba)
 }
 
-/// Signal payload for a live stream. A `MediaStream` is an IDENTITY, not a
-/// value, and carries no `PartialEq` — but the world kernel's signals are
-/// equality-guarded and require one. This newtype supplies the semantics the
-/// demo wants: two empty slots are equal (a redundant clear stays a no-op),
-/// and any slot holding a stream is treated as distinct, so opening the camera
-/// always notifies. That is the runtime-v2 replacement for the old core's
-/// `set_always` on a payload with no `PartialEq`.
-#[derive(Clone)]
-struct StreamSlot(Option<MediaStream>);
-
-impl PartialEq for StreamSlot {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.is_none() && other.0.is_none()
-    }
-}
-
 /// A sized preview box wrapping a live-stream `Video`, filling its parent.
-fn preview(stream: Signal<StreamSlot>) -> Element {
+///
+/// `MediaStream` compares by pointer identity (see its `PartialEq`), so
+/// `Option<MediaStream>` is directly a legal signal payload — the guarded
+/// `set` stays quiet only when the SAME stream is stored again.
+fn preview(stream: Signal<Option<MediaStream>>) -> Element {
     let fill = StyleRules {
         width: Some(Length::pct(100.0).into()),
         height: Some(Length::pct(100.0).into()),
@@ -109,7 +97,7 @@ fn preview(stream: Signal<StreamSlot>) -> Element {
         ..Default::default()
     };
     view(vec![video::Video(video::VideoProps {
-        source: video::stream(move || stream.get().0),
+        source: video::stream(move || stream.get()),
         autoplay: true,
         ..Default::default()
     })
@@ -122,8 +110,8 @@ fn preview(stream: Signal<StreamSlot>) -> Element {
 pub fn app() -> Element {
     install_idea_theme(light_theme());
 
-    let input_sig: Signal<StreamSlot> = signal(StreamSlot(None));
-    let output_sig: Signal<StreamSlot> = signal(StreamSlot(None));
+    let input_sig: Signal<Option<MediaStream>> = signal(None);
+    let output_sig: Signal<Option<MediaStream>> = signal(None);
     let status: Signal<String> = signal("Idle — press Start camera".to_string());
     let started: Signal<bool> = signal(false);
     // Reactive watermark opacity — the pipeline re-reads it every composited frame.
@@ -163,10 +151,8 @@ pub fn app() -> Element {
                             s.fill(Color::new(232, 46, 150, 220));
                         })
                         .build();
-                    // `StreamSlot`'s `PartialEq` never reports a present
-                    // stream as equal, so a plain guarded `set` notifies.
-                    input_sig.set(StreamSlot(Some(input)));
-                    output_sig.set(StreamSlot(Some(out)));
+                    input_sig.set(Some(input));
+                    output_sig.set(Some(out));
                     status.set("Live — left: input (untouched) · right: composited output".to_string());
                 }
                 Err(e) => {

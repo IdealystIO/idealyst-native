@@ -381,7 +381,11 @@ impl StackScreenExt for Screen {
 /// Typed handle to a live stack navigator, filled into the `Ref` passed
 /// to [`StackBuilder::bind`]. Wraps the vocabulary's unified
 /// [`NavHandle`].
-#[derive(Clone)]
+/// Equal exactly when the two handles drive the same navigator —
+/// DERIVED for the same reason as `SwapHandle`: `NavHandle` owns the
+/// identity rule (pointer equality on its dispatch closure) and the
+/// wrapper adds no state of its own.
+#[derive(Clone, PartialEq, Eq)]
 pub struct StackHandle {
     inner: NavHandle,
 }
@@ -510,19 +514,20 @@ impl ChildList for StackNavigator {
     }
 }
 
-/// No-op: the vocabulary's `register_builtins` installs the stack handler
-/// on every host, so there is nothing for an app to register. Kept so
-/// historical bootstrap code compiles unchanged.
-pub fn register<B>(_backend: &mut B) {}
-
-/// No-op — see [`register`].
-pub fn register_generic<B>(_backend: &mut B) {}
+// NOTE: this SDK intentionally exposes NO registration seam. The stack
+// handler is a vocabulary built-in installed by `register_builtins` on
+// every host, so there is nothing for an app to register. The 1.0-era
+// no-op `register` / `register_generic` shims were removed in 1.1.0:
+// an unconstrained `fn register<B>(_: &mut B) {}` accepts a
+// `&mut Registry<H>` happily, so a caller who assumed the usual seam
+// convention got a call that compiled, did nothing, and sent them
+// debugging a registration they had already "fixed".
 
 /// Convenience re-exports, including the shared data surface (`Route`,
 /// `Screen`, `StackContext`), so an app imports everything from here.
 pub mod prelude {
     pub use super::{
-        header_state, register, HeaderButton, Route, Screen, StackBuilder, StackContext,
+        header_state, HeaderButton, Route, Screen, StackBuilder, StackContext,
         StackHandle, StackHeaderState, StackNavigator, StackPresentation, StackRetention,
         StackScreenExt, StackScreenOptions,
     };

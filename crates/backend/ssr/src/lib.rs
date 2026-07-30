@@ -1204,7 +1204,7 @@ mod tests {
 
     /// REGRESSION (before/after) — a GPU external (canvas) SSR-renders its HOST
     /// element only when its scene handler is registered. This is exactly the
-    /// mechanism `canvas_core::register_ssr_scene` uses (a local marker prim
+    /// mechanism `canvas_core::register_ssr` uses (a local marker prim
     /// stands in here so `backend-ssr` stays SDK-free):
     ///
     /// * BEFORE (no handler): the caps fallback `create_external` emits
@@ -1235,7 +1235,7 @@ mod tests {
         assert_eq!(before_html, "<div></div>", "no SSR handler → the un-adoptable div");
 
         // AFTER: register the host handler on the scene registry (what
-        // `canvas_core::register_ssr_scene` does) and render through it.
+        // `canvas_core::register_ssr` does) and render through it.
         let html = newcore::render_path_with(
             "/",
             |registry| {

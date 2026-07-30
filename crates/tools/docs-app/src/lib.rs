@@ -81,7 +81,7 @@ fn model() -> Rc<CatalogModel> {
 ///   `<pre>`/span (web/SSR) or single-node native code block.
 /// - `markdown::register` so guide bodies and entry docs render real
 ///   markdown DOM.
-/// - `table::register_handlers` so `FieldsTable` / the variants +
+/// - `table::register` so `FieldsTable` / the variants +
 ///   animations tables render the SDK's `<table>`/`<tr>`/`<td>`.
 ///
 /// Registration is mandatory: an unregistered payload **panics at
@@ -105,7 +105,7 @@ where
 {
     codeblock::register(registry);
     markdown::register(registry);
-    table::register_handlers(registry);
+    table::register(registry);
 }
 
 /// Recorder-side registration for the runtime-server sidecar

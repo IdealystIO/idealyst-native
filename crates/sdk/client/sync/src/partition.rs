@@ -394,6 +394,30 @@ pub struct SyncEngine {
     auto_sync: Rc<Cell<bool>>,
 }
 
+/// Pointer identity on the partition registry — an engine IS its shared
+/// state, so clones of one engine are equal and two engines built over the
+/// same store never are.
+///
+/// `partitions` is the discriminator because every clone shares that exact
+/// `Rc` and each `SyncEngine::new` allocates a fresh one; it is a proxy for
+/// the whole shared cell group, not a partial comparison. Comparing the
+/// contents instead would be both wrong and expensive: the registry mutates
+/// on every `register`, so a field-wise engine would compare *unequal to
+/// itself* across a registration — turning `provide(engine)` into a
+/// re-render storm — and `Arc<dyn SyncStore>` has no equality at all, so a
+/// full derive is not even available.
+///
+/// The impl exists because `Signal<T>` (and the `provide`/`inject` context
+/// slot) bound `T: PartialEq` at creation and `get`, and an app parking the
+/// engine at its root is the documented usage right above.
+impl PartialEq for SyncEngine {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.partitions, &other.partitions)
+    }
+}
+
+impl Eq for SyncEngine {}
+
 impl SyncEngine {
     /// Construct an engine over a [`SyncStore`] backend and a stable
     /// per-install `client_id`. The `client_id` is half of every
@@ -712,6 +736,53 @@ mod tests {
     fn engine() -> (SyncEngine, MockTransport) {
         let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
         (SyncEngine::with_kv(storage, "device-1"), MockTransport::new())
+    }
+
+    /// `SyncEngine: PartialEq` by shared-state identity — required so the
+    /// engine can be `provide`d / held in a signal, which is the documented
+    /// app-root usage. Clones must be the same engine.
+    #[test]
+    fn sync_engine_clones_compare_equal() {
+        let (e, _) = engine();
+        assert!(e == e.clone(), "clones share one partition registry");
+    }
+
+    /// Two engines over equally-configured stores are still two engines.
+    /// Value equality is not available here (`Arc<dyn SyncStore>` has none)
+    /// and would be wrong anyway.
+    #[test]
+    fn independently_built_sync_engines_compare_unequal() {
+        let (a, _) = engine();
+        let (b, _) = engine();
+        assert!(a != b, "same client_id + same store kind is not the same engine");
+    }
+
+    /// The comparison must NOT read the registry's contents: registering a
+    /// partition mutates it, and an engine that stopped being equal to its
+    /// own clone across a registration would re-render every subscriber.
+    #[test]
+    fn sync_engine_eq_survives_partition_registration() {
+        in_world(async {
+            let (e, tr) = engine();
+            let snapshot = e.clone();
+            let _p = part(&e, &tr).await;
+            assert!(
+                e == snapshot,
+                "registering a partition must not change the engine's identity"
+            );
+        });
+    }
+
+    /// `SyncHandle` derives from the engine, so the same two facts hold
+    /// for it — pinned separately because the derive is what makes the
+    /// handle usable in a signal at all.
+    #[test]
+    fn sync_handles_follow_their_engines_identity() {
+        let (a, _) = engine();
+        let (b, _) = engine();
+        let ha = SyncHandle::new(a.clone());
+        assert!(ha == SyncHandle::new(a), "same engine, same handle");
+        assert!(ha != SyncHandle::new(b), "different engines, different handles");
     }
 
     async fn part(engine: &SyncEngine, tr: &MockTransport) -> Partition<Note> {

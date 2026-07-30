@@ -28,7 +28,7 @@ trick, generalized to every backend).
 - [`Source`] — `ThisApp`, `UserChoice`, `FullScreen`, or `Window(WindowSelector)`.
 - [`AudioSource`] — reserved enum (`None` / `App` / `System` / `Microphone` /
   `AppAndMic`) for when audio capture lands; the frame callback is video-only today.
-- [`PrivateLayer(children)`] + [`register_scene(&mut registry)`] — the
+- [`PrivateLayer(children)`] + [`register(&mut registry)`] — the
   capture-excluded overlay and its boot-seam registration.
 - [`RecorderError`] — `Unsupported`, `PermissionDenied`, `UnsupportedSource(&str)`,
   `Platform(String)`.
@@ -70,9 +70,9 @@ controls, watermarks, or chrome you don't want in the captured output. Bootstrap
 once at startup, then wrap children:
 
 ```rust
-// bootstrap — pass `register_scene` to the boot entry's registry seam
+// bootstrap — pass `register` to the boot entry's registry seam
 // (native then builds the capture-excluded window):
-// backend_web::newcore::start_in("#app", screen_recorder::register_scene, app);
+// backend_web::newcore::start_in("#app", screen_recorder::register, app);
 
 // in your tree:
 // ui! {
@@ -152,5 +152,5 @@ item as you exercise it.
 [`Source`]: src/config.rs
 [`AudioSource`]: src/config.rs
 [`PrivateLayer(children)`]: src/private_layer.rs
-[`register_scene(&mut registry)`]: src/private_layer.rs
+[`register(&mut registry)`]: src/private_layer.rs
 [`RecorderError`]: src/error.rs

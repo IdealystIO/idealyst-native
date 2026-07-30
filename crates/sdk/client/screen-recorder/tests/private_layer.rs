@@ -2,7 +2,7 @@
 //! registry on the shared `host-mock` recording substrate.
 //!
 //! `HostMock` has no capture-exclusion mechanism, so this exercises the
-//! generic passthrough arm of `register_scene`. What it pins is the
+//! generic passthrough arm of `register`. What it pins is the
 //! contract the whole design hinges on: the layer mounts as ONE external
 //! node keyed by `PrivateLayerProps` and its children realize INTO it.
 //! If that containment broke, the native overlay handlers would parent
@@ -16,7 +16,7 @@ use screen_recorder::PrivateLayer;
 
 fn harness() -> Harness {
     // The SDK's boot registration seam.
-    let h = Harness::with_registry(|r| screen_recorder::register_scene(r));
+    let h = Harness::with_registry(|r| screen_recorder::register(r));
     h.mute(&["update_text", "on_node_unstyled", "mark_container"]);
     h
 }

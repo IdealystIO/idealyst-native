@@ -70,7 +70,7 @@ use runtime_shared::accessibility::AccessibilityProps;
 use runtime_shared::{
     Color, FlexDirection, FontFamily, FontStyle, FontWeight, Length, Ref, StyleRules, Tokenized,
 };
-use runtime_scene::{item, Element, MountCx, Registry};
+use runtime_scene::{item, Element, Host, MountCx, Registry};
 use runtime_vocabulary::caps::TextOps;
 use runtime_vocabulary::glue::{switch, BuildElement, IntoElement, Reactive};
 use runtime_vocabulary::style_attach::{attach_style, IntoStyleProp, StyleProp, StyleServices};
@@ -87,6 +87,21 @@ use runtime_vocabulary::style_attach::{attach_style, IntoStyleProp, StyleProp, S
 pub struct MarkdownHandle {
     node: Rc<dyn Any>,
 }
+
+/// Pointer identity on the NODE — a `MarkdownHandle` names one mounted
+/// markdown node, so clones of it are equal and handles onto two different
+/// nodes never are. Same shape and reasoning as `form::FormHandle`: the
+/// node is `Rc<dyn Any>`, so the address is both the only comparable thing
+/// and the right question ("same node?"). Required for the handle to be
+/// held in a `Signal`, whose `T: PartialEq` bound applies at creation and
+/// `get`, not just on the guarded `set`.
+impl PartialEq for MarkdownHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.node, &other.node)
+    }
+}
+
+impl Eq for MarkdownHandle {}
 
 impl MarkdownHandle {
     /// The type-erased native node the handler mounted (the outer
@@ -240,6 +255,49 @@ where
     H: StyleServices + TextOps + 'static,
 {
     registry.register::<MarkdownPrim, _>(mount_markdown::<H>);
+}
+
+/// Declare this SDK's payload kind **late-bound** instead of installing
+/// its handler — the boot half of lazy registration. Pair with
+/// [`register_from_chunk`] from inside a `#[component(lazy)]` body.
+///
+/// Only web code-splits, so on every other target this installs the
+/// handler eagerly exactly as [`register`] does. That is deliberate:
+/// deferring a kind nothing later registers leaves the payload parked
+/// behind a placeholder forever, with no panic and no log, and native
+/// has no chunk to arrive. Calling `defer` is therefore always safe —
+/// it splits where splitting exists and is a plain `register` elsewhere.
+pub fn defer<H>(registry: &mut Registry<H>)
+where
+    H: Host + StyleServices + TextOps + 'static,
+{
+    #[cfg(target_arch = "wasm32")]
+    {
+        registry.defer::<MarkdownPrim>();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        register(registry);
+    }
+}
+
+/// Install this SDK's payload handler from inside a lazy chunk — the
+/// chunk half of lazy registration. Requires [`defer`] at boot.
+///
+/// Generic over the host because this crate takes no backend dependency;
+/// the caller pins `H` to its concrete backend, e.g.
+/// `register_from_chunk::<backend_web::WebBackend>()`. A no-op on
+/// non-web targets, where [`defer`] already registered eagerly.
+pub fn register_from_chunk<H>()
+where
+    H: Host + StyleServices + TextOps + 'static,
+{
+    #[cfg(target_arch = "wasm32")]
+    {
+        runtime_scene::defer_registration::<H, _>(|registry| {
+            registry.register_deferred::<MarkdownPrim, _>(mount_markdown::<H>);
+        });
+    }
 }
 
 /// Mount handler: outer `<div>` column with the theme's base

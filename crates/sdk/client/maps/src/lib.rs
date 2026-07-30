@@ -64,7 +64,7 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use runtime_scene::{item, Element, MountCx, Registry};
+use runtime_scene::{item, Element, Host, MountCx, Registry};
 use runtime_vocabulary::caps::ExternalOps;
 use runtime_vocabulary::glue::IntoElement;
 use runtime_vocabulary::style_attach::{
@@ -219,6 +219,60 @@ fn mount_map_web(
 pub fn register(registry: &mut Registry<backend_ios::IosBackend>) {
     registry.register::<MapsPrim, _>(mount_map_ios);
 }
+
+// ============================================================================
+// Lazy registration seams. `defer` mirrors `register`'s cfg structure —
+// generic where `register` is generic, backend-concrete on iOS where it
+// is concrete — so the two are always callable in the same position.
+// ============================================================================
+
+/// Declare the maps payload kind **late-bound** instead of installing its
+/// handler — the boot half of lazy registration. Pair with
+/// [`register_from_chunk`] from inside a `#[component(lazy)]` body.
+///
+/// Web-only behavior: web is the sole target that code-splits, so every
+/// other arm installs the handler eagerly exactly as [`register`] does.
+/// Deferring a kind nothing later registers would leave the payload
+/// parked behind a placeholder forever — no panic, no log — and native
+/// has no chunk to arrive, so `defer` is always safe to call.
+#[cfg(target_arch = "wasm32")]
+pub fn defer<H: Host>(registry: &mut Registry<H>) {
+    registry.defer::<MapsPrim>();
+}
+
+/// Non-web `defer` — see the wasm32 arm. Registers eagerly.
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
+pub fn defer<H>(registry: &mut Registry<H>)
+where
+    H: Host + ExternalOps + StyleServices + 'static,
+{
+    register(registry);
+}
+
+/// iOS `defer` — see the wasm32 arm. Registers eagerly, and is
+/// backend-concrete because [`register`] is on this target.
+#[cfg(target_os = "ios")]
+pub fn defer(registry: &mut Registry<backend_ios::IosBackend>) {
+    register(registry);
+}
+
+/// Install the web payload handler from inside a lazy chunk — the chunk
+/// half of lazy registration. Requires [`defer`] at boot.
+///
+/// Web-only by construction: the web handler is `WebBackend`-concrete,
+/// and web is the only target that code-splits. The non-web build is an
+/// empty stub so a `#[component(lazy)]` body calling this compiles on
+/// every target — there, [`defer`] already registered eagerly.
+#[cfg(target_arch = "wasm32")]
+pub fn register_from_chunk() {
+    runtime_scene::defer_registration::<backend_web::WebBackend, _>(|registry| {
+        registry.register_deferred::<MapsPrim, _>(mount_map_web);
+    });
+}
+
+/// Non-web stub — see the wasm32 [`register_from_chunk`].
+#[cfg(not(target_arch = "wasm32"))]
+pub fn register_from_chunk() {}
 
 /// iOS mount handler: build the `MKMapView` (the leaf's builder, which
 /// also registers the view with the backend's layout tree), then the

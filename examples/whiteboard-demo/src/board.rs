@@ -207,7 +207,7 @@ pub fn DrawingSurface(props: &DrawingSurfaceProps) -> Element {
     let cam_size = props.state.camera_size;
     let canvas_anim = props.state.canvas_anim;
     let camera_layer = canvas::TextureLayer::new(
-        Rc::new(move || cam_stream.get().map(|c| c.0)),
+        Rc::new(move || cam_stream.get()),
         // Clamped to the stage so the camera can't leave the board — and the same
         // clamp the widget box uses, so frame and image agree. Size follows the
         // chosen `CameraSize`.

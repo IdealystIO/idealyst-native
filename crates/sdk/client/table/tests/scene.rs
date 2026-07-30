@@ -6,7 +6,7 @@
 //!   under one `display: grid` view item, column tracks = widest row,
 //!   `Owned` row scopes survive the flattening;
 //! - the WEB `<table>` lowering: the scene-Registry handlers
-//!   ([`table::register_handlers`]) drive a real caps-complete host
+//!   ([`table::register`]) drive a real caps-complete host
 //!   (`backend_ssr::newcore`) and must emit genuine
 //!   `<table>`/`<tr>`/`<th>`/`<td>` markup.
 
@@ -263,7 +263,7 @@ fn cell_helpers_reach_both_lowerings() {
 /// children realized INSIDE their cells.
 #[test]
 fn web_handlers_emit_real_table_markup() {
-    let page = backend_ssr::newcore::render_path_with("/", table::register_handlers, || {
+    let page = backend_ssr::newcore::render_path_with("/", table::register, || {
         item_lowering::table_item(
             vec![
                 item_lowering::row_item(
@@ -327,7 +327,7 @@ fn web_handlers_emit_real_table_markup() {
 #[test]
 fn interactive_cell_mounts_through_the_registry() {
     let fired = Rc::new(Cell::new(false));
-    let page = backend_ssr::newcore::render_path_with("/", table::register_handlers, || {
+    let page = backend_ssr::newcore::render_path_with("/", table::register, || {
         let cell = item_lowering::cell_item(false, vec![glue::text("go").into_element()], None);
         let fired = fired.clone();
         set_cell_interaction(
@@ -367,4 +367,81 @@ fn native_grid_lowering_emits_grid_css_through_scene_realization() {
         css.contains("grid-template-columns"),
         "column tracks must flow into the emitted CSS: {css}"
     );
+}
+
+// ===========================================================================
+// 1.1.0 registration seams: `defer` / `register_from_chunk`
+// ===========================================================================
+
+/// `defer` must be safe to call on a NON-WEB target.
+///
+/// Only web code-splits, so off-web `defer` installs the handlers eagerly
+/// rather than declaring the kinds late-bound. Without that arm a host
+/// (or native) app calling `defer` would park every table behind a
+/// layout-transparent placeholder forever — no panic, no log, just an
+/// invisible table, because no chunk is ever coming to drain it.
+///
+/// This is the regression test for that arm: the same tree rendered
+/// through `defer` must produce the same real table markup `register`
+/// produces. A `defer` that only declared (the wasm behavior) would
+/// render placeholders here and fail every assertion below.
+#[test]
+fn defer_registers_eagerly_off_web() {
+    let page = backend_ssr::newcore::render_path_with("/", table::defer, || {
+        item_lowering::table_item(
+            vec![item_lowering::row_item(
+                vec![item_lowering::cell_item(
+                    true,
+                    vec![glue::text("Prop").into_element()],
+                    None,
+                )],
+                None,
+            )],
+            None,
+        )
+    });
+
+    let html = &page.html;
+    assert!(
+        html.contains("<table"),
+        "`defer` installed the real <table> handler off-web: {html}"
+    );
+    assert!(html.contains("<tr"), "row handler installed by `defer`: {html}");
+    assert!(
+        html.contains("<th"),
+        "cell handler installed by `defer`: {html}"
+    );
+    assert!(
+        html.contains("Prop"),
+        "cell children realized, so the item mounted rather than parking: {html}"
+    );
+}
+
+/// The non-web `register_from_chunk` stub must exist and be inert.
+///
+/// A `#[component(lazy)]` body calls it unconditionally; the call has to
+/// compile on every target. Off-web it must do nothing, because `defer`
+/// already registered — queueing a late registration for a kind that was
+/// never declared deferred would panic in `register_deferred`.
+#[test]
+fn register_from_chunk_is_inert_off_web() {
+    table::register_from_chunk::<backend_ssr::SsrBackend>();
+
+    // Registration still works afterwards, and rendering is unaffected —
+    // proving the stub queued nothing that a later realize would trip on.
+    let page = backend_ssr::newcore::render_path_with("/", table::register, || {
+        item_lowering::table_item(
+            vec![item_lowering::row_item(
+                vec![item_lowering::cell_item(
+                    false,
+                    vec![glue::text("cell").into_element()],
+                    None,
+                )],
+                None,
+            )],
+            None,
+        )
+    });
+    assert!(page.html.contains("<table"), "{}", page.html);
+    assert!(page.html.contains("cell"), "{}", page.html);
 }

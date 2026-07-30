@@ -66,6 +66,25 @@ Note `update`'s closure shape also changed: it takes `&T` and *returns*
 the new value, where 0.5.x took `&mut T`. That one is a compile error,
 so the compiler will find it for you.
 
+**You do not have to find these by hand.** Debug builds warn when code
+reads a signal whose staged write has not been flushed yet:
+
+```
+[WARN] idealyst[staged-read]: the read at src/counter.rs:42:21 returns the
+COMMITTED value — a write staged earlier in this turn (signal created at
+src/counter.rs:31:17; world 1, slot 0) has not been flushed yet. `set` only
+stages; the driver's flush is what makes it visible, so
+`count.set(count.get() + 1)` twice nets +1, not +2. Use `update(|v| ...)`,
+which composes on the STAGED value, or keep the intended value in a local.
+Reading the committed value here may well be deliberate — this is a warning,
+it fires once per call site, and only in debug builds.
+```
+
+It is a warning, not a panic — reading the committed value after staging
+is sometimes exactly what you want. See
+[the diagnostic's contract](reactivity.md#the-staged-read-diagnostic-dev-builds)
+for what it does and does not catch.
+
 Full treatment — including why batching disappeared and what the flush
 boundary guarantees — is in
 [`migrating-to-runtime-v2.md`](migrating-to-runtime-v2.md#reactive-semantics-writes-are-staged).
@@ -88,10 +107,38 @@ boundary guarantees — is in
 | `signal`/`effect`/`memo` inside an event handler | handlers run outside the world | **runtime panic** on the event |
 
 The `PartialEq` bound is the one that surprises people: it applies to
-creation and to `get`, not just to `set`. For a payload with no
-meaningful value equality (a connection handle, an `Rc<dyn Any>` slot),
-give it a pointer-identity impl comparing `Rc::ptr_eq` — in-tree
-examples are `idea-theme`'s `ThemeSlot` and `server::SocketSender`.
+creation and to `get`, not just to `set`. Three answers, in order of
+preference:
+
+1. **Derive it** — the normal case for enums, DTOs, view models.
+2. **Write a pointer-identity impl** when the payload has no meaningful
+   value equality (a connection handle, an `Rc<dyn Any>` slot): compare
+   `Rc::ptr_eq` on an `Rc` the type already holds. "Is this the same
+   instance?" is exactly the question the guarded `set` asks. In-tree
+   examples are `idea-theme`'s `ThemeSlot` and `server::SocketSender`.
+3. **Wrap it in `runtime_core::ByIdentity<T>`** when the type is not
+   yours — the orphan rule blocks the impl from your crate. It is an
+   `Rc<T>` comparing by `Rc::ptr_eq`, `Clone`ing by sharing, and
+   `Deref`ing to `T`, so it disappears at use sites:
+
+   ```rust
+   let session = signal(ByIdentity::new(third_party::Session::open()?));
+   session.with(|s| s.ping()); // Deref — no unwrapping
+   ```
+
+   `ByIdentityArc<T>` is the `Arc` sibling for a pointer you were handed
+   rather than allocated (`storage::platform_storage()`); wrapping an
+   existing `Arc` in `ByIdentity` would compare the new `Rc` instead and
+   lose the identity you wanted.
+
+Framework types already carry the impl — `MediaStream`, `AudioStream`,
+`net::Client` / `CancelHandle` / `CancelToken`, `NavHandle` (and
+`SwapHandle` / `StackHandle`), `sync::SyncEngine` / `SyncHandle`,
+`graphql::GraphqlClient`, `offload::Handle`, and the SDK node handles
+(`FormHandle`, `SvgHandle`, `VideoHandle`, `WebViewHandle`,
+`ToolbarHandle`, `MarkdownHandle`). You should
+never need `ByIdentity` for something we ship; if you do, that is a
+framework bug, since only the framework can supply the impl.
 
 ### 2. Removed from the `runtime_core` author surface
 
@@ -179,9 +226,25 @@ it needs. See
    - `signal(` / `effect!` / `memo(` / free theme functions inside an
      event handler → capture what you need at build time.
    These are runtime panics on first interaction, not build failures.
-4. **Audit read-after-write.** The staged-write change is silent. Search
-   for a `.set(` followed by a `.get()` of the same signal in one
-   handler — that is the shape that changes meaning.
+4. **Audit read-after-write — by running the app, not by grepping.** The
+   staged-write change is the one break with no compile error and no
+   panic, so the runtime finds it for you: **run a debug build and
+   exercise the interactive paths**, then read the log for
+   `idealyst[staged-read]`. Each message names the read's source
+   location, the signal's creation site, and the fix (`update`). It
+   fires once per call site, so a handler you hit fifty times reports
+   once. Every message is a place where a read returns the value from
+   *before* a `set` in the same turn.
+
+   The diagnostic is debug-only and needs no opt-in — no cargo feature,
+   no flag. On web it arrives through `console.warn`; on native through
+   the platform log channel; under `cargo test` on stderr.
+
+   It is deliberately quiet about reads that *subscribe* (a `get()`
+   inside an effect re-runs when the write commits, so the staleness is
+   transient). What it reports is the shape that cannot self-correct:
+   event handlers, component bodies, `peek` / `with_untracked`, and
+   cross-world reads. Those are where the migration actually bites.
 5. **If you ship an External SDK**, port registration to the scene
    `Registry` (section 2 above).
 6. **Run it.** The staged-write and handler-context changes surface

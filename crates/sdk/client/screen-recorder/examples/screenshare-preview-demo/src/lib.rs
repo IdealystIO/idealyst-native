@@ -27,13 +27,13 @@ use std::rc::Rc;
 #[cfg(target_arch = "wasm32")]
 pub fn register_scene_extensions(registry: &mut runtime_scene::Registry<backend_web::WebBackend>) {
     video::register(registry);
-    screen_recorder::register_scene(registry);
+    screen_recorder::register(registry);
 }
 
 /// Native registration seam. Both SDKs are registry-GENERIC off web and
 /// type-dispatch ONCE at registration: `video::register` downcasts to the
 /// macOS / iOS / Android registry and installs the real player, and
-/// `screen_recorder::register_scene` installs the capture-excluded overlay
+/// `screen_recorder::register` installs the capture-excluded overlay
 /// window where the platform has one (passthrough container elsewhere).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn register_scene_extensions<H>(registry: &mut runtime_scene::Registry<H>)
@@ -43,7 +43,7 @@ where
         + 'static,
 {
     video::register(registry);
-    screen_recorder::register_scene(registry);
+    screen_recorder::register(registry);
 }
 
 /// Android entry: the generated wrapper's `attach` mounts `scene_app()`
@@ -52,29 +52,16 @@ pub fn scene_app() -> Element {
     app()
 }
 
-/// Signal payload for the live source. A `MediaStream` is an IDENTITY, not a
-/// value, and carries no `PartialEq` — but the world kernel's signals are
-/// equality-guarded and require one. This newtype supplies the semantics the
-/// demo wants: two empty slots are equal (a redundant clear stays a no-op),
-/// and any slot holding a stream is treated as distinct, so starting capture
-/// always notifies. That is the runtime-v2 replacement for the old core's
-/// `set_always` on a payload with no `PartialEq`.
-#[derive(Clone)]
-struct StreamSlot(Option<MediaStream>);
-
-impl PartialEq for StreamSlot {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.is_none() && other.0.is_none()
-    }
-}
-
 pub fn app() -> Element {
     install_idea_theme(light_theme());
 
     // The live source, once capture starts. `MediaStream` is `Clone` (Rc); the
     // signal holds it (keeping capture alive) and the `Video` clones it to
     // display.
-    let stream_sig: Signal<StreamSlot> = signal(StreamSlot(None));
+    // `MediaStream` compares by pointer identity (see its `PartialEq`), so
+    // `Option<MediaStream>` is directly a legal signal payload: the guarded
+    // `set` stays quiet only when the SAME stream is stored again.
+    let stream_sig: Signal<Option<MediaStream>> = signal(None);
     let status: Signal<String> = signal("Idle — press Start screen share".to_string());
     let started: Signal<bool> = signal(false);
 
@@ -97,7 +84,7 @@ pub fn app() -> Element {
         ..Default::default()
     };
     let preview = view(vec![video::Video(video::VideoProps {
-        source: video::stream(move || stream_sig.get().0),
+        source: video::stream(move || stream_sig.get()),
         autoplay: true,
         ..Default::default()
     })
@@ -117,9 +104,7 @@ pub fn app() -> Element {
             match ScreenRecorder::new().start(RecordingConfig::new()).await {
                 Ok(stream) => {
                     status.set("Live — screen feed via Video(source = stream)".to_string());
-                    // `StreamSlot`'s `PartialEq` never reports a present
-                    // stream as equal, so a plain guarded `set` notifies.
-                    stream_sig.set(StreamSlot(Some(stream)));
+                    stream_sig.set(Some(stream));
                 }
                 Err(e) => {
                     started.set(false);

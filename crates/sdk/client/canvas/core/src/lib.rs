@@ -53,7 +53,7 @@ mod scene;
 pub use scene::*;
 
 mod prim;
-pub use prim::{register_ssr_scene, Canvas, CanvasBound, CanvasPrim};
+pub use prim::{register_ssr, Canvas, CanvasBound, CanvasPrim};
 
 use runtime_core::{IdealystSchema, Length, StyleRules, StyleSheet};
 use std::rc::Rc;

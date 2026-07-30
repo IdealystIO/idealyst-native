@@ -68,6 +68,45 @@ stored in a signal at all. Two migration shapes:
   `server::SocketSender` (`crates/api/server/src/socket.rs`). Pair it
   with `set_always` at the write site if every write must notify
   regardless.
+- **Wrap it in `ByIdentity<T>`** when the type is not yours to write an
+  impl on. The orphan rule blocks `impl PartialEq for third_party::Thing`
+  from your crate exactly as it blocks it from ours, so a newtype was the
+  only way out — and it got reinvented five separate times in this tree
+  before the wrapper existed. `runtime_core::ByIdentity<T>` is that
+  newtype, shipped: an `Rc<T>` that compares with `Rc::ptr_eq`, `Clone`s
+  by sharing, and `Deref`s to `T` so it is invisible at use sites.
+
+  ```rust
+  use runtime_core::{signal, ByIdentity};
+
+  // `third_party::Session` has no PartialEq and you cannot add one.
+  let session = signal(ByIdentity::new(third_party::Session::open()?));
+  session.with(|s| s.ping());          // Deref — no unwrapping
+  session.set(ByIdentity::new(other)); // a different instance notifies
+  ```
+
+  `ByIdentityArc<T>` is the `Arc` sibling, for a pointer you were *handed*
+  rather than one you allocated (`storage::platform_storage() -> Arc<dyn
+  Storage>`). Wrapping such a value in `ByIdentity` would allocate a fresh
+  `Rc` around it, so two wrappers over clones of the same `Arc` would
+  compare unequal — match the pointer you already have. Both are
+  `?Sized`-tolerant, so `ByIdentityArc<dyn Storage>` works.
+
+  Reach for `ByIdentity` only for types you do not control. If the type is
+  yours, the impl on the type itself is better: it makes every call site
+  work without a wrapper.
+
+**Framework types already carry the impl.** You should not need to wrap
+anything we ship. `MediaStream`, `AudioStream`, `net::Client`,
+`net::CancelHandle` / `CancelToken`, `NavHandle` and its `SwapHandle` /
+`StackHandle` wrappers, `sync::SyncEngine` / `SyncHandle`,
+`graphql::GraphqlClient`, `offload::Handle`, and every SDK node handle
+(`form::FormHandle`, `SvgHandle`, `VideoHandle`, `WebViewHandle`,
+`ToolbarHandle`, `MarkdownHandle`) all compare correctly in a signal — by pointer identity, except `offload::Handle`,
+which is a `(&'static str, fn ptr)` pair and so compares by value ("the
+same job is the same job"). If you hit a framework type that still cannot
+go in a signal, that is a bug in the framework, not something to work
+around with `ByIdentity` — the orphan rule means only we can fix it.
 
 SDK-visible consequence: `server::use_socket<In, Out>` and
 `server::use_sse<T>` now require `PartialEq` on the *inbound* message
@@ -363,6 +402,62 @@ count.update(|n| n + 1);
 
 A *single* `set(get() + 1)` per turn is fine — that's the idiomatic
 counter handler and it behaves identically on both cores.
+
+### The staged-read diagnostic finds these for you
+
+Every other break in this migration is a compile error or a loud panic.
+This one is silent, so the kernel carries a dev-build warning for it:
+reading a signal whose staged write has not been flushed yet emits
+
+```
+idealyst[staged-read]: the read at <file:line:col> returns the COMMITTED
+value — a write staged earlier in this turn (signal created at
+<file:line:col>; world W, slot S) has not been flushed yet. …
+```
+
+The contract, in full:
+
+- **Armed by a pending staged value**, i.e. `set` / `set_always` /
+  `update`. `touch()` (no value) and `set_untracked` (writes the
+  committed cell in place) cannot make a read stale and do not arm it.
+- **Cleared at the flush** that commits the write. There is no per-turn
+  bookkeeping: the condition is `SignalData::next.is_some()`, and
+  `commit` takes `next`.
+- **`get`, `peek`, `with`, `with_untracked` all warn.** They all return
+  the committed value, so the surprise is identical. `peek` means "do
+  not subscribe me", not "I know this is pre-commit".
+- **`update` never warns.** It composes on the staged value and never
+  touches the read path — warning on the prescribed fix would be worse
+  than shipping nothing.
+- **Reads that subscribe are exempt.** A tracked `get()` inside an
+  effect of the signal's own world re-runs when the write commits, so
+  the staleness is transient. That exemption is what keeps the
+  diagnostic pointed at the shape that *cannot* self-correct: event
+  handlers, component bodies (`component_scope` runs untracked),
+  `peek`/`with_untracked`, and cross-world reads.
+- **Once per call site**, for the process lifetime — a raf loop reports
+  once, not per frame. The location comes from `#[track_caller]`; a
+  thin wrapper of your own around `get()` should forward
+  `#[cfg_attr(debug_assertions, track_caller)]` or it will absorb the
+  attribution for every call site in your app.
+- **Warning, never a panic.** Reading the committed value after staging
+  is sometimes deliberate.
+- **`debug_assertions`-gated, no cargo feature, no opt-in.** Release
+  builds compile out the check, the message, the dedupe table and the
+  per-signal creation-site field
+  (`tests.rs::staged_read_diagnostic_is_debug_build_only` asserts the
+  opposite thing in each profile).
+
+Messages route through `runtime_shared::logging` — `console.warn` on
+web, the platform channel on native — via a bridge that
+`runtime_vocabulary::register_builtins` installs, since `runtime-world`
+sits below runtime-shared and cannot call the logger itself. With no
+bridge installed (a bare kernel embed, `cargo test`) they go to
+`eprintln!`. A host that wants them elsewhere calls
+`runtime_world::install_diagnostic_sink`.
+
+Behaviour pinned by `crates/runtime/world/src/tests.rs`'s
+`staged_read_diagnostic` module.
 
 ### When does the flush happen?
 

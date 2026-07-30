@@ -70,7 +70,12 @@ scope.
 - **Writes are staged; reads see the committed value** — `s.set(v)` then
   `s.get()` in the same handler still returns the old value. The world commits
   and fans out once, at the flush that closes the turn. `update` is the
-  exception: its closure sees the staged value.
+  exception: its closure sees the staged value. Debug builds warn on the
+  stale read (`idealyst[staged-read]`, naming the read site, the signal's
+  creation site and the `update` fix; once per call site, never a panic).
+  Reads that subscribe the running effect are exempt — they re-run when the
+  write commits — so what it reports is handlers, component bodies, `peek` /
+  `with_untracked` and cross-world reads.
 - **A write after the world dropped is a no-op; a stale handle in a LIVE world
   panics** — an async callback completing after unmount of its world is
   harmless, but writing through a recycled slot's handle while the world is

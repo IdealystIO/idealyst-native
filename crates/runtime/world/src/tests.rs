@@ -1709,3 +1709,328 @@ fn in_effect_tracks_effect_bodies_only() {
     });
     assert!(!in_effect());
 }
+
+// ============================================================================
+// Staged-read diagnostic — the dev-build warning for the one 0.5 → 1.0 break
+// that is neither a compile error nor a panic (`set(v)` then `get()` in one
+// turn returns the PRE-set value).
+//
+// Every test drains first: `__take_staged_read_warnings` also clears the
+// per-call-site dedupe table, so the suite is order-independent even under
+// `--test-threads=1`, where all tests share one thread (and therefore one
+// TLS `DIAG`).
+// ============================================================================
+
+#[cfg(debug_assertions)]
+mod staged_read_diagnostic {
+    use super::*;
+    use std::cell::RefCell;
+
+    fn drain() -> Vec<StagedReadWarning> {
+        __take_staged_read_warnings()
+    }
+
+    /// The headline case: stage a write, read the same signal before the
+    /// flush. This is the exact shape the migration guide's step 4 used to
+    /// ask upgraders to grep for by hand.
+    #[test]
+    fn staged_write_then_read_warns_and_names_both_sites() {
+        let _ = drain();
+        let world = World::new();
+        world.enter(|| {
+            let count = signal(0u32);
+            let created_line = line!() - 1;
+            count.set(count.peek() + 1);
+            let read_line = line!() + 1;
+            let observed = count.peek();
+            // The value proves the hazard is real, not just reported.
+            assert_eq!(observed, 0, "the read sees the COMMITTED value");
+
+            let warnings = drain();
+            assert_eq!(warnings.len(), 1, "one warning: {warnings:?}");
+            let w = warnings[0];
+            assert_eq!(w.read_site.line(), read_line, "names the read site");
+            assert_eq!(w.created_at.line(), created_line, "names the creation site");
+            assert!(w.read_site.file().ends_with("tests.rs"));
+        });
+    }
+
+    /// After the flush the staged value IS the committed value, so the read
+    /// is entirely correct — the diagnostic must be silent. This is the
+    /// per-turn reset: `AnySignal::commit` takes `next`, which is the whole
+    /// mechanism.
+    #[test]
+    fn read_after_flush_does_not_warn() {
+        let _ = drain();
+        let world = World::new();
+        let sig = world.signal(0u32);
+        sig.set(7);
+        world.flush();
+        assert_eq!(sig.peek(), 7);
+        assert!(drain().is_empty(), "committed reads are silent");
+    }
+
+    /// The same signal read twice with a flush in between: the first read
+    /// warns, the second must not — proving the flush boundary clears the
+    /// PENDING state rather than the dedupe table doing the work. (The
+    /// drain in the middle resets the dedupe table, so silence downstream
+    /// can only come from `next` being `None`.)
+    #[test]
+    fn flush_boundary_clears_the_pending_state_not_just_the_dedupe() {
+        let _ = drain();
+        let world = World::new();
+        let sig = world.signal(0u32);
+        sig.set(7);
+        assert_eq!(sig.peek(), 0);
+        assert_eq!(drain().len(), 1, "pre-flush read warns");
+        world.flush();
+        assert_eq!(sig.peek(), 7);
+        assert!(drain().is_empty(), "post-flush read is silent");
+    }
+
+    /// `update` is the fix the migration guide prescribes. It composes on
+    /// the STAGED value and never routes through `read_signal`, so it must
+    /// be silent — warning on the recommended remedy would be worse than
+    /// not shipping the diagnostic at all.
+    #[test]
+    fn update_after_a_staged_set_does_not_warn() {
+        let _ = drain();
+        let world = World::new();
+        let count = world.signal(0u32);
+        count.update(|n| n + 1);
+        count.update(|n| n + 1);
+        assert!(drain().is_empty(), "update composes; it must not warn");
+        world.flush();
+        assert_eq!(count.peek(), 2, "and it really does compose");
+    }
+
+    /// A raf loop or animation driver hitting the same read every frame
+    /// must produce ONE message, not one per frame. A firehose is worse
+    /// than silence.
+    #[test]
+    fn the_same_call_site_warns_exactly_once() {
+        let _ = drain();
+        let world = World::new();
+        let sig = world.signal(0u32);
+        for _ in 0..64 {
+            sig.set(1);
+            let _ = sig.peek(); // ONE call site, 64 executions
+        }
+        let warnings = drain();
+        assert_eq!(warnings.len(), 1, "deduped per call site: {warnings:?}");
+    }
+
+    /// Dedupe is per SITE, not global: a second offending line still gets
+    /// its own message.
+    #[test]
+    fn two_distinct_call_sites_both_warn() {
+        let _ = drain();
+        let world = World::new();
+        let sig = world.signal(0u32);
+        sig.set(1);
+        let first_line = line!() + 1;
+        let _ = sig.peek();
+        let second_line = line!() + 1;
+        let _ = sig.peek();
+        let warnings = drain();
+        assert_eq!(warnings.len(), 2, "one per site: {warnings:?}");
+        assert_eq!(warnings[0].read_site.line(), first_line);
+        assert_eq!(warnings[1].read_site.line(), second_line);
+    }
+
+    /// Staging signal A must not implicate a read of signal B — the check
+    /// is per-slot (`next.is_some()` on the slot being read), not a
+    /// turn-wide "something is staged" flag.
+    #[test]
+    fn reading_a_different_signal_than_the_staged_one_does_not_warn() {
+        let _ = drain();
+        let world = World::new();
+        let a = world.signal(0u32);
+        let b = world.signal(0u32);
+        a.set(1);
+        assert_eq!(b.peek(), 0);
+        assert!(drain().is_empty(), "b has nothing staged");
+    }
+
+    /// A read that SUBSCRIBED the running effect is re-delivered when the
+    /// staged value commits — the effect re-runs with the fresh value, so
+    /// the staleness is transient and self-correcting. Warning here would
+    /// fire on the framework's own drivers (a binding effect created just
+    /// after its signal was seeded) and on every memo settling against a
+    /// sibling memo, which is what would make it noise rather than signal.
+    #[test]
+    fn a_tracked_read_inside_an_effect_does_not_warn() {
+        let _ = drain();
+        let world = World::new();
+        let seen = counter();
+        let s = seen.clone();
+        world.enter(|| {
+            let sig = signal(0u32);
+            sig.set(1); // staged BEFORE the effect is created
+            let _e = effect(move || {
+                let _ = sig.get(); // tracked → subscribes → re-delivered
+                bump(&s);
+            });
+        });
+        assert!(drain().is_empty(), "subscribed reads self-correct");
+        assert_eq!(seen.get(), 1);
+        world.flush();
+        assert_eq!(seen.get(), 2, "and the re-delivery really happens");
+    }
+
+    /// The converse of the rule above, and the `peek` decision made
+    /// explicit: `peek` drops the SUBSCRIPTION, not the staging rule, so
+    /// inside an effect it has no second chance and must warn.
+    #[test]
+    fn an_untracked_read_inside_an_effect_still_warns() {
+        let _ = drain();
+        let world = World::new();
+        world.enter(|| {
+            let sig = signal(0u32);
+            sig.set(1);
+            let _e = effect(move || {
+                let _ = sig.peek(); // no subscription → stale value is final
+            });
+        });
+        assert_eq!(drain().len(), 1, "peek has no re-delivery");
+    }
+
+    /// A cross-world read never subscribes (the kernel's deliberate
+    /// no-cross-world-subscription rule), so it gets no re-delivery either
+    /// and must warn even though it sits inside an effect.
+    #[test]
+    fn a_cross_world_read_inside_an_effect_still_warns() {
+        let _ = drain();
+        let a = World::new();
+        let b = World::new();
+        let shared = a.signal(0u32);
+        shared.set(1); // staged into A
+        b.enter(|| {
+            let _e = effect(move || {
+                let _ = shared.get(); // B-effect reading an A-signal
+            });
+        });
+        assert_eq!(drain().len(), 1, "cross-world reads never subscribe");
+    }
+
+    /// `peek` and `with_untracked` return the committed value exactly like
+    /// `get`/`with` do, so the staleness surprise is identical and all four
+    /// reads warn. (Documented decision: `peek` means "do not subscribe
+    /// me", never "I know this is pre-commit".)
+    #[test]
+    fn every_read_op_warns_including_peek_and_with_untracked() {
+        let _ = drain();
+        let world = World::new();
+        let sig = world.signal(0u32);
+        sig.set(1);
+        let _ = sig.get();
+        let _ = sig.peek();
+        let _ = sig.with(|v| *v);
+        let _ = sig.with_untracked(|v| *v);
+        assert_eq!(drain().len(), 4, "get, peek, with, with_untracked");
+    }
+
+    /// Writes that do not stage a VALUE cannot make a read stale, so they
+    /// must not arm the diagnostic: `touch` only forces a notification and
+    /// `set_untracked` writes the committed value in place.
+    #[test]
+    fn touch_and_set_untracked_do_not_arm_the_diagnostic() {
+        let _ = drain();
+        let world = World::new();
+        let sig = world.signal(0u32);
+        sig.touch();
+        assert_eq!(sig.peek(), 0);
+        sig.set_untracked(5);
+        assert_eq!(sig.peek(), 5, "set_untracked is immediately visible");
+        assert!(drain().is_empty(), "neither stages a pending value");
+    }
+
+    /// A memo's cache signal must report the AUTHOR's `memo(...)` site, not
+    /// runtime-world's internals — `#[track_caller]` does not propagate
+    /// through the closure `World::memo` needs, so the site is threaded
+    /// through `memo_at` by hand. Read straight out of the arena: a memo's
+    /// cache can only be observed mid-stage from inside the flush, which is
+    /// not reachable from a test body.
+    #[test]
+    fn a_memos_cache_signal_reports_the_authors_creation_site() {
+        fn created_at_of<T>(m: &Memo<T>) -> SiteLoc {
+            let arena = arena_of(m.value.world).expect("live world");
+            let site = arena.signals.borrow()[m.value.slot as usize].created_at;
+            site
+        }
+
+        let world = World::new();
+        // Free `memo()` in an entered world.
+        world.enter(|| {
+            let src = signal(1u32);
+            let ambient_line = line!() + 1;
+            let m = memo(move || src.get() * 2);
+            let site = created_at_of(&m);
+            assert_eq!(site.line(), ambient_line, "free memo()");
+            assert!(site.file().ends_with("tests.rs"));
+        });
+        // `World::memo`, which reaches `memo_at` through a closure.
+        let src2 = world.signal(3u32);
+        let method_line = line!() + 1;
+        let m2 = world.memo(move || src2.get() + 1);
+        let site = created_at_of(&m2);
+        assert_eq!(site.line(), method_line, "World::memo");
+        assert!(site.file().ends_with("tests.rs"));
+    }
+
+    /// Hosts route the message through their own log channel (web
+    /// `console.warn`, NSLog, …) because runtime-world sits below
+    /// runtime-shared's `Logger` and cannot call it. Without a sink the
+    /// text goes to `eprintln!`.
+    #[test]
+    fn an_installed_sink_receives_the_message() {
+        let _ = drain();
+        let captured: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = Rc::clone(&captured);
+        install_diagnostic_sink(Box::new(move |msg: &str| {
+            sink.borrow_mut().push(msg.to_string());
+        }));
+
+        let world = World::new();
+        let sig = world.signal(0u32);
+        sig.set(1);
+        let _ = sig.peek();
+
+        let msgs = captured.borrow();
+        assert_eq!(msgs.len(), 1, "{msgs:?}");
+        let msg = &msgs[0];
+        // The message IS the whole user experience of this feature: it must
+        // carry the slug, both source sites, and the remedy.
+        assert!(msg.starts_with("idealyst[staged-read]:"), "{msg}");
+        assert!(msg.contains("COMMITTED value"), "{msg}");
+        assert!(msg.contains("update(|v| ...)"), "names the fix: {msg}");
+        assert!(msg.contains("tests.rs"), "names the source sites: {msg}");
+        drop(msgs);
+        let _ = drain();
+    }
+}
+
+/// The gate itself. Runs in BOTH profiles and asserts the opposite thing in
+/// each, so `cargo test -p runtime-world` and `cargo test -p runtime-world
+/// --release` together pin "debug-only" — rather than one of them pinning
+/// "present" while the other never runs.
+///
+/// `SiteLoc` is the diagnostic's ONLY persistent footprint: it is the type
+/// of `SignalSlot::created_at` (one per live signal) and of every read-path
+/// site parameter. The dedupe table, the warning log, the sink and
+/// `warn_staged_read` itself live behind `#[cfg(debug_assertions)]` and do
+/// not exist below it — as does `__take_staged_read_warnings`, which is why
+/// the module above is `#[cfg(debug_assertions)]` too.
+#[test]
+fn staged_read_diagnostic_is_debug_build_only() {
+    let site_bytes = std::mem::size_of::<SiteLoc>();
+    if cfg!(debug_assertions) {
+        assert_eq!(
+            site_bytes,
+            std::mem::size_of::<&'static std::panic::Location<'static>>(),
+            "debug builds carry a real caller location per signal"
+        );
+    } else {
+        assert_eq!(site_bytes, 0, "release builds must add no per-signal storage");
+    }
+}

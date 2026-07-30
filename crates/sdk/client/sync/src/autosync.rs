@@ -25,7 +25,12 @@ use crate::SyncEngine;
 
 /// What the engine hands a [`SyncTrigger`] so it can request syncs without
 /// knowing anything about partitions or the protocol.
-#[derive(Clone)]
+/// Two handles are equal exactly when they drive the same engine —
+/// derived, because `SyncEngine`'s own `PartialEq` already answers the
+/// identity question (pointer equality on its shared partition registry)
+/// and the handle adds no state of its own. A separate impl here would be
+/// a second, drift-prone copy of the same rule.
+#[derive(Clone, PartialEq, Eq)]
 pub struct SyncHandle {
     engine: SyncEngine,
 }

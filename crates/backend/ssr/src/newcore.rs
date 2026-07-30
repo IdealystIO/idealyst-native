@@ -814,7 +814,7 @@ impl caps::ExternalOps for SsrBackend {
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Third-party primitives register a scene-`Registry` handler
-        // (`codeblock::register`, `table::register_handlers`, …) and never
+        // (`codeblock::register`, `table::register`, …) and never
         // reach this method — the registry realizes their real DOM so
         // hydration adopts it. `create_external` therefore only serves
         // `missing_primitive_placeholder`: an empty host `<div>` the

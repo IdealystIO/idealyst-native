@@ -286,6 +286,30 @@ pub struct NavHandle {
     dispatch: Rc<dyn Fn(NavCommand)>,
 }
 
+/// Pointer identity on the dispatcher — a `NavHandle` names ONE live
+/// navigator, so clones of it are equal and handles onto two different
+/// navigators never are.
+///
+/// The sole field is `Rc<dyn Fn(NavCommand)>`, a closure over the
+/// navigator's driver. Closures have no equality, so the address is not
+/// merely the best answer available — it is the only one, and it happens
+/// to be the right question: "does this handle drive the same navigator?"
+/// is exactly what a guarded `set` wants to know when an author swaps
+/// which navigator a control targets.
+///
+/// Needed because `Signal<T>` is bounded on `T: PartialEq` at creation and
+/// `get`, not just on the guarded `set`, and stashing the bound handle in
+/// state or context is the ordinary way to drive navigation from outside
+/// the navigator's subtree. Supplying it HERE (rather than on each SDK
+/// wrapper) means `SwapHandle`/`StackHandle` can simply derive.
+impl PartialEq for NavHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.dispatch, &other.dispatch)
+    }
+}
+
+impl Eq for NavHandle {}
+
 impl NavHandle {
     pub(crate) fn new(dispatch: Rc<dyn Fn(NavCommand)>) -> Self {
         NavHandle { dispatch }

@@ -84,3 +84,28 @@ pub use runtime_shared::{face, node_ref, typeface};
 // them here preserves that surface; without it the break is silent in the
 // migration guide's inventory (they are not among its removed 19 names).
 pub use runtime_shared::{log_debug, log_error, log_info, log_warn};
+
+#[cfg(test)]
+mod tests {
+    /// Path pin: authors spell the identity wrapper `runtime_core::ByIdentity`.
+    /// It is DEFINED in runtime-shared and reaches here only via glue's
+    /// re-export plus this crate's `pub use runtime_vocabulary::glue::*`. If
+    /// either link is dropped the type still exists and every one of its own
+    /// tests still passes, while every app breaks — the same silent-surface
+    /// failure mode as the `log_*` macros above.
+    #[test]
+    fn by_identity_resolves_on_the_author_surface() {
+        let a = crate::ByIdentity::new(String::from("payload"));
+        let b = a.clone();
+        assert!(a == b, "clones are the same instance");
+        assert!(
+            a != crate::ByIdentity::new(String::from("payload")),
+            "an equal-valued but separate allocation is a different instance"
+        );
+        assert_eq!(&*a, "payload", "Deref reaches the payload");
+
+        let arc: std::sync::Arc<str> = std::sync::Arc::from("shared");
+        let c = crate::ByIdentityArc::from_ptr(arc.clone());
+        assert!(c == crate::ByIdentityArc::from_ptr(arc));
+    }
+}

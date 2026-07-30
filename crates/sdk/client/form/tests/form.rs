@@ -170,3 +170,36 @@ fn form_tag_builds_through_build_element_with_children_and_callback() {
         "the Form tag's BuildElement path must mount identically to form(..)"
     );
 }
+
+/// `FormHandle: PartialEq` by node identity — required because
+/// `Signal<T>` is bounded on `T: PartialEq` at creation and `get`, so an
+/// author who parks a bound handle in state (to submit from a toolbar
+/// button, say) cannot otherwise compile. The orphan rule means only the
+/// `form` crate can supply the impl.
+///
+/// Both directions matter: clones of ONE handle must compare equal (a
+/// guarded `set` of the same handle must not notify), and handles onto
+/// two DIFFERENT mounted forms must compare unequal (swapping which form
+/// you drive must notify).
+#[test]
+fn form_handles_compare_by_mounted_node_identity() {
+    let h = harness();
+
+    let a: Ref<FormHandle> = Ref::new();
+    let b: Ref<FormHandle> = Ref::new();
+    let _ra: Realized<u32> = h.mount(form(FormProps::default()).bind(a.clone()).into_element());
+    let _rb: Realized<u32> = h.mount(form(FormProps::default()).bind(b.clone()).into_element());
+
+    let ha = a.with(|handle| handle.clone()).expect("form a mounted");
+    let hb = b.with(|handle| handle.clone()).expect("form b mounted");
+
+    assert!(
+        ha == ha.clone(),
+        "clones of one handle name the same form and must compare equal"
+    );
+    assert!(
+        ha != hb,
+        "handles onto two different mounted forms must compare unequal — \
+         the `ops` vtable they share must not make them look identical"
+    );
+}

@@ -830,3 +830,62 @@ fn navigator_mounts_publish_routes_to_the_ssg_collector() {
         assert!(take_route_collector().is_none(), "collector off: nothing recorded");
     });
 }
+
+// ===========================================================================
+// NavHandle identity
+// ===========================================================================
+
+/// `NavHandle: PartialEq` compares the DISPATCHER, so a handle is equal
+/// to its own clones and unequal to a handle on any other navigator.
+///
+/// Framework-core impl, so it is pinned here rather than in the SDKs: it
+/// is what lets `Signal<NavHandle>` exist at all (the handle types are
+/// bounded on `PartialEq` at signal creation and `get`, not just on the
+/// guarded `set`), and `SwapHandle`/`StackHandle` derive from it rather
+/// than re-deriving the rule.
+///
+/// The unequal half is the load-bearing one: two navigators mounted in
+/// the same app hand out structurally identical handles, and if those
+/// compared equal, re-targeting a control from one navigator to the other
+/// would be swallowed by the guarded `set` and the UI would keep driving
+/// the old navigator.
+#[test]
+fn nav_handles_compare_by_navigator_identity() {
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        let a = mount_swap(&h, MountPolicy::LazyPersistent);
+        let b = mount_swap(&h, MountPolicy::LazyPersistent);
+
+        assert!(
+            a.handle == a.handle.clone(),
+            "clones of one handle drive the same navigator and must compare equal"
+        );
+        assert!(
+            a.handle != b.handle,
+            "handles onto two separately mounted navigators must compare unequal"
+        );
+    });
+}
+
+/// Identity must not drift as the navigator's STATE changes — the handle
+/// names the navigator, not its current route. A handle that stopped
+/// equalling its own earlier clone after a `select` would re-fire every
+/// subscriber holding it.
+#[test]
+fn nav_handle_identity_survives_navigation() {
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        let f = mount_swap(&h, MountPolicy::LazyPersistent);
+        let before = f.handle.clone();
+
+        f.handle.select(&ABOUT, ());
+        world.flush();
+
+        assert!(
+            f.handle == before,
+            "navigating must not change which navigator the handle names"
+        );
+    });
+}

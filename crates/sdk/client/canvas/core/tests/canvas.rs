@@ -1,6 +1,6 @@
 //! `Canvas(CanvasProps { .. }).with_style(…)` mounted through the scene
 //! registry on the shared `host-mock` recording substrate, using the
-//! renderer-agnostic SSR/hydration host handler (`register_ssr_scene` —
+//! renderer-agnostic SSR/hydration host handler (`register_ssr` —
 //! bare `<canvas>` + author style).
 //!
 //! The renderer-specific handlers (canvas-native web Canvas2D) are
@@ -14,7 +14,7 @@ use runtime_scene::Realized;
 use runtime_vocabulary::glue::IntoElement;
 
 fn harness() -> Harness {
-    Harness::with_registry(|r| canvas_core::register_ssr_scene(r))
+    Harness::with_registry(|r| canvas_core::register_ssr(r))
 }
 
 #[test]

@@ -23,8 +23,10 @@ value equal to what it already held wakes no subscribers. The full write
 surface decomposes "write" and "notify" independently:
 
 - `set(v)` — write, notify only on change (the default; `T: PartialEq`)
-- `set_always(v)` — write, always notify (any `T`; use for non-`PartialEq`
-  types or deliberate same-value retriggers)
+- `set_always(v)` — write, always notify (deliberate same-value retriggers).
+  It is *not* a way around the `PartialEq` bound: a type with no `PartialEq`
+  cannot be put in a signal at all. Give the type a pointer-identity impl, or
+  wrap it in `runtime_core::ByIdentity<T>` if it is not yours to change
 - `touch()` — notify without writing (e.g. re-fire a `switch` discriminant)
 - `set_untracked(v)` — write without notifying (rare, deliberate bookkeeping)
 - `update(f)` — in-place mutation, always notifies (`update_if_changed(f)`
